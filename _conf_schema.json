@@ -1,0 +1,220 @@
+{
+  "enabled": {
+    "type": "bool",
+    "description": "启用插件",
+    "hint": "关闭后不监听、不判断、不主动发送。",
+    "default": true
+  },
+  "decision_model_enabled": {
+    "type": "bool",
+    "description": "启用判断模型",
+    "hint": "开启后，普通消息会先用提示词判断是否适合主动回复；关闭后只响应明确接话/表情包请求和手动检查。回复生成仍走 AstrBot 主 Agent 管线。",
+    "default": true
+  },
+  "judge_provider_id": {
+    "type": "string",
+    "description": "判断模型 Provider ID",
+    "hint": "留空使用当前会话模型；建议选择速度快、成本低的小模型。该模型只判断是否回复，不负责生成正文或调用工具。",
+    "default": "",
+    "_special": "select_provider"
+  },
+  "decision_prompt_template": {
+    "type": "text",
+    "description": "判断提示词",
+    "hint": "可用变量：{session}、{trigger}、{bot_aliases}、{last_message_age_sec}、{last_reply_age_sec}、{latest_message}、{recent_messages}。需输出 JSON：{\"should_reply\": true/false, \"reason\": \"理由\"}。",
+    "default": "",
+    "editor_mode": true,
+    "editor_language": "text"
+  },
+  "decision_temperature": {
+    "type": "float",
+    "description": "判断模型温度",
+    "hint": "越低越稳定，建议 0.1-0.4。",
+    "default": 0.2,
+    "slider": {
+      "min": 0,
+      "max": 2,
+      "step": 0.1
+    }
+  },
+  "decision_timeout_sec": {
+    "type": "float",
+    "description": "判断模型超时（秒）",
+    "hint": "超时则本次不主动回应。",
+    "default": 20.0,
+    "slider": {
+      "min": 1,
+      "max": 300,
+      "step": 1
+    }
+  },
+  "decision_history_min_messages": {
+    "type": "int",
+    "description": "最少上下文消息数",
+    "hint": "生成主动回复前至少参考多少条当前会话上下文；缓存不足时会读取 AstrBot 当前会话历史补齐。0 表示只用本插件缓存。",
+    "default": 5,
+    "slider": {
+      "min": 0,
+      "max": 30,
+      "step": 1
+    }
+  },
+  "reply_length_mode": {
+    "type": "string",
+    "options": [
+      "short",
+      "balanced",
+      "expressive"
+    ],
+    "description": "回复长度模式",
+    "hint": "short 偏短；balanced 自然均衡；expressive 可以稍微展开。",
+    "default": "balanced"
+  },
+  "allow_multiline_reply": {
+    "type": "bool",
+    "description": "允许正文换行",
+    "hint": "开启后正文模型可以自然分段。",
+    "default": true
+  },
+  "max_reply_chars": {
+    "type": "int",
+    "description": "主动回复最长字符数",
+    "hint": "生成内容超过该长度时会尽量在句末截断。",
+    "default": 220,
+    "slider": {
+      "min": 20,
+      "max": 2000,
+      "step": 10
+    }
+  },
+  "log_reply_content": {
+    "type": "bool",
+    "description": "日志记录主动回复内容",
+    "hint": "开启后发送成功日志会附带文本预览，方便排查；担心隐私可关闭。",
+    "default": true
+  },
+  "bot_aliases": {
+    "type": "list",
+    "description": "Bot 昵称",
+    "hint": "用于识别“阿c回一下”这类非 @ 的接话请求。",
+    "default": []
+  },
+  "ignored_sender_ids": {
+    "type": "list",
+    "description": "忽略发送者 ID",
+    "hint": "这些 QQ/用户 ID 的消息不会触发主动回复。管理员不会被自动屏蔽。",
+    "default": []
+  },
+  "whitelist_sessions": {
+    "type": "list",
+    "description": "主动回复白名单会话",
+    "hint": "只对这些会话生效。也可以在目标会话里发送 /selfreply add 自动加入。",
+    "default": []
+  },
+  "check_interval_sec": {
+    "type": "int",
+    "description": "后台巡检间隔（秒）",
+    "hint": "定时检查白名单会话是否适合主动回应。",
+    "default": 300,
+    "slider": {
+      "min": 30,
+      "max": 3600,
+      "step": 30
+    }
+  },
+  "patrol_inactive_after_sec": {
+    "type": "int",
+    "description": "巡检不活跃截断（秒）",
+    "hint": "白名单会话超过该时间没有新消息时，后台巡检会跳过。0 表示不截断。",
+    "default": 1800,
+    "slider": {
+      "min": 0,
+      "max": 604800,
+      "step": 3600
+    }
+  },
+  "message_delay_sec": {
+    "type": "int",
+    "description": "消息后延迟触发（秒）",
+    "hint": "白名单会话收到普通消息后等待多久再检查是否主动回应，避免马上插话。",
+    "default": 15,
+    "slider": {
+      "min": 5,
+      "max": 86400,
+      "step": 5
+    }
+  },
+  "min_silence_sec": {
+    "type": "int",
+    "description": "最小静默时间（秒）",
+    "hint": "距离最后一条用户消息不足该时间时，不会主动回应。",
+    "default": 10,
+    "slider": {
+      "min": 0,
+      "max": 86400,
+      "step": 10
+    }
+  },
+  "cooldown_sec": {
+    "type": "int",
+    "description": "主动回复冷却（秒）",
+    "hint": "同一会话两次主动回复之间至少间隔多久。",
+    "default": 300,
+    "slider": {
+      "min": 0,
+      "max": 86400,
+      "step": 60
+    }
+  },
+  "max_daily_replies_per_session": {
+    "type": "int",
+    "description": "单会话每日上限",
+    "hint": "0 表示不限制。",
+    "default": 8,
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 1
+    }
+  },
+  "recent_message_limit": {
+    "type": "int",
+    "description": "本插件最近消息数量",
+    "hint": "本插件缓存的最近聊天条数，用于补充主 Agent 生成主动回复时的上下文。",
+    "default": 20,
+    "slider": {
+      "min": 3,
+      "max": 100,
+      "step": 1
+    }
+  },
+  "quiet_hours": {
+    "type": "list",
+    "description": "免打扰时段",
+    "hint": "格式如 00:30-08:30。可填写多段。",
+    "default": []
+  },
+  "enabled_message_trigger": {
+    "type": "bool",
+    "description": "启用消息后触发",
+    "hint": "收到白名单会话普通消息后，延迟一段时间再检查是否主动回应。",
+    "default": true
+  },
+  "enabled_patrol_trigger": {
+    "type": "bool",
+    "description": "启用后台巡检",
+    "hint": "默认关闭后台巡检，只保留收到消息后的延迟判断。",
+    "default": false
+  },
+  "generation_timeout_sec": {
+    "type": "float",
+    "description": "主 Agent 生成超时（秒）",
+    "hint": "主动回复走 AstrBot 主 Agent 管线；超时则本次不发送。",
+    "default": 60.0,
+    "slider": {
+      "min": 1,
+      "max": 300,
+      "step": 1
+    }
+  }
+}

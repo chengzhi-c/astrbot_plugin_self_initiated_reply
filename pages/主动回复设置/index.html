@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>主动回复配置</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="/api/plugin/page/bridge-sdk.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">主动回复插件</p>
+        <h1>主动回复设置</h1>
+      </div>
+      <div class="top-actions">
+        <button class="btn primary" id="saveTopBtn" type="button">保存</button>
+        <button class="btn secondary" id="refreshBtn" type="button">刷新</button>
+      </div>
+    </header>
+
+    <section class="status-grid" id="statusGrid">
+      <div class="stat">
+        <span class="stat-label">插件状态</span>
+        <strong id="selfStatus">加载中</strong>
+      </div>
+      <div class="stat">
+        <span class="stat-label">白名单数</span>
+        <strong id="whitelistCount">-</strong>
+      </div>
+    </section>
+
+    <main class="views">
+      <div class="view active" data-view-panel="self">
+        <section class="panel">
+        <div class="panel-head">
+          <h2>基础配置</h2>
+        </div>
+        <form id="configForm" class="form">
+          <section class="subpanel">
+            <h3>运行开关</h3>
+            <label class="toggle-row">
+              <input type="checkbox" id="enabledInput">
+              <span>启用主动回复</span>
+            </label>
+            <div class="field-grid">
+              <label>
+                <span>最少上下文消息数</span>
+                <input type="number" id="minContextInput" min="0" max="30">
+              </label>
+              <label>
+                <span>空闲触发秒数</span>
+                <input type="number" id="idleInput" min="5" max="7200">
+              </label>
+              <label>
+                <span>冷却秒数</span>
+                <input type="number" id="cooldownInput" min="0" max="86400">
+              </label>
+            </div>
+          </section>
+
+          <section class="subpanel accent-panel">
+            <h3>判断模型调整</h3>
+            <label class="toggle-row">
+              <input type="checkbox" id="decisionModelInput">
+              <span>启用提示词判断模型</span>
+            </label>
+            <div class="field-grid model-grid">
+              <div class="provider-field">
+                <span>判断模型 Provider</span>
+                <div class="provider-control">
+                  <select id="judgeProviderSelect">
+                    <option value="">使用当前会话默认模型</option>
+                  </select>
+                  <button class="btn secondary provider-mode-btn" id="providerManualBtn" type="button">手动输入</button>
+                </div>
+                <input class="provider-manual-input" type="text" id="judgeProviderInput" placeholder="手动填写 Provider ID">
+                <span class="muted provider-hint" id="providerHint">留空表示使用当前会话默认模型</span>
+              </div>
+              <label>
+                <span>判断温度</span>
+                <input type="number" id="decisionTempInput" min="0" max="2" step="0.05">
+              </label>
+              <label>
+                <span>判断超时秒数</span>
+                <input type="number" id="decisionTimeoutInput" min="1" max="300" step="1">
+              </label>
+            </div>
+            <div class="prompt-workspace">
+              <label class="prompt-editor">
+                <span>判断提示词</span>
+                <textarea id="decisionPromptInput" rows="12" spellcheck="false" placeholder="留空则恢复默认提示词"></textarea>
+              </label>
+              <section class="prompt-preview-panel" aria-labelledby="promptPreviewTitle">
+                <div class="prompt-preview-head">
+                  <h4 id="promptPreviewTitle">提示词预览</h4>
+                  <span class="muted">示例变量</span>
+                </div>
+                <pre class="prompt-preview" id="promptPreview" aria-live="polite"></pre>
+              </section>
+            </div>
+            <div class="actions compact-actions">
+              <button class="btn secondary" id="resetPromptBtn" type="button">恢复默认提示词</button>
+            </div>
+            <details class="prompt-help">
+              <summary>提示词变量帮助</summary>
+              <p class="muted">预览窗口使用下方变量的示例值；真实运行时，插件会按当前会话、触发方式和最近消息替换。</p>
+              <dl class="variable-list">
+                <div>
+                  <dt>{session}</dt>
+                  <dd>当前会话 UMO，用于区分平台、群聊或私聊。</dd>
+                </div>
+                <div>
+                  <dt>{trigger}</dt>
+                  <dd>触发类型，例如消息延迟、后台巡检或手动检查。</dd>
+                </div>
+                <div>
+                  <dt>{bot_aliases}</dt>
+                  <dd>Bot 名称和别名列表，帮助判断用户是否在叫 Bot。</dd>
+                </div>
+                <div>
+                  <dt>{latest_message}</dt>
+                  <dd>最近一条可观察的用户消息文本。</dd>
+                </div>
+                <div>
+                  <dt>{recent_messages}</dt>
+                  <dd>最近上下文消息，通常是判断是否适合接话的主要依据。</dd>
+                </div>
+                <div>
+                  <dt>{last_message_age_sec}</dt>
+                  <dd>距离最近一条消息过去的秒数。</dd>
+                </div>
+                <div>
+                  <dt>{last_reply_age_sec}</dt>
+                  <dd>距离本插件上次主动回复过去的秒数。</dd>
+                </div>
+              </dl>
+            </details>
+          </section>
+
+          <details class="subpanel advanced-panel">
+            <summary>高级：白名单会话 ID</summary>
+            <p class="muted advanced-hint">日常建议用 `/selfreply add` 和 `/selfreply remove` 管理当前会话；这里保留给需要批量编辑 UMO 的场景。</p>
+            <label>
+              <span>白名单会话 UMO（每行一个）</span>
+              <textarea id="whitelistInput" rows="5" spellcheck="false"></textarea>
+            </label>
+          </details>
+
+          <div class="actions">
+            <button class="btn primary" type="submit">保存配置</button>
+            <span class="muted" id="configSaveState"></span>
+          </div>
+        </form>
+        </section>
+      </div>
+    </main>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

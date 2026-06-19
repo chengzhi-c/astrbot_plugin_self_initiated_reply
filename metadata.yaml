@@ -1,0 +1,16 @@
+name: astrbot_plugin_self_initiated_reply
+display_name: 主动回复
+desc: 主动回复插件：白名单会话内，避开 @Bot/命令后由判断模型决定是否自然接话，回复走 AstrBot 主 Agent 管线，支持 Stealer 表情包和 LivingMemory 记忆钩子
+help: |
+  指令组：/selfreply
+  /selfreply status: 查看运行状态
+  /selfreply add: 将当前会话加入白名单
+  /selfreply remove: 移出当前会话
+  /selfreply list: 查看白名单
+  /selfreply check [content]: 手动测试一次主动回复
+  /selfreply on: 临时启用
+  /selfreply off: 临时暂停
+  /selfreply debug: 查看当前会话识别信息
+version: 0.6.0
+author: chengzhi-c/Codex
+repo: ""
