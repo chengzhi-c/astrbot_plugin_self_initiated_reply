@@ -10,6 +10,35 @@ from astrbot.api.message_components import At
 
 from .models import MessageRecord
 
+# 预编译正则表达式以提升性能
+_AT_MENTION_PATTERN = re.compile(r"^(?:\[[^\]]*[Aa][Tt][^\]]*\]\s*)+")
+_CQ_AT_PATTERN = re.compile(r"^(?:\[CQ:at,[^\]]+\]\s*)+")
+_TEXT_AT_PATTERN = re.compile(r"^(?:@\S+\s*)+")
+_INLINE_AT_PATTERN = re.compile(r"\[CQ:at,[^\]]+\]")
+_INLINE_MENTION_PATTERN = re.compile(r"\[At:[^\]]+\]")
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+
+ALIAS_REPLY_REQUEST_PATTERN = re.compile(
+    r"(?:"
+    r"(?:回|回复|回应|理|搭理)(?:我|一下|下|句|句话|啊|嘛|呢)?|"
+    r"(?:说|讲)(?:话|句|句话|一下|下|啊|嘛|呢)?|"
+    r"(?:吱声|吱个声|冒泡|出来)(?:一下|下|啊|嘛|呢)?|"
+    r"(?:出来)?(?:冒泡)(?:一下|下|啊|嘛|呢)?|"
+    r"(?:在吗|还在吗|你在吗|听得到|看得到)|"
+    r"(?:快点|赶紧|速速)(?:回|回复|说|讲|理|出来)(?:一下|下|句话|句|话|啊|嘛|呢)?|"
+    r"(?:发|发个|发张|来|来个|来张|整|整个|丢|甩|给|找|搜|搜索)(?:个|张|一个|一张)?(?:表情包|表情|图|gif|动图)"
+    r")"
+)
+GENERAL_REPLY_REQUEST_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"^(?:有人吗|在吗|还在吗|听得到吗?|看得到吗?)$",
+        r"^(?:发|发个|发张|来|来个|来张|整|整个|丢|甩)(?:一个|一张|个|张)?(?:表情包|表情|图|gif|动图)$",
+        r"^(?:表情包|表情|图|gif|动图)(?:来|发|整|给)(?:一个|一下|下)?$",
+        r"^(?:找|搜|搜索)(?:个|张)?(?:表情包|表情|图|gif|动图)$",
+    )
+)
+
 
 async def maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
@@ -102,6 +131,31 @@ def event_umo(event: AstrMessageEvent) -> str:
     return f"{platform}:{msg_type}:{session_id.strip()}"
 
 
+def session_group_id(umo: str) -> str:
+    parts = str(umo or "").strip().split(":", 2)
+    if len(parts) == 3 and "group" in parts[1].lower():
+        return parts[2].strip()
+    return ""
+
+
+def session_whitelisted(umo: str, whitelist: set[str]) -> bool:
+    normalized = str(umo or "").strip()
+    if not normalized:
+        return False
+    if normalized in whitelist:
+        return True
+    group_id = session_group_id(normalized)
+    return bool(group_id and group_id in whitelist)
+
+
+def whitelist_storage_key(umo: str, whitelist: set[str]) -> str:
+    normalized = str(umo or "").strip()
+    group_id = session_group_id(normalized)
+    if group_id and group_id in whitelist:
+        return group_id
+    return normalized
+
+
 def event_sender_id(event: AstrMessageEvent) -> str:
     try:
         return str(event.get_sender_id() or "").strip()
@@ -176,43 +230,56 @@ def is_explicit_direct_call(event: AstrMessageEvent, text: str) -> bool:
 
 def strip_leading_mentions(text: str) -> str:
     raw = str(text or "").strip()
-    raw = re.sub(r"^(?:\[[^\]]*[Aa][Tt][^\]]*\]\s*)+", "", raw).strip()
-    raw = re.sub(r"^(?:\[CQ:at,[^\]]+\]\s*)+", "", raw).strip()
-    raw = re.sub(r"^(?:@\S+\s*)+", "", raw).strip()
+    raw = _AT_MENTION_PATTERN.sub("", raw).strip()
+    raw = _CQ_AT_PATTERN.sub("", raw).strip()
+    raw = _TEXT_AT_PATTERN.sub("", raw).strip()
     return raw
 
 
 def clean_chat_text(text: str) -> str:
     raw = strip_leading_mentions(text)
-    raw = re.sub(r"\[CQ:at,[^\]]+\]", "", raw)
-    raw = re.sub(r"\[At:[^\]]+\]", "", raw)
-    return re.sub(r"\s+", " ", raw).strip()
+    raw = _INLINE_AT_PATTERN.sub("", raw)
+    raw = _INLINE_MENTION_PATTERN.sub("", raw)
+    return _WHITESPACE_PATTERN.sub(" ", raw).strip()
 
 
 def is_alias_call(text: str, aliases: list[str]) -> bool:
     normalized = strip_leading_mentions(text).strip()
     for alias in aliases:
-        if alias and (normalized == alias or normalized.startswith(alias)):
+        if alias and normalized == alias:
             return True
     return False
 
 
+def _compact_reply_request_text(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or "").lower())
+
+
+def _alias_request_tail(text: str, aliases: list[str]) -> str:
+    normalized = _compact_reply_request_text(strip_leading_mentions(text))
+    for alias in aliases:
+        compact_alias = _compact_reply_request_text(alias)
+        if not compact_alias:
+            continue
+        if normalized == compact_alias:
+            return ""
+        if normalized.startswith(compact_alias):
+            return normalized[len(compact_alias) :].lstrip("，,。.!！?？:：-—")
+    return ""
+
+
 def looks_like_reply_request(text: str, aliases: list[str]) -> bool:
-    normalized = re.sub(r"\s+", "", str(text or "").lower())
+    normalized = _compact_reply_request_text(text)
     if not normalized:
         return False
     if is_alias_call(text, aliases):
         return True
-    patterns = (
-        r"(回|回复|回应|理|搭理).{0,8}(我|一下|下|句|句话|啊|嘛)?$",
-        r"(说|讲|吱声|吱个声|冒泡|出来).{0,8}(话|句|一下|下|啊|嘛)?$",
-        r"(在吗|还在吗|你在吗|有人吗|听得到|看得到)",
-        r"(快点|赶紧|速速).{0,8}(回|说|理|出来)",
-        r"(发|发表|发个|发张|来|来个|来张|整|整个|丢|甩|给).{0,12}(表情包|表情|图|gif|动图)",
-        r"(表情包|表情|图|gif|动图).{0,12}(来|发|整|给|一个|一下|下)",
-        r"(找|搜|搜索).{0,12}(表情包|表情|图|gif|动图)",
-    )
-    return any(re.search(pattern, normalized) for pattern in patterns)
+
+    alias_tail = _alias_request_tail(text, aliases)
+    if alias_tail and ALIAS_REPLY_REQUEST_PATTERN.fullmatch(alias_tail):
+        return True
+
+    return any(pattern.search(normalized) for pattern in GENERAL_REPLY_REQUEST_PATTERNS)
 
 
 def dedupe_message_records(records: list[MessageRecord]) -> list[MessageRecord]:

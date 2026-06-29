@@ -108,7 +108,7 @@
   "whitelist_sessions": {
     "type": "list",
     "description": "主动回复白名单会话",
-    "hint": "只对这些会话生效。也可以在目标会话里发送 /selfreply add 自动加入。",
+    "hint": "只对这些会话生效。群聊可填写完整 UMO 或直接填写 QQ 群号；也可以在目标会话里发送 /selfreply add 自动加入。",
     "default": []
   },
   "check_interval_sec": {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 import time
@@ -34,8 +35,13 @@ from .models import (
     COMMAND_HANDLED_KEY,
     DECISION_JSON_CONTRACT,
     DEFAULT_DECISION_PROMPT_TEMPLATE,
+    EVENT_CLEANUP_INTERVAL_SEC,
+    MAX_AGENT_STEPS,
+    MAX_CACHED_EVENTS,
+    PATROL_BACKOFF_DELAY_SEC,
     PLUGIN_ID,
     PLUGIN_VERSION,
+    REPLY_REQUEST_WINDOW_SEC,
     MessageRecord,
     SessionState,
     Settings,
@@ -60,7 +66,17 @@ from .utils import (
     latest_user_text,
     looks_like_reply_request,
     parse_json,
+    session_whitelisted,
+    whitelist_storage_key,
 )
+
+ADMIN_COMMAND_ACTIONS = {"status", "list", "add", "remove", "check", "on", "off", "debug"}
+MAX_AGENT_STEPS = 15
+REPLY_REQUEST_WINDOW_SEC = 180
+EVENT_CACHE_TTL_SEC = 3600
+MAX_CACHED_EVENTS = 100
+_QUIET_HOUR_PATTERN = re.compile(r"(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})")
+_PROMPT_PLACEHOLDER_PATTERN = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 
 
 @register(
@@ -94,6 +110,7 @@ class SelfInitiatedReplyPlugin(Star):
             self.settings.recent_message_limit,
         )
         self._last_events: dict[str, AstrMessageEvent] = {}
+        self._whitelist_runtime_umos: dict[str, str] = {}
         self._delay_tasks: dict[str, asyncio.Task[Any]] = {}
         self._running_sessions: set[str] = set()
         self._patrol_task: asyncio.Task[Any] | None = None
@@ -101,6 +118,7 @@ class SelfInitiatedReplyPlugin(Star):
         self._save_lock = asyncio.Lock()
         self._invalid_quiet_hours_logged: set[str] = set()
         self._admin_ids = self._load_global_admin_ids()
+        self._last_event_cleanup = now_ts()  # 事件清理时间戳
 
         self._save_storage_sync()
         self._ensure_patrol_task()
@@ -132,6 +150,12 @@ class SelfInitiatedReplyPlugin(Star):
             state = SessionState(recent=deque(maxlen=self.settings.recent_message_limit))
             self.sessions[umo] = state
         return state
+
+    def _runtime_umo_for_whitelist_item(self, item: str) -> str:
+        value = str(item or "").strip()
+        if ":" in value:
+            return value
+        return self._whitelist_runtime_umos.get(value, "")
 
     def _save_storage_sync(self) -> None:
         save_sessions(
@@ -168,15 +192,17 @@ class SelfInitiatedReplyPlugin(Star):
         if not self.runtime_enabled or event.is_stopped():
             return
         umo = event_umo(event)
-        if not umo or umo not in self.settings.whitelist:
+        if not session_whitelisted(umo, self.settings.whitelist):
             return
+        state_key = whitelist_storage_key(umo, self.settings.whitelist)
+        self._whitelist_runtime_umos[state_key] = umo
         if self._should_ignore_event(event, text):
             return
 
         clean_text = clean_chat_text(text)
         if not clean_text:
             return
-        state = self._state_for(umo)
+        state = self._state_for(state_key)
         state.last_active_at = now_ts()
         state.last_active_sender_id = event_sender_id(event)
         state.recent.append(
@@ -188,9 +214,11 @@ class SelfInitiatedReplyPlugin(Star):
                 at=state.last_active_at,
             )
         )
-        self._last_events[umo] = event
 
         if self.settings.enabled_message_trigger:
+            # 只在需要触发检查时才存储事件，避免内存泄漏
+            self._last_events[umo] = event
+            self._cleanup_old_events_if_needed()
             trigger = "reply_request" if looks_like_reply_request(clean_text, self.settings.bot_aliases) else "message_delay"
             delay = (
                 min(self.settings.message_delay_sec, max(1, self.settings.min_silence_sec))
@@ -250,6 +278,38 @@ class SelfInitiatedReplyPlugin(Star):
         if self._delay_tasks.get(umo) is task:
             self._delay_tasks.pop(umo, None)
 
+    def _cleanup_old_events_if_needed(self) -> None:
+        """定期清理陈旧事件，防止内存泄漏"""
+        now = now_ts()
+        if now - self._last_event_cleanup < EVENT_CLEANUP_INTERVAL_SEC:
+            return
+
+        self._last_event_cleanup = now
+
+        # 清理不在运行中的会话事件
+        stale_keys = [
+            umo for umo in list(self._last_events.keys())
+            if umo not in self._running_sessions
+        ]
+
+        # 每次清理一半陈旧事件
+        for key in stale_keys[:len(stale_keys) // 2]:
+            self._last_events.pop(key, None)
+
+        # 硬性上限保护
+        if len(self._last_events) > MAX_CACHED_EVENTS:
+            excess = len(self._last_events) - MAX_CACHED_EVENTS
+            sorted_keys = sorted(self._last_events.keys())[:excess]
+            for key in sorted_keys:
+                if key not in self._running_sessions:
+                    self._last_events.pop(key, None)
+            logger.info(
+                "[%s] cleaned up %d cached events (total: %d)",
+                PLUGIN_ID,
+                excess,
+                len(self._last_events),
+            )
+
     def _ensure_patrol_task(self) -> None:
         if not self.settings.enabled_patrol_trigger or self._stopping or not self.runtime_enabled:
             return
@@ -261,9 +321,12 @@ class SelfInitiatedReplyPlugin(Star):
             try:
                 await asyncio.sleep(self.settings.check_interval_sec)
                 now = now_ts()
-                for umo in list(self.settings.whitelist):
+                for item in list(self.settings.whitelist):
                     try:
-                        state = self._state_for(umo)
+                        umo = self._runtime_umo_for_whitelist_item(item)
+                        if not umo:
+                            continue
+                        state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
                         if self.settings.patrol_inactive_after_sec and (
                             not state.last_active_at or now - state.last_active_at > self.settings.patrol_inactive_after_sec
                         ):
@@ -278,19 +341,30 @@ class SelfInitiatedReplyPlugin(Star):
                 raise
             except Exception as exc:
                 logger.warning("[%s] patrol loop failed error=%s", PLUGIN_ID, exc, exc_info=True)
+                # 添加退避延迟，避免错误循环
+                await asyncio.sleep(min(PATROL_BACKOFF_DELAY_SEC, self.settings.check_interval_sec))
 
     async def _check_session(self, umo: str, *, trigger: str, force: bool) -> str:
         if self._stopping or (not force and not self.runtime_enabled):
             return "插件未启用。"
-        if not force and umo not in self.settings.whitelist:
+        if not force and not session_whitelisted(umo, self.settings.whitelist):
             return "会话不在主动回复白名单。"
         if umo in self._running_sessions:
             return "已有判断任务在运行。"
-        state = self._state_for(umo)
+        state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
+
+        # 提前刷新日期，避免午夜边界竞争
         state.refresh_day()
         gate = self._local_gate(state, force=force)
         if gate:
             logger.debug("[%s] skip session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
+            return gate
+
+        # 双重检查：再次刷新日期并检查，避免午夜时刻的竞争条件
+        state.refresh_day()
+        gate = self._local_gate(state, force=force)
+        if gate:
+            logger.debug("[%s] skip session=%s trigger=%s reason=%s (double-check)", PLUGIN_ID, umo, trigger, gate)
             return gate
 
         self._running_sessions.add(umo)
@@ -421,7 +495,7 @@ class SelfInitiatedReplyPlugin(Star):
             async def _run() -> None:
                 async for _ in run_agent(
                     build_result.agent_runner,
-                    max_step=15,
+                    max_step=MAX_AGENT_STEPS,
                     show_tool_use=False,
                     show_tool_call_result=False,
                     stream_to_general=False,
@@ -556,7 +630,7 @@ class SelfInitiatedReplyPlugin(Star):
         self._invalid_quiet_hours_logged.add(key)
         logger.warning("[%s] invalid quiet_hours item ignored: %s", PLUGIN_ID, key)
 
-    def _recent_reply_request_reason(self, state: SessionState, *, window_sec: int = 180) -> str:
+    def _recent_reply_request_reason(self, state: SessionState, *, window_sec: int = REPLY_REQUEST_WINDOW_SEC) -> str:
         now = now_ts()
         for item in reversed(list(state.recent)):
             if item.role != "user":
@@ -653,18 +727,21 @@ class SelfInitiatedReplyPlugin(Star):
         return format_message_records(records, limit=self.settings.recent_message_limit)
 
     async def _add_whitelist_session(self, umo: str) -> bool:
-        existed = umo in self.settings.whitelist
+        existed = session_whitelisted(umo, self.settings.whitelist)
         self.settings.whitelist.add(umo)
-        self._state_for(umo)
+        self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
         self._sync_whitelist()
         await self._save_storage()
         logger.info("[%s] whitelist add session=%s existed=%s total=%d", PLUGIN_ID, umo, existed, len(self.settings.whitelist))
         return not existed
 
     async def _remove_whitelist_session(self, umo: str) -> bool:
-        existed = umo in self.settings.whitelist
-        self.settings.whitelist.discard(umo)
+        key = whitelist_storage_key(umo, self.settings.whitelist)
+        existed = session_whitelisted(umo, self.settings.whitelist)
+        self.settings.whitelist.discard(key)
         self._last_events.pop(umo, None)
+        self._last_events.pop(key, None)
+        self._whitelist_runtime_umos.pop(key, None)
         task = self._delay_tasks.pop(umo, None)
         if task and not task.done():
             task.cancel()
@@ -676,7 +753,7 @@ class SelfInitiatedReplyPlugin(Star):
     async def _handle_inline_command(self, event: AstrMessageEvent, parsed: tuple[str, str]) -> None:
         action, arg = parsed
         self._set_command_handled(event)
-        if action in {"add", "remove", "check", "on", "off", "debug"} and not is_admin_event(event, self._admin_ids):
+        if action in ADMIN_COMMAND_ACTIONS and not is_admin_event(event, self._admin_ids):
             await self._send_command_text(event, "没有权限执行该主动回复管理指令。")
             return
         await self._send_command_text(event, await self._command_text(event, action, arg))
@@ -686,7 +763,8 @@ class SelfInitiatedReplyPlugin(Star):
         if action == "help":
             return help_text()
         if action == "status":
-            return status_text(self.settings, event, self._state_for(umo) if umo else SessionState(), self.runtime_enabled)
+            state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist)) if umo else SessionState()
+            return status_text(self.settings, event, state, self.runtime_enabled)
         if action == "list":
             return list_text(self.settings)
         if not umo:
@@ -699,7 +777,7 @@ class SelfInitiatedReplyPlugin(Star):
             return f"已移出主动回复白名单：{umo}" if removed else f"当前会话本不在主动回复白名单：{umo}"
         if action == "check":
             self._last_events[umo] = event
-            state = self._state_for(umo)
+            state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
             text = clean_chat_text(arg or strip_command_prefix(event_text(event)))
             if text:
                 state.last_active_at = now_ts()
@@ -746,12 +824,16 @@ class SelfInitiatedReplyPlugin(Star):
         self._set_command_handled(event)
         yield event.plain_result(help_text())
 
+    @permission_type(PermissionType.ADMIN)
     @selfreply.command("status", alias={"stat"})
     async def selfreply_status(self, event: AstrMessageEvent):
         """状态：查看运行状态、判断模型和白名单信息。"""
         self._set_command_handled(event)
-        yield event.plain_result(status_text(self.settings, event, self._state_for(event_umo(event)), self.runtime_enabled))
+        umo = event_umo(event)
+        state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist)) if umo else SessionState()
+        yield event.plain_result(status_text(self.settings, event, state, self.runtime_enabled))
 
+    @permission_type(PermissionType.ADMIN)
     @selfreply.command("list", alias={"ls", "whitelist"})
     async def selfreply_list(self, event: AstrMessageEvent):
         """列表：查看主动回复白名单。"""
@@ -1008,33 +1090,33 @@ class SelfInitiatedReplyPlugin(Star):
             if "whitelist" in data:
                 updates["whitelist"] = set(str(s).strip() for s in data["whitelist"] if str(s).strip())
 
-            # 原子赋值：校验全部通过后才写入
-            if "enabled" in updates:
-                self.runtime_enabled = updates["enabled"]
-                self.settings.enabled = updates["enabled"]
-            if "decision_model_enabled" in updates:
-                self.settings.decision_model_enabled = updates["decision_model_enabled"]
-            if "judge_provider_id" in updates:
-                self.settings.judge_provider_id = updates["judge_provider_id"]
-            if "decision_prompt_template" in updates:
-                self.settings.decision_prompt_template = updates["decision_prompt_template"]
-            if "decision_temperature" in updates:
-                self.settings.decision_temperature = updates["decision_temperature"]
-            if "decision_timeout_sec" in updates:
-                self.settings.decision_timeout_sec = updates["decision_timeout_sec"]
-            if "cooldown_sec" in updates:
-                self.settings.cooldown_sec = updates["cooldown_sec"]
-            if "patrol_inactive_after_sec" in updates:
-                self.settings.patrol_inactive_after_sec = updates["patrol_inactive_after_sec"]
-            if "decision_history_min_messages" in updates:
-                self.settings.decision_history_min_messages = updates["decision_history_min_messages"]
-            if "whitelist" in updates:
-                self.settings.whitelist = updates["whitelist"]
+            # 原子赋值：使用异常处理确保一致性
+            old_enabled = self.runtime_enabled
+            try:
+                # 先应用到 settings（除了 enabled）
+                for key in ["decision_model_enabled", "judge_provider_id", "decision_prompt_template",
+                           "decision_temperature", "decision_timeout_sec", "cooldown_sec",
+                           "patrol_inactive_after_sec", "decision_history_min_messages", "whitelist"]:
+                    if key in updates:
+                        setattr(self.settings, key, updates[key])
 
-            if updates:
-                self._sync_whitelist()
-                await self._save_storage()
-            return {"ok": True}
+                if "enabled" in updates:
+                    self.settings.enabled = updates["enabled"]
+
+                # 持久化成功后再更新运行时状态
+                if updates:
+                    self._sync_whitelist()
+                    await self._save_storage()
+
+                # 最后更新运行时启用状态
+                if "enabled" in updates:
+                    self.runtime_enabled = updates["enabled"]
+
+                return {"ok": True}
+            except Exception:
+                # 发生异常时回滚运行时状态
+                self.runtime_enabled = old_enabled
+                raise
         except Exception as exc:
             logger.warning("[%s] api post config failed: %s", PLUGIN_ID, exc)
             return {"ok": False, "error": str(exc)}

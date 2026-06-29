@@ -109,7 +109,7 @@
 
 在群聊中使用 `/selfreply add` 会把整个群会话加入白名单，而不是只加入当前发言者。
 
-页面里仍保留“高级：白名单会话 ID”区域，适合批量编辑 UMO；日常更建议使用 `/selfreply add` 和 `/selfreply remove`。
+页面里仍保留“高级：白名单会话 ID”区域，适合批量编辑。群聊可以填写完整 UMO，也可以直接填写 QQ 群号；日常更建议使用 `/selfreply add` 和 `/selfreply remove`。
 
 ## 建议配置
 

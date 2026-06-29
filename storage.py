@@ -9,6 +9,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .models import MessageRecord, PLUGIN_ID, SessionState, Settings
+from .utils import session_whitelisted, whitelist_storage_key
 
 
 def _config_to_dict(config_obj: Any) -> dict[str, Any]:
@@ -69,8 +70,10 @@ def load_config_data(path: Path, config_obj: Any) -> dict[str, Any]:
             disk_data = json.loads(path.read_text(encoding="utf-8-sig"))
             if isinstance(disk_data, dict):
                 data.update(disk_data)
-        except Exception as exc:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
             logger.warning("[%s] failed to load config file: %s", PLUGIN_ID, exc)
+        except Exception as exc:
+            logger.error("[%s] unexpected error loading config: %s", PLUGIN_ID, exc, exc_info=True)
     return data
 
 
@@ -80,13 +83,17 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
             raw_sessions = data.get("sessions", {}) if isinstance(data, dict) else {}
-        except Exception as exc:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
             logger.warning("[%s] failed to load state: %s", PLUGIN_ID, exc)
+            raw_sessions = {}
+        except Exception as exc:
+            logger.error("[%s] unexpected error loading state: %s", PLUGIN_ID, exc, exc_info=True)
             raw_sessions = {}
         for umo, raw in raw_sessions.items():
             umo = str(umo or "").strip()
-            if not umo or umo not in whitelist or not isinstance(raw, dict):
+            if not umo or not session_whitelisted(umo, whitelist) or not isinstance(raw, dict):
                 continue
+            umo = whitelist_storage_key(umo, whitelist)
             state = SessionState(recent=deque(maxlen=recent_limit))
             state.last_active_at = float(raw.get("last_active_at") or 0.0)
             state.last_active_sender_id = str(raw.get("last_active_sender_id") or "")
@@ -119,9 +126,10 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
 def save_sessions(path: Path, sessions: dict[str, SessionState], whitelist: set[str], recent_limit: int) -> None:
     payload = {"version": 3, "sessions": {}}
     for umo, state in sessions.items():
-        if umo not in whitelist:
+        if not session_whitelisted(umo, whitelist):
             continue
-        payload["sessions"][umo] = {
+        key = whitelist_storage_key(umo, whitelist)
+        payload["sessions"][key] = {
             "last_active_at": state.last_active_at,
             "last_active_sender_id": state.last_active_sender_id,
             "last_proactive_at": state.last_proactive_at,
@@ -145,8 +153,10 @@ def save_sessions(path: Path, sessions: dict[str, SessionState], whitelist: set[
         tmp_path = path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp_path, path)
-    except Exception as exc:
+    except (OSError, UnicodeEncodeError) as exc:
         logger.warning("[%s] failed to save state: %s", PLUGIN_ID, exc)
+    except Exception as exc:
+        logger.error("[%s] unexpected error saving state: %s", PLUGIN_ID, exc, exc_info=True)
 
 
 def migrate_config_file(path: Path, config_obj: Any, settings: Settings) -> None:
