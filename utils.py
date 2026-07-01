@@ -68,9 +68,7 @@ def content_to_text(content: Any) -> str:
         parts = []
         for item in content:
             if isinstance(item, dict):
-                if item.get("type") == "text" and item.get("text"):
-                    parts.append(str(item.get("text")))
-                elif item.get("text"):
+                if item.get("text"):
                     parts.append(str(item.get("text")))
             else:
                 text = getattr(item, "text", None)

@@ -137,7 +137,7 @@
     "type": "int",
     "description": "消息后延迟触发（秒）",
     "hint": "白名单会话收到普通消息后等待多久再检查是否主动回应，避免马上插话。",
-    "default": 15,
+    "default": 60,
     "slider": {
       "min": 5,
       "max": 86400,
@@ -148,7 +148,7 @@
     "type": "int",
     "description": "最小静默时间（秒）",
     "hint": "距离最后一条用户消息不足该时间时，不会主动回应。",
-    "default": 10,
+    "default": 45,
     "slider": {
       "min": 0,
       "max": 86400,
@@ -159,7 +159,7 @@
     "type": "int",
     "description": "主动回复冷却（秒）",
     "hint": "同一会话两次主动回复之间至少间隔多久。",
-    "default": 300,
+    "default": 900,
     "slider": {
       "min": 0,
       "max": 86400,
@@ -170,7 +170,7 @@
     "type": "int",
     "description": "单会话每日上限",
     "hint": "0 表示不限制。",
-    "default": 8,
+    "default": 5,
     "slider": {
       "min": 0,
       "max": 100,

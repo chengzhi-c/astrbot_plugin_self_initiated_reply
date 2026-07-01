@@ -71,12 +71,8 @@ from .utils import (
 )
 
 ADMIN_COMMAND_ACTIONS = {"status", "list", "add", "remove", "check", "on", "off", "debug"}
-MAX_AGENT_STEPS = 15
-REPLY_REQUEST_WINDOW_SEC = 180
-EVENT_CACHE_TTL_SEC = 3600
-MAX_CACHED_EVENTS = 100
-_QUIET_HOUR_PATTERN = re.compile(r"(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})")
-_PROMPT_PLACEHOLDER_PATTERN = re.compile(r"\{([a-zA-Z0-9_]+)\}")
+# MAX_AGENT_STEPS / REPLY_REQUEST_WINDOW_SEC / MAX_CACHED_EVENTS 统一从 models 导入，
+# 此处不再重复定义，避免同名常量遮蔽。
 
 
 @register(
@@ -215,10 +211,13 @@ class SelfInitiatedReplyPlugin(Star):
             )
         )
 
+        # 缓存该会话最近一次可用 event，供消息触发与后台巡检共用。
+        # 后台巡检是独立定时器，需要一个不随单次 delay 生命周期消失的 event 引用，
+        # 否则巡检判断通过后拿不到 event 会静默失败。清理交给 _cleanup_old_events_if_needed。
+        self._last_events[umo] = event
+        self._cleanup_old_events_if_needed()
+
         if self.settings.enabled_message_trigger:
-            # 只在需要触发检查时才存储事件，避免内存泄漏
-            self._last_events[umo] = event
-            self._cleanup_old_events_if_needed()
             trigger = "reply_request" if looks_like_reply_request(clean_text, self.settings.bot_aliases) else "message_delay"
             delay = (
                 min(self.settings.message_delay_sec, max(1, self.settings.min_silence_sec))
@@ -267,8 +266,8 @@ class SelfInitiatedReplyPlugin(Star):
                 return
             result = await self._check_session(umo, trigger=trigger, force=force)
             logger.debug("[%s] check result session=%s trigger=%s result=%s", PLUGIN_ID, umo, trigger, result)
-            # 检查完成后释放 event 引用，避免内存泄漏
-            self._last_events.pop(umo, None)
+            # 不在此处 pop event：巡检触发与消息触发共用最近 event，
+            # 陈旧引用由 _cleanup_old_events_if_needed 按间隔与数量上限统一清理。
         except asyncio.CancelledError:
             return
         except Exception as exc:
@@ -353,18 +352,12 @@ class SelfInitiatedReplyPlugin(Star):
             return "已有判断任务在运行。"
         state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
 
-        # 提前刷新日期，避免午夜边界竞争
+        # 刷新日期后做一次本地闸门检查。单线程 asyncio 下，闸门检查与后续判断之间
+        # 若无 await 就不存在竞争，无需重复检查。
         state.refresh_day()
         gate = self._local_gate(state, force=force)
         if gate:
             logger.debug("[%s] skip session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
-            return gate
-
-        # 双重检查：再次刷新日期并检查，避免午夜时刻的竞争条件
-        state.refresh_day()
-        gate = self._local_gate(state, force=force)
-        if gate:
-            logger.debug("[%s] skip session=%s trigger=%s reason=%s (double-check)", PLUGIN_ID, umo, trigger, gate)
             return gate
 
         self._running_sessions.add(umo)
@@ -404,7 +397,14 @@ class SelfInitiatedReplyPlugin(Star):
             if not sent:
                 return "主动发送失败。"
 
-            logger.info("[%s] proactive reply sent session=%s chars=%d", PLUGIN_ID, umo, len(reply))
+            if self.settings.log_reply_content:
+                preview = reply if len(reply) <= 80 else reply[:80] + "…"
+                logger.info(
+                    "[%s] proactive reply sent session=%s chars=%d text=%s",
+                    PLUGIN_ID, umo, len(reply), preview,
+                )
+            else:
+                logger.info("[%s] proactive reply sent session=%s chars=%d", PLUGIN_ID, umo, len(reply))
             
             # 更新状态
             state.last_proactive_at = now_ts()
@@ -434,7 +434,7 @@ class SelfInitiatedReplyPlugin(Star):
         ):
             return "今日主动回复次数已达上限。"
         silence = now_ts() - state.last_active_at if state.last_active_at else 0
-        if silence + 0.001 < self.settings.min_silence_sec:
+        if silence < self.settings.min_silence_sec:
             return f"静默时间不足：{int(silence)}s / {self.settings.min_silence_sec}s。"
         cooldown_left = self.settings.cooldown_sec - (now_ts() - state.last_proactive_at)
         if cooldown_left >= 1:
@@ -451,8 +451,14 @@ class SelfInitiatedReplyPlugin(Star):
             return ""
 
         context_text = await self._build_context_text(umo, state)
+        length_hint = {
+            "short": "回复要非常简短，控制在一句话或几个字，像随口搭一句。",
+            "balanced": "回复自然均衡，一两句话即可，不要长篇大论。",
+            "expressive": "可以稍微展开，但仍保持群聊口吻，最多两三句。",
+        }.get(self.settings.reply_length_mode, "回复自然均衡，一两句话即可，不要长篇大论。")
         system_hint = (
             "你正在群聊中主动接话。请根据最近的聊天记录自然地回复一句话，像群友聊天一样。"
+            f"{length_hint}"
             "如果最近用户明确要求表情包/动图/发图，优先调用 search_emoji 搜索表情包候选，再调用 send_emoji_by_id 发送表情包。"
             "其他情绪合适的场景，也可以自然地调用表情包工具。"
             "可以使用 LivingMemory/记忆工具检索和保存有价值的信息。"
@@ -783,7 +789,11 @@ class SelfInitiatedReplyPlugin(Star):
                 state.last_active_at = now_ts()
                 state.last_active_sender_id = event_sender_id(event)
                 state.recent.append(MessageRecord(role="user", name=event_sender_name(event), text=text, at=state.last_active_at))
-            result = await self._check_session(umo, trigger="manual", force=True)
+            try:
+                result = await self._check_session(umo, trigger="manual", force=True)
+            finally:
+                # 手动 check 用完即清理临时 event 引用，与消息触发路径对称。
+                self._last_events.pop(umo, None)
             return f"主动回复检查结果：{result}"
         if action == "on":
             self.runtime_enabled = True
@@ -1108,9 +1118,14 @@ class SelfInitiatedReplyPlugin(Star):
                     self._sync_whitelist()
                     await self._save_storage()
 
-                # 最后更新运行时启用状态
+                # 最后更新运行时启用状态，并与命令路径一致地启停后台任务
                 if "enabled" in updates:
                     self.runtime_enabled = updates["enabled"]
+                    if self.runtime_enabled:
+                        self._ensure_patrol_task()
+                    else:
+                        self._cancel_delay_tasks()
+                        await self._stop_patrol_task()
 
                 return {"ok": True}
             except Exception:
