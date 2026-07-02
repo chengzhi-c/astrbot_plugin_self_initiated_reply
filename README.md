@@ -27,10 +27,6 @@
    - 因此 `search_emoji`、`send_emoji_by_id` 等 Stealer 工具可以被模型正常调用。
    - LivingMemory 的 `on_llm_request` / `on_llm_response` 钩子也会自然参与召回和写入。
 
-4. **不直连其他插件数据库**
-   - 本插件不再直接读取或写入 Stealer、LivingMemory 的数据库。
-   - 跨插件能力由 AstrBot 主回复链、工具系统和事件钩子完成。
-
 ## 0.6.4 更新摘要
 
 - 修复 `message_delay_sec` 与 `min_silence_sec` 相同或非常接近时，延迟任务醒来略早导致“静默时间不足”后直接结束、不再进入判断模型的问题。
@@ -151,19 +147,6 @@
 - **每日每会话最大回复次数**：建议 `5 - 12` 次，`0` 表示不限。
 - **忽略发送者 ID**：只在确实要屏蔽某个用户时填写；管理员不会被自动屏蔽。
 
-## 和 Stealer / LivingMemory 的关系
-
-本插件不直接管理 Stealer 和 LivingMemory。
-
-正确关系是：
-
-- 主动回复插件负责判断“要不要接话”。
-- AstrBot 主 Agent 负责生成回复和调用工具。
-- Stealer 插件负责表情包搜索、选择和发送。
-- LivingMemory 插件负责长期记忆召回和写入。
-
-因此，如果要调表情包数据，请去 Stealer 插件页面；如果要调长期记忆，请去 LivingMemory 插件页面。本插件页面只管理主动回复自己的触发和判断逻辑。
-
 ## 排查建议
 
 如果没有主动回复：
@@ -173,12 +156,5 @@
 3. 查看 `/selfreply status`。
 4. 查看日志中的 `should_reply` 和 `reason`。
 5. 如果判断模型经常不放行，优先调整页面里的“判断提示词”和“判断温度”。
-
-如果不能发表情包：
-
-1. 确认 Stealer 插件启用且工具可用。
-2. 确认主动回复已经进入主 Agent 生成阶段，而不是被判断模型拦截。
-3. 在提示词中明确允许“发表情包/找图/动图请求应 should_reply=true”。
-4. 用普通 `@Bot 来个表情包` 测试 Stealer 本身是否正常。
 
 修改插件代码、页面或 metadata 后，建议重启 AstrBot 或重载插件让改动生效。
