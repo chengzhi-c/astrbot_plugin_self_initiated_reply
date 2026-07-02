@@ -8,7 +8,7 @@ from typing import Any
 
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.6.2"
+PLUGIN_VERSION = "0.6.3"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 
 # 插件运行常量

@@ -11,6 +11,6 @@ help: |
   /selfreply on: 临时启用
   /selfreply off: 临时暂停
   /selfreply debug: 查看当前会话识别信息
-version: 0.6.2
+version: 0.6.3
 author: chengzhi-c
 repo: "https://github.com/chengzhi-c/astrbot_plugin_self_initiated_reply"

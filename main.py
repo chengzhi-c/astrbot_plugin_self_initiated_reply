@@ -219,11 +219,7 @@ class SelfInitiatedReplyPlugin(Star):
 
         if self.settings.enabled_message_trigger:
             trigger = "reply_request" if looks_like_reply_request(clean_text, self.settings.bot_aliases) else "message_delay"
-            delay = (
-                min(self.settings.message_delay_sec, max(1, self.settings.min_silence_sec))
-                if trigger == "reply_request"
-                else None
-            )
+            delay = self._message_trigger_delay(trigger)
             self._schedule_delayed_check(umo, delay_sec=delay, trigger=trigger, force=False)
 
     def _should_ignore_event(self, event: AstrMessageEvent, text: str) -> bool:
@@ -234,6 +230,12 @@ class SelfInitiatedReplyPlugin(Star):
         if event_sender_id(event) in self.settings.ignored_sender_ids:
             return True
         return is_explicit_direct_call(event, text)
+
+    def _message_trigger_delay(self, trigger: str) -> int:
+        min_silence = max(0, int(self.settings.min_silence_sec))
+        if trigger == "reply_request":
+            return min_silence
+        return max(int(self.settings.message_delay_sec), min_silence)
 
     def _schedule_delayed_check(
         self,
@@ -391,6 +393,11 @@ class SelfInitiatedReplyPlugin(Star):
             
             if not reply:
                 return "管线未生成内容。"
+
+            gate = self._local_gate(state, force=force)
+            if gate:
+                logger.debug("[%s] skip before send session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
+                return gate
 
             # 发送回复
             sent = await self._send_reply(umo, reply)
@@ -1054,7 +1061,12 @@ class SelfInitiatedReplyPlugin(Star):
                 "min_context_messages": min_context_messages,
                 # Backward-compatible alias for older unified-manager frontend builds.
                 "proactive_threshold": min_context_messages,
-                "idle_trigger_seconds": self.settings.patrol_inactive_after_sec,
+                "message_delay_sec": self.settings.message_delay_sec,
+                "min_silence_sec": self.settings.min_silence_sec,
+                "cooldown_sec": self.settings.cooldown_sec,
+                "patrol_inactive_after_sec": self.settings.patrol_inactive_after_sec,
+                # Backward-compatible aliases for older custom-page builds.
+                "idle_trigger_seconds": self.settings.message_delay_sec,
                 "cooldown_seconds": self.settings.cooldown_sec,
                 "whitelist": list(self.settings.whitelist),
                 "pipeline_mode": True,
@@ -1090,10 +1102,16 @@ class SelfInitiatedReplyPlugin(Star):
                 updates["decision_temperature"] = max(0.0, min(2.0, float(data["decision_temperature"])))
             if "decision_timeout_sec" in data:
                 updates["decision_timeout_sec"] = max(1.0, min(300.0, float(data["decision_timeout_sec"])))
-            if "cooldown_seconds" in data:
-                updates["cooldown_sec"] = int(data["cooldown_seconds"])
-            if "idle_trigger_seconds" in data:
-                updates["patrol_inactive_after_sec"] = int(data["idle_trigger_seconds"])
+            cooldown_value = data.get("cooldown_sec", data.get("cooldown_seconds", None))
+            if cooldown_value is not None:
+                updates["cooldown_sec"] = max(0, min(86400, int(cooldown_value)))
+            message_delay_value = data.get("message_delay_sec", data.get("idle_trigger_seconds", None))
+            if message_delay_value is not None:
+                updates["message_delay_sec"] = max(5, min(86400, int(message_delay_value)))
+            if "min_silence_sec" in data:
+                updates["min_silence_sec"] = max(0, min(86400, int(data["min_silence_sec"])))
+            if "patrol_inactive_after_sec" in data:
+                updates["patrol_inactive_after_sec"] = max(0, min(604800, int(data["patrol_inactive_after_sec"])))
             min_context_value = data.get("min_context_messages", data.get("proactive_threshold", None))
             if min_context_value is not None:
                 updates["decision_history_min_messages"] = max(0, min(30, int(min_context_value)))
@@ -1105,8 +1123,9 @@ class SelfInitiatedReplyPlugin(Star):
             try:
                 # 先应用到 settings（除了 enabled）
                 for key in ["decision_model_enabled", "judge_provider_id", "decision_prompt_template",
-                           "decision_temperature", "decision_timeout_sec", "cooldown_sec",
-                           "patrol_inactive_after_sec", "decision_history_min_messages", "whitelist"]:
+                            "decision_temperature", "decision_timeout_sec", "cooldown_sec",
+                            "message_delay_sec", "min_silence_sec", "patrol_inactive_after_sec",
+                            "decision_history_min_messages", "whitelist"]:
                     if key in updates:
                         setattr(self.settings, key, updates[key])
 
