@@ -92,7 +92,7 @@ def status_text(settings: Settings, event: AstrMessageEvent, state: object, runt
             f"判断模型: {'启用' if settings.decision_model_enabled else '关闭'}，Provider: {settings.judge_provider_id or '当前会话模型'}",
             f"判断提示词: {'自定义' if settings.decision_prompt_custom else '默认'}",
             f"最少上下文消息数: {settings.decision_history_min_messages} 条",
-            f"消息后触发: {settings.enabled_message_trigger}，延迟 {settings.message_delay_sec}s",
+            f"消息后触发: {settings.enabled_message_trigger}，延迟 {settings.message_delay_sec}s，最小静默 {settings.min_silence_sec}s",
             f"后台巡检: {settings.enabled_patrol_trigger}",
             "直接 @Bot: 始终交给 AstrBot 主回复链，主动回复不抢答",
             f"忽略发送者: {', '.join(sorted(settings.ignored_sender_ids)) or '-'}",

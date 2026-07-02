@@ -334,7 +334,12 @@ label span {
   line-height: 1.5;
 }
 
-.field-grid,
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .toolbar {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
