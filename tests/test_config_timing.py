@@ -226,6 +226,48 @@ def test_message_trigger_delay_respects_longer_message_delay():
     assert plugin._message_trigger_delay("reply_request") == 120
 
 
+def test_delayed_check_waits_past_minimum_silence_boundary(monkeypatch):
+    plugin = _plugin(
+        {
+            "whitelist_sessions": ["session-1"],
+            "message_delay_sec": 20,
+            "min_silence_sec": 20,
+            "cooldown_sec": 0,
+        }
+    )
+    plugin._stopping = False
+    plugin.sessions = {}
+    plugin._state_for("session-1").last_active_at = 100.0
+
+    import astrbot_plugin_self_initiated_reply.main as main_module
+
+    current_time = [100.0]
+    sleep_calls = []
+    checked_at = []
+
+    async def _sleep(seconds):
+        sleep_calls.append(seconds)
+        if len(sleep_calls) == 1:
+            current_time[0] = 119.99
+        else:
+            current_time[0] += seconds
+
+    async def _check_session(*args, **kwargs):
+        checked_at.append(current_time[0])
+        return "checked"
+
+    monkeypatch.setattr(main_module, "now_ts", lambda: current_time[0])
+    monkeypatch.setattr(main_module.asyncio, "sleep", _sleep)
+    plugin._check_session = _check_session
+
+    asyncio.run(plugin._delayed_check("session-1", delay_sec=20, trigger="message_delay", force=False))
+
+    assert sleep_calls[0] == 20
+    assert len(sleep_calls) == 2
+    assert checked_at == [current_time[0]]
+    assert checked_at[0] >= 120.0
+
+
 def test_check_session_rechecks_silence_before_sending(monkeypatch):
     plugin = _plugin(
         {
