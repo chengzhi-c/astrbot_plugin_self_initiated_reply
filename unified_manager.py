@@ -28,9 +28,13 @@ class UnifiedManagerApi:
             "enabled": bool(self.owner.runtime_enabled),
             "decision_model_enabled": settings.decision_model_enabled,
             "whitelist_count": len(settings.whitelist),
+            "message_delay_sec": settings.message_delay_sec,
+            "min_silence_sec": settings.min_silence_sec,
+            "cooldown_sec": settings.cooldown_sec,
+            # Backward-compatible aliases for older callers.
             "cooldown_seconds": settings.cooldown_sec,
-            "idle_trigger_seconds": settings.patrol_inactive_after_sec,
+            "idle_trigger_seconds": settings.message_delay_sec,
+            "patrol_inactive_after_sec": settings.patrol_inactive_after_sec,
             "min_context_messages": settings.decision_history_min_messages,
-            # Backward-compatible alias for older callers.
             "decision_history_min_messages": settings.decision_history_min_messages,
         }

@@ -19,7 +19,8 @@ const els = {
   promptPreview: document.getElementById("promptPreview"),
   resetPromptBtn: document.getElementById("resetPromptBtn"),
   minContextInput: document.getElementById("minContextInput"),
-  idleInput: document.getElementById("idleInput"),
+  messageDelayInput: document.getElementById("messageDelayInput"),
+  minSilenceInput: document.getElementById("minSilenceInput"),
   cooldownInput: document.getElementById("cooldownInput"),
   whitelistInput: document.getElementById("whitelistInput"),
   configSaveState: document.getElementById("configSaveState"),
@@ -195,8 +196,9 @@ async function loadConfig() {
   els.decisionPromptInput.value = config.decision_prompt_template || config.decision_prompt_default || "";
   els.decisionPromptInput.dataset.defaultPrompt = config.decision_prompt_default || config.decision_prompt_template || "";
   els.minContextInput.value = config.min_context_messages ?? config.proactive_threshold ?? 5;
-  els.idleInput.value = config.idle_trigger_seconds ?? 60;
-  els.cooldownInput.value = config.cooldown_seconds ?? 180;
+  els.messageDelayInput.value = config.message_delay_sec ?? config.idle_trigger_seconds ?? 60;
+  els.minSilenceInput.value = config.min_silence_sec ?? 45;
+  els.cooldownInput.value = config.cooldown_sec ?? config.cooldown_seconds ?? 900;
   const whitelist = Array.isArray(config.whitelist) ? config.whitelist : [];
   els.whitelistInput.value = whitelist.join("\n");
   els.whitelistCount.textContent = `${whitelist.length} 个白名单`;
@@ -218,8 +220,9 @@ async function saveConfig(event) {
     decision_timeout_sec: Number(els.decisionTimeoutInput.value || 20),
     decision_prompt_template: els.decisionPromptInput.value.trim(),
     min_context_messages: Number(els.minContextInput.value || 5),
-    idle_trigger_seconds: Number(els.idleInput.value || 60),
-    cooldown_seconds: Number(els.cooldownInput.value || 180),
+    message_delay_sec: Number(els.messageDelayInput.value || 60),
+    min_silence_sec: Number(els.minSilenceInput.value || 45),
+    cooldown_sec: Number(els.cooldownInput.value || 900),
     whitelist,
   });
   if (!result || result.ok !== true) {
