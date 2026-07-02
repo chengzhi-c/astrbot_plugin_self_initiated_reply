@@ -266,6 +266,20 @@ class SelfInitiatedReplyPlugin(Star):
                 await asyncio.sleep(delay)
             if self._stopping or not self.runtime_enabled:
                 return
+            state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
+            silence_left = self._remaining_silence_sec(state)
+            while not force and silence_left > 0:
+                logger.info(
+                    "[%s] wait for minimum silence session=%s trigger=%s remaining=%.2fs",
+                    PLUGIN_ID,
+                    umo,
+                    trigger,
+                    silence_left,
+                )
+                await asyncio.sleep(silence_left + 0.1)
+                if self._stopping or not self.runtime_enabled:
+                    return
+                silence_left = self._remaining_silence_sec(state)
             result = await self._check_session(umo, trigger=trigger, force=force)
             logger.debug("[%s] check result session=%s trigger=%s result=%s", PLUGIN_ID, umo, trigger, result)
             # 不在此处 pop event：巡检触发与消息触发共用最近 event，
@@ -359,7 +373,7 @@ class SelfInitiatedReplyPlugin(Star):
         state.refresh_day()
         gate = self._local_gate(state, force=force)
         if gate:
-            logger.debug("[%s] skip session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
+            logger.info("[%s] skip session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
             return gate
 
         self._running_sessions.add(umo)
@@ -396,7 +410,7 @@ class SelfInitiatedReplyPlugin(Star):
 
             gate = self._local_gate(state, force=force)
             if gate:
-                logger.debug("[%s] skip before send session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
+                logger.info("[%s] skip before send session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
                 return gate
 
             # 发送回复
@@ -449,6 +463,12 @@ class SelfInitiatedReplyPlugin(Star):
         if state.last_proactive_observed_at >= state.last_active_at:
             return "这条消息之后已经主动回复过。"
         return ""
+
+    def _remaining_silence_sec(self, state: SessionState) -> float:
+        if not state.last_active_at:
+            return 0.0
+        silence_left = self.settings.min_silence_sec - (now_ts() - state.last_active_at)
+        return max(0.0, silence_left)
 
     async def _generate_reply_via_pipeline(self, umo: str, state: SessionState) -> str:
         """通过 AstrBot 主 Agent 生成回复，使 llm_tool/on_llm_request/on_llm_response 正常生效。"""
