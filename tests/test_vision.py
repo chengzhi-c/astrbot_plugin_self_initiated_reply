@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import os
 import sys
 import types
 from pathlib import Path
@@ -72,6 +73,170 @@ def test_image_extractor_preserves_remote_url_and_local_path() -> None:
     assert extracted[0].sender_id == "u1"
 
 
+def test_sticker_images_can_be_skipped_by_platform_metadata() -> None:
+    _, image, _ = _load_modules()
+
+    class NormalImage:
+        type = "image"
+        subType = 0
+        url = "https://cdn.example.test/photo.png"
+
+    class StickerImage:
+        type = "image"
+        subType = 1
+        url = "https://cdn.example.test/sticker.gif"
+
+    class RawSticker:
+        type = "image"
+        data = {
+            "subType": 1,
+            "url": "https://cdn.example.test/raw-sticker.gif",
+        }
+
+    raw_sticker = {
+        "type": "image",
+        "data": {
+            "subType": 1,
+            "url": "https://cdn.example.test/raw-dict-sticker.gif",
+        },
+    }
+
+    class Event:
+        message_id = "message-43"
+
+        @staticmethod
+        def get_messages():
+            return [NormalImage(), StickerImage(), RawSticker(), raw_sticker]
+
+    event = Event()
+    assert image.ImageExtractor.has_images(event)
+    assert image.ImageExtractor.has_images(event, skip_stickers=True)
+    assert image.ImageExtractor.is_sticker(StickerImage())
+    assert image.ImageExtractor.is_sticker(RawSticker())
+    assert image.ImageExtractor.is_sticker(raw_sticker)
+
+    extracted = image.ImageExtractor.extract_images(event, skip_stickers=True)
+    assert [item.url for item in extracted] == ["https://cdn.example.test/photo.png"]
+    assert extracted[0].is_sticker is False
+
+
+def test_onebot_sticker_only_message_is_excluded_before_vision_cache() -> None:
+    """OneBot subType=1 must be filtered before the Vision event cache entry."""
+    _, image, _ = _load_modules()
+
+    class Event:
+        message_id = "onebot-sticker-only"
+
+        @staticmethod
+        def get_messages():
+            # 与 aiocqhttp OneBot 原始消息段形状一致。
+            return [
+                {
+                    "type": "image",
+                    "data": {
+                        "file": "EF99ED5B76CBE7B88D3C0439B616A28C.jpg",
+                        "subType": 1,
+                        "url": "https://multimedia.nt.qq.com.cn/download?fileid=sticker",
+                        "file_size": "30241",
+                    },
+                }
+            ]
+
+    event = Event()
+    assert image.ImageExtractor.has_images(event) is True
+    assert image.ImageExtractor.has_images(event, skip_stickers=True) is False
+    assert image.ImageExtractor.extract_images(event, skip_stickers=True) == []
+
+
+def test_onebot_mixed_message_keeps_normal_image_and_skips_sticker() -> None:
+    """A normal image in the same chain must remain eligible for Vision."""
+    _, image, _ = _load_modules()
+
+    class Event:
+        @staticmethod
+        def get_messages():
+            return [
+                {
+                    "type": "image",
+                    "data": {
+                        "file": "normal.jpg",
+                        "subType": 0,
+                        "url": "https://multimedia.nt.qq.com.cn/download?fileid=normal",
+                    },
+                },
+                {
+                    "type": "image",
+                    "data": {
+                        "file": "sticker.jpg",
+                        "subType": 1,
+                        "url": "https://multimedia.nt.qq.com.cn/download?fileid=sticker",
+                    },
+                },
+            ]
+
+    extracted = image.ImageExtractor.extract_images(Event(), skip_stickers=True)
+    assert len(extracted) == 1
+    assert extracted[0].url.endswith("fileid=normal")
+    assert extracted[0].is_sticker is False
+
+
+def test_normalized_image_falls_back_to_raw_onebot_subtype() -> None:
+    """AstrBot Image may drop subType; raw_message must remain authoritative."""
+    _, image, _ = _load_modules()
+
+    class NormalizedImage:
+        type = "image"
+        file = "sticker.jpg"
+        url = "https://multimedia.nt.qq.com.cn/download?fileid=sticker"
+        # AstrBot 4.26.8 Image has no OneBot subType field, while raw_message
+        # keeps the authoritative subType=1 marker.
+
+    class Event:
+        message_obj = SimpleNamespace(
+            raw_message={
+                "message": [
+                    {
+                        "type": "image",
+                        "data": {
+                            "file": "sticker.jpg",
+                            "subType": 1,
+                            "url": "https://multimedia.nt.qq.com.cn/download?fileid=sticker",
+                        },
+                    }
+                ]
+            }
+        )
+
+        @staticmethod
+        def get_messages():
+            return [NormalizedImage()]
+
+    event = Event()
+    assert image.ImageExtractor.has_images(event) is True
+    assert image.ImageExtractor.has_images(event, skip_stickers=True) is False
+    assert image.ImageExtractor.extract_images(event, skip_stickers=True) == []
+
+
+def test_on_message_keeps_image_eligibility_out_of_generic_ignore_gate() -> None:
+    """The generic event gate must not duplicate Vision image parsing."""
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    start = source.index("    async def on_message(")
+    end = source.index("\n    def _is_command_entry(", start)
+    handler = source[start:end]
+    ignore_start = source.index("    def _should_ignore_event(")
+    ignore_end = source.index("\n    def _advance_session_generation(", ignore_start)
+    ignore_method = source[ignore_start:ignore_end]
+
+    marker = "skip_stickers=self.settings.vision_skip_stickers"
+    assert handler.count(marker) >= 2, (
+        "on_message 必须在 Vision 资格判断和实际提取处使用同一表情包过滤设置"
+    )
+    assert "ImageExtractor.has_images" in handler
+    assert "ImageExtractor.has_images" not in ignore_method, (
+        "通用忽略门不应再次解析图片；图片资格应由 on_message 统一计算"
+    )
+
+
 def test_image_parser_uses_direct_vision_call_and_caches_caption() -> None:
     _, image, _ = _load_modules()
 
@@ -105,6 +270,84 @@ def test_image_parser_uses_direct_vision_call_and_caches_caption() -> None:
     assert len(bridge.calls) == 1
     assert bridge.calls[0]["provider_id"] == "vision-provider"
     assert bridge.calls[0]["image_urls"] == ["data:image/png;base64,AA=="]
+
+
+def test_image_parser_freezes_remote_image_before_delayed_parse(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+
+    class Bridge:
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            return SimpleNamespace(completion_text="一张图片")
+
+    parser = image.ImageParser(
+        Bridge(), provider_id="vision", source_cache_dir=tmp_path / "image_cache"
+    )
+    payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+    async def fake_fetch(_url):
+        return "data:image/png;base64," + __import__("base64").b64encode(payload).decode()
+
+    parser._fetch_image_data_url = fake_fetch
+    info = image.ImageInfo(url="https://multimedia.nt.qq.com.cn/expired.png")
+
+    assert asyncio.run(parser.prepare(info)) is True
+    assert info.prepared_source
+    assert Path(info.prepared_source).is_file()
+    assert info.file_path == info.prepared_source
+    assert asyncio.run(parser.parse(info, umo="qq:GroupMessage:1")) == "一张图片"
+
+
+def test_image_parser_source_cache_cleanup_preserves_active_sources(tmp_path: Path) -> None:
+    """Expired frozen files are removed while active session sources survive."""
+    _, image, _ = _load_modules()
+
+    root = tmp_path / "image_cache"
+    old = root / "aa" / "old.png"
+    protected = root / "bb" / "protected.png"
+    fresh = root / "cc" / "fresh.png"
+    for path in (old, protected, fresh):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"cached-image")
+
+    os.utime(old, (100.0, 100.0))
+    os.utime(protected, (100.0, 100.0))
+    os.utime(fresh, (4900.0, 4900.0))
+
+    removed = image.ImageParser.cleanup_source_cache(
+        root,
+        protected_sources={str(protected)},
+        max_age_sec=1000.0,
+        now=5000.0,
+    )
+
+    assert removed == 1
+    assert not old.exists()
+    assert protected.exists()
+    assert fresh.exists()
+
+
+def test_image_parser_does_not_fallback_to_expiring_raw_url() -> None:
+    _, image, _ = _load_modules()
+
+    class Bridge:
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            raise AssertionError("不可访问的图片不应继续传给 Provider")
+
+    parser = image.ImageParser(Bridge(), provider_id="vision")
+
+    async def failed_fetch(_url):
+        return None
+
+    parser._fetch_image_data_url = failed_fetch
+    info = image.ImageInfo(url="https://multimedia.nt.qq.com.cn/expired.png")
+
+    assert asyncio.run(parser.parse(info, umo="qq:GroupMessage:1")) is None
 
 
 def test_image_parser_rejects_private_network_targets() -> None:
@@ -178,6 +421,7 @@ def test_vision_settings_are_bounded_and_persisted() -> None:
             "vision_judge_enabled": True,
             "vision_main_enabled": True,
             "vision_provider_id": "vision",
+            "vision_skip_stickers": True,
             "vision_max_images": 999,
             "vision_image_age_sec": 999999,
             "vision_timeout_sec": 0,
@@ -193,6 +437,8 @@ def test_vision_settings_are_bounded_and_persisted() -> None:
     assert persisted["vision_judge_enabled"] is True
     assert persisted["vision_main_enabled"] is True
     assert persisted["vision_provider_id"] == "vision"
+    assert settings.vision_skip_stickers is True
+    assert persisted["vision_skip_stickers"] is True
     assert "vision_enabled" not in persisted, (
         "聚合开关不得写回配置：它不在 _conf_schema.json 里，"
         "AstrBot 配置页会把它渲染成无效的裸文本框"
@@ -359,6 +605,17 @@ def test_parsers_with_different_providers_do_not_share_descriptions() -> None:
     # 同一个 parser 重复解析同一张图仍然命中缓存
     assert asyncio.run(cheap_parser.parse(image_info, umo="qq:GroupMessage:1")) == "一只猫"
     assert cheap_bridge.calls == 1
+
+
+def test_skip_sticker_vision_setting_is_declared_in_schema() -> None:
+    import json
+
+    _, _, _ = _load_modules()
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    entry = schema.get("vision_skip_stickers")
+    assert entry is not None
+    assert entry["type"] == "bool"
+    assert entry["default"] is False
 
 
 def test_judge_vision_provider_is_declared_in_schema() -> None:

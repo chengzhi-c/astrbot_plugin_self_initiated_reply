@@ -194,6 +194,10 @@
               <input type="checkbox" id="visionMainEnabledInput">
               <span>主模型识图（生成回复正文时看图）</span>
             </label>
+            <label class="toggle-row">
+              <input type="checkbox" id="visionSkipStickersInput">
+              <span>跳过表情包识图（按 QQ 图片标记过滤）</span>
+            </label>
             <div class="field-grid">
               <label class="provider-cell">
                 <span>识图模型 Provider</span>
@@ -219,7 +223,7 @@
               <label><span>图片有效时间（秒）</span><input type="number" id="visionImageAgeInput" min="60" max="86400"></label>
               <label><span>识图超时（秒）</span><input type="number" id="visionTimeoutInput" min="1" max="120" step="1"></label>
             </div>
-            <p class="muted">两个开关独立。判断阶段触发频率高，只开主模型识图更省 token。均需支持 Vision 的模型。判断阶段可单独指定更便宜的识图模型，留空则使用主识图模型（而非判断模型，因为判断模型通常不支持 Vision）。图片描述仅作为不可信聊天上下文参与判断与生成，不会写入会话历史。</p>
+            <p class="muted">两个识图开关独立。判断阶段触发频率高，只开主模型识图更省 token。开启“跳过表情包识图”后，QQ OneBot 标记为表情包的图片（通常为 subType=1）不会调用 Vision。图片描述仅作为不可信聊天上下文参与判断与生成，不会写入会话历史。</p>
           </section>
 
           <details class="advanced-panel">

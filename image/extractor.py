@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -16,19 +17,138 @@ if TYPE_CHECKING:
 _IMAGE_TYPES = {"image", "img", "picture", "photo"}
 
 
+def _component_field(component: Any, name: str) -> Any:
+    """Read a component field across AstrBot objects and raw mapping shapes."""
+    sources = [component]
+    nested = component.get("data") if isinstance(component, dict) else getattr(component, "data", None)
+    if nested is not None:
+        sources.append(nested)
+    for source in sources:
+        if isinstance(source, dict) and name in source:
+            return source[name]
+        value = getattr(source, name, None)
+        if value is not None:
+            return value
+    return None
+
+
 def _component_type(component: Any) -> str:
-    value = getattr(component, "type", "")
+    value = _component_field(component, "type")
     if not value:
         value = component.__class__.__name__
-    return str(value or "").strip().lower()
+    result = str(value or "").strip().lower()
+    # AstrBot 将组件类型封装为枚举，转字符串后形如 "componenttype.image"
+    # 取最后一段，兼容裸字符串和枚举两种写法
+    if "." in result:
+        result = result.rsplit(".", 1)[-1]
+    return result
 
 
 def _component_value(component: Any, *names: str) -> str:
     for name in names:
-        value = getattr(component, name, None)
-        if value:
+        value = _component_field(component, name)
+        if value is not None and str(value).strip():
             return str(value).strip()
     return ""
+
+
+def _is_sticker_marker(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    return normalized in {"1", "true", "yes", "on", "sticker", "emoji", "face", "表情", "表情包", "贴图"}
+
+
+def _explicit_sticker_marker(component: Any) -> tuple[bool, bool]:
+    """Read one component's explicit sticker marker.
+
+    The first tuple item distinguishes ``subType=0``/``False`` from a missing
+    field.  That distinction matters when a normalized AstrBot Image defaults
+    ``subType`` to zero while the raw OneBot segment still says ``subType=1``.
+    """
+    for name in ("subType", "sub_type", "subtype", "is_sticker", "is_emoji", "sticker", "emoji"):
+        value = _component_field(component, name)
+        if value is not None:
+            return True, _is_sticker_marker(value)
+    return False, False
+
+
+def _component_is_sticker(component: Any, *, raw_component: Any = None) -> bool:
+    """Return whether the platform explicitly marks an image as a sticker.
+
+    AstrBot's aiocqhttp adapter normalizes a OneBot image into ``Image`` and
+    may drop platform-only fields such as ``subType``.  When the event retains
+    the raw OneBot message, its marker is authoritative over normalized
+    defaults; otherwise the normalized component metadata is used.
+    """
+    if raw_component is not None:
+        found, is_sticker = _explicit_sticker_marker(raw_component)
+        if found:
+            return is_sticker
+    _, is_sticker = _explicit_sticker_marker(component)
+    return is_sticker
+
+
+def _field_value(source: Any, name: str) -> Any:
+    if isinstance(source, Mapping):
+        return source.get(name)
+    getter = getattr(source, "get", None)
+    if callable(getter):
+        try:
+            return getter(name)
+        except Exception:
+            pass
+    return getattr(source, name, None)
+
+
+def _event_raw_message(event: Any) -> Any:
+    """Return the platform raw event retained by AstrBot, when available."""
+    message_obj = getattr(event, "message_obj", None)
+    for owner in (event, message_obj):
+        if owner is None:
+            continue
+        for name in ("raw_message", "raw_event"):
+            value = _field_value(owner, name)
+            if value is not None:
+                return value
+    return None
+
+
+def _raw_image_components(event: Any) -> list[Any]:
+    """Extract direct raw image segments for platform metadata recovery."""
+    raw = _event_raw_message(event)
+    if raw is None:
+        return []
+    segments = _field_value(raw, "message")
+    if segments is None and isinstance(raw, (list, tuple)):
+        segments = raw
+    if not isinstance(segments, (list, tuple)):
+        return []
+    return [
+        component
+        for component in segments
+        if _component_type(component) in _IMAGE_TYPES
+    ]
+
+
+def _image_entries(event: Any) -> list[tuple[Any, Any]]:
+    """Pair normalized image components with raw image segments by order."""
+    getter = getattr(event, "get_messages", None)
+    components = getter() if callable(getter) else []
+    raw_components = _raw_image_components(event)
+    entries: list[tuple[Any, Any]] = []
+    raw_index = 0
+    for component in components or []:
+        if _component_type(component) not in _IMAGE_TYPES:
+            continue
+        raw_component = (
+            raw_components[raw_index]
+            if raw_index < len(raw_components)
+            else None
+        )
+        raw_index += 1
+        entries.append((component, raw_component))
+    return entries
 
 
 def _event_message_id(event: Any) -> str:
@@ -59,17 +179,32 @@ class ImageExtractor:
         *,
         sender_id: str = "",
         timestamp: float = 0.0,
+        skip_stickers: bool = False,
     ) -> list[ImageInfo]:
         images: list[ImageInfo] = []
         try:
-            getter = getattr(event, "get_messages", None)
-            components = getter() if callable(getter) else []
             message_id = _event_message_id(event)
-            for component in components or []:
-                if _component_type(component) not in _IMAGE_TYPES:
+            for component, raw_component in _image_entries(event):
+                is_sticker = _component_is_sticker(
+                    component,
+                    raw_component=raw_component,
+                )
+                if skip_stickers and is_sticker:
                     continue
                 raw_url = _component_value(component, "url", "src")
                 raw_file = _component_value(component, "file", "path", "local_path")
+                # AstrBot may normalize an Image's source to a temporary local
+                # file before this plugin runs.  Prefer it, but recover the
+                # original OneBot URL/file metadata when the normalized object
+                # no longer carries a usable source.
+                if raw_component is not None:
+                    raw_url = raw_url or _component_value(raw_component, "url", "src")
+                    raw_file = raw_file or _component_value(
+                        raw_component,
+                        "file",
+                        "path",
+                        "local_path",
+                    )
                 parsed_file = urlparse(raw_file)
                 if not raw_url and parsed_file.scheme in {"http", "https"}:
                     raw_url, raw_file = raw_file, ""
@@ -89,6 +224,7 @@ class ImageExtractor:
                         format=image_format,
                         message_id=message_id,
                         sender_id=str(sender_id or ""),
+                        is_sticker=is_sticker,
                         timestamp=float(timestamp or 0.0),
                     )
                 )
@@ -97,13 +233,25 @@ class ImageExtractor:
         return images
 
     @staticmethod
-    def has_images(event: "AstrMessageEvent") -> bool:
+    def has_images(event: "AstrMessageEvent", *, skip_stickers: bool = False) -> bool:
         try:
-            getter = getattr(event, "get_messages", None)
-            components = getter() if callable(getter) else []
-            return any(_component_type(component) in _IMAGE_TYPES for component in components or [])
+            return any(
+                not (
+                    skip_stickers
+                    and _component_is_sticker(
+                        component,
+                        raw_component=raw_component,
+                    )
+                )
+                for component, raw_component in _image_entries(event)
+            )
         except Exception:
             return False
+
+    @staticmethod
+    def is_sticker(component: Any) -> bool:
+        """Expose platform sticker detection for diagnostics and tests."""
+        return _component_is_sticker(component)
 
 
 def _infer_format(value: str) -> str:

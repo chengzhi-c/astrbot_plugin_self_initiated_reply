@@ -35,6 +35,10 @@ class ImageInfo:
     message_id: str = ""
     sender_id: str = ""
     timestamp: float = 0.0
+    is_sticker: bool = False
+    # 事件级图片冻结：消息到达时先把图片转成 data URL，避免 QQ CDN
+    # 链接在主动回复延迟窗口内过期。仅存于内存，不写入配置/状态文件。
+    prepared_source: str = ""
     
     @property
     def has_url(self) -> bool:
@@ -65,10 +69,12 @@ class ImageInfo:
     
     def cache_key(self) -> str:
         """生成缓存键
-        
-        Returns:
-            基于URL或文件路径的缓存键
+
+        已冻结的图片优先使用内容寻址的本地源作为键，避免同一个 QQ CDN
+        URL 在内容更新后继续复用旧描述；未冻结时仍兼容 URL/文件路径键。
         """
+        if self.prepared_source:
+            return f"prepared:{self.prepared_source}"
         if self.url:
             return f"url:{self.url}"
         if self.file_path:

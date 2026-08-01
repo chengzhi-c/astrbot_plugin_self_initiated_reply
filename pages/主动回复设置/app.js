@@ -34,6 +34,7 @@ const els = {
   cooldownInput: document.getElementById("cooldownInput"),
   visionJudgeEnabledInput: document.getElementById("visionJudgeEnabledInput"),
   visionMainEnabledInput: document.getElementById("visionMainEnabledInput"),
+  visionSkipStickersInput: document.getElementById("visionSkipStickersInput"),
   visionMaxImagesInput: document.getElementById("visionMaxImagesInput"),
   visionImageAgeInput: document.getElementById("visionImageAgeInput"),
   visionTimeoutInput: document.getElementById("visionTimeoutInput"),
@@ -349,6 +350,7 @@ async function loadConfig() {
   els.cooldownInput.value = config.cooldown_sec ?? config.cooldown_seconds ?? 900;
   els.visionJudgeEnabledInput.checked = Boolean(config.vision_judge_enabled);
   els.visionMainEnabledInput.checked = Boolean(config.vision_main_enabled);
+  els.visionSkipStickersInput.checked = Boolean(config.vision_skip_stickers);
   visionProviderControl.sync(config.vision_provider_id || "");
   visionJudgeProviderControl.sync(config.vision_judge_provider_id || "");
   els.visionMaxImagesInput.value = config.vision_max_images ?? 2;
@@ -385,6 +387,7 @@ async function saveConfig(event) {
     cooldown_sec: Number(els.cooldownInput.value || 900),
     vision_judge_enabled: els.visionJudgeEnabledInput.checked,
     vision_main_enabled: els.visionMainEnabledInput.checked,
+    vision_skip_stickers: els.visionSkipStickersInput.checked,
     vision_provider_id: visionProviderControl.value(),
     vision_judge_provider_id: visionJudgeProviderControl.value(),
     vision_max_images: Number(els.visionMaxImagesInput.value || 2),
