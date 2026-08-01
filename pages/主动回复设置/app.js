@@ -19,6 +19,9 @@ const els = {
   visionProviderSelect: document.getElementById("visionProviderSelect"),
   visionProviderInput: document.getElementById("visionProviderInput"),
   visionProviderManualBtn: document.getElementById("visionProviderManualBtn"),
+  visionJudgeProviderSelect: document.getElementById("visionJudgeProviderSelect"),
+  visionJudgeProviderInput: document.getElementById("visionJudgeProviderInput"),
+  visionJudgeProviderManualBtn: document.getElementById("visionJudgeProviderManualBtn"),
   providerHint: document.getElementById("providerHint"),
   decisionTempInput: document.getElementById("decisionTempInput"),
   decisionTimeoutInput: document.getElementById("decisionTimeoutInput"),
@@ -42,7 +45,6 @@ const els = {
 let bridgeReady = null;
 let providerOptions = [];
 let providerManualMode = false;
-let visionProviderManualMode = false;
 
 const PROMPT_PREVIEW_VALUES = {
   session: "aiocqhttp:GroupMessage:123456789",
@@ -186,27 +188,98 @@ function setProviderManualMode(enabled) {
   }
 }
 
-function setVisionManualMode(enabled) {
-  visionProviderManualMode = Boolean(enabled);
-  if (els.visionProviderManualBtn) {
-    els.visionProviderManualBtn.textContent = visionProviderManualMode ? "使用列表" : "手动输入";
+/**
+ * 构造一个「下拉选择 + 手动输入」的 Provider 控件。
+ *
+ * 主识图与判断阶段识图的控件结构完全一致，用同一工厂避免重复实现。
+ * 控件自己持有 manual 状态，对外只暴露 value / render / sync。
+ *
+ * @param {{select: HTMLSelectElement|null, input: HTMLInputElement|null,
+ *          button: HTMLButtonElement|null, placeholder: string}} refs
+ */
+function createProviderControl(refs) {
+  let manual = false;
+
+  function setManual(enabled) {
+    manual = Boolean(enabled);
+    if (refs.button) refs.button.textContent = manual ? "使用列表" : "手动输入";
+    if (refs.select) refs.select.style.display = manual ? "none" : "block";
+    if (refs.input) refs.input.style.display = manual ? "block" : "none";
   }
-  if (els.visionProviderSelect) {
-    els.visionProviderSelect.style.display = visionProviderManualMode ? "none" : "block";
+
+  function value() {
+    if (manual) return refs.input ? refs.input.value.trim() : "";
+    return refs.select ? refs.select.value.trim() : "";
   }
-  if (els.visionProviderInput) {
-    els.visionProviderInput.style.display = visionProviderManualMode ? "block" : "none";
+
+  function render() {
+    if (!refs.select) return;
+    const current = refs.select.value;
+    refs.select.innerHTML = "";
+    const fallback = document.createElement("option");
+    fallback.value = "";
+    fallback.textContent = refs.placeholder;
+    refs.select.appendChild(fallback);
+    providerOptions.forEach((provider) => {
+      const option = document.createElement("option");
+      option.value = provider.id;
+      option.textContent = provider.label || provider.id;
+      refs.select.appendChild(option);
+    });
+    refs.select.value = current;
   }
+
+  function sync(providerId) {
+    const next = String(providerId || "").trim();
+    const known = next === "" || providerOptions.some((provider) => provider.id === next);
+    if (known && refs.select) {
+      refs.select.value = next;
+      if (refs.input) refs.input.value = "";
+      setManual(false);
+      return;
+    }
+    if (refs.input) refs.input.value = next;
+    setManual(true);
+  }
+
+  if (refs.button) {
+    refs.button.addEventListener("click", () => {
+      if (manual) {
+        sync(refs.input ? refs.input.value.trim() : "");
+        if (manual) showToast("当前 Provider 不在列表中，继续保留手动输入");
+        return;
+      }
+      if (refs.input) refs.input.value = refs.select ? refs.select.value || "" : "";
+      setManual(true);
+    });
+  }
+  if (refs.select) {
+    refs.select.addEventListener("change", () => {
+      if (refs.input) refs.input.value = "";
+    });
+  }
+
+  return { value, render, sync, setManual };
 }
+
+const visionProviderControl = createProviderControl({
+  select: els.visionProviderSelect,
+  input: els.visionProviderInput,
+  button: els.visionProviderManualBtn,
+  placeholder: "使用当前会话模型",
+});
+
+// 留空 = 与主识图 Provider 一致，回落逻辑由后端 Settings 统一处理
+const visionJudgeProviderControl = createProviderControl({
+  select: els.visionJudgeProviderSelect,
+  input: els.visionJudgeProviderInput,
+  button: els.visionJudgeProviderManualBtn,
+  placeholder: "与上方一致",
+});
 
 function currentProviderId() {
   if (providerManualMode) return els.judgeProviderInput.value.trim();
   return els.judgeProviderSelect ? els.judgeProviderSelect.value.trim() : els.judgeProviderInput.value.trim();
-}
-
-function currentVisionProviderId() {
-  if (visionProviderManualMode) return els.visionProviderInput.value.trim();
-  return els.visionProviderSelect ? els.visionProviderSelect.value.trim() : "";
 }
 
 function renderProviderSelect() {
@@ -226,23 +299,6 @@ function renderProviderSelect() {
   els.judgeProviderSelect.value = current;
 }
 
-function renderVisionSelect() {
-  if (!els.visionProviderSelect) return;
-  const current = els.visionProviderSelect.value;
-  els.visionProviderSelect.innerHTML = "";
-  const defaultOption = document.createElement("option");
-  defaultOption.value = "";
-  defaultOption.textContent = "使用当前会话模型";
-  els.visionProviderSelect.appendChild(defaultOption);
-  providerOptions.forEach((provider) => {
-    const option = document.createElement("option");
-    option.value = provider.id;
-    option.textContent = provider.label || provider.id;
-    els.visionProviderSelect.appendChild(option);
-  });
-  els.visionProviderSelect.value = current;
-}
-
 function syncProviderControl(providerId) {
   const value = String(providerId || "").trim();
   const known = value === "" || providerOptions.some((provider) => provider.id === value);
@@ -256,19 +312,6 @@ function syncProviderControl(providerId) {
   setProviderManualMode(true);
 }
 
-function syncVisionControl(providerId) {
-  const value = String(providerId || "").trim();
-  const known = value === "" || providerOptions.some((provider) => provider.id === value);
-  if (known && els.visionProviderSelect) {
-    els.visionProviderSelect.value = value;
-    els.visionProviderInput.value = "";
-    setVisionManualMode(false);
-    return;
-  }
-  els.visionProviderInput.value = value;
-  setVisionManualMode(true);
-}
-
 async function loadProviders() {
   try {
     const result = await apiGet("providers");
@@ -279,11 +322,13 @@ async function loadProviders() {
       ? result.providers.filter((item) => item && item.id)
       : [];
     renderProviderSelect();
-    renderVisionSelect();
+    visionProviderControl.render();
+    visionJudgeProviderControl.render();
   } catch (error) {
     providerOptions = [];
     renderProviderSelect();
-    renderVisionSelect();
+    visionProviderControl.render();
+    visionJudgeProviderControl.render();
     setProviderManualMode(true);
     showToast("无法加载 Provider 列表，可手动填写");
   }
@@ -304,7 +349,8 @@ async function loadConfig() {
   els.cooldownInput.value = config.cooldown_sec ?? config.cooldown_seconds ?? 900;
   els.visionJudgeEnabledInput.checked = Boolean(config.vision_judge_enabled);
   els.visionMainEnabledInput.checked = Boolean(config.vision_main_enabled);
-  syncVisionControl(config.vision_provider_id || "");
+  visionProviderControl.sync(config.vision_provider_id || "");
+  visionJudgeProviderControl.sync(config.vision_judge_provider_id || "");
   els.visionMaxImagesInput.value = config.vision_max_images ?? 2;
   els.visionImageAgeInput.value = config.vision_image_age_sec ?? 300;
   els.visionTimeoutInput.value = config.vision_timeout_sec ?? 20;
@@ -339,7 +385,8 @@ async function saveConfig(event) {
     cooldown_sec: Number(els.cooldownInput.value || 900),
     vision_judge_enabled: els.visionJudgeEnabledInput.checked,
     vision_main_enabled: els.visionMainEnabledInput.checked,
-    vision_provider_id: currentVisionProviderId(),
+    vision_provider_id: visionProviderControl.value(),
+    vision_judge_provider_id: visionJudgeProviderControl.value(),
     vision_max_images: Number(els.visionMaxImagesInput.value || 2),
     vision_image_age_sec: Number(els.visionImageAgeInput.value || 300),
     vision_timeout_sec: Number(els.visionTimeoutInput.value || 20),
@@ -387,23 +434,6 @@ if (els.providerManualBtn) {
 if (els.judgeProviderSelect) {
   els.judgeProviderSelect.addEventListener("change", () => {
     els.judgeProviderInput.value = "";
-  });
-}
-if (els.visionProviderManualBtn) {
-  els.visionProviderManualBtn.addEventListener("click", () => {
-    if (visionProviderManualMode) {
-      const manualValue = els.visionProviderInput.value.trim();
-      syncVisionControl(manualValue);
-      if (visionProviderManualMode) showToast("当前 Provider 不在列表中，继续保留手动输入");
-      return;
-    }
-    els.visionProviderInput.value = els.visionProviderSelect.value || "";
-    setVisionManualMode(true);
-  });
-}
-if (els.visionProviderSelect) {
-  els.visionProviderSelect.addEventListener("change", () => {
-    els.visionProviderInput.value = "";
   });
 }
 els.resetPromptBtn.addEventListener("click", () => {
