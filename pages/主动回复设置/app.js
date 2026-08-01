@@ -274,7 +274,7 @@ const visionJudgeProviderControl = createProviderControl({
   select: els.visionJudgeProviderSelect,
   input: els.visionJudgeProviderInput,
   button: els.visionJudgeProviderManualBtn,
-  placeholder: "与上方一致",
+  placeholder: "与识图模型一致",
 });
 
 function currentProviderId() {
