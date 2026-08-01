@@ -8,8 +8,19 @@ from typing import Any
 
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.6.4"
+PLUGIN_VERSION = "0.7.2"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
+STATE_VERSION = 4
+
+# 配置安全限制
+MAX_PROMPT_LENGTH = 8000  # 提示词最大长度，防止 OOM 和费用爆炸
+MAX_WHITELIST_SIZE = 1000  # 白名单最大条目数，防止性能降级
+MAX_RECENT_MESSAGE_LIMIT = 100  # 历史消息最大缓存数
+MAX_DAILY_REPLIES_LIMIT = 1000  # 每日回复次数上限
+MAX_VISION_IMAGES = 5  # 单次主动回复最多解析的图片数
+MAX_VISION_IMAGE_AGE_SEC = 86400  # 图片上下文最长保留时间
+MAX_VISION_TIMEOUT_SEC = 120  # 单张图片解析超时上限
+MAX_CACHED_IMAGE_EVENTS = 20  # 每会话临时保留的含图事件数
 
 # 插件运行常量
 MAX_AGENT_STEPS = 15  # Agent 最大步数：为表情包搜索+记忆检索+生成预留足够步数
@@ -128,6 +139,55 @@ def choice(value: Any, allowed: set[str], default: str) -> str:
     return normalized if normalized in allowed else default
 
 
+def sanitize_prompt_variable(
+    text: str,
+    max_length: int = 500,
+    *,
+    allow_newlines: bool = False,
+) -> str:
+    """清理用于提示词的变量，防止注入和长度攻击。
+
+    提示词是纯文本，不是 JSON，所以不做反斜杠转义（那只会把 `\\"` 当成字
+    面量塑进模型看到的内容）。双引号改成中文引号，既不破坏可读性，又能避免
+    用户内容伪造出与输出契约一模一样的 JSON 片段。
+
+    Args:
+        text: 原始文本
+        max_length: 最大长度限制
+        allow_newlines: 是否保留换行。多行聊天记录必须保留行结构，
+            否则判断模型无法区分发言人和轮次；单字段变量保持单行。
+
+    Returns:
+        清理后的安全文本
+    """
+    text = str(text or "").strip()
+    if not text:
+        return ""
+
+    # 1. 截断长度
+    if len(text) > max_length:
+        text = text[:max_length] + "..."
+
+    # 2. 双引号改写，避免伪造 JSON 输出契约
+    text = text.replace('"', "“")
+
+    if allow_newlines:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = []
+        for line in text.split("\n"):
+            # 移除控制字符并压缩行内空白
+            line = "".join(char for char in line if ord(char) >= 32)
+            line = re.sub(r"[^\S\n]+", " ", line).strip()
+            if line:
+                lines.append(line)
+        return "\n".join(lines)
+
+    # 3. 单行模式：换行、制表符归一为空格，并移除控制字符
+    text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    text = "".join(char for char in text if ord(char) >= 32)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 @dataclass
 class MessageRecord:
     role: str
@@ -135,6 +195,15 @@ class MessageRecord:
     text: str
     sender_id: str = ""
     at: float = field(default_factory=now_ts)
+
+
+@dataclass(frozen=True)
+class PipelineReply:
+    """Result of one main-Agent run, including tool-side direct sends."""
+
+    text: str = ""
+    direct_send_count: int = 0
+    direct_texts: tuple[str, ...] = ()
 
 
 @dataclass
@@ -182,6 +251,22 @@ class Settings:
     check_interval_sec: int
     patrol_inactive_after_sec: int
     generation_timeout_sec: float
+    vision_judge_enabled: bool
+    vision_main_enabled: bool
+    vision_provider_id: str
+    vision_max_images: int
+    vision_image_age_sec: int
+    vision_timeout_sec: float
+
+    @property
+    def vision_enabled(self) -> bool:
+        """Whether any Vision path is active.
+
+        Used by the event-caching gate and parser construction: image events
+        only need to be retained when at least one of the judge or main paths
+        will actually consume them.
+        """
+        return self.vision_judge_enabled or self.vision_main_enabled
 
     @property
     def decision_prompt_custom(self) -> bool:
@@ -190,12 +275,47 @@ class Settings:
 
     @classmethod
     def from_config(cls, config: Any) -> "Settings":
+        from astrbot.api import logger
+        
+        # 提示词长度限制
+        prompt_template = str(
+            config.get("decision_prompt_template", "") or DEFAULT_DECISION_PROMPT_TEMPLATE
+        ).strip()
+        if len(prompt_template) > MAX_PROMPT_LENGTH:
+            logger.warning(
+                "[%s] 判断提示词过长 (%d 字符)，已截断到 %d 字符",
+                PLUGIN_ID,
+                len(prompt_template),
+                MAX_PROMPT_LENGTH,
+            )
+            prompt_template = prompt_template[:MAX_PROMPT_LENGTH]
+        
+        # 白名单条目数限制
+        whitelist_raw = as_list(config.get("whitelist_sessions", []))
+        if len(whitelist_raw) > MAX_WHITELIST_SIZE:
+            logger.warning(
+                "[%s] 白名单过大 (%d 条目)，已截断到前 %d 条",
+                PLUGIN_ID,
+                len(whitelist_raw),
+                MAX_WHITELIST_SIZE,
+            )
+            whitelist_raw = whitelist_raw[:MAX_WHITELIST_SIZE]
+        
+        # 旧版本只有一个 vision_enabled 开关，作为两个新开关的默认值迁移。
+        # 只读不写：to_config_dict() 不再写回该键，否则它不在 schema 里，
+        # AstrBot 配置页会把它渲染成一个既无效又可编辑的裸文本框。
+        legacy_vision = as_bool(config.get("vision_enabled", False), False)
+        vision_judge_enabled = as_bool(
+            config.get("vision_judge_enabled", legacy_vision), legacy_vision
+        )
+        vision_main_enabled = as_bool(
+            config.get("vision_main_enabled", legacy_vision), legacy_vision
+        )
+
         return cls(
             enabled=as_bool(config.get("enabled", True), True),
             judge_provider_id=str(config.get("judge_provider_id", "") or "").strip(),
-            decision_prompt_template=str(
-                config.get("decision_prompt_template", "") or DEFAULT_DECISION_PROMPT_TEMPLATE
-            ).strip(),
+            decision_prompt_template=prompt_template,
             decision_history_min_messages=as_int(config.get("decision_history_min_messages", 5), 5, 0, 30),
             decision_temperature=as_float(config.get("decision_temperature", 0.2), 0.2, 0.0, 2.0),
             decision_timeout_sec=as_float(config.get("decision_timeout_sec", 20), 20, 1, 300),
@@ -206,17 +326,17 @@ class Settings:
                 "balanced",
             ),
             allow_multiline_reply=as_bool(config.get("allow_multiline_reply", True), True),
-            max_reply_chars=as_int(config.get("max_reply_chars", 220), 220, 20, 2000),
+            max_reply_chars=as_int(config.get("max_reply_chars", 220), 220, 0, 2000),
             log_reply_content=as_bool(config.get("log_reply_content", True), True),
             bot_aliases=as_list(config.get("bot_aliases", [])),
-            whitelist=set(as_list(config.get("whitelist_sessions", []))),
+            whitelist=set(whitelist_raw),
             ignored_sender_ids=set(as_list(config.get("ignored_sender_ids", []))),
-            recent_message_limit=as_int(config.get("recent_message_limit", 20), 20, 3, 100),
+            recent_message_limit=as_int(config.get("recent_message_limit", 20), 20, 3, MAX_RECENT_MESSAGE_LIMIT),
             message_delay_sec=as_int(config.get("message_delay_sec", 60), 60, 5, 86400),
             min_silence_sec=as_int(config.get("min_silence_sec", 45), 45, 0, 86400),
             cooldown_sec=as_int(config.get("cooldown_sec", 900), 900, 0, 86400),
             max_daily_replies_per_session=as_int(
-                config.get("max_daily_replies_per_session", 5), 5, 0, 100
+                config.get("max_daily_replies_per_session", 5), 5, 0, MAX_DAILY_REPLIES_LIMIT
             ),
             quiet_hours=as_list(config.get("quiet_hours", [])),
             enabled_message_trigger=as_bool(config.get("enabled_message_trigger", True), True),
@@ -226,6 +346,16 @@ class Settings:
                 config.get("patrol_inactive_after_sec", 1800), 1800, 0, 604800
             ),
             generation_timeout_sec=as_float(config.get("generation_timeout_sec", 60), 60, 1, 300),
+            vision_judge_enabled=vision_judge_enabled,
+            vision_main_enabled=vision_main_enabled,
+            vision_provider_id=str(config.get("vision_provider_id", "") or "").strip(),
+            vision_max_images=as_int(config.get("vision_max_images", 2), 2, 1, MAX_VISION_IMAGES),
+            vision_image_age_sec=as_int(
+                config.get("vision_image_age_sec", 300), 300, 60, MAX_VISION_IMAGE_AGE_SEC
+            ),
+            vision_timeout_sec=as_float(
+                config.get("vision_timeout_sec", 20), 20, 1, MAX_VISION_TIMEOUT_SEC
+            ),
         )
 
     def to_config_dict(self) -> dict[str, Any]:
@@ -262,4 +392,10 @@ class Settings:
             "enabled_message_trigger": self.enabled_message_trigger,
             "enabled_patrol_trigger": self.enabled_patrol_trigger,
             "generation_timeout_sec": self.generation_timeout_sec,
+            "vision_judge_enabled": self.vision_judge_enabled,
+            "vision_main_enabled": self.vision_main_enabled,
+            "vision_provider_id": self.vision_provider_id,
+            "vision_max_images": self.vision_max_images,
+            "vision_image_age_sec": self.vision_image_age_sec,
+            "vision_timeout_sec": self.vision_timeout_sec,
         }

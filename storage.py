@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import tempfile
 from collections import deque
 from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
 
-from .models import MessageRecord, PLUGIN_ID, SessionState, Settings
+from .models import MessageRecord, PLUGIN_ID, STATE_VERSION, SessionState, Settings
 from .utils import session_whitelisted, whitelist_storage_key
 
 
@@ -28,9 +30,9 @@ def _config_to_dict(config_obj: Any) -> dict[str, Any]:
         return {}
 
 
-def _update_config_obj(config_obj: Any, data: dict[str, Any]) -> None:
+def _update_config_obj(config_obj: Any, data: dict[str, Any]) -> bool:
     if config_obj is None:
-        return
+        return True
     try:
         if hasattr(config_obj, "clear"):
             config_obj.clear()
@@ -38,32 +40,62 @@ def _update_config_obj(config_obj: Any, data: dict[str, Any]) -> None:
         else:
             for key, value in data.items():
                 config_obj[key] = value
-    except Exception:
-        pass
+        return True
+    except Exception as exc:
+        logger.warning("[%s] failed to update AstrBot config object: %s", PLUGIN_ID, exc)
+        return False
 
 
-def _persist_config_obj(config_obj: Any, data: dict[str, Any]) -> None:
+def _persist_config_obj(config_obj: Any, data: dict[str, Any]) -> bool:
     if config_obj is None or not hasattr(config_obj, "save_config"):
-        return
+        return True
     try:
         config_obj.save_config(data)
+        return True
     except TypeError:
         try:
             config_obj.save_config()
+            return True
         except Exception as exc:
             logger.warning("[%s] failed to save AstrBot config: %s", PLUGIN_ID, exc)
     except Exception as exc:
         logger.warning("[%s] failed to save AstrBot config: %s", PLUGIN_ID, exc)
+    return False
+
+
+def _write_json_atomic(path: Path, data: dict[str, Any]) -> bool:
+    tmp_path: Path | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        return True
+    except (OSError, UnicodeEncodeError, TypeError, ValueError) as exc:
+        logger.warning("[%s] failed to write %s: %s", PLUGIN_ID, path, exc)
+    except Exception as exc:
+        logger.error("[%s] unexpected error writing %s: %s", PLUGIN_ID, path, exc, exc_info=True)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+    return False
 
 
 def load_config_data(path: Path, config_obj: Any) -> dict[str, Any]:
-    """Load plugin config with the on-disk JSON taking precedence.
-
-    The custom page writes the JSON file directly, while AstrBot also passes a
-    dict-like config object into the plugin. Keeping the JSON as the final
-    source here prevents a stale in-memory object from overwriting a page save
-    during plugin restart.
-    """
+    """Load plugin config with the on-disk JSON taking precedence."""
     data = _config_to_dict(config_obj)
     if path.exists():
         try:
@@ -77,56 +109,88 @@ def load_config_data(path: Path, config_obj: Any) -> dict[str, Any]:
     return data
 
 
+def _finite_float(value: Any, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return parsed if math.isfinite(parsed) else default
+
+
+def _nonnegative_int(value: Any, default: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(0, parsed)
+
+
 def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[str, SessionState]:
     sessions: dict[str, SessionState] = {}
+    raw_sessions: Any = {}
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
             raw_sessions = data.get("sessions", {}) if isinstance(data, dict) else {}
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
             logger.warning("[%s] failed to load state: %s", PLUGIN_ID, exc)
-            raw_sessions = {}
         except Exception as exc:
             logger.error("[%s] unexpected error loading state: %s", PLUGIN_ID, exc, exc_info=True)
-            raw_sessions = {}
-        for umo, raw in raw_sessions.items():
-            umo = str(umo or "").strip()
-            if not umo or not session_whitelisted(umo, whitelist) or not isinstance(raw, dict):
-                continue
-            umo = whitelist_storage_key(umo, whitelist)
+    if not isinstance(raw_sessions, dict):
+        raw_sessions = {}
+
+    for raw_umo, raw in raw_sessions.items():
+        umo = str(raw_umo or "").strip()
+        if not umo or not session_whitelisted(umo, whitelist) or not isinstance(raw, dict):
+            continue
+        try:
+            key = whitelist_storage_key(umo, whitelist)
             state = SessionState(recent=deque(maxlen=recent_limit))
-            state.last_active_at = float(raw.get("last_active_at") or 0.0)
+            state.last_active_at = _finite_float(raw.get("last_active_at"))
             state.last_active_sender_id = str(raw.get("last_active_sender_id") or "")
-            state.last_proactive_at = float(raw.get("last_proactive_at") or 0.0)
-            state.last_proactive_observed_at = float(raw.get("last_proactive_observed_at") or 0.0)
+            state.last_proactive_at = _finite_float(raw.get("last_proactive_at"))
+            state.last_proactive_observed_at = _finite_float(raw.get("last_proactive_observed_at"))
             state.last_proactive_text = str(raw.get("last_proactive_text") or "")
             state.daily_key = str(raw.get("daily_key") or state.daily_key)
-            state.daily_count = int(raw.get("daily_count") or 0)
-            for item in raw.get("recent", []) or []:
+            state.daily_count = _nonnegative_int(raw.get("daily_count"))
+            raw_recent = raw.get("recent", [])
+            if not isinstance(raw_recent, list):
+                raw_recent = []
+            for item in raw_recent:
                 if not isinstance(item, dict):
                     continue
                 text = str(item.get("text") or "").strip()
                 if not text:
                     continue
+                role = str(item.get("role") or "user").strip().lower()
+                if role not in {"user", "assistant"}:
+                    role = "user"
                 state.recent.append(
                     MessageRecord(
-                        role=str(item.get("role") or "user"),
+                        role=role,
                         name=str(item.get("name") or "用户"),
                         text=text,
                         sender_id=str(item.get("sender_id") or ""),
-                        at=float(item.get("at") or 0.0),
+                        at=_finite_float(item.get("at")),
                     )
                 )
-            sessions[umo] = state
+            sessions[key] = state
+        except Exception as exc:
+            logger.warning("[%s] skipped malformed session state %s: %s", PLUGIN_ID, umo, exc)
+
     for umo in whitelist:
-        sessions.setdefault(umo, SessionState(recent=deque(maxlen=recent_limit)))
+        sessions.setdefault(str(umo).strip(), SessionState(recent=deque(maxlen=recent_limit)))
     return sessions
 
 
-def save_sessions(path: Path, sessions: dict[str, SessionState], whitelist: set[str], recent_limit: int) -> None:
-    payload = {"version": 3, "sessions": {}}
-    for umo, state in sessions.items():
-        if not session_whitelisted(umo, whitelist):
+def build_sessions_payload(
+    sessions: dict[str, SessionState], whitelist: set[str], recent_limit: int
+) -> dict[str, Any]:
+    """Build an immutable JSON-ready snapshot before moving I/O off-thread."""
+    payload: dict[str, Any] = {"version": STATE_VERSION, "sessions": {}}
+    for raw_umo, state in list(sessions.items()):
+        umo = str(raw_umo or "").strip()
+        if not umo or not session_whitelisted(umo, whitelist):
             continue
         key = whitelist_storage_key(umo, whitelist)
         payload["sessions"][key] = {
@@ -148,35 +212,32 @@ def save_sessions(path: Path, sessions: dict[str, SessionState], whitelist: set[
                 for item in list(state.recent)[-recent_limit:]
             ],
         }
+    return payload
+
+
+def write_sessions_payload(path: Path, payload: dict[str, Any]) -> bool:
+    return _write_json_atomic(path, payload)
+
+
+def save_sessions(path: Path, sessions: dict[str, SessionState], whitelist: set[str], recent_limit: int) -> bool:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp_path, path)
-    except (OSError, UnicodeEncodeError) as exc:
-        logger.warning("[%s] failed to save state: %s", PLUGIN_ID, exc)
+        payload = build_sessions_payload(sessions, whitelist, recent_limit)
     except Exception as exc:
-        logger.error("[%s] unexpected error saving state: %s", PLUGIN_ID, exc, exc_info=True)
+        logger.error("[%s] unexpected error preparing state: %s", PLUGIN_ID, exc, exc_info=True)
+        return False
+    return write_sessions_payload(path, payload)
 
 
-def migrate_config_file(path: Path, config_obj: Any, settings: Settings) -> None:
+def migrate_config_file(path: Path, config_obj: Any, settings: Settings) -> bool:
     data = settings.to_config_dict()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as exc:
-        logger.warning("[%s] failed to migrate config: %s", PLUGIN_ID, exc)
-    _update_config_obj(config_obj, data)
-    _persist_config_obj(config_obj, data)
+    if not _write_json_atomic(path, data):
+        return False
+    return _update_config_obj(config_obj, data) and _persist_config_obj(config_obj, data)
 
 
-def sync_config_whitelist(path: Path, config_obj: Any, settings: Settings) -> None:
+def sync_config_whitelist(path: Path, config_obj: Any, settings: Settings) -> bool:
     data = settings.to_config_dict()
     data["whitelist_sessions"] = sorted(settings.whitelist)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as exc:
-        logger.warning("[%s] failed to sync config: %s", PLUGIN_ID, exc)
-    _update_config_obj(config_obj, data)
-    _persist_config_obj(config_obj, data)
+    if not _write_json_atomic(path, data):
+        return False
+    return _update_config_obj(config_obj, data) and _persist_config_obj(config_obj, data)

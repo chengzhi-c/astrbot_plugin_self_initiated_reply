@@ -16,7 +16,14 @@ _CQ_AT_PATTERN = re.compile(r"^(?:\[CQ:at,[^\]]+\]\s*)+")
 _TEXT_AT_PATTERN = re.compile(r"^(?:@\S+\s*)+")
 _INLINE_AT_PATTERN = re.compile(r"\[CQ:at,[^\]]+\]")
 _INLINE_MENTION_PATTERN = re.compile(r"\[At:[^\]]+\]")
+_TOOL_CALL_LEAK_PATTERN = re.compile(r"^\s*\[(?:historical )?tool call\]", re.IGNORECASE)
+# 工具标记及其同行残留（不跨行，避免吃掉后续正常内容）
+_TOOL_CALL_INLINE_PATTERN = re.compile(
+    r"\[(?:historical\s+)?tool\s+call\][^\n]*", re.IGNORECASE
+)
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+# 行内空白：不含换行，用于保留多行结构时压缩空格
+_INLINE_SPACE_PATTERN = re.compile(r"[^\S\n]+")
 
 ALIAS_REPLY_REQUEST_PATTERN = re.compile(
     r"(?:"
@@ -59,6 +66,45 @@ def parse_json(text: str) -> Any:
             return json.loads(match.group(0))
         except json.JSONDecodeError:
             return None
+
+
+def parse_decision_json(text: str) -> dict[str, Any] | None:
+    """严格解析判断模型的 JSON 响应，带类型校验和规范化。
+    
+    Args:
+        text: 判断模型返回的原始文本
+        
+    Returns:
+        规范化后的字典 {"should_reply": bool, "reason": str}，解析失败返回 None
+    """
+    parsed = parse_json(text)
+    if not isinstance(parsed, dict):
+        return None
+    
+    # 必须包含 should_reply
+    if "should_reply" not in parsed:
+        return None
+    
+    # 规范化 should_reply 为布尔值
+    raw_reply = parsed["should_reply"]
+    if isinstance(raw_reply, bool):
+        should_reply = raw_reply
+    elif isinstance(raw_reply, str):
+        should_reply = raw_reply.strip().lower() in {"true", "yes", "1", "是"}
+    elif isinstance(raw_reply, (int, float)):
+        should_reply = bool(raw_reply)
+    else:
+        return None  # 无效类型
+    
+    # 规范化 reason
+    reason = str(parsed.get("reason") or "未提供理由").strip()
+    if len(reason) > 200:
+        reason = reason[:200] + "..."
+    
+    return {
+        "should_reply": should_reply,
+        "reason": reason,
+    }
 
 
 def content_to_text(content: Any) -> str:
@@ -147,11 +193,12 @@ def session_whitelisted(umo: str, whitelist: set[str]) -> bool:
 
 
 def whitelist_storage_key(umo: str, whitelist: set[str]) -> str:
-    normalized = str(umo or "").strip()
-    group_id = session_group_id(normalized)
-    if group_id and group_id in whitelist:
-        return group_id
-    return normalized
+    """Return a platform-aware state key.
+
+    Bare group IDs remain accepted as a legacy wildcard whitelist entry, but
+    they must not collapse state from two different platforms into one record.
+    """
+    return str(umo or "").strip()
 
 
 def event_sender_id(event: AstrMessageEvent) -> str:
@@ -322,10 +369,29 @@ def clean_reply(text: str, *, allow_multiline: bool, max_chars: int) -> str:
     text = str(text or "").strip()
     text = re.sub(r"^```(?:text)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"^(?:回复|答复)\s*[:：]\s*", "", text).strip()
-    if not allow_multiline:
-        text = re.sub(r"\s+", " ", text)
-    if max_chars and len(text) > max_chars:
+
+    # 整条回复就是工具标记时直接丢弃
+    if _TOOL_CALL_LEAK_PATTERN.match(text):
+        return ""
+
+    # 移除文本中所有位置的工具标记及其同行残留
+    text = _TOOL_CALL_INLINE_PATTERN.sub("", text)
+
+    if allow_multiline:
+        # 保留换行结构，只压缩行内空白并丢弃因过滤而变空的行
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [_INLINE_SPACE_PATTERN.sub(" ", line).strip() for line in text.split("\n")]
+        text = "\n".join(line for line in lines if line).strip()
+    else:
+        text = _WHITESPACE_PATTERN.sub(" ", text).strip()
+
+    if not text:
+        return ""
+
+    # max_chars 为 0 时视为无限制
+    if max_chars > 0 and len(text) > max_chars:
         clipped = text[:max_chars].rstrip()
         match = re.search(r"^([\s\S]*[。！？.!?])[^。！？.!?]*$", clipped)
         text = (match.group(1) if match else clipped).strip()
+
     return text
