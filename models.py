@@ -254,9 +254,23 @@ class Settings:
     vision_judge_enabled: bool
     vision_main_enabled: bool
     vision_provider_id: str
+    vision_judge_provider_id: str
     vision_max_images: int
     vision_image_age_sec: int
     vision_timeout_sec: float
+
+    @property
+    def vision_judge_provider_resolved(self) -> str:
+        """判断阶段实际使用的识图 Provider ID。
+
+        判断阶段触发频率高，允许单独指定一个更便宜的识图模型。
+        留空时回落到主识图 Provider；两者都留空则由 adapter
+        进一步回落到当前会话模型。
+        """
+        return (
+            str(self.vision_judge_provider_id or "").strip()
+            or str(self.vision_provider_id or "").strip()
+        )
 
     @property
     def vision_enabled(self) -> bool:
@@ -349,6 +363,9 @@ class Settings:
             vision_judge_enabled=vision_judge_enabled,
             vision_main_enabled=vision_main_enabled,
             vision_provider_id=str(config.get("vision_provider_id", "") or "").strip(),
+            vision_judge_provider_id=str(
+                config.get("vision_judge_provider_id", "") or ""
+            ).strip(),
             vision_max_images=as_int(config.get("vision_max_images", 2), 2, 1, MAX_VISION_IMAGES),
             vision_image_age_sec=as_int(
                 config.get("vision_image_age_sec", 300), 300, 60, MAX_VISION_IMAGE_AGE_SEC
@@ -395,6 +412,7 @@ class Settings:
             "vision_judge_enabled": self.vision_judge_enabled,
             "vision_main_enabled": self.vision_main_enabled,
             "vision_provider_id": self.vision_provider_id,
+            "vision_judge_provider_id": self.vision_judge_provider_id,
             "vision_max_images": self.vision_max_images,
             "vision_image_age_sec": self.vision_image_age_sec,
             "vision_timeout_sec": self.vision_timeout_sec,

@@ -275,3 +275,103 @@ def test_image_info_cache_key_prefers_url_then_file() -> None:
     assert empty_info.cache_key() == "id:m1"
     assert not empty_info.has_any_source
 
+
+def test_judge_vision_provider_falls_back_to_main_vision_provider() -> None:
+    """判断阶段识图 Provider 留空时必须回落到主识图 Provider。
+
+    这保证旧配置升级后行为不变：以前只有一个 vision_provider_id，
+    两个阶段共用；新字段不填时应继续共用。
+    """
+    _, _, models = _load_modules()
+
+    # 留空 → 回落主识图 Provider
+    inherited = models.Settings.from_config({"vision_provider_id": "vision-main"})
+    assert inherited.vision_judge_provider_id == ""
+    assert inherited.vision_judge_provider_resolved == "vision-main"
+
+    # 显式指定 → 不受主识图 Provider 影响
+    overridden = models.Settings.from_config(
+        {"vision_provider_id": "vision-main", "vision_judge_provider_id": "vision-cheap"}
+    )
+    assert overridden.vision_judge_provider_resolved == "vision-cheap"
+    assert overridden.vision_provider_id == "vision-main"
+
+    # 两者都留空 → 交由 adapter 回落到当前会话模型
+    both_empty = models.Settings.from_config({})
+    assert both_empty.vision_judge_provider_resolved == ""
+
+    # 只填判断阶段，主阶段仍然走会话默认
+    judge_only = models.Settings.from_config({"vision_judge_provider_id": "vision-cheap"})
+    assert judge_only.vision_judge_provider_resolved == "vision-cheap"
+    assert judge_only.vision_provider_id == ""
+
+
+def test_judge_vision_provider_is_persisted_and_whitespace_stripped() -> None:
+    _, _, models = _load_modules()
+
+    settings = models.Settings.from_config({"vision_judge_provider_id": "  vision-cheap  "})
+    assert settings.vision_judge_provider_id == "vision-cheap"
+    assert settings.to_config_dict()["vision_judge_provider_id"] == "vision-cheap"
+
+
+def test_parsers_with_different_providers_do_not_share_descriptions() -> None:
+    """不同 Provider 的 parser 不得共用描述缓存。
+
+    缓存键只根据图片计算（不含 provider），所以两个 Provider 必须各自
+        持有缓存；否则判断阶段廉价模型的描述会被主阶段读到。
+    """
+    _, image, _ = _load_modules()
+
+    def make_parser(provider_id: str, caption: str):
+        class Bridge:
+            def __init__(self):
+                self.calls = 0
+
+            async def resolve_provider_id(self, umo, preferred):
+                return preferred
+
+            async def llm_generate_direct(self, **kwargs):
+                self.calls += 1
+                return SimpleNamespace(completion_text=caption)
+
+        bridge = Bridge()
+        parser = image.ImageParser(bridge, provider_id=provider_id)
+
+        async def fake_resolve(_image_info):
+            return "data:image/png;base64,AA=="
+
+        parser._resolve_image_url = fake_resolve
+        return bridge, parser
+
+    image_info = image.ImageInfo(url="https://cdn.example.test/same.png")
+
+    cheap_bridge, cheap_parser = make_parser("vision-cheap", "一只猫")
+    good_bridge, good_parser = make_parser("vision-good", "一只橘猫坐在窗边晓着眼睛")
+
+    cheap = asyncio.run(cheap_parser.parse(image_info, umo="qq:GroupMessage:1"))
+    good = asyncio.run(good_parser.parse(image_info, umo="qq:GroupMessage:1"))
+
+    assert cheap == "一只猫"
+    assert good == "一只橘猫坐在窗边晓着眼睛", "不得读到另一个 Provider 的缓存结果"
+    assert cheap_bridge.calls == 1
+    assert good_bridge.calls == 1
+
+    # 同一个 parser 重复解析同一张图仍然命中缓存
+    assert asyncio.run(cheap_parser.parse(image_info, umo="qq:GroupMessage:1")) == "一只猫"
+    assert cheap_bridge.calls == 1
+
+
+def test_judge_vision_provider_is_declared_in_schema() -> None:
+    """新增配置项必须在 schema 里声明，否则 AstrBot 配置页无法正常渲染。"""
+    import json
+
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+    entry = schema.get("vision_judge_provider_id")
+    assert entry is not None, "vision_judge_provider_id 未在 _conf_schema.json 声明"
+    assert entry["type"] == "string"
+    assert entry["default"] == ""
+    assert entry.get("_special") == "select_provider", (
+        "应使用 select_provider 以便在配置页直接选择 Provider"
+    )
+

@@ -127,8 +127,8 @@ class SelfInitiatedReplyPlugin(Star):
         self._last_events: dict[str, AstrMessageEvent] = {}
         self._last_event_at: dict[str, float] = {}
         self._recent_image_events: dict[str, deque[tuple[float, AstrMessageEvent]]] = {}
-        self._image_parser: ImageParser | None = None
-        self._image_parser_signature: tuple[str, float] | None = None
+        self._image_parsers: dict[str, ImageParser] = {}
+        self._image_parser_timeout: float | None = None
         self._whitelist_runtime_umos: dict[str, set[str]] = {}
         self._delay_tasks: dict[str, asyncio.Task[Any]] = {}
         self._session_generation: dict[str, int] = {}
@@ -1013,23 +1013,39 @@ class SelfInitiatedReplyPlugin(Star):
             "elapsed_sec": now_ts() - started,
         }
 
-    def _get_image_parser(self) -> ImageParser | None:
-        """Return a cached Vision parser for the active settings, if enabled."""
+    def _get_image_parser(self, provider_id: str = "") -> ImageParser | None:
+        """Return a cached Vision parser for one provider, if Vision is enabled.
+
+        Parsers are cached per resolved provider ID so that the judge and main
+        paths can use different Vision models. When both paths resolve to the
+        same provider they share one instance, and therefore one description
+        cache, so an image is only described once.
+
+        Args:
+            provider_id: Resolved Vision provider ID. Empty means the adapter
+                falls back to the current session model.
+
+        Returns:
+            A parser instance, or ``None`` when no Vision path is enabled.
+        """
         if not self.settings.vision_enabled:
             return None
-        signature = (
-            self.settings.vision_provider_id,
-            float(self.settings.vision_timeout_sec),
-        )
-        if self._image_parser is None or self._image_parser_signature != signature:
-            self._image_parser = ImageParser(
+        timeout = float(self.settings.vision_timeout_sec)
+        # 超时值变化时整体重建，避免旧实例带着过期的超时设置
+        if self._image_parser_timeout != timeout:
+            self._image_parsers.clear()
+            self._image_parser_timeout = timeout
+        key = str(provider_id or "").strip()
+        parser = self._image_parsers.get(key)
+        if parser is None:
+            parser = ImageParser(
                 self.bridge,
-                provider_id=self.settings.vision_provider_id,
+                provider_id=key,
                 recorder_bridge=get_recorder_bridge(self.context),
-                timeout_sec=self.settings.vision_timeout_sec,
+                timeout_sec=timeout,
             )
-            self._image_parser_signature = signature
-        return self._image_parser
+            self._image_parsers[key] = parser
+        return parser
 
     def _recent_images_for(self, umo: str) -> list[ImageInfo]:
         """Return distinct, recent image references for one session.
@@ -1064,19 +1080,23 @@ class SelfInitiatedReplyPlugin(Star):
                     return list(reversed(candidates))
         return list(reversed(candidates))
 
-    async def _build_image_context(self, umo: str, *, enabled: bool) -> str:
+    async def _build_image_context(
+        self, umo: str, *, enabled: bool, provider_id: str = ""
+    ) -> str:
         """Describe recent images for prompt context without persisting the result.
 
         Args:
             umo: Session UMO.
             enabled: Whether this path's Vision is enabled.
+            provider_id: Vision provider for this path. Empty lets the adapter
+                fall back to the current session model.
 
         Returns:
             Formatted image context string or empty.
         """
         if not enabled:
             return ""
-        parser = self._get_image_parser()
+        parser = self._get_image_parser(provider_id)
         if parser is None:
             return ""
         images = self._recent_images_for(umo)
@@ -1107,7 +1127,11 @@ class SelfInitiatedReplyPlugin(Star):
         
         aliases = "、".join(self.settings.bot_aliases) or "未配置"
         recent = await self._build_recent_messages(umo, state, limit=max(8, self.settings.decision_history_min_messages))
-        image_context = await self._build_image_context(umo, enabled=self.settings.vision_judge_enabled)
+        image_context = await self._build_image_context(
+            umo,
+            enabled=self.settings.vision_judge_enabled,
+            provider_id=self.settings.vision_judge_provider_resolved,
+        )
         if image_context:
             recent = f"{recent}\n\n{image_context}" if recent else image_context
         latest = latest_user_text(list(state.recent))
@@ -1149,7 +1173,11 @@ class SelfInitiatedReplyPlugin(Star):
             records = await self.bridge.read_astrbot_history(umo, limit=self.settings.recent_message_limit) + records
         records = dedupe_message_records(records)
         context_text = format_message_records(records, limit=self.settings.recent_message_limit)
-        image_context = await self._build_image_context(umo, enabled=self.settings.vision_main_enabled)
+        image_context = await self._build_image_context(
+            umo,
+            enabled=self.settings.vision_main_enabled,
+            provider_id=self.settings.vision_provider_id,
+        )
         return f"{context_text}\n\n{image_context}" if image_context else context_text
 
     def _replace_whitelist(self, whitelist: set[str]) -> None:
@@ -1544,6 +1572,7 @@ class SelfInitiatedReplyPlugin(Star):
                 # 聚合值，保留给旧版前端
                 "vision_enabled": self.settings.vision_enabled,
                 "vision_provider_id": self.settings.vision_provider_id,
+                "vision_judge_provider_id": self.settings.vision_judge_provider_id,
                 "vision_max_images": self.settings.vision_max_images,
                 "vision_image_age_sec": self.settings.vision_image_age_sec,
                 "vision_timeout_sec": self.settings.vision_timeout_sec,
@@ -1619,6 +1648,10 @@ class SelfInitiatedReplyPlugin(Star):
                 updates["vision_main_enabled"] = legacy_vision
             if "vision_provider_id" in data:
                 updates["vision_provider_id"] = str(data["vision_provider_id"] or "").strip()
+            if "vision_judge_provider_id" in data:
+                updates["vision_judge_provider_id"] = str(
+                    data["vision_judge_provider_id"] or ""
+                ).strip()
             if "vision_max_images" in data:
                 updates["vision_max_images"] = max(1, min(5, int(data["vision_max_images"])))
             if "vision_image_age_sec" in data:
@@ -1649,6 +1682,7 @@ class SelfInitiatedReplyPlugin(Star):
                     "vision_judge_enabled",
                     "vision_main_enabled",
                     "vision_provider_id",
+                    "vision_judge_provider_id",
                     "vision_max_images",
                     "vision_image_age_sec",
                     "vision_timeout_sec",
@@ -1666,11 +1700,12 @@ class SelfInitiatedReplyPlugin(Star):
                         "vision_judge_enabled",
                         "vision_main_enabled",
                         "vision_provider_id",
+                        "vision_judge_provider_id",
                         "vision_timeout_sec",
                     )
                 ):
-                    self._image_parser = None
-                    self._image_parser_signature = None
+                    self._image_parsers.clear()
+                    self._image_parser_timeout = None
                 if updates:
                     self._sync_whitelist()
                     await self._save_storage()
@@ -1686,6 +1721,9 @@ class SelfInitiatedReplyPlugin(Star):
             except Exception:
                 self.settings = old_settings
                 self.runtime_enabled = old_runtime_enabled
+                # 回滚后一律丢弃 parser 缓存，避免残留按失败配置建的实例
+                self._image_parsers.clear()
+                self._image_parser_timeout = None
                 try:
                     self._sync_whitelist()
                     await self._save_storage()

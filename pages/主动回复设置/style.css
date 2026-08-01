@@ -755,6 +755,17 @@ textarea {
   align-items: center;
 }
 
+/* 识图 Provider 控件内含「下拉 + 切换按钮」，比纯数字输入需要更多横向空间，
+   否则 Provider 名称会被截断。 */
+.field-grid > .provider-cell {
+  grid-column: span 2;
+}
+
+select option {
+  background: var(--surface);
+  color: var(--text);
+}
+
 /* --------------------------------------------------------------------------
    提示词工作区
    -------------------------------------------------------------------------- */
@@ -1151,6 +1162,10 @@ details > summary:hover {
   .view.active,
   .field-grid {
     grid-template-columns: 1fr;
+  }
+
+  .field-grid > .provider-cell {
+    grid-column: auto;
   }
 
   .panel {

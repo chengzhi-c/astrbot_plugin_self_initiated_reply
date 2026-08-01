@@ -195,7 +195,7 @@
               <span>主模型识图（生成回复正文时看图）</span>
             </label>
             <div class="field-grid">
-              <label>
+              <label class="provider-cell">
                 <span>识图模型 Provider</span>
                 <div class="provider-field vision-provider-field">
                   <select id="visionProviderSelect">
@@ -205,11 +205,21 @@
                   <button type="button" class="btn-link" id="visionProviderManualBtn">手动输入</button>
                 </div>
               </label>
+              <label class="provider-cell">
+                <span>判断阶段识图 Provider</span>
+                <div class="provider-field vision-provider-field">
+                  <select id="visionJudgeProviderSelect">
+                    <option value="">与上方一致</option>
+                  </select>
+                  <input type="text" id="visionJudgeProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
+                  <button type="button" class="btn-link" id="visionJudgeProviderManualBtn">手动输入</button>
+                </div>
+              </label>
               <label><span>单次最多识别图片数</span><input type="number" id="visionMaxImagesInput" min="1" max="5"></label>
               <label><span>图片有效时间（秒）</span><input type="number" id="visionImageAgeInput" min="60" max="86400"></label>
               <label><span>识图超时（秒）</span><input type="number" id="visionTimeoutInput" min="1" max="120" step="1"></label>
             </div>
-            <p class="muted">两个开关独立。判断阶段触发频率高，只开主模型识图更省 token。均需支持 Vision 的模型。图片描述仅作为不可信聊天上下文参与判断与生成，不会写入会话历史。</p>
+            <p class="muted">两个开关独立。判断阶段触发频率高，只开主模型识图更省 token。均需支持 Vision 的模型。判断阶段可单独指定更便宜的识图模型，留空则与主识图模型一致。图片描述仅作为不可信聊天上下文参与判断与生成，不会写入会话历史。</p>
           </section>
 
           <details class="advanced-panel">
