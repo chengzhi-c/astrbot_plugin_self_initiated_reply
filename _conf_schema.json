@@ -236,6 +236,12 @@
     "default": "",
     "_special": "select_provider"
   },
+  "vision_skip_stickers": {
+    "type": "bool",
+    "description": "跳过表情包识图",
+    "hint": "按消息段的表情包标记（QQ OneBot 通常为 subType=1）过滤图片，不调用 Vision 解析。默认关闭。",
+    "default": false
+  },
   "vision_judge_provider_id": {
     "type": "string",
     "description": "判断阶段识图模型 Provider ID",

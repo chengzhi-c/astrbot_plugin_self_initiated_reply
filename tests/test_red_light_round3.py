@@ -348,6 +348,25 @@ def test_terminate_clears_image_event_cache() -> None:
     )
 
 
+def test_new_message_does_not_cancel_running_decorating_hook() -> None:
+    """新消息应使旧回复失效，但不能取消正在执行的装饰钩子。"""
+    source = _main_source()
+    cancel_start = source.index("    def _cancel_delay_task(")
+    cancel_end = source.index("\n    def _clear_cached_event(", cancel_start)
+    cancel_method = source[cancel_start:cancel_end]
+    invalidate_start = source.index("    def _invalidate_session(")
+    invalidate_end = source.index("\n    def _cancel_event_session(", invalidate_start)
+    invalidate_method = source[invalidate_start:invalidate_end]
+    bulk_start = source.index("    def _cancel_delay_tasks(")
+    bulk_end = source.index("\n    async def _stop_patrol_task(", bulk_start)
+    bulk_method = source[bulk_start:bulk_end]
+
+    assert "self._running_sessions" in cancel_method
+    assert "force" in cancel_method
+    assert "force_cancel" in invalidate_method
+    assert "force_cancel=True" in bulk_method
+
+
 if __name__ == "__main__":
     import pytest
 

@@ -126,11 +126,12 @@ class SelfInitiatedReplyPlugin(Star):
         )
         self._last_events: dict[str, AstrMessageEvent] = {}
         self._last_event_at: dict[str, float] = {}
-        self._recent_image_events: dict[str, deque[tuple[float, AstrMessageEvent]]] = {}
+        self._recent_image_events: dict[str, deque[tuple[float, list[ImageInfo]]]] = {}
         self._image_parsers: dict[str, ImageParser] = {}
         self._image_parser_timeout: float | None = None
         self._whitelist_runtime_umos: dict[str, set[str]] = {}
         self._delay_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._running_check_tasks: dict[str, asyncio.Task[Any]] = {}
         self._session_generation: dict[str, int] = {}
         self._running_sessions: set[str] = set()
         self._patrol_task: asyncio.Task[Any] | None = None
@@ -150,6 +151,15 @@ class SelfInitiatedReplyPlugin(Star):
             len(self.settings.whitelist),
             self.settings.enabled_message_trigger,
             self.settings.enabled_patrol_trigger,
+        )
+        logger.info(
+            "[%s] vision judge=%s main=%s skip_stickers=%s provider=%s judge_provider=%s",
+            PLUGIN_ID,
+            self.settings.vision_judge_enabled,
+            self.settings.vision_main_enabled,
+            self.settings.vision_skip_stickers,
+            self.settings.vision_provider_id or "<current>",
+            self.settings.vision_judge_provider_resolved or "<current>",
         )
         self._register_web_apis()
 
@@ -245,6 +255,7 @@ class SelfInitiatedReplyPlugin(Star):
         if not self.runtime_enabled or event.is_stopped():
             return
         umo = event_umo(event)
+
         if not session_whitelisted(umo, self.settings.whitelist):
             return
         state_key = whitelist_storage_key(umo, self.settings.whitelist)
@@ -253,7 +264,14 @@ class SelfInitiatedReplyPlugin(Star):
         if group_id:
             self._whitelist_runtime_umos.setdefault(group_id, set()).add(umo)
 
-        if self._should_ignore_event(event, text):
+        clean_text = clean_chat_text(text)
+        # Compute Vision eligibility once and pass it through the generic event
+        # gate; the capture path below reuses the same decision.
+        has_images = self.settings.vision_enabled and ImageExtractor.has_images(
+            event,
+            skip_stickers=self.settings.vision_skip_stickers,
+        )
+        if self._should_ignore_event(event, text, vision_has_images=has_images):
             self._invalidate_session(umo)
             if not is_self_message(event) and is_explicit_direct_call(event, text):
                 state = self._state_for(state_key)
@@ -261,8 +279,6 @@ class SelfInitiatedReplyPlugin(Star):
                 state.last_active_sender_id = event_sender_id(event)
             return
 
-        clean_text = clean_chat_text(text)
-        has_images = self.settings.vision_enabled and ImageExtractor.has_images(event)
         if not clean_text and not has_images:
             self._invalidate_session(umo)
             return
@@ -289,11 +305,41 @@ class SelfInitiatedReplyPlugin(Star):
         self._last_events[umo] = event
         self._last_event_at[umo] = state.last_active_at
         if has_images:
-            image_events = self._recent_image_events.setdefault(
-                umo,
-                deque(maxlen=MAX_CACHED_IMAGE_EVENTS),
+            # 立即提取图片信息，避免 event 对象被 AstrBot 复用导致数据丢失
+            images = ImageExtractor.extract_images(
+                event,
+                sender_id=event_sender_id(event),
+                timestamp=state.last_active_at,
+                skip_stickers=self.settings.vision_skip_stickers,
             )
-            image_events.append((state.last_active_at, event))
+            if images:
+                # 在原始事件仍然可用时立即下载并缓存图片，主动回复的延迟窗口
+                # 只消费冻结后的本地文件，不再依赖可能过期的 QQ CDN URL。
+                parser = self._get_image_parser()
+                prepared = await parser.prepare_batch(images, max_concurrent=2) if parser else []
+                cached_images = [image for image, ok in zip(images, prepared) if ok]
+                if cached_images:
+                    image_events = self._recent_image_events.setdefault(
+                        umo,
+                        deque(maxlen=MAX_CACHED_IMAGE_EVENTS),
+                    )
+                    image_events.append((state.last_active_at, cached_images))
+                    logger.info(
+                        "[%s] captured %s/%s images into local vision cache for umo=%s",
+                        PLUGIN_ID,
+                        len(cached_images),
+                        len(images),
+                        umo,
+                    )
+                else:
+                    logger.warning(
+                        "[%s] extracted %s images but none could be frozen for umo=%s",
+                        PLUGIN_ID,
+                        len(images),
+                        umo,
+                    )
+            else:
+                logger.debug("[%s] has_images=True but extract_images returned empty for umo=%s", PLUGIN_ID, umo)
         self._cleanup_old_events_if_needed()
 
         if self.settings.enabled_message_trigger:
@@ -321,10 +367,19 @@ class SelfInitiatedReplyPlugin(Star):
             return True
         return is_at_or_wake_command_event(event) or is_explicit_direct_call(event, text)
 
-    def _should_ignore_event(self, event: AstrMessageEvent, text: str) -> bool:
+    def _should_ignore_event(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+        *,
+        vision_has_images: bool,
+    ) -> bool:
         if is_self_message(event):
             return True
-        if not text or text.startswith("/"):
+        if text.startswith("/"):
+            return True
+        # 纯图片消息没有文本，但在识图开启时仍需观察，否则图片无法进入缓存
+        if not text and not vision_has_images:
             return True
         if event_sender_id(event) in self.settings.ignored_sender_ids:
             return True
@@ -338,26 +393,42 @@ class SelfInitiatedReplyPlugin(Star):
     def _generation_is_current(self, umo: str, generation: int | None) -> bool:
         return generation is None or self._session_generation.get(umo, 0) == generation
 
-    def _cancel_delay_task(self, umo: str) -> None:
-        task = self._delay_tasks.pop(umo, None)
+    def _cancel_delay_task(self, umo: str, *, force: bool = False) -> None:
+        task = self._delay_tasks.get(umo)
+        running_task = self._running_check_tasks.get(umo)
+        if not force and (umo in self._running_sessions or running_task is not None):
+            # A new message invalidates the running check through the
+            # generation counter, but must not cancel its await chain.  The
+            # old task will reach its generation gates and cleanly suppress
+            # the stale reply.  Cancelling here used to interrupt decorating
+            # hooks (for example smart segmentation) with CancelledError.
+            logger.debug(
+                "[%s] leave running check alive for stale-generation suppression session=%s",
+                PLUGIN_ID,
+                umo,
+            )
+            return
+        self._delay_tasks.pop(umo, None)
         if task and not task.done():
             task.cancel()
+        if force and running_task and not running_task.done() and running_task is not task:
+            running_task.cancel()
 
     def _clear_cached_event(self, umo: str) -> None:
         self._last_events.pop(umo, None)
         self._last_event_at.pop(umo, None)
         self._recent_image_events.pop(umo, None)
 
-    def _invalidate_session(self, umo: str) -> int:
+    def _invalidate_session(self, umo: str, *, force_cancel: bool = False) -> int:
         generation = self._advance_session_generation(umo)
-        self._cancel_delay_task(umo)
+        self._cancel_delay_task(umo, force=force_cancel)
         self._clear_cached_event(umo)
         return generation
 
     def _cancel_event_session(self, event: AstrMessageEvent) -> None:
         umo = event_umo(event)
         if umo and session_whitelisted(umo, self.settings.whitelist):
-            self._invalidate_session(umo)
+            self._invalidate_session(umo, force_cancel=True)
 
     def _message_trigger_delay(self, trigger: str) -> int:
         min_silence = max(0, int(self.settings.min_silence_sec))
@@ -418,12 +489,29 @@ class SelfInitiatedReplyPlugin(Star):
                 if self._stopping or not self.runtime_enabled or not self._generation_is_current(umo, generation):
                     return
                 silence_left = self._remaining_silence_sec(state)
-            result = await self._check_session(
-                umo,
-                trigger=trigger,
-                force=force,
-                expected_generation=generation,
-            )
+            while umo in self._running_sessions:
+                logger.debug(
+                    "[%s] wait for previous check to finish session=%s trigger=%s",
+                    PLUGIN_ID,
+                    umo,
+                    trigger,
+                )
+                await asyncio.sleep(0.1)
+                if self._stopping or not self.runtime_enabled or not self._generation_is_current(umo, generation):
+                    return
+            running_task = asyncio.current_task()
+            if running_task is not None:
+                self._running_check_tasks[umo] = running_task
+            try:
+                result = await self._check_session(
+                    umo,
+                    trigger=trigger,
+                    force=force,
+                    expected_generation=generation,
+                )
+            finally:
+                if running_task is not None and self._running_check_tasks.get(umo) is running_task:
+                    self._running_check_tasks.pop(umo, None)
             logger.debug("[%s] check result session=%s trigger=%s result=%s", PLUGIN_ID, umo, trigger, result)
         except asyncio.CancelledError:
             return
@@ -456,6 +544,26 @@ class SelfInitiatedReplyPlugin(Star):
         stale = [item for item in removable if now - item[0] >= EVENT_CLEANUP_INTERVAL_SEC]
         for _, umo in stale:
             self._clear_cached_event(umo)
+
+        protected_sources = {
+            image.prepared_source
+            for events in self._recent_image_events.values()
+            for _, images in events
+            for image in images
+            if image.prepared_source
+        }
+        removed_images = ImageParser.cleanup_source_cache(
+            self._storage_path.parent / "image_cache",
+            protected_sources=protected_sources,
+            max_age_sec=max(3600.0, self.settings.vision_image_age_sec * 2),
+            now=now,
+        )
+        if removed_images:
+            logger.info(
+                "[%s] cleaned up %d expired frozen images",
+                PLUGIN_ID,
+                removed_images,
+            )
 
         if len(self._last_events) > MAX_CACHED_EVENTS:
             excess = len(self._last_events) - MAX_CACHED_EVENTS
@@ -603,6 +711,8 @@ class SelfInitiatedReplyPlugin(Star):
                 if not sent:
                     if direct_send_count:
                         await self._record_proactive_state(state, "", direct_send_count)
+                    if not self._generation_is_current(umo, expected_generation):
+                        return "会话已更新，放弃旧回复。"
                     return "主动发送失败。"
             else:
                 sent = True
@@ -900,8 +1010,21 @@ class SelfInitiatedReplyPlugin(Star):
                         pass
                     logger.info("[%s] suppress stale reply before event send session=%s", PLUGIN_ID, umo)
                     return False
+                logger.debug(
+                    "[%s] event send begin session=%s chars=%d chain_items=%d",
+                    PLUGIN_ID,
+                    umo,
+                    len(reply),
+                    len(getattr(result, "chain", []) or []),
+                )
                 await last_event.send(result)
                 sent = True
+                logger.info(
+                    "[%s] event send completed session=%s chars=%d; platform adapter completion is not a QQ delivery receipt",
+                    PLUGIN_ID,
+                    umo,
+                    len(reply),
+                )
                 await call_event_hook(last_event, EventType.OnAfterMessageSentEvent)
                 last_event.clear_result()
                 return True
@@ -1043,6 +1166,7 @@ class SelfInitiatedReplyPlugin(Star):
                 provider_id=key,
                 recorder_bridge=get_recorder_bridge(self.context),
                 timeout_sec=timeout,
+                source_cache_dir=self._storage_path.parent / "image_cache",
             )
             self._image_parsers[key] = parser
         return parser
@@ -1054,6 +1178,7 @@ class SelfInitiatedReplyPlugin(Star):
         """
         events = self._recent_image_events.get(umo)
         if not events:
+            logger.debug("[%s] _recent_images_for: no cached images for umo=%s", PLUGIN_ID, umo)
             return []
         cutoff = now_ts() - self.settings.vision_image_age_sec
         while events and events[0][0] < cutoff:
@@ -1064,13 +1189,11 @@ class SelfInitiatedReplyPlugin(Star):
 
         candidates: list[ImageInfo] = []
         seen: set[str] = set()
-        for event_at, event in reversed(events):
-            images = ImageExtractor.extract_images(
-                event,
-                sender_id=event_sender_id(event),
-                timestamp=event_at,
-            )
+        # events 现在存的是 (timestamp, list[ImageInfo])
+        for event_at, images in reversed(events):
             for image in reversed(images):
+                if self.settings.vision_skip_stickers and getattr(image, "is_sticker", False):
+                    continue
                 key = image.cache_key()
                 if key in seen:
                     continue
@@ -1420,7 +1543,7 @@ class SelfInitiatedReplyPlugin(Star):
     def _cancel_delay_tasks(self) -> None:
         sessions = set(self._delay_tasks) | set(self._running_sessions)
         for umo in sessions:
-            self._invalidate_session(umo)
+            self._invalidate_session(umo, force_cancel=True)
         self._delay_tasks.clear()
 
     async def _stop_patrol_task(self) -> None:
@@ -1573,6 +1696,7 @@ class SelfInitiatedReplyPlugin(Star):
                 "vision_enabled": self.settings.vision_enabled,
                 "vision_provider_id": self.settings.vision_provider_id,
                 "vision_judge_provider_id": self.settings.vision_judge_provider_id,
+                "vision_skip_stickers": self.settings.vision_skip_stickers,
                 "vision_max_images": self.settings.vision_max_images,
                 "vision_image_age_sec": self.settings.vision_image_age_sec,
                 "vision_timeout_sec": self.settings.vision_timeout_sec,
@@ -1652,6 +1776,10 @@ class SelfInitiatedReplyPlugin(Star):
                 updates["vision_judge_provider_id"] = str(
                     data["vision_judge_provider_id"] or ""
                 ).strip()
+            if "vision_skip_stickers" in data:
+                updates["vision_skip_stickers"] = self._strict_bool(
+                    data["vision_skip_stickers"], "vision_skip_stickers"
+                )
             if "vision_max_images" in data:
                 updates["vision_max_images"] = max(1, min(5, int(data["vision_max_images"])))
             if "vision_image_age_sec" in data:
@@ -1683,6 +1811,7 @@ class SelfInitiatedReplyPlugin(Star):
                     "vision_main_enabled",
                     "vision_provider_id",
                     "vision_judge_provider_id",
+                    "vision_skip_stickers",
                     "vision_max_images",
                     "vision_image_age_sec",
                     "vision_timeout_sec",

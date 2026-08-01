@@ -8,7 +8,7 @@ from typing import Any
 
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.7.2"
+PLUGIN_VERSION = "0.7.7"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -255,6 +255,7 @@ class Settings:
     vision_main_enabled: bool
     vision_provider_id: str
     vision_judge_provider_id: str
+    vision_skip_stickers: bool
     vision_max_images: int
     vision_image_age_sec: int
     vision_timeout_sec: float
@@ -366,6 +367,7 @@ class Settings:
             vision_judge_provider_id=str(
                 config.get("vision_judge_provider_id", "") or ""
             ).strip(),
+            vision_skip_stickers=as_bool(config.get("vision_skip_stickers", False), False),
             vision_max_images=as_int(config.get("vision_max_images", 2), 2, 1, MAX_VISION_IMAGES),
             vision_image_age_sec=as_int(
                 config.get("vision_image_age_sec", 300), 300, 60, MAX_VISION_IMAGE_AGE_SEC
@@ -413,6 +415,7 @@ class Settings:
             "vision_main_enabled": self.vision_main_enabled,
             "vision_provider_id": self.vision_provider_id,
             "vision_judge_provider_id": self.vision_judge_provider_id,
+            "vision_skip_stickers": self.vision_skip_stickers,
             "vision_max_images": self.vision_max_images,
             "vision_image_age_sec": self.vision_image_age_sec,
             "vision_timeout_sec": self.vision_timeout_sec,
