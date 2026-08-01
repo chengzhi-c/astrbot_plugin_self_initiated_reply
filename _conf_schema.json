@@ -79,10 +79,10 @@
   "max_reply_chars": {
     "type": "int",
     "description": "主动回复最长字符数",
-    "hint": "生成内容超过该长度时会尽量在句末截断。",
+    "hint": "生成内容超过该长度时会尽量在句末截断。设为 0 表示不限制。",
     "default": 220,
     "slider": {
-      "min": 20,
+      "min": 0,
       "max": 2000,
       "step": 10
     }
@@ -147,7 +147,7 @@
   "min_silence_sec": {
     "type": "int",
     "description": "最小静默时间（秒）",
-    "hint": "距离最后一条用户消息不足该时间时，不会主动回应。",
+    "hint": "距离该会话最后一条用户消息不足该时间时，不会主动回应。每个群聊独立计时。",
     "default": 45,
     "slider": {
       "min": 0,
@@ -158,7 +158,7 @@
   "cooldown_sec": {
     "type": "int",
     "description": "主动回复冷却（秒）",
-    "hint": "同一会话两次主动回复之间至少间隔多久。",
+    "hint": "同一会话两次主动回复之间至少间隔多久。每个群聊独立计时，不影响其他群。",
     "default": 900,
     "slider": {
       "min": 0,
@@ -169,7 +169,7 @@
   "max_daily_replies_per_session": {
     "type": "int",
     "description": "单会话每日上限",
-    "hint": "0 表示不限制。",
+    "hint": "0 表示不限制。每个群聊独立计数，每天 0 点自动重置。",
     "default": 5,
     "slider": {
       "min": 0,
@@ -214,6 +214,58 @@
     "slider": {
       "min": 1,
       "max": 300,
+      "step": 1
+    }
+  },
+  "vision_judge_enabled": {
+    "type": "bool",
+    "description": "判断模型启用图片识别",
+    "hint": "开启后，判断是否接话时会带上最近图片的文字描述。判断阶段频率高，开启会明显增加 token 消耗。默认关闭。",
+    "default": false
+  },
+  "vision_main_enabled": {
+    "type": "bool",
+    "description": "主模型启用图片识别",
+    "hint": "开启后，生成回复正文时会带上最近图片的文字描述。只在确定要接话后才触发，成本比判断阶段低。默认关闭。",
+    "default": false
+  },
+  "vision_provider_id": {
+    "type": "string",
+    "description": "识图模型 Provider ID",
+    "hint": "留空使用当前会话模型；建议选择支持 Vision 的模型。识图直接调用该 Provider，不经过其他 LLM 钩子。",
+    "default": "",
+    "_special": "select_provider"
+  },
+  "vision_max_images": {
+    "type": "int",
+    "description": "单次最多识别图片数",
+    "hint": "每次主动回复最多识别多少张最近的图片。",
+    "default": 2,
+    "slider": {
+      "min": 1,
+      "max": 5,
+      "step": 1
+    }
+  },
+  "vision_image_age_sec": {
+    "type": "int",
+    "description": "图片有效时间（秒）",
+    "hint": "只识别该时间窗口内出现过的图片，过期图片不再解析。",
+    "default": 300,
+    "slider": {
+      "min": 60,
+      "max": 86400,
+      "step": 60
+    }
+  },
+  "vision_timeout_sec": {
+    "type": "float",
+    "description": "识图超时（秒）",
+    "hint": "单张图片解析最长等待时间，超时则跳过该图。",
+    "default": 20.0,
+    "slider": {
+      "min": 1,
+      "max": 120,
       "step": 1
     }
   }

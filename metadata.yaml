@@ -1,6 +1,6 @@
 name: astrbot_plugin_self_initiated_reply
 display_name: 主动回复
-desc: 主动回复插件：白名单会话内，避开 @Bot/命令后由判断模型决定是否自然接话，回复走 AstrBot 主 Agent 管线，支持 Stealer 表情包和 LivingMemory 记忆钩子
+desc: 主动回复插件：白名单会话内，避开 @Bot/命令后由判断模型决定是否自然接话，回复走 AstrBot 主 Agent 管线，支持表情包插件和记忆钩子
 help: |
   指令组：/selfreply
   /selfreply status: 查看运行状态
@@ -11,6 +11,7 @@ help: |
   /selfreply on: 临时启用
   /selfreply off: 临时暂停
   /selfreply debug: 查看当前会话识别信息
-version: 0.6.4
+version: 0.7.2
+astrbot_version: ">=4.9.2,<5"
 author: chengzhi-c
 repo: "https://github.com/chengzhi-c/astrbot_plugin_self_initiated_reply"

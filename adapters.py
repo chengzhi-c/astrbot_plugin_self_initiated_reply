@@ -115,6 +115,7 @@ class AstrBotBridge:
         system_prompt: str = "",
         temperature: float | None = None,
         max_tokens: int | None = None,
+        image_urls: list[str] | None = None,
     ) -> Any:
         """Bare LLM call used only for lightweight should-reply decisions.
 
@@ -131,17 +132,93 @@ class AstrBotBridge:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        if image_urls:
+            kwargs["image_urls"] = list(image_urls)
+        aliases = {
+            "chat_provider_id": ("chat_provider_id", "provider_id", "provider"),
+            "prompt": ("prompt", "content", "query"),
+            "system_prompt": ("system_prompt",),
+            "temperature": ("temperature",),
+            "max_tokens": ("max_tokens",),
+            "image_urls": ("image_urls", "images", "image_urls_list"),
+        }
+        if image_urls:
+            supported = self._supported_kwargs(llm_generate, kwargs, aliases)
+            if not any(key in supported for key in aliases["image_urls"]):
+                raise RuntimeError("当前 AstrBot Context 的 LLM 接口不支持图片输入")
         return await self._call_compat(
             llm_generate,
             kwargs=kwargs,
             minimal_kwargs={"chat_provider_id": provider_id, "prompt": prompt},
-            aliases={
-                "chat_provider_id": ("chat_provider_id", "provider_id", "provider"),
-                "prompt": ("prompt", "content", "query"),
-                "system_prompt": ("system_prompt",),
-                "temperature": ("temperature",),
-                "max_tokens": ("max_tokens",),
-            },
+            aliases=aliases,
+        )
+
+    async def llm_generate_direct(
+        self,
+        *,
+        provider_id: str,
+        prompt: str,
+        system_prompt: str = "",
+        image_urls: list[str] | None = None,
+        contexts: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Any:
+        """Call a Provider directly, bypassing the normal LLM hook chain.
+
+        This is intentionally used for Vision parsing so image analysis does not
+        recursively trigger this plugin or other request hooks.
+        """
+        provider_id = str(provider_id or "").strip()
+        if not provider_id:
+            raise RuntimeError("未指定图片解析 Provider")
+        image_urls = list(image_urls or [])
+        if not image_urls:
+            raise ValueError("图片解析至少需要一个 image_url")
+
+        provider = None
+        get_provider = getattr(self.context, "get_provider_by_id", None)
+        if callable(get_provider):
+            provider = await maybe_await(get_provider(provider_id))
+        if provider is None:
+            manager = getattr(self.context, "provider_manager", None)
+            manager_get_provider = getattr(manager, "get_provider_by_id", None)
+            if callable(manager_get_provider):
+                provider = await maybe_await(manager_get_provider(provider_id))
+            if provider is None:
+                inst_map = getattr(manager, "inst_map", None)
+                if isinstance(inst_map, dict):
+                    provider = inst_map.get(provider_id)
+        text_chat = getattr(provider, "text_chat", None)
+        if not callable(text_chat):
+            raise RuntimeError(f"Provider 不可用或不支持 text_chat: {provider_id}")
+
+        kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "contexts": contexts or [],
+            "system_prompt": system_prompt,
+            "image_urls": image_urls,
+        }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        aliases = {
+            "prompt": ("prompt", "content", "query"),
+            "contexts": ("contexts", "context"),
+            "system_prompt": ("system_prompt", "system"),
+            "image_urls": ("image_urls", "images", "image_urls_list"),
+            "temperature": ("temperature",),
+            "max_tokens": ("max_tokens", "max_new_tokens"),
+        }
+        supported = self._supported_kwargs(text_chat, kwargs, aliases)
+        if not any(key in supported for key in aliases["image_urls"]):
+            raise RuntimeError(f"Provider 不支持图片输入: {provider_id}")
+        return await self._call_compat(
+            text_chat,
+            kwargs=kwargs,
+            minimal_kwargs={"prompt": prompt, "contexts": contexts or [], "image_urls": image_urls},
+            aliases=aliases,
         )
 
     async def resolve_provider_id(self, umo: str, preferred: str) -> str:

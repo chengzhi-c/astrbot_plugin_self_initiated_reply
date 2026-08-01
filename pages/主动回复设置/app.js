@@ -3,7 +3,11 @@ const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
 const els = {
   refreshBtn: document.getElementById("refreshBtn"),
   saveTopBtn: document.getElementById("saveTopBtn"),
+  themeToggle: document.getElementById("themeToggle"),
+  selfStat: document.getElementById("selfStat"),
   selfStatus: document.getElementById("selfStatus"),
+  decisionModelStat: document.getElementById("decisionModelStat"),
+  decisionModelStatus: document.getElementById("decisionModelStatus"),
   whitelistCount: document.getElementById("whitelistCount"),
   configForm: document.getElementById("configForm"),
   enabledInput: document.getElementById("enabledInput"),
@@ -12,6 +16,9 @@ const els = {
   judgeProviderSelect: document.getElementById("judgeProviderSelect"),
   judgeProviderInput: document.getElementById("judgeProviderInput"),
   providerManualBtn: document.getElementById("providerManualBtn"),
+  visionProviderSelect: document.getElementById("visionProviderSelect"),
+  visionProviderInput: document.getElementById("visionProviderInput"),
+  visionProviderManualBtn: document.getElementById("visionProviderManualBtn"),
   providerHint: document.getElementById("providerHint"),
   decisionTempInput: document.getElementById("decisionTempInput"),
   decisionTimeoutInput: document.getElementById("decisionTimeoutInput"),
@@ -22,6 +29,11 @@ const els = {
   messageDelayInput: document.getElementById("messageDelayInput"),
   minSilenceInput: document.getElementById("minSilenceInput"),
   cooldownInput: document.getElementById("cooldownInput"),
+  visionJudgeEnabledInput: document.getElementById("visionJudgeEnabledInput"),
+  visionMainEnabledInput: document.getElementById("visionMainEnabledInput"),
+  visionMaxImagesInput: document.getElementById("visionMaxImagesInput"),
+  visionImageAgeInput: document.getElementById("visionImageAgeInput"),
+  visionTimeoutInput: document.getElementById("visionTimeoutInput"),
   whitelistInput: document.getElementById("whitelistInput"),
   configSaveState: document.getElementById("configSaveState"),
   toast: document.getElementById("toast"),
@@ -30,6 +42,7 @@ const els = {
 let bridgeReady = null;
 let providerOptions = [];
 let providerManualMode = false;
+let visionProviderManualMode = false;
 
 const PROMPT_PREVIEW_VALUES = {
   session: "aiocqhttp:GroupMessage:123456789",
@@ -45,6 +58,46 @@ const PROMPT_PREVIEW_VALUES = {
   last_message_age_sec: "65",
   last_reply_age_sec: "900",
 };
+
+const THEME_KEY = "selfreply-theme";
+const THEME_CYCLE = ["auto", "light", "dark"];
+
+function currentTheme() {
+  const value = document.documentElement.getAttribute("data-theme");
+  return value === "light" || value === "dark" ? value : "auto";
+}
+
+function applyTheme(theme) {
+  if (theme === "auto") {
+    document.documentElement.removeAttribute("data-theme");
+  } else {
+    document.documentElement.setAttribute("data-theme", theme);
+  }
+  try {
+    if (theme === "auto") localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, theme);
+  } catch (error) {
+    /* localStorage 不可用时仅当次生效 */
+  }
+}
+
+function cycleTheme() {
+  const next = THEME_CYCLE[(THEME_CYCLE.indexOf(currentTheme()) + 1) % THEME_CYCLE.length];
+  applyTheme(next);
+}
+
+function setStatState(element, state) {
+  if (!element) return;
+  element.classList.remove("is-on", "is-off", "is-info");
+  element.classList.add(state);
+}
+
+function setSaveState(text, kind) {
+  if (!els.configSaveState) return;
+  els.configSaveState.textContent = text || "";
+  els.configSaveState.classList.remove("is-pending", "is-ok", "is-error");
+  if (kind) els.configSaveState.classList.add(`is-${kind}`);
+}
 
 function showToast(message) {
   els.toast.textContent = message;
@@ -133,9 +186,27 @@ function setProviderManualMode(enabled) {
   }
 }
 
+function setVisionManualMode(enabled) {
+  visionProviderManualMode = Boolean(enabled);
+  if (els.visionProviderManualBtn) {
+    els.visionProviderManualBtn.textContent = visionProviderManualMode ? "使用列表" : "手动输入";
+  }
+  if (els.visionProviderSelect) {
+    els.visionProviderSelect.style.display = visionProviderManualMode ? "none" : "block";
+  }
+  if (els.visionProviderInput) {
+    els.visionProviderInput.style.display = visionProviderManualMode ? "block" : "none";
+  }
+}
+
 function currentProviderId() {
   if (providerManualMode) return els.judgeProviderInput.value.trim();
   return els.judgeProviderSelect ? els.judgeProviderSelect.value.trim() : els.judgeProviderInput.value.trim();
+}
+
+function currentVisionProviderId() {
+  if (visionProviderManualMode) return els.visionProviderInput.value.trim();
+  return els.visionProviderSelect ? els.visionProviderSelect.value.trim() : "";
 }
 
 function renderProviderSelect() {
@@ -155,6 +226,23 @@ function renderProviderSelect() {
   els.judgeProviderSelect.value = current;
 }
 
+function renderVisionSelect() {
+  if (!els.visionProviderSelect) return;
+  const current = els.visionProviderSelect.value;
+  els.visionProviderSelect.innerHTML = "";
+  const defaultOption = document.createElement("option");
+  defaultOption.value = "";
+  defaultOption.textContent = "使用判断模型";
+  els.visionProviderSelect.appendChild(defaultOption);
+  providerOptions.forEach((provider) => {
+    const option = document.createElement("option");
+    option.value = provider.id;
+    option.textContent = provider.label || provider.id;
+    els.visionProviderSelect.appendChild(option);
+  });
+  els.visionProviderSelect.value = current;
+}
+
 function syncProviderControl(providerId) {
   const value = String(providerId || "").trim();
   const known = value === "" || providerOptions.some((provider) => provider.id === value);
@@ -168,6 +256,19 @@ function syncProviderControl(providerId) {
   setProviderManualMode(true);
 }
 
+function syncVisionControl(providerId) {
+  const value = String(providerId || "").trim();
+  const known = value === "" || providerOptions.some((provider) => provider.id === value);
+  if (known && els.visionProviderSelect) {
+    els.visionProviderSelect.value = value;
+    els.visionProviderInput.value = "";
+    setVisionManualMode(false);
+    return;
+  }
+  els.visionProviderInput.value = value;
+  setVisionManualMode(true);
+}
+
 async function loadProviders() {
   try {
     const result = await apiGet("providers");
@@ -178,9 +279,11 @@ async function loadProviders() {
       ? result.providers.filter((item) => item && item.id)
       : [];
     renderProviderSelect();
+    renderVisionSelect();
   } catch (error) {
     providerOptions = [];
     renderProviderSelect();
+    renderVisionSelect();
     setProviderManualMode(true);
     showToast("无法加载 Provider 列表，可手动填写");
   }
@@ -199,15 +302,26 @@ async function loadConfig() {
   els.messageDelayInput.value = config.message_delay_sec ?? config.idle_trigger_seconds ?? 60;
   els.minSilenceInput.value = config.min_silence_sec ?? 45;
   els.cooldownInput.value = config.cooldown_sec ?? config.cooldown_seconds ?? 900;
+  els.visionJudgeEnabledInput.checked = Boolean(config.vision_judge_enabled);
+  els.visionMainEnabledInput.checked = Boolean(config.vision_main_enabled);
+  syncVisionControl(config.vision_provider_id || "");
+  els.visionMaxImagesInput.value = config.vision_max_images ?? 2;
+  els.visionImageAgeInput.value = config.vision_image_age_sec ?? 300;
+  els.visionTimeoutInput.value = config.vision_timeout_sec ?? 20;
   const whitelist = Array.isArray(config.whitelist) ? config.whitelist : [];
   els.whitelistInput.value = whitelist.join("\n");
-  els.whitelistCount.textContent = `${whitelist.length} 个白名单`;
+  els.whitelistCount.textContent = String(whitelist.length);
+  if (els.decisionModelStatus) {
+    const decisionOn = config.decision_model_enabled !== false;
+    els.decisionModelStatus.textContent = fmtBool(decisionOn);
+    setStatState(els.decisionModelStat, decisionOn ? "is-on" : "is-off");
+  }
   renderPromptPreview();
 }
 
 async function saveConfig(event) {
   event.preventDefault();
-  els.configSaveState.textContent = "保存中";
+  setSaveState("保存中", "pending");
   const whitelist = els.whitelistInput.value
     .split(/[\n,，]+/)
     .map((item) => item.trim())
@@ -223,15 +337,21 @@ async function saveConfig(event) {
     message_delay_sec: Number(els.messageDelayInput.value || 60),
     min_silence_sec: Number(els.minSilenceInput.value || 45),
     cooldown_sec: Number(els.cooldownInput.value || 900),
+    vision_judge_enabled: els.visionJudgeEnabledInput.checked,
+    vision_main_enabled: els.visionMainEnabledInput.checked,
+    vision_provider_id: currentVisionProviderId(),
+    vision_max_images: Number(els.visionMaxImagesInput.value || 2),
+    vision_image_age_sec: Number(els.visionImageAgeInput.value || 300),
+    vision_timeout_sec: Number(els.visionTimeoutInput.value || 20),
     whitelist,
   });
   if (!result || result.ok !== true) {
-    els.configSaveState.textContent = "保存失败";
+    setSaveState("保存失败", "error");
     showToast(result?.error || "保存失败");
     return;
   }
-  els.configSaveState.textContent = "已保存";
-  els.whitelistCount.textContent = `${whitelist.length} 个白名单`;
+  setSaveState("已保存", "ok");
+  els.whitelistCount.textContent = String(whitelist.length);
   showToast("配置已保存");
   await loadOverview();
   await loadConfig();
@@ -240,8 +360,10 @@ async function saveConfig(event) {
 async function loadOverview() {
   const overview = await apiGet("unified/overview");
   const self = overview.self_reply || {};
-  els.selfStatus.textContent = fmtBool(self.enabled);
-  els.whitelistCount.textContent = `${self.whitelist_count || 0} 个白名单`;
+  const enabled = Boolean(self.enabled);
+  els.selfStatus.textContent = fmtBool(enabled);
+  setStatState(els.selfStat, enabled ? "is-on" : "is-off");
+  els.whitelistCount.textContent = String(self.whitelist_count || 0);
 }
 
 async function loadAll() {
@@ -267,6 +389,23 @@ if (els.judgeProviderSelect) {
     els.judgeProviderInput.value = "";
   });
 }
+if (els.visionProviderManualBtn) {
+  els.visionProviderManualBtn.addEventListener("click", () => {
+    if (visionProviderManualMode) {
+      const manualValue = els.visionProviderInput.value.trim();
+      syncVisionControl(manualValue);
+      if (visionProviderManualMode) showToast("当前 Provider 不在列表中，继续保留手动输入");
+      return;
+    }
+    els.visionProviderInput.value = els.visionProviderSelect.value || "";
+    setVisionManualMode(true);
+  });
+}
+if (els.visionProviderSelect) {
+  els.visionProviderSelect.addEventListener("change", () => {
+    els.visionProviderInput.value = "";
+  });
+}
 els.resetPromptBtn.addEventListener("click", () => {
   els.decisionPromptInput.value = els.decisionPromptInput.dataset.defaultPrompt || "";
   renderPromptPreview();
@@ -274,9 +413,14 @@ els.resetPromptBtn.addEventListener("click", () => {
 });
 els.decisionPromptInput.addEventListener("input", renderPromptPreview);
 els.configForm.addEventListener("submit", (event) => saveConfig(event).catch((err) => {
-  els.configSaveState.textContent = "保存失败";
+  setSaveState("保存失败", "error");
   showToast(err.message || "保存失败");
 }));
+
+// 主题切换：跟随系统 → 浅色 → 深色
+if (els.themeToggle) {
+  els.themeToggle.addEventListener("click", cycleTheme);
+}
 
 // 顶部保存按钮
 if (els.saveTopBtn) {

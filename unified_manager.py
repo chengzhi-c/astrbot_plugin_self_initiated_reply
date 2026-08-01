@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import PLUGIN_ID
-
-
 class UnifiedManagerApi:
     """Simplified dashboard API - only self-reply config."""
 
