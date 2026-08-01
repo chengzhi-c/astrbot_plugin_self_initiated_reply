@@ -239,7 +239,7 @@
   "vision_judge_provider_id": {
     "type": "string",
     "description": "判断阶段识图模型 Provider ID",
-    "hint": "单独指定判断阶段用哪个模型识图。判断阶段触发频率高，可以填一个更便宜的 Vision 模型控制成本。留空则与上方「识图模型」保持一致。",
+    "hint": "单独指定判断阶段用哪个模型识图。判断阶段触发频率高，可以填一个更便宜的 Vision 模型控制成本。留空则使用上方「识图模型」（而非判断模型，因为判断模型通常不支持 Vision）。",
     "default": "",
     "_special": "select_provider"
   },
