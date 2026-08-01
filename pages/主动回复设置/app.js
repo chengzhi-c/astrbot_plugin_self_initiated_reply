@@ -232,7 +232,7 @@ function renderVisionSelect() {
   els.visionProviderSelect.innerHTML = "";
   const defaultOption = document.createElement("option");
   defaultOption.value = "";
-  defaultOption.textContent = "使用判断模型";
+  defaultOption.textContent = "使用当前会话模型";
   els.visionProviderSelect.appendChild(defaultOption);
   providerOptions.forEach((provider) => {
     const option = document.createElement("option");
