@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import math
 import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.7.7"
+PLUGIN_VERSION = "0.7.13"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -21,9 +23,11 @@ MAX_VISION_IMAGES = 5  # 单次主动回复最多解析的图片数
 MAX_VISION_IMAGE_AGE_SEC = 86400  # 图片上下文最长保留时间
 MAX_VISION_TIMEOUT_SEC = 120  # 单张图片解析超时上限
 MAX_CACHED_IMAGE_EVENTS = 20  # 每会话临时保留的含图事件数
+MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024  # 图片冻结缓存总容量上限
 
 # 插件运行常量
 MAX_AGENT_STEPS = 15  # Agent 最大步数：为表情包搜索+记忆检索+生成预留足够步数
+MAX_DIRECT_TOOL_SENDS = 2  # 每次主动回复最多允许工具直接发出的消息数
 REPLY_REQUEST_WINDOW_SEC = 180  # 明确请求窗口：3分钟内的接话请求视为有效
 EVENT_CLEANUP_INTERVAL_SEC = 3600  # 事件清理间隔：1小时清理一次陈旧事件
 MAX_CACHED_EVENTS = 100  # 最大缓存事件数：防止内存无限增长
@@ -111,17 +115,23 @@ def as_bool(value: Any, default: bool = False) -> bool:
 
 
 def as_int(value: Any, default: int, minimum: int = 0, maximum: int = 100000) -> int:
+    if isinstance(value, bool):
+        return default
     try:
         parsed = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return max(minimum, min(maximum, parsed))
 
 
 def as_float(value: Any, default: float, minimum: float = 0.0, maximum: float = 300.0) -> float:
+    if isinstance(value, bool):
+        return default
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(parsed):
         return default
     return max(minimum, min(maximum, parsed))
 
@@ -204,6 +214,29 @@ class PipelineReply:
     text: str = ""
     direct_send_count: int = 0
     direct_texts: tuple[str, ...] = ()
+
+
+class SendStatus(str, Enum):
+    """Outcome of one outbound attempt.
+
+    UNKNOWN means the platform call may have reached the adapter, so callers
+    must not blindly retry through a second channel.
+    """
+
+    DELIVERED = "delivered"
+    FAILED_BEFORE_SUBMIT = "failed_before_submit"
+    UNKNOWN = "unknown"
+    SUPPRESSED = "suppressed"
+
+
+@dataclass(frozen=True)
+class SendOutcome:
+    status: SendStatus
+    detail: str = ""
+
+    @property
+    def delivered(self) -> bool:
+        return self.status is SendStatus.DELIVERED
 
 
 @dataclass

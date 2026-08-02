@@ -167,14 +167,41 @@ def test_resolver_still_accepts_real_local_image(tmp_path: Path) -> None:
     """
     _, _, _, image, _ = _load_modules()
 
-    real = tmp_path / "photo.png"
+    media_root = tmp_path / "media"
+    real = media_root / "photo.png"
+    media_root.mkdir()
     real.write_bytes(_PNG_BYTES)
 
-    parser = image.ImageParser(object(), provider_id="vision", recorder_bridge=None)
+    parser = image.ImageParser(
+        object(),
+        provider_id="vision",
+        recorder_bridge=None,
+        source_cache_dir=media_root,
+    )
     resolved = asyncio.run(parser._resolve_image_url(image.ImageInfo(file_path=str(real))))
 
     assert resolved is not None, "合法本地图片被误杀，识图功能将完全失效"
     assert resolved.startswith("data:image/png;base64,")
+
+
+def test_resolver_rejects_valid_image_outside_trusted_root(tmp_path: Path) -> None:
+    """有效图片也不能绕过本地可信媒体根目录。"""
+    _, _, _, image, _ = _load_modules()
+
+    media_root = tmp_path / "media"
+    media_root.mkdir()
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(_PNG_BYTES)
+
+    parser = image.ImageParser(
+        object(),
+        provider_id="vision",
+        recorder_bridge=None,
+        source_cache_dir=media_root,
+    )
+    resolved = asyncio.run(parser._resolve_image_url(image.ImageInfo(file_path=str(outside))))
+
+    assert resolved is None
 
 
 # ============================================================================
@@ -346,6 +373,87 @@ def test_terminate_clears_image_event_cache() -> None:
     assert "_recent_image_events" in method, (
         "terminate 未清理 _recent_image_events，每会话最多 20 个事件对象残留"
     )
+
+
+def test_terminate_waits_for_cancelled_background_tasks() -> None:
+    """取消后台任务后必须等待其收尾，避免旧任务越过终止边界。"""
+    source = _main_source()
+    terminate = source[source.index("    async def terminate("):]
+    wait_method_start = source.index("    async def _wait_background_tasks(")
+    wait_method_end = source.index("\n    async def _stop_patrol_task(", wait_method_start)
+    wait_method = source[wait_method_start:wait_method_end]
+
+    assert "await self._wait_background_tasks()" in terminate
+    assert "asyncio.gather" in wait_method
+    assert "self._background_tasks" in wait_method
+
+
+def test_image_cache_cleanup_has_manual_api_and_startup_sweep() -> None:
+    """图片缓存既要能手动清理，也要在插件重载时立即扫一次。"""
+    source = _main_source()
+    register_start = source.index("    def _register_web_apis(")
+    register_end = source.index("\n    @staticmethod\n    def _config_value", register_start)
+    registration = source[register_start:register_end]
+
+    assert 'f"{route}/image-cache/cleanup"' in registration
+    assert '"POST"' in registration
+    assert "_api_cleanup_image_cache" in registration
+    assert "self._cleanup_image_sources(now=now_ts())" in source
+    assert "if not self.settings.vision_enabled" not in source[source.index("    def _cleanup_image_sources("):source.index("    def _cleanup_old_events_if_needed(")]
+
+
+def test_plugin_logo_is_root_square_png() -> None:
+    """AstrBot 从插件根目录的 logo.png 读取插件图标。"""
+    logo = ROOT / "logo.png"
+    data = logo.read_bytes()
+    assert logo.is_file()
+    assert data[:8] == bytes.fromhex("89504e470d0a1a0a")
+    width = int.from_bytes(data[16:20], "big")
+    height = int.from_bytes(data[20:24], "big")
+    assert width == height
+    assert width > 0
+
+
+def test_successful_image_cache_logs_are_debug_only() -> None:
+    """高频成功路径不应在 INFO 级别刷屏，失败日志仍保留原级别。"""
+    source = _main_source()
+    parser_source = (ROOT / "image" / "parser.py").read_text(encoding="utf-8")
+
+    assert 'logger.debug(\n                "[%s] captured %s/%s images into local vision cache for umo=%s",' in source
+    assert 'logger.info(\n                "[%s] captured %s/%s images into local vision cache for umo=%s",' not in source
+    assert 'logger.debug(\n                "[selfreply] host image snapshot created: %s",' in parser_source
+    assert 'logger.info(\n                "[selfreply] host image snapshot created: %s",' not in parser_source
+
+
+def test_config_mutations_share_one_lock_and_settings_normalizer() -> None:
+    """白名单和 Web 配置更新不能交错覆盖，配置必须经统一入口规范化。"""
+    source = _main_source()
+    api_start = source.index("    async def _api_post_config(")
+    api_end = source.index("\n    async def _api_status(", api_start)
+    api = source[api_start:api_end]
+
+    assert "async with self._config_lock" in api
+    assert "_api_post_config_locked" in api
+    assert "_add_whitelist_session_locked" in source
+    assert "_remove_whitelist_session_locked" in source
+    assert "Settings.from_config(candidate)" in api
+
+
+def test_proactive_agent_starts_with_restricted_tool_scope() -> None:
+    """主动 Agent 默认不得继承全局插件、跨会话消息和高危工具。"""
+    source = _main_source()
+    start = source.index("    async def _generate_reply_via_pipeline(")
+    end = source.index("\n    def _main_agent_build_config(", start)
+    method = source[start:end]
+
+    assert "req.func_tool = _AGENT_RUNTIME.new_tool_set()" in method
+    assert "_install_agent_tool_boundary(last_event)" in method
+    boundary_start = source.index("    def _install_agent_tool_boundary(")
+    boundary_end = source.index("\n    @staticmethod\n    def _resolve_paths", boundary_start)
+    boundary = source[boundary_start:boundary_end]
+    assert "setattr(event, \"plugins_name\", [])" in boundary
+    assert "support_proactive_message = False" in boundary
+    assert "_restore_agent_tool_boundary" in method
 
 
 def test_new_message_does_not_cancel_running_decorating_hook() -> None:

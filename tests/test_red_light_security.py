@@ -138,9 +138,36 @@ def test_extreme_daily_limit_values() -> None:
     }
     settings = models.Settings.from_config(config)
     
-    # 预期：应该有上限（如 1000）防止配置错误
+    # 预期：应该有上限（如 1000）防止刷屏
     assert settings.max_daily_replies_per_session <= 1000, \
         "每日限额无上限可能导致刷屏"
+
+
+def test_nonfinite_and_boolean_numeric_values_use_safe_defaults() -> None:
+    """NaN/Infinity 和 bool 不能穿过配置规范化层。"""
+    models, _, _ = _load_modules()
+
+    settings = models.Settings.from_config(
+        {
+            "decision_temperature": float("nan"),
+            "generation_timeout_sec": float("inf"),
+            "max_daily_replies_per_session": True,
+        }
+    )
+
+    assert settings.decision_temperature == 0.2
+    assert settings.generation_timeout_sec == 60
+    assert settings.max_daily_replies_per_session == 5
+
+
+def test_unknown_send_outcome_is_not_delivered() -> None:
+    """未知投递结果不能被当成可安全重试的成功或失败。"""
+    models, _, _ = _load_modules()
+
+    outcome = models.SendOutcome(models.SendStatus.UNKNOWN, "adapter raised after submit")
+
+    assert outcome.delivered is False
+    assert outcome.status is models.SendStatus.UNKNOWN
 
 
 # ============================================================================

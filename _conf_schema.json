@@ -118,7 +118,7 @@
     "default": 300,
     "slider": {
       "min": 30,
-      "max": 3600,
+      "max": 86400,
       "step": 30
     }
   },
@@ -173,7 +173,7 @@
     "default": 5,
     "slider": {
       "min": 0,
-      "max": 100,
+      "max": 1000,
       "step": 1
     }
   },

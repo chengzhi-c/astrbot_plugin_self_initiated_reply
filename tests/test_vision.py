@@ -73,6 +73,60 @@ def test_image_extractor_preserves_remote_url_and_local_path() -> None:
     assert extracted[0].sender_id == "u1"
 
 
+def test_aiocqhttp_raw_cq_string_recovers_image_url() -> None:
+    _, image, _ = _load_modules()
+
+    image_url = "https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=abc"
+    normalized = SimpleNamespace(
+        type="image",
+        file="A0E918C4686246A821F0771021DCBC04.png",
+    )
+    event = SimpleNamespace(
+        message_obj=SimpleNamespace(
+            raw_message=(
+                "[CQ:image,file=A0E918C4686246A821F0771021DCBC04.png,"
+                "subType=0,url=" + image_url + ",file_size=1467279]"
+            )
+        ),
+        get_messages=lambda: [normalized],
+    )
+
+    extracted = image.ImageExtractor.extract_images(event)
+
+    assert len(extracted) == 1
+    assert extracted[0].url == image_url
+    assert extracted[0].file_path == "A0E918C4686246A821F0771021DCBC04.png"
+
+
+def test_aiocqhttp_raw_cq_string_image_can_be_frozen(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+
+    image_url = "https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=abc"
+    normalized = SimpleNamespace(type="image", file="A.png")
+    event = SimpleNamespace(
+        message_obj=SimpleNamespace(
+            raw_message="[CQ:image,file=A.png,subType=0,url=" + image_url + "]"
+        ),
+        get_messages=lambda: [normalized],
+    )
+    extracted = image.ImageExtractor.extract_images(event)
+    assert len(extracted) == 1
+
+    parser = image.ImageParser(object(), source_cache_dir=tmp_path / "image_cache")
+    payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+    async def fake_fetch(url: str) -> str:
+        assert url == image_url
+        encoded = __import__("base64").b64encode(payload).decode()
+        return "data:image/png;base64," + encoded
+
+    parser._fetch_image_data_url = fake_fetch
+
+    assert asyncio.run(parser.prepare(extracted[0])) is True
+    assert extracted[0].prepared_source
+    assert Path(extracted[0].prepared_source).is_file()
+
+
 def test_sticker_images_can_be_skipped_by_platform_metadata() -> None:
     _, image, _ = _load_modules()
 
@@ -237,6 +291,18 @@ def test_on_message_keeps_image_eligibility_out_of_generic_ignore_gate() -> None
     )
 
 
+def test_on_message_snapshots_host_files_before_background_freeze() -> None:
+    """宿主临时文件必须先快照，不能只依赖 handler 返回后的后台任务。"""
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    start = source.index("    async def on_message(")
+    end = source.index("\n    def _is_command_entry(", start)
+    handler = source[start:end]
+
+    assert "await parser.snapshot_local_sources(images, max_concurrent=2)" in handler
+    assert "async def _image_cleanup_loop" in source
+    assert "max_age_sec=image_age" in source
+
+
 def test_image_parser_uses_direct_vision_call_and_caches_caption() -> None:
     _, image, _ = _load_modules()
 
@@ -272,6 +338,92 @@ def test_image_parser_uses_direct_vision_call_and_caches_caption() -> None:
     assert bridge.calls[0]["image_urls"] == ["data:image/png;base64,AA=="]
 
 
+def test_image_parser_cache_isolated_by_resolved_provider() -> None:
+    """空 provider 配置下，不同会话的实际 Provider 不能共享描述。"""
+    _, image, _ = _load_modules()
+
+    class Bridge:
+        def __init__(self):
+            self.calls = []
+
+        async def resolve_provider_id(self, umo, preferred):
+            assert preferred == ""
+            return "provider-a" if umo.endswith(":a") else "provider-b"
+
+        async def llm_generate_direct(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(completion_text=kwargs["provider_id"])
+
+    bridge = Bridge()
+    parser = image.ImageParser(bridge, provider_id="")
+
+    async def fake_resolve(_image_info):
+        return "data:image/png;base64,AA=="
+
+    parser._resolve_image_url = fake_resolve
+    image_info = image.ImageInfo(url="https://cdn.example.test/shared.png")
+
+    first = asyncio.run(parser.parse(image_info, umo="qq:GroupMessage:a"))
+    second = asyncio.run(parser.parse(image_info, umo="qq:GroupMessage:b"))
+
+    assert first == "provider-a"
+    assert second == "provider-b"
+    assert [call["provider_id"] for call in bridge.calls] == ["provider-a", "provider-b"]
+
+
+def test_normalized_host_image_is_marked_as_trusted_local_source(tmp_path: Path) -> None:
+    """宿主归一化后的本地媒体路径可进入快照流程，但默认 ImageInfo 仍不可信。"""
+    _, image, _ = _load_modules()
+
+    source = tmp_path / "astrbot-temp" / "photo.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(bytes([137, 80, 78, 71, 13, 10, 26, 10]) + bytes(32))
+
+    class NormalizedImage:
+        type = "image"
+        local_path = str(source)
+
+    class Event:
+        @staticmethod
+        def get_messages():
+            return [NormalizedImage()]
+
+    extracted = image.ImageExtractor.extract_images(Event())
+    assert len(extracted) == 1
+    assert extracted[0].trusted_local_path is True
+
+
+def test_trusted_host_image_is_snapshotted_into_plugin_cache(tmp_path: Path) -> None:
+    """事件临时文件必须在 handler 生命周期内复制到插件缓存。"""
+    _, image, _ = _load_modules()
+
+    source = tmp_path / "astrbot-temp" / "photo.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(bytes([137, 80, 78, 71, 13, 10, 26, 10]) + bytes(32))
+    cache = tmp_path / "image_cache"
+    parser = image.ImageParser(object(), source_cache_dir=cache)
+    info = image.ImageInfo(file_path=str(source), trusted_local_path=True)
+
+    assert asyncio.run(parser.snapshot_local_sources([info])) == [True]
+    assert info.prepared_source
+    assert Path(info.prepared_source).is_file()
+    assert Path(info.prepared_source).parent != source.parent
+    assert asyncio.run(parser._resolve_image_url(info)).startswith("data:image/png;base64,")
+
+
+def test_untrusted_absolute_image_path_is_still_rejected(tmp_path: Path) -> None:
+    """临时快照兼容不能退化为任意绝对路径读取。"""
+    _, image, _ = _load_modules()
+
+    source = tmp_path / "outside.png"
+    source.write_bytes(bytes([137, 80, 78, 71, 13, 10, 26, 10]) + bytes(32))
+    parser = image.ImageParser(object(), source_cache_dir=tmp_path / "image_cache")
+    info = image.ImageInfo(file_path=str(source))
+
+    assert asyncio.run(parser.snapshot_local_sources([info])) == [False]
+    assert asyncio.run(parser._resolve_image_url(info)) is None
+
+
 def test_image_parser_freezes_remote_image_before_delayed_parse(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
 
@@ -298,6 +450,45 @@ def test_image_parser_freezes_remote_image_before_delayed_parse(tmp_path: Path) 
     assert Path(info.prepared_source).is_file()
     assert info.file_path == info.prepared_source
     assert asyncio.run(parser.parse(info, umo="qq:GroupMessage:1")) == "一张图片"
+
+
+def test_materialize_refuses_symlink_target(tmp_path: Path) -> None:
+    """内容寻址写入不能跟随 image_cache 内的 symlink。"""
+    _, image, _ = _load_modules()
+    parser = image.ImageParser(object(), source_cache_dir=tmp_path / "image_cache")
+    payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    encoded = __import__("base64").b64encode(payload).decode()
+    data_url = "data:image/png;base64," + encoded
+    digest = __import__("hashlib").sha256(payload).hexdigest()
+    target = tmp_path / "image_cache" / digest[:2] / f"{digest}.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside")
+    try:
+        target.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        return
+
+    assert parser._materialize_data_url(data_url) is None
+    assert outside.read_bytes() == b"outside"
+
+
+def test_materialize_existing_source_refreshes_mtime(tmp_path: Path) -> None:
+    """重复使用同一内容寻址图片时，清理器不能按旧 mtime 提前回收。"""
+    _, image, _ = _load_modules()
+    parser = image.ImageParser(object(), source_cache_dir=tmp_path / "image_cache")
+    payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    encoded = __import__("base64").b64encode(payload).decode()
+    data_url = "data:image/png;base64," + encoded
+
+    first = parser._materialize_data_url(data_url)
+    assert first is not None
+    os.utime(first, (100.0, 100.0))
+
+    second = parser._materialize_data_url(data_url)
+
+    assert second == first
+    assert second.stat().st_mtime > 100.0
 
 
 def test_image_parser_source_cache_cleanup_preserves_active_sources(tmp_path: Path) -> None:
@@ -327,6 +518,62 @@ def test_image_parser_source_cache_cleanup_preserves_active_sources(tmp_path: Pa
     assert not old.exists()
     assert protected.exists()
     assert fresh.exists()
+
+
+def test_image_parser_source_cache_quota_removes_oldest_unprotected_file(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+
+    root = tmp_path / "image_cache"
+    old = root / "aa" / "old.png"
+    middle = root / "bb" / "middle.png"
+    protected = root / "cc" / "protected.png"
+    for path in (old, middle, protected):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"1234")
+    os.utime(old, (100.0, 100.0))
+    os.utime(middle, (200.0, 200.0))
+    os.utime(protected, (300.0, 300.0))
+
+    removed = image.ImageParser.cleanup_source_cache(
+        root,
+        protected_sources={str(protected)},
+        max_age_sec=100000.0,
+        max_total_bytes=8,
+        now=5000.0,
+    )
+
+    assert removed == 1
+    assert not old.exists()
+    assert middle.exists()
+    assert protected.exists()
+
+
+def test_cleanup_source_cache_can_run_when_vision_is_disabled(tmp_path: Path) -> None:
+    """手动/启动清理不能因 Vision 当前关闭而遗留旧缓存。"""
+    _, image, _ = _load_modules()
+    root = tmp_path / "image_cache"
+    root.mkdir()
+    expired = root / "expired.png"
+    expired.write_bytes(b"old")
+    os.utime(expired, (9_000, 9_000))
+
+    removed = image.ImageParser.cleanup_source_cache(
+        root,
+        max_age_sec=60,
+        max_total_bytes=None,
+        now=10_000,
+    )
+
+    assert removed == 1
+    assert not expired.exists()
+
+
+def test_web_page_exposes_manual_image_cache_cleanup_control() -> None:
+    """清理按钮必须接入现有页面与 API，而不是只能重载插件。"""
+    html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "pages" / "主动回复设置" / "app.js").read_text(encoding="utf-8")
+    assert "cleanupImageCacheBtn" in html
+    assert 'apiPost("image-cache/cleanup"' in script
 
 
 def test_image_parser_does_not_fallback_to_expiring_raw_url() -> None:

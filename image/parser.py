@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import ipaddress
+import os
 import re
 import socket
 import time
@@ -16,6 +17,7 @@ from urllib.parse import urlparse
 from astrbot.api import logger
 
 from .cache import ImageCache
+from ..models import MAX_IMAGE_CACHE_BYTES
 from .models import ImageInfo
 from .recorder_bridge import MAX_IMAGE_BYTES, MessageRecorderBridge
 from .safety import sniff_image_mime
@@ -24,6 +26,9 @@ try:
     import httpx
 except ImportError:  # pragma: no cover - AstrBot normally bundles httpx
     httpx = None  # type: ignore[assignment]
+
+
+VISION_PROMPT_VERSION = "v1"
 
 
 _UNABLE_PATTERNS = re.compile(
@@ -90,6 +95,16 @@ class ImageParser:
         self._cache = cache or ImageCache(max_size=50)
         self._timeout_sec = max(1.0, float(timeout_sec))
         self._source_cache_dir = Path(source_cache_dir) if source_cache_dir else None
+        if self._source_cache_dir is not None:
+            try:
+                self._source_cache_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.warning("[selfreply] image cache directory unavailable: %s", exc)
+        self._allowed_local_roots = (
+            {self._source_cache_dir.resolve()}
+            if self._source_cache_dir is not None
+            else set()
+        )
 
     async def prepare(self, image_info: ImageInfo) -> bool:
         """Freeze a message image before the delayed proactive check.
@@ -126,6 +141,58 @@ class ImageParser:
             logger.warning("[selfreply] image capture failed: %s", exc)
             return False
 
+    async def snapshot_local_sources(
+        self, images: list[ImageInfo], *, max_concurrent: int = 2
+    ) -> list[bool]:
+        """Copy host-provided temporary images before the event handler returns.
+
+        AstrBot may delete or recycle a normalized Image's temporary path after
+        the message pipeline finishes. Only sources explicitly marked by the
+        extractor as host-trusted enter this fast local snapshot path; arbitrary
+        ImageInfo paths remain subject to the normal cache-root restriction.
+        """
+        semaphore = asyncio.Semaphore(max(1, int(max_concurrent)))
+
+        async def snapshot_one(image: ImageInfo) -> bool:
+            async with semaphore:
+                return await self._snapshot_local_source(image)
+
+        return list(await asyncio.gather(*(snapshot_one(image) for image in images)))
+
+    async def _snapshot_local_source(self, image_info: ImageInfo) -> bool:
+        if image_info.prepared_source:
+            return True
+        if not image_info.trusted_local_path or not image_info.file_path:
+            return False
+        file_value = str(image_info.file_path).strip()
+        parsed = urlparse(file_value)
+        if parsed.scheme in {"http", "https", "file"}:
+            return False
+        path = Path(file_value)
+        if not path.is_absolute():
+            return False
+        try:
+            data_url = await asyncio.to_thread(
+                self._file_to_data_url,
+                path,
+                trusted=True,
+            )
+            if not data_url:
+                return False
+            cached_path = await asyncio.to_thread(self._materialize_data_url, data_url)
+            if not cached_path:
+                return False
+            image_info.file_path = str(cached_path)
+            image_info.prepared_source = str(cached_path)
+            logger.debug(
+                "[selfreply] host image snapshot created: %s",
+                cached_path.name,
+            )
+            return True
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.debug("[selfreply] host image snapshot failed: %s", exc)
+            return False
+
     async def prepare_batch(
         self, images: list[ImageInfo], *, max_concurrent: int = 2
     ) -> list[bool]:
@@ -142,19 +209,20 @@ class ImageParser:
         """Parse one image and return a compact description, or ``None`` on failure."""
         if not image_info.has_any_source:
             return None
-        cache_key = image_info.cache_key()
-        cached = self._cache.get(cache_key)
-        if cached:
-            return cached
-
         try:
-            image_url = await self._resolve_image_url(image_info)
-            if not image_url:
-                logger.info("[selfreply] no usable image source for parsing")
-                return None
             provider_id = await self._bridge.resolve_provider_id(umo, self._provider_id)
             if not provider_id:
                 logger.info("[selfreply] no Vision provider available; skip image parsing")
+                return None
+            cache_key = (
+                f"vision:{VISION_PROMPT_VERSION}|provider:{provider_id}|{image_info.cache_key()}"
+            )
+            cached = self._cache.get(cache_key)
+            if cached:
+                return cached
+            image_url = await self._resolve_image_url(image_info)
+            if not image_url:
+                logger.info("[selfreply] no usable image source for parsing")
                 return None
             response = await asyncio.wait_for(
                 self._bridge.llm_generate_direct(
@@ -192,6 +260,7 @@ class ImageParser:
         *,
         protected_sources: set[str] | None = None,
         max_age_sec: float = 172800.0,
+        max_total_bytes: int | None = MAX_IMAGE_CACHE_BYTES,
         now: float | None = None,
     ) -> int:
         """Remove expired frozen image files without touching active sources."""
@@ -220,7 +289,7 @@ class ImageParser:
 
         removed = 0
         for path in cache_root.rglob("*"):
-            if not path.is_file():
+            if not path.is_file() or path.is_symlink():
                 continue
             try:
                 resolved = path.resolve()
@@ -231,6 +300,36 @@ class ImageParser:
                 removed += 1
             except (OSError, ValueError):
                 continue
+
+        try:
+            quota = None if max_total_bytes is None else max(0, int(max_total_bytes))
+        except (TypeError, ValueError, OverflowError):
+            quota = None
+        if quota is not None:
+            entries: list[tuple[float, Path, int, Path]] = []
+            total_bytes = 0
+            for path in cache_root.rglob("*"):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                try:
+                    resolved = path.resolve()
+                    resolved.relative_to(resolved_root)
+                    size = path.stat().st_size
+                    entries.append((path.stat().st_mtime, path, size, resolved))
+                    total_bytes += size
+                except (OSError, ValueError):
+                    continue
+            for _, path, size, resolved in sorted(entries, key=lambda item: item[0]):
+                if total_bytes <= quota:
+                    break
+                if resolved in protected:
+                    continue
+                try:
+                    path.unlink()
+                    total_bytes -= size
+                    removed += 1
+                except OSError:
+                    continue
 
         for directory in sorted(
             (item for item in cache_root.rglob("*") if item.is_dir()),
@@ -264,7 +363,7 @@ class ImageParser:
             if prepared.startswith("data:"):
                 return prepared
             prepared_path = Path(prepared)
-            data_url = self._file_to_data_url(prepared_path)
+            data_url = self._file_to_data_url(prepared_path, trusted=True)
             if data_url:
                 return data_url
 
@@ -274,7 +373,7 @@ class ImageParser:
                 image_info.url,
             )
             if local_path:
-                data_url = self._file_to_data_url(local_path)
+                data_url = self._file_to_data_url(local_path, trusted=True)
                 if data_url:
                     return data_url
 
@@ -288,10 +387,13 @@ class ImageParser:
                 logger.info("[selfreply] image URL download failed: %s", file_value[:80])
                 return None
             path = Path(file_value)
+            trusted = bool(image_info.trusted_local_path)
             if not path.is_absolute() and self._recorder_bridge:
                 resolved = self._recorder_bridge.resolve_relative_path(file_value)
-                path = resolved or path
-            data_url = self._file_to_data_url(path)
+                if resolved is not None:
+                    path = resolved
+                    trusted = True
+            data_url = self._file_to_data_url(path, trusted=trusted)
             if data_url:
                 return data_url
 
@@ -330,18 +432,37 @@ class ImageParser:
         target = root / digest[:2] / f"{digest}{extension}"
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            if not target.exists():
+            # exists() 对断开的 symlink 返回 False；先单独拒绝 symlink，
+            # 避免 write_bytes 跟随链接把内容写出 image_cache。
+            if target.is_symlink():
+                return None
+            if target.exists():
+                if not target.is_file():
+                    return None
+            else:
                 target.write_bytes(content)
+            # 内容寻址只决定文件身份；mtime 表示最近一次被使用的生命周期。
+            # 重复图片复用旧文件时刷新它，避免清理任务按旧时间提前回收。
+            os.utime(target, None)
             return target
         except OSError as exc:
             logger.debug("[selfreply] image cache write failed: %s", exc)
             return None
 
-    @staticmethod
-    def _file_to_data_url(path: Path) -> str | None:
-        if not path.is_absolute():
+    def _file_to_data_url(self, path: Path, *, trusted: bool = False) -> str | None:
+        try:
+            if not path.is_absolute() or path.is_symlink():
+                return None
+            candidate = path.resolve(strict=True)
+            if not trusted and not any(
+                candidate == root or root in candidate.parents
+                for root in self._allowed_local_roots
+            ):
+                logger.warning("[selfreply] rejected local image outside trusted roots: %s", path)
+                return None
+            return MessageRecorderBridge.image_to_data_url(candidate)
+        except (OSError, RuntimeError, ValueError):
             return None
-        return MessageRecorderBridge.image_to_data_url(path)
 
     async def _fetch_image_data_url(self, url: str) -> str | None:
         if httpx is None or not await self._is_safe_url(url):
@@ -351,19 +472,30 @@ class ImageParser:
             async with httpx.AsyncClient(
                 timeout=15,
                 follow_redirects=True,  # 跟随重定向（QQ 图片 URL 通常会 302）
+                max_redirects=3,
                 transport=transport,
             ) as client:
-                response = await client.get(url)
-                if response.status_code >= 400:
-                    return None
-                content = response.content
-                if not content or len(content) > MAX_IMAGE_BYTES:
-                    return None
-                # The declared content-type is a hint; the payload decides.
-                content_type = sniff_image_mime(content)
-                if not content_type:
-                    return None
-                return f"data:{content_type};base64,{base64.b64encode(content).decode('ascii')}"
+                async with client.stream("GET", url) as response:
+                    if response.status_code >= 400:
+                        return None
+                    content_length = response.headers.get("content-length")
+                    try:
+                        if content_length and int(content_length) > MAX_IMAGE_BYTES:
+                            return None
+                    except (TypeError, ValueError):
+                        pass
+                    content = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        content.extend(chunk)
+                        if len(content) > MAX_IMAGE_BYTES:
+                            return None
+                    if not content:
+                        return None
+                    # The declared content-type is a hint; the payload decides.
+                    content_type = sniff_image_mime(bytes(content))
+                    if not content_type:
+                        return None
+                    return f"data:{content_type};base64,{base64.b64encode(content).decode('ascii')}"
         except Exception as exc:
             logger.debug("[selfreply] image download failed: %s", exc)
             return None

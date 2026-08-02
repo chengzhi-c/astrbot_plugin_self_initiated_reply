@@ -38,6 +38,8 @@ const els = {
   visionMaxImagesInput: document.getElementById("visionMaxImagesInput"),
   visionImageAgeInput: document.getElementById("visionImageAgeInput"),
   visionTimeoutInput: document.getElementById("visionTimeoutInput"),
+  cleanupImageCacheBtn: document.getElementById("cleanupImageCacheBtn"),
+  cleanupImageCacheState: document.getElementById("cleanupImageCacheState"),
   whitelistInput: document.getElementById("whitelistInput"),
   configSaveState: document.getElementById("configSaveState"),
   toast: document.getElementById("toast"),
@@ -407,6 +409,30 @@ async function saveConfig(event) {
   await loadConfig();
 }
 
+async function cleanupImageCache() {
+  if (!els.cleanupImageCacheBtn) return;
+  els.cleanupImageCacheBtn.disabled = true;
+  if (els.cleanupImageCacheState) els.cleanupImageCacheState.textContent = "清理中…";
+  try {
+    const result = await apiPost("image-cache/cleanup");
+    if (!result || result.ok !== true) {
+      throw new Error(result?.error || "图片缓存清理失败");
+    }
+    const removed = Number(result.removed || 0);
+    if (els.cleanupImageCacheState) {
+      els.cleanupImageCacheState.textContent = removed
+        ? `已清理 ${removed} 个过期图片`
+        : "没有需要清理的过期图片";
+    }
+    showToast(removed ? `已清理 ${removed} 个过期图片` : "没有需要清理的过期图片");
+  } catch (error) {
+    if (els.cleanupImageCacheState) els.cleanupImageCacheState.textContent = "清理失败";
+    showToast(error.message || "图片缓存清理失败");
+  } finally {
+    els.cleanupImageCacheBtn.disabled = false;
+  }
+}
+
 async function loadOverview() {
   const overview = await apiGet("unified/overview");
   const self = overview.self_reply || {};
@@ -422,6 +448,9 @@ async function loadAll() {
 }
 
 els.refreshBtn.addEventListener("click", () => loadAll().catch((err) => showToast(err.message || "刷新失败")));
+if (els.cleanupImageCacheBtn) {
+  els.cleanupImageCacheBtn.addEventListener("click", () => cleanupImageCache());
+}
 if (els.providerManualBtn) {
   els.providerManualBtn.addEventListener("click", () => {
     if (providerManualMode) {
