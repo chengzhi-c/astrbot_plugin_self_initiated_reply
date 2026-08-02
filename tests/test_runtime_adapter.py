@@ -73,3 +73,69 @@ def test_runtime_adapter_reports_signature_mismatch() -> None:
 
     with pytest.raises(RuntimeError, match="apply_reset"):
         adapter.validate()
+
+
+def test_runtime_adapter_enforces_run_contract_params() -> None:
+    """run_agent 缺少实际使用的运行参数时必须加载期失败。"""
+    runtime = _load_adapter()
+
+    async def run_agent(agent_runner, *, max_step):
+        yield agent_runner, max_step
+
+    adapter = runtime.AstrBotRuntimeAdapter(
+        runtime.AgentRuntimeCapabilities(
+            import_error=None,
+            tool_set=object,
+            build_config=object,
+            build_main_agent=lambda **_k: None,
+            get_session_conv=lambda *_a: None,
+            run_agent=run_agent,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="show_tool_use"):
+        adapter.validate()
+
+
+def test_restrict_final_tools_enforces_allowlist() -> None:
+    runtime = _load_adapter()
+    adapter = runtime.AstrBotRuntimeAdapter(
+        runtime.AgentRuntimeCapabilities(
+            import_error=None,
+            tool_set=object,
+            build_config=object,
+            build_main_agent=lambda **_k: None,
+            get_session_conv=lambda *_a: None,
+            run_agent=lambda *_a, **_k: (),
+        )
+    )
+
+    class Tool:
+        def __init__(self, name: str):
+            self.name = name
+
+    class ToolSet:
+        def __init__(self):
+            self.tools = []
+
+        def add_tool(self, tool):
+            self.tools.append(tool)
+
+        def remove_tool(self, name):
+            self.tools = [t for t in self.tools if t.name != name]
+
+    tool_set = ToolSet()
+    tool_set.add_tool(Tool("send_message_to_user"))
+    tool_set.add_tool(Tool("web_search"))
+    req = type("Req", (), {"func_tool": tool_set})()
+
+    assert adapter.restrict_final_tools(req, set()) is True
+    assert tool_set.tools == []
+
+    # 无法枚举 -> fail closed
+    bad_req = type("Req", (), {"func_tool": type("Bad", (), {"tools": None})()})()
+    assert adapter.restrict_final_tools(bad_req, set()) is False
+
+    # 无工具集 -> 天然空，放行
+    empty_req = type("Req", (), {"func_tool": None})()
+    assert adapter.restrict_final_tools(empty_req, set()) is True

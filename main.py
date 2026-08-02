@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import itertools
 import json
 import math
 import re
@@ -54,6 +55,7 @@ from .models import (
     MAX_CACHED_EVENTS,
     MAX_CACHED_IMAGE_EVENTS,
     PATROL_BACKOFF_DELAY_SEC,
+    PROACTIVE_ALLOWED_TOOL_IDS,
     PipelineReply,
     PLUGIN_ID,
     PLUGIN_VERSION,
@@ -149,6 +151,9 @@ class SelfInitiatedReplyPlugin(Star):
         self._whitelist_runtime_umos: dict[str, set[str]] = {}
         self._delay_tasks: dict[str, asyncio.Task[Any]] = {}
         self._running_check_tasks: dict[str, asyncio.Task[Any]] = {}
+        # 全局单调代次计数器：白名单移除/重加不会再产生 ABA，旧任务持有的
+        # token 永远小于会话当前 token，任何 check 点都会拒绝它。
+        self._generation_counter: itertools.count[int] = itertools.count(1)
         self._session_generation: dict[str, int] = {}
         self._running_sessions: set[str] = set()
         self._session_locks: dict[str, asyncio.Lock] = {}
@@ -198,38 +203,29 @@ class SelfInitiatedReplyPlugin(Star):
 
     @staticmethod
     def _install_agent_tool_boundary(event: AstrMessageEvent) -> dict[str, Any]:
-        """Limit a proactive run to built-in low-side-effect tools by default."""
-        state: dict[str, Any] = {}
+        """Limit a proactive run to built-in low-side-effect tools by default.
+
+        Only ``event.plugins_name`` is touched: the event object is per-message
+        owned by this plugin, while ``platform_meta`` is a shared adapter
+        singleton and must never be mutated. The authoritative allowlist is
+        enforced later on ``req.func_tool`` via the runtime adapter, right
+        before the agent reset and run.
+        """
         try:
             original_plugins_name = getattr(event, "plugins_name")
-            setattr(event, "plugins_name", [])
-            state["plugins_name"] = original_plugins_name
-        except Exception as exc:
+        except AttributeError as exc:
             raise RuntimeError("当前 AstrBot 事件不支持插件工具边界") from exc
         try:
-            platform_meta = getattr(event, "platform_meta")
-            if not hasattr(platform_meta, "support_proactive_message"):
-                raise AttributeError("support_proactive_message")
-            original_support = platform_meta.support_proactive_message
-            platform_meta.support_proactive_message = False
-            state["platform_meta"] = (platform_meta, original_support)
+            setattr(event, "plugins_name", [])
         except Exception as exc:
-            SelfInitiatedReplyPlugin._restore_agent_tool_boundary(event, state)
-            raise RuntimeError("当前 AstrBot 事件不支持跨会话主动消息边界") from exc
-        return state
+            raise RuntimeError("当前 AstrBot 事件不支持插件工具边界") from exc
+        return {"plugins_name": original_plugins_name}
 
     @staticmethod
     def _restore_agent_tool_boundary(event: AstrMessageEvent, state: dict[str, Any]) -> None:
         if "plugins_name" in state:
             try:
                 setattr(event, "plugins_name", state["plugins_name"])
-            except Exception:
-                pass
-        platform_state = state.get("platform_meta")
-        if platform_state:
-            try:
-                platform_meta, original_value = platform_state
-                platform_meta.support_proactive_message = original_value
             except Exception:
                 pass
 
@@ -272,6 +268,8 @@ class SelfInitiatedReplyPlugin(Star):
             self.sessions[umo] = state
         else:
             self.sessions[umo] = state
+        # 所有读取路径统一刷新跨天计数（幂等），避免 status/持久化显示昨日数据
+        state.refresh_day()
         return state
 
     def _runtime_umos_for_whitelist_item(self, item: str) -> set[str]:
@@ -334,7 +332,7 @@ class SelfInitiatedReplyPlugin(Star):
             await self._handle_inline_command(event, parsed)
             return
 
-        if not self.runtime_enabled or event.is_stopped():
+        if self._stopping or not self.runtime_enabled or event.is_stopped():
             return
         umo = event_umo(event)
 
@@ -462,11 +460,19 @@ class SelfInitiatedReplyPlugin(Star):
         return is_explicit_direct_call(event, text)
 
     def _advance_session_generation(self, umo: str) -> int:
-        generation = self._session_generation.get(umo, 0) + 1
+        generation = next(self._generation_counter)
         self._session_generation[umo] = generation
         return generation
 
-    def _track_background_task(self, coro: Any) -> asyncio.Task[Any]:
+    def _track_background_task(self, coro: Any) -> asyncio.Task[Any] | None:
+        if self._stopping:
+            # Spawn barrier: once terminate() has begun, no new background
+            # work may start; the coroutine is closed instead of run.
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return None
         task = asyncio.create_task(coro)
         self._background_tasks.add(task)
         task.add_done_callback(self._discard_background_task)
@@ -592,6 +598,8 @@ class SelfInitiatedReplyPlugin(Star):
                 generation=generation,
             )
         )
+        if task is None:
+            return
         self._delay_tasks[umo] = task
         task.add_done_callback(lambda done, session=umo: self._discard_delay_task(session, done))
 
@@ -912,6 +920,21 @@ class SelfInitiatedReplyPlugin(Star):
             if reply:
                 sent = await self._send_reply(umo, reply, expected_generation=expected_generation)
                 if not sent.delivered:
+                    if sent.status is SendStatus.UNKNOWN:
+                        # 可能已经提交：不自动重试；消耗冷却与日配额并推进观察窗口
+                        # （视为已尝试），防止巡检或新消息立刻对同一事件重复处理；
+                        # 工具直发已确认发生时不重复计数。
+                        if not direct_send_count:
+                            await self._record_proactive_state(
+                                umo,
+                                state,
+                                "",
+                                0,
+                                expected_generation=expected_generation,
+                                observed_active_at=observed_active_at,
+                                confirmed=False,
+                            )
+                        return "主动发送状态未知，未自动重试。"
                     if direct_send_count:
                         await self._record_proactive_state(
                             umo,
@@ -921,8 +944,6 @@ class SelfInitiatedReplyPlugin(Star):
                             expected_generation=expected_generation,
                             observed_active_at=observed_active_at,
                         )
-                    if sent.status is SendStatus.UNKNOWN:
-                        return "主动发送状态未知，未自动重试。"
                     if not self._generation_is_current(umo, expected_generation):
                         return "会话已更新，放弃旧回复。"
                     if sent.status is SendStatus.SUPPRESSED:
@@ -964,10 +985,39 @@ class SelfInitiatedReplyPlugin(Star):
         *,
         expected_generation: int | None = None,
         observed_active_at: float | None = None,
+        confirmed: bool = True,
     ) -> bool:
+        """Persist the outcome of one proactive send attempt.
+
+        ``confirmed=False`` models an UNKNOWN submission that may have reached
+        the platform: it consumes the cooldown and the daily quota so later
+        triggers do not immediately retry the same conversation, and it also
+        advances the observed window (the attempt is treated as done, matching
+        the no-retry policy). It does not write an assistant history entry.
+        """
         at = now_ts()
-        text = reply.strip() or f"[工具主动发送 x{direct_send_count}]"
         state.last_proactive_at = at
+        state.daily_count += 1
+        if not confirmed:
+            # UNKNOWN may have been delivered: advance the observed window so a
+            # later patrol does not regenerate a reply for the same event.
+            if self._generation_is_current(umo, expected_generation):
+                state.last_proactive_observed_at = (
+                    state.last_active_at if observed_active_at is None else observed_active_at
+                )
+            logger.info(
+                "[%s] record unconfirmed proactive send session=%s (submission status unknown)",
+                PLUGIN_ID,
+                umo,
+            )
+            try:
+                await self._save_storage()
+                return True
+            except Exception as exc:
+                logger.warning("[%s] proactive state save failed: %s", PLUGIN_ID, exc)
+                return False
+        text = reply.strip() or f"[工具主动发送 x{direct_send_count}]"
+        state.last_proactive_text = text
         if self._generation_is_current(umo, expected_generation):
             state.last_proactive_observed_at = (
                 state.last_active_at if observed_active_at is None else observed_active_at
@@ -978,8 +1028,6 @@ class SelfInitiatedReplyPlugin(Star):
                 PLUGIN_ID,
                 umo,
             )
-        state.last_proactive_text = text
-        state.daily_count += 1
         state.recent.append(MessageRecord(role="assistant", name="Bot", text=text, at=at))
         try:
             await self._save_storage()
@@ -1113,6 +1161,15 @@ class SelfInitiatedReplyPlugin(Star):
                     direct_texts=tuple(direct_send_texts),
                 )
 
+            # First enforcement point: the host may have injected tools while
+            # building (web search, proactive send, MCP, ...). Clean the final
+            # tool set before any hook or reset can consume it.
+            if not self._enforce_final_tool_policy(req):
+                return PipelineReply(
+                    direct_send_count=direct_send_count,
+                    direct_texts=tuple(direct_send_texts),
+                )
+
             if await call_event_hook(last_event, EventType.OnLLMRequestEvent, build_result.provider_request):
                 if build_result.reset_coro:
                     build_result.reset_coro.close()
@@ -1122,6 +1179,15 @@ class SelfInitiatedReplyPlugin(Star):
                 )
             if build_result.reset_coro:
                 await build_result.reset_coro
+
+            # Second enforcement point: a hook may have injected tools into the
+            # request between build and reset. The runner reads req.func_tool at
+            # run time, so the allowlist must hold again right before running.
+            if not self._enforce_final_tool_policy(req):
+                return PipelineReply(
+                    direct_send_count=direct_send_count,
+                    direct_texts=tuple(direct_send_texts),
+                )
 
             async def _run() -> None:
                 async for _ in _AGENT_RUNTIME.run(
@@ -1189,6 +1255,21 @@ class SelfInitiatedReplyPlugin(Star):
             except Exception:
                 pass
 
+    def _enforce_final_tool_policy(self, req: Any) -> bool:
+        """Enforce the proactive tool allowlist; abort the run when unverifiable.
+
+        The default allowlist is empty, so every tool the host injected during
+        build or through hooks is removed. Returns ``False`` (fail closed) when
+        the final tool set cannot be enumerated or cleaned.
+        """
+        if _AGENT_RUNTIME.restrict_final_tools(req, PROACTIVE_ALLOWED_TOOL_IDS):
+            return True
+        logger.warning(
+            "[%s] proactive agent tool policy could not be enforced; aborting run",
+            PLUGIN_ID,
+        )
+        return False
+
     def _main_agent_build_config(self, umo: str = "") -> MainAgentBuildConfig:
         provider_settings = {}
         try:
@@ -1201,7 +1282,10 @@ class SelfInitiatedReplyPlugin(Star):
             pass
         return _AGENT_RUNTIME.new_build_config(
             tool_call_timeout=int(provider_settings.get("tool_call_timeout", 60) or 60),
-            tool_schema_mode=str(provider_settings.get("tool_schema_mode", "full") or "full"),
+            # 强制 full：skills_like 会进入 raw/light 双工具集路径，策略清理只覆盖
+            # light 集而 runner 执行时回读 raw 集（_skill_like_raw_tool_set），
+            # 边界不可见；主动回复工具集很小，full 无额外成本且边界单一可验证。
+            tool_schema_mode="full",
             provider_wake_prefix="",
             streaming_response=False,
             sanitize_context_by_modalities=bool(provider_settings.get("sanitize_context_by_modalities", False)),
@@ -1273,15 +1357,17 @@ class SelfInitiatedReplyPlugin(Star):
                     umo,
                     len(reply),
                 )
-                try:
-                    await call_event_hook(last_event, EventType.OnAfterMessageSentEvent)
-                except Exception as exc:
-                    logger.warning("[%s] after-send hook failed session=%s error=%s", PLUGIN_ID, umo, exc)
-                finally:
+                if send_result.outcome.status is SendStatus.DELIVERED:
+                    # UNKNOWN 可能已经提交也可能没有，不触发 after-send hook，
+                    # 避免副作用基于未确认的发送结果。
                     try:
-                        last_event.clear_result()
-                    except Exception:
-                        pass
+                        await call_event_hook(last_event, EventType.OnAfterMessageSentEvent)
+                    except Exception as exc:
+                        logger.warning("[%s] after-send hook failed session=%s error=%s", PLUGIN_ID, umo, exc)
+                try:
+                    last_event.clear_result()
+                except Exception:
+                    pass
                 return send_result.outcome
             except asyncio.CancelledError:
                 try:
@@ -1311,6 +1397,15 @@ class SelfInitiatedReplyPlugin(Star):
             if send_result.outcome.status is SendStatus.UNKNOWN:
                 logger.warning(
                     "[%s] context send result unknown session=%s detail=%s",
+                    PLUGIN_ID,
+                    umo,
+                    send_result.outcome.detail,
+                )
+            elif send_result.outcome.status is SendStatus.FAILED_BEFORE_SUBMIT:
+                # False = no reachable platform target; the message was not
+                # submitted, so it must not consume cooldown/quota.
+                logger.warning(
+                    "[%s] context send rejected (no reachable platform) session=%s detail=%s",
                     PLUGIN_ID,
                     umo,
                     send_result.outcome.detail,
@@ -1372,7 +1467,18 @@ class SelfInitiatedReplyPlugin(Star):
             if trigger == "patrol":
                 return {"should_reply": True, "reason": "判断模型关闭，后台巡检触发", "elapsed_sec": 0.0}
             return {"should_reply": False, "reason": "判断模型关闭且未检测到明确请求", "elapsed_sec": 0.0}
-        provider_id = await self.bridge.resolve_provider_id(umo, self.settings.judge_provider_id)
+        provider_id = ""
+        try:
+            provider_id = await self.bridge.resolve_provider_id(umo, self.settings.judge_provider_id)
+        except Exception as exc:
+            # provider 解析链路的业务故障（配置坏/DB 错）由 _call_first_supported
+            # 向上传播到这里，避免被当作"不存在"而输出误导性的"未找到可用判断模型"。
+            logger.error("[%s] resolve decision provider failed: %s", PLUGIN_ID, exc)
+            return {
+                "should_reply": False,
+                "reason": "判断模型解析失败",
+                "elapsed_sec": now_ts() - started,
+            }
         if not provider_id:
             return {"should_reply": False, "reason": "未找到可用判断模型", "elapsed_sec": now_ts() - started}
         prompt = await self._build_decision_prompt(umo, state, trigger)
@@ -1583,6 +1689,8 @@ class SelfInitiatedReplyPlugin(Star):
         tracked = set(self._last_events)
         tracked.update(self._delay_tasks)
         tracked.update(self._running_sessions)
+        tracked.update(self._session_locks)
+        tracked.update(self.sessions)
         tracked.update(
             umo
             for values in self._whitelist_runtime_umos.values()
@@ -1595,8 +1703,15 @@ class SelfInitiatedReplyPlugin(Star):
         }
         for umo in invalid_sessions:
             self._invalidate_session(umo)
-            # 代次表按 UMO 累积且从不回收，移出白名单时一并清理
+            # 代次表按 UMO 累积且从不回收；移出白名单时清理内存。全局单调
+            # token 保证即使会话重新加入，旧任务持有的旧 token 也必然失效。
             self._session_generation.pop(umo, None)
+            # 会话锁只在会话活动时存在，移出白名单时一并回收。
+            self._session_locks.pop(umo, None)
+            # 会话状态（含 recent 历史）从内存回收；磁盘由 build_sessions_payload
+            # 写盘时过滤非白名单条目，重启后不会复活。
+            self.sessions.pop(umo, None)
+            self.sessions.pop(session_group_id(umo), None)
         for key, raw_values in list(self._whitelist_runtime_umos.items()):
             values = raw_values if isinstance(raw_values, set) else {str(raw_values)}
             values = {
@@ -1739,12 +1854,14 @@ class SelfInitiatedReplyPlugin(Star):
         except Exception:
             pass
 
+    @permission_type(PermissionType.ADMIN)
     @filter.command_group("selfreply")
     async def selfreply(self, event: AstrMessageEvent):
         """主动回复：查看指令说明。"""
         self._set_command_handled(event)
         yield event.plain_result(help_text())
 
+    @permission_type(PermissionType.ADMIN)
     @selfreply.command("help", alias={"h"})
     async def selfreply_help(self, event: AstrMessageEvent):
         """帮助：显示主动回复指令说明。"""
@@ -2218,15 +2335,21 @@ class SelfInitiatedReplyPlugin(Star):
                     self._sync_whitelist()
                     await self._save_storage()
 
-                self.runtime_enabled = new_settings.enabled
-                if self.runtime_enabled:
-                    self._ensure_image_cleanup_task()
-                if "enabled" in updates:
+                # 持久 enabled 真正变化才清除临时覆盖并同步任务拓扑；全量表单
+                # 重复提交相同值不得影响 /on /off 建立的临时运行态。
+                enabled_persisted_changed = (
+                    "enabled" in updates and old_settings.enabled != new_settings.enabled
+                )
+                if enabled_persisted_changed:
+                    self.runtime_enabled = new_settings.enabled
                     if self.runtime_enabled:
                         self._ensure_patrol_task()
+                        self._ensure_image_cleanup_task()
                     else:
                         self._cancel_delay_tasks()
                         await self._stop_patrol_task()
+                elif self.runtime_enabled:
+                    self._ensure_image_cleanup_task()
                 return {"ok": True}
             except Exception:
                 self.settings = old_settings

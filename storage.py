@@ -4,6 +4,7 @@ import json
 import math
 import os
 import tempfile
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -125,17 +126,42 @@ def _nonnegative_int(value: Any, default: int = 0) -> int:
     return max(0, parsed)
 
 
+def _backup_state_file(path: Path) -> None:
+    """Move a damaged/incompatible state file aside so the cause is recoverable."""
+    try:
+        backup = path.with_name(f"{path.name}.corrupt-{time.time_ns()}")
+        os.replace(path, backup)
+        logger.error("[%s] state file backed up to %s", PLUGIN_ID, backup.name)
+    except OSError:
+        logger.error("[%s] failed to back up state file %s", PLUGIN_ID, path)
+
+
 def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[str, SessionState]:
     sessions: dict[str, SessionState] = {}
     raw_sessions: Any = {}
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
+            if isinstance(data, dict):
+                file_version = data.get("version")
+                if file_version is not None and file_version != STATE_VERSION:
+                    # 版本不符：结构可能已变化，静默容错解析会产生"半加载"状态
+                    # （字段默认化、计数错位），用户无感知。备份原文件并告警，
+                    # 之后按当前结构尽力解析，避免直接丢弃仍兼容的数据。
+                    logger.error(
+                        "[%s] state version mismatch: file=%s expected=%s; backing up",
+                        PLUGIN_ID,
+                        file_version,
+                        STATE_VERSION,
+                    )
+                    _backup_state_file(path)
             raw_sessions = data.get("sessions", {}) if isinstance(data, dict) else {}
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
-            logger.warning("[%s] failed to load state: %s", PLUGIN_ID, exc)
+            logger.error("[%s] failed to load state (backing up): %s", PLUGIN_ID, exc)
+            _backup_state_file(path)
         except Exception as exc:
             logger.error("[%s] unexpected error loading state: %s", PLUGIN_ID, exc, exc_info=True)
+            _backup_state_file(path)
     if not isinstance(raw_sessions, dict):
         raw_sessions = {}
 

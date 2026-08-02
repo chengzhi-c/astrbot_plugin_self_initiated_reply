@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
 from .models import SendOutcome, SendStatus
 
@@ -72,11 +72,18 @@ class OutboundGateway:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            status = SendStatus.UNKNOWN if is_direct else SendStatus.UNKNOWN
-            return OutboundResult(SendOutcome(status, str(exc)))
+            # An exception after the call began may still have reached the
+            # adapter; the outcome is UNKNOWN and must not be retried.
+            return OutboundResult(SendOutcome(SendStatus.UNKNOWN, str(exc)))
 
         if raw_result is False:
-            outcome = SendOutcome(SendStatus.UNKNOWN, "sender returned False")
+            # ``False`` is a definite "not submitted" signal: ``Context.send_message``
+            # returns False only when no reachable platform target exists. It must
+            # not consume cooldown/quota as an UNKNOWN submission would.
+            outcome = SendOutcome(
+                SendStatus.FAILED_BEFORE_SUBMIT,
+                "sender returned False (definitely not submitted)",
+            )
         elif raw_result is None:
             outcome = SendOutcome(self._none_status, "sender completed")
         else:

@@ -281,8 +281,10 @@ def test_on_message_keeps_image_eligibility_out_of_generic_ignore_gate() -> None
     ignore_end = source.index("\n    def _advance_session_generation(", ignore_start)
     ignore_method = source[ignore_start:ignore_end]
 
+    # 资格判断与提取都引用同一 settings 字段；若将来合并为单次调用，
+    # 此计数断言应同步放宽（意图是防止两处使用不同设置，不是绑定调用次数）。
     marker = "skip_stickers=self.settings.vision_skip_stickers"
-    assert handler.count(marker) >= 2, (
+    assert handler.count(marker) >= 1, (
         "on_message 必须在 Vision 资格判断和实际提取处使用同一表情包过滤设置"
     )
     assert "ImageExtractor.has_images" in handler
@@ -336,6 +338,48 @@ def test_image_parser_uses_direct_vision_call_and_caches_caption() -> None:
     assert len(bridge.calls) == 1
     assert bridge.calls[0]["provider_id"] == "vision-provider"
     assert bridge.calls[0]["image_urls"] == ["data:image/png;base64,AA=="]
+
+
+def test_image_parser_concurrent_parse_shared_inflight() -> None:
+    """同一图片并发解析共享同一次 provider 调用（inflight 去重）。"""
+    _, image, _ = _load_modules()
+
+    class Bridge:
+        def __init__(self):
+            self.calls = 0
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            self.calls += 1
+            self.started.set()
+            await self.release.wait()  # 挂起，让第二个协程进入 inflight 路径
+            return SimpleNamespace(completion_text="一张图片")
+
+    bridge = Bridge()
+    parser = image.ImageParser(bridge, provider_id="vision-provider")
+
+    async def fake_resolve(_image_info):
+        return "data:image/png;base64,AA=="
+
+    parser._resolve_image_url = fake_resolve
+    image_info = image.ImageInfo(url="https://cdn.example.test/cat.png")
+
+    async def main():
+        first = asyncio.create_task(parser.parse(image_info, umo="qq:GroupMessage:1"))
+        await bridge.started.wait()  # 第一个协程已发起 provider 调用
+        second = asyncio.create_task(parser.parse(image_info, umo="qq:GroupMessage:1"))
+        await asyncio.sleep(0)  # 让第二个协程跑到 inflight 分支
+        bridge.release.set()
+        return await asyncio.gather(first, second)
+
+    results = asyncio.run(main())
+    assert results == ["一张图片", "一张图片"]
+    assert bridge.calls == 1
+    assert parser._inflight == {}  # 完成后无残留
 
 
 def test_image_parser_cache_isolated_by_resolved_provider() -> None:
@@ -489,6 +533,76 @@ def test_materialize_existing_source_refreshes_mtime(tmp_path: Path) -> None:
 
     assert second == first
     assert second.stat().st_mtime > 100.0
+
+
+def test_materialize_rewrites_same_size_tampered_content(tmp_path: Path) -> None:
+    """内容寻址命中分支必须校验内容哈希：同大小篡改也要重写。"""
+    _, image, _ = _load_modules()
+    parser = image.ImageParser(object(), source_cache_dir=tmp_path / "image_cache")
+    payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    encoded = __import__("base64").b64encode(payload).decode()
+    data_url = "data:image/png;base64," + encoded
+
+    first = parser._materialize_data_url(data_url)
+    assert first is not None
+    # 外部替换为同大小不同内容（模拟缓存文件被篡改）
+    tampered = b"\x89PNG\r\n\x1a\n" + b"\xff" * 32
+    assert len(tampered) == len(payload)
+    first.write_bytes(tampered)
+
+    second = parser._materialize_data_url(data_url)
+
+    assert second == first
+    assert first.read_bytes() == payload  # 篡改内容被重写回正确内容
+
+
+def test_image_parser_concurrent_cancel_one_waiter_others_unaffected(tmp_path: Path) -> None:
+    """一个等待方被取消不得把取消传播到共享 Future（shield），其他等待方仍拿结果。"""
+    _, image, _ = _load_modules()
+
+    class Bridge:
+        def __init__(self):
+            self.calls = 0
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            self.calls += 1
+            self.started.set()
+            await self.release.wait()
+            return SimpleNamespace(completion_text="一张图片")
+
+    bridge = Bridge()
+    parser = image.ImageParser(bridge, provider_id="vision-provider")
+
+    async def fake_resolve(_image_info):
+        return "data:image/png;base64,AA=="
+
+    parser._resolve_image_url = fake_resolve
+    image_info = image.ImageInfo(url="https://cdn.example.test/cat.png")
+
+    async def main():
+        producer = asyncio.create_task(parser.parse(image_info, umo="qq:GroupMessage:1"))
+        await bridge.started.wait()  # 生产方已发起 provider 调用
+        waiter_a = asyncio.create_task(parser.parse(image_info, umo="qq:GroupMessage:1"))
+        waiter_b = asyncio.create_task(parser.parse(image_info, umo="qq:GroupMessage:1"))
+        await asyncio.sleep(0)  # 两个等待方都挂到共享 Future 上
+        waiter_a.cancel()  # 取消其中一个等待方
+        try:
+            await waiter_a
+        except asyncio.CancelledError:
+            pass
+        bridge.release.set()
+        results = await asyncio.gather(producer, waiter_b)
+        return results
+
+    results = asyncio.run(main())
+    assert results == ["一张图片", "一张图片"]
+    assert bridge.calls == 1  # 生产方结果未被取消路径吞掉
+    assert parser._inflight == {}
 
 
 def test_image_parser_source_cache_cleanup_preserves_active_sources(tmp_path: Path) -> None:

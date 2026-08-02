@@ -98,11 +98,15 @@ class AstrBotBridge:
             try:
                 return await maybe_await(func(*args, **kwargs))
             except TypeError as exc:
+                # 签名不匹配：换下一个调用形态继续探测。
                 last_type_error = exc
                 continue
             except Exception as exc:
-                logger.debug("[%s] %s failed: %s", PLUGIN_ID, log_name, exc)
-                return None
+                # 非 TypeError 是真实业务故障（provider 配置坏、DB 读错等），
+                # 换签名重试没有意义；记录 warning 并向上传播，
+                # 避免被调用方当作"接口不存在"而静默降级。
+                logger.warning("[%s] %s failed: %s", PLUGIN_ID, log_name, exc)
+                raise
         if last_type_error:
             logger.debug("[%s] %s unsupported signature: %s", PLUGIN_ID, log_name, last_type_error)
         return None

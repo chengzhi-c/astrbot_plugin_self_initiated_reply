@@ -93,6 +93,8 @@ class ImageParser:
         self._provider_id = str(provider_id or "").strip()
         self._recorder_bridge = recorder_bridge
         self._cache = cache or ImageCache(max_size=50)
+        # 同 key 并发解析共享同一次 provider 调用（避免重复计费）
+        self._inflight: dict[str, asyncio.Future] = {}
         self._timeout_sec = max(1.0, float(timeout_sec))
         self._source_cache_dir = Path(source_cache_dir) if source_cache_dir else None
         if self._source_cache_dir is not None:
@@ -220,39 +222,56 @@ class ImageParser:
             cached = self._cache.get(cache_key)
             if cached:
                 return cached
-            image_url = await self._resolve_image_url(image_info)
-            if not image_url:
-                logger.info("[selfreply] no usable image source for parsing")
-                return None
-            response = await asyncio.wait_for(
-                self._bridge.llm_generate_direct(
-                    provider_id=provider_id,
-                    prompt="简要描述这张图片，重点说明文字和关键物体，不超过80字。",
-                    system_prompt=(
-                        "你是主动回复插件的图片理解器。只描述图片中可观察到的内容，"
-                        "不要猜测身份、隐私或图片之外的信息。"
-                    ),
-                    temperature=0.2,
-                    max_tokens=120,
-                    image_urls=[image_url],
-                ),
-                timeout=self._timeout_sec,
-            )
+            pending = self._inflight.get(cache_key)
+            if pending is not None:
+                # 同一图片正在并发解析：共享同一次 provider 调用，避免重复计费。
+                # shield 防止等待方被取消时把取消传播到共享 Future（Task.cancel
+                # 会取消其正在等待的 Future，波及其他等待方）；等待方仍正常抛
+                # CancelledError，生产方结果不被吞掉。
+                return await asyncio.shield(pending)
+            pending = asyncio.get_running_loop().create_future()
+            self._inflight[cache_key] = pending
+            result: str | None = None
+            try:
+                image_url = await self._resolve_image_url(image_info)
+                if not image_url:
+                    logger.info("[selfreply] no usable image source for parsing")
+                else:
+                    response = await asyncio.wait_for(
+                        self._bridge.llm_generate_direct(
+                            provider_id=provider_id,
+                            prompt="简要描述这张图片，重点说明文字和关键物体，不超过80字。",
+                            system_prompt=(
+                                "你是主动回复插件的图片理解器。只描述图片中可观察到的内容，"
+                                "不要猜测身份、隐私或图片之外的信息。"
+                            ),
+                            temperature=0.2,
+                            max_tokens=120,
+                            image_urls=[image_url],
+                        ),
+                        timeout=self._timeout_sec,
+                    )
+                    description = self._response_text(response)
+                    if not description or self._is_unable_to_describe(description):
+                        logger.info("[selfreply] no usable description from provider")
+                    else:
+                        description = description.strip()
+                        if len(description) > 300:
+                            description = description[:300].rstrip() + "..."
+                        self._cache.put(cache_key, description)
+                        result = description
+            finally:
+                # 无论成功/失败/取消，唤醒所有等待方；失败不写缓存
+                if not pending.done():
+                    pending.set_result(result)
+                self._inflight.pop(cache_key, None)
+            return result
         except asyncio.TimeoutError:
             logger.info("[selfreply] image parsing timed out")
             return None
         except Exception as exc:
             logger.warning("[selfreply] image parsing failed: %s", exc)
             return None
-
-        description = self._response_text(response)
-        if not description or self._is_unable_to_describe(description):
-            return None
-        description = description.strip()
-        if len(description) > 300:
-            description = description[:300].rstrip() + "..."
-        self._cache.put(cache_key, description)
-        return description
 
     @staticmethod
     def cleanup_source_cache(
@@ -439,6 +458,13 @@ class ImageParser:
             if target.exists():
                 if not target.is_file():
                     return None
+                # 内容寻址的完整性前提是"文件内容 = 文件名 hash"：
+                # write_bytes 中断会留下半截文件，命中分支先校验大小；
+                # 同大小内容被外部替换时重算哈希兜底，不符即重写。
+                if target.stat().st_size != len(content) or (
+                    hashlib.sha256(target.read_bytes()).digest() != digest.encode()
+                ):
+                    target.write_bytes(content)
             else:
                 target.write_bytes(content)
             # 内容寻址只决定文件身份；mtime 表示最近一次被使用的生命周期。

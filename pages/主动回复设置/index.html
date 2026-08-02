@@ -20,17 +20,17 @@
   <script src="/api/plugin/page/bridge-sdk.js"></script>
 </head>
 <body>
+  <!-- 氛围层：纯渐变晕光，不画具象物体。功能区保持素净 -->
+  <div class="ambience" aria-hidden="true"></div>
+
   <div class="shell">
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
-            <path d="M12 7.6l.85 2.05 2.05.85-2.05.85L12 13.4l-.85-2.05L9.1 10.5l2.05-.85L12 7.6z" fill="currentColor" stroke="none"></path>
-          </svg>
+          <img src="./brand-mirror.png" alt="业镜" style="width: 34px; height: 34px;" />
         </span>
-        <div>
-          <p class="eyebrow">主动回复插件</p>
+        <div class="brand-text">
+          <p class="eyebrow">业镜 · 主动回复</p>
           <h1>主动回复设置</h1>
         </div>
       </div>
@@ -54,202 +54,260 @@
       </div>
     </header>
 
-    <section class="status-grid" id="statusGrid">
-      <div class="stat" id="selfStat">
-        <span class="stat-label"><i class="stat-dot" aria-hidden="true"></i>插件状态</span>
-        <strong id="selfStatus">加载中</strong>
-      </div>
-      <div class="stat is-info" id="decisionModelStat">
-        <span class="stat-label"><i class="stat-dot" aria-hidden="true"></i>判断模型</span>
-        <strong id="decisionModelStatus">-</strong>
-      </div>
-      <div class="stat is-info" id="whitelistStat">
-        <span class="stat-label"><i class="stat-dot" aria-hidden="true"></i>白名单数</span>
-        <strong id="whitelistCount">-</strong>
-      </div>
-    </section>
+    <form id="configForm" class="form">
 
-    <main class="views">
-      <div class="view active" data-view-panel="self">
-        <section class="panel">
-        <div class="panel-head">
-          <h2>基础配置</h2>
-          <span class="muted">改动后需要点击保存才会生效</span>
+      <!-- 第一层：开不开。总电闸，独占顶部 -->
+      <section class="master" id="selfStat">
+        <label class="master-switch">
+          <input type="checkbox" id="enabledInput">
+          <span class="master-switch-body">
+            <i class="master-track" aria-hidden="true"></i>
+            <span class="master-copy">
+              <b>主动回复</b>
+              <em id="selfStatus">加载中</em>
+            </span>
+          </span>
+        </label>
+        <div class="master-readouts">
+          <div class="readout" id="decisionModelStat">
+            <span class="readout-label"><i class="stat-dot" aria-hidden="true"></i>判断模型</span>
+            <strong id="decisionModelStatus">-</strong>
+          </div>
+          <div class="readout is-info" id="whitelistStat">
+            <span class="readout-label"><i class="stat-dot" aria-hidden="true"></i>生效会话</span>
+            <strong id="whitelistCount">-</strong>
+          </div>
         </div>
-        <form id="configForm" class="form">
-          <section class="subpanel">
-            <h3>运行开关</h3>
-            <label class="toggle-row">
-              <input type="checkbox" id="enabledInput">
-              <span>启用主动回复</span>
-            </label>
+      </section>
+
+      <!-- 第二层：在哪开。从折叠里放出来 -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2>生效范围</h2>
+          <span class="muted">只在这些会话里主动开口</span>
+        </div>
+        <label class="field">
+          <span class="field-label">白名单会话 UMO / QQ 群号<em>每行一个</em></span>
+          <textarea id="whitelistInput" rows="5" spellcheck="false"
+            placeholder="留空则任何会话都不会主动回复&#10;群聊可填完整 UMO，也可直接填 QQ 群号"></textarea>
+        </label>
+        <p class="muted">日常建议用 <code>/selfreply add</code> 和 <code>/selfreply remove</code> 管理当前会话，这里适合批量编辑。</p>
+      </section>
+
+      <!-- 第三层：什么时候开口。按「量的是什么」分组，显式标注起算点 -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2>开口节奏</h2>
+          <span class="muted">四个阈值互不影响，各自独立生效</span>
+        </div>
+
+        <div class="origin-groups">
+          <fieldset class="origin">
+            <legend class="origin-head">
+              <span class="origin-title">自最近一条消息起算</span>
+              <code>last_message_age_sec</code>
+            </legend>
             <div class="field-grid">
-              <label>
-                <span>最少上下文消息数</span>
-                <input type="number" id="minContextInput" min="0" max="30">
-              </label>
-              <label>
-                <span>消息后延迟秒数</span>
+              <label class="field">
+                <span class="field-label">消息后延迟<em>秒</em></span>
                 <input type="number" id="messageDelayInput" min="5" max="86400">
               </label>
-              <label>
-                <span>最小静默秒数</span>
+              <label class="field">
+                <span class="field-label">最小静默<em>秒</em></span>
                 <input type="number" id="minSilenceInput" min="0" max="86400">
               </label>
-              <label>
-                <span>冷却秒数</span>
+            </div>
+          </fieldset>
+
+          <fieldset class="origin">
+            <legend class="origin-head">
+              <span class="origin-title">自上次主动回复起算</span>
+              <code>last_reply_age_sec</code>
+            </legend>
+            <div class="field-grid">
+              <label class="field">
+                <span class="field-label">冷却<em>秒</em></span>
                 <input type="number" id="cooldownInput" min="0" max="86400">
               </label>
             </div>
-          </section>
+          </fieldset>
 
-          <section class="subpanel accent-panel">
-            <h3>判断模型调整</h3>
-            <label class="toggle-row">
-              <input type="checkbox" id="decisionModelInput">
-              <span>启用提示词判断模型</span>
-            </label>
-            <div class="field-grid model-grid">
-              <div class="provider-field">
-                <span>判断模型 Provider</span>
-                <div class="provider-control">
-                  <select id="judgeProviderSelect">
-                    <option value="">使用当前会话默认模型</option>
-                  </select>
-                  <button class="btn secondary provider-mode-btn" id="providerManualBtn" type="button">手动输入</button>
-                </div>
-                <input class="provider-manual-input" type="text" id="judgeProviderInput" placeholder="手动填写 Provider ID">
-                <span class="muted provider-hint" id="providerHint">留空表示使用当前会话默认模型</span>
-              </div>
-              <label>
-                <span>判断温度</span>
-                <input type="number" id="decisionTempInput" min="0" max="2" step="0.05">
-              </label>
-              <label>
-                <span>判断超时秒数</span>
-                <input type="number" id="decisionTimeoutInput" min="1" max="300" step="1">
-              </label>
-            </div>
-            <div class="prompt-workspace">
-              <label class="prompt-editor">
-                <span>判断提示词</span>
-                <textarea id="decisionPromptInput" rows="12" spellcheck="false" placeholder="留空则恢复默认提示词"></textarea>
-              </label>
-              <section class="prompt-preview-panel" aria-labelledby="promptPreviewTitle">
-                <div class="prompt-preview-head">
-                  <h4 id="promptPreviewTitle">提示词预览</h4>
-                  <span class="muted">示例变量</span>
-                </div>
-                <pre class="prompt-preview" id="promptPreview" aria-live="polite"></pre>
-              </section>
-            </div>
-            <div class="actions compact-actions">
-              <button class="btn secondary" id="resetPromptBtn" type="button">恢复默认提示词</button>
-            </div>
-            <details class="prompt-help">
-              <summary>提示词变量帮助</summary>
-              <div class="details-body">
-                <p class="muted">预览窗口使用下方变量的示例值；真实运行时，插件会按当前会话、触发方式和最近消息替换。</p>
-                <dl class="variable-list">
-                  <div>
-                    <dt>{session}</dt>
-                    <dd>当前会话 UMO，用于区分平台、群聊或私聊。</dd>
-                  </div>
-                  <div>
-                    <dt>{trigger}</dt>
-                    <dd>触发类型，例如消息延迟、后台巡检或手动检查。</dd>
-                  </div>
-                  <div>
-                    <dt>{bot_aliases}</dt>
-                    <dd>Bot 名称和别名列表，帮助判断用户是否在叫 Bot。</dd>
-                  </div>
-                  <div>
-                    <dt>{latest_message}</dt>
-                    <dd>最近一条可观察的用户消息文本。</dd>
-                  </div>
-                  <div>
-                    <dt>{recent_messages}</dt>
-                    <dd>最近上下文消息，通常是判断是否适合接话的主要依据。</dd>
-                  </div>
-                  <div>
-                    <dt>{last_message_age_sec}</dt>
-                    <dd>距离最近一条消息过去的秒数。</dd>
-                  </div>
-                  <div>
-                    <dt>{last_reply_age_sec}</dt>
-                    <dd>距离本插件上次主动回复过去的秒数。</dd>
-                  </div>
-                </dl>
-              </div>
-            </details>
-          </section>
-
-          <section class="subpanel">
-            <h3>图片识别</h3>
-            <label class="toggle-row">
-              <input type="checkbox" id="visionJudgeEnabledInput">
-              <span>判断模型识图（判断是否接话时看图）</span>
-            </label>
-            <label class="toggle-row">
-              <input type="checkbox" id="visionMainEnabledInput">
-              <span>主模型识图（生成回复正文时看图）</span>
-            </label>
-            <label class="toggle-row">
-              <input type="checkbox" id="visionSkipStickersInput">
-              <span>跳过表情包识图（按 QQ 图片标记过滤）</span>
-            </label>
+          <fieldset class="origin origin-count">
+            <legend class="origin-head">
+              <span class="origin-title">与时间无关</span>
+            </legend>
             <div class="field-grid">
-              <label class="provider-cell">
-                <span>识图模型 Provider</span>
-                <div class="provider-field vision-provider-field">
-                  <select id="visionProviderSelect">
-                    <option value="">使用当前会话模型</option>
-                  </select>
-                  <input type="text" id="visionProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
-                  <button type="button" class="btn-link" id="visionProviderManualBtn">手动输入</button>
-                </div>
+              <label class="field">
+                <span class="field-label">最少上下文消息数<em>条</em></span>
+                <input type="number" id="minContextInput" min="0" max="30">
               </label>
-              <label class="provider-cell">
-                <span>判断阶段识图 Provider</span>
-                <div class="provider-field vision-provider-field">
-                  <select id="visionJudgeProviderSelect">
-                    <option value="">与识图模型一致</option>
-                  </select>
-                  <input type="text" id="visionJudgeProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
-                  <button type="button" class="btn-link" id="visionJudgeProviderManualBtn">手动输入</button>
-                </div>
-              </label>
-              <label><span>单次最多识别图片数</span><input type="number" id="visionMaxImagesInput" min="1" max="5"></label>
-              <label><span>图片有效时间（秒）</span><input type="number" id="visionImageAgeInput" min="60" max="86400"></label>
-              <label><span>识图超时（秒）</span><input type="number" id="visionTimeoutInput" min="1" max="120" step="1"></label>
             </div>
-            <div class="actions compact-actions image-cache-actions">
-              <button class="btn secondary" id="cleanupImageCacheBtn" type="button">立即清理过期图片</button>
-              <span class="muted" id="cleanupImageCacheState" aria-live="polite">自动清理运行中</span>
-            </div>
-            <p class="muted">两个识图开关独立。判断阶段触发频率高，只开主模型识图更省 token。开启“跳过表情包识图”后，QQ OneBot 标记为表情包的图片（通常为 subType=1）不会调用 Vision。图片描述仅作为不可信聊天上下文参与判断与生成，不会写入会话历史。缓存按钮只清理已超过有效时间且未被当前任务使用的图片。</p>
-          </section>
+          </fieldset>
+        </div>
+      </section>
 
-          <details class="advanced-panel">
-            <summary>高级：白名单会话 ID</summary>
-            <div class="details-body">
-              <p class="muted">日常建议用 <code>/selfreply add</code> 和 <code>/selfreply remove</code> 管理当前会话；批量编辑时群聊可填完整 UMO 或直接填 QQ 群号。</p>
-              <label>
-                <span>白名单会话 UMO / QQ 群号（每行一个）</span>
-                <textarea id="whitelistInput" rows="5" spellcheck="false"></textarea>
-              </label>
-            </div>
-          </details>
+      <!-- 第四层：怎么判断。判断模型 Provider 必须是文档中第一个 .provider-field -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2>判断方式</h2>
+          <span class="muted">决定「此刻该不该开口」</span>
+        </div>
 
-          <div class="actions">
-            <button class="btn primary" type="submit">保存配置</button>
-            <span class="save-state" id="configSaveState"></span>
+        <label class="toggle-row">
+          <input type="checkbox" id="decisionModelInput">
+          <span>启用提示词判断模型</span>
+        </label>
+
+        <div class="field-grid model-grid">
+          <div class="provider-field">
+            <span class="field-label">判断模型 Provider</span>
+            <div class="provider-control">
+              <select id="judgeProviderSelect">
+                <option value="">使用当前会话默认模型</option>
+              </select>
+              <button class="btn secondary provider-mode-btn" id="providerManualBtn" type="button">手动输入</button>
+            </div>
+            <input class="provider-manual-input" type="text" id="judgeProviderInput" placeholder="手动填写 Provider ID">
+            <span class="muted provider-hint" id="providerHint">留空表示使用当前会话默认模型</span>
           </div>
-        </form>
-        </section>
+          <label class="field">
+            <span class="field-label">判断温度</span>
+            <input type="number" id="decisionTempInput" min="0" max="2" step="0.05">
+          </label>
+          <label class="field">
+            <span class="field-label">判断超时<em>秒</em></span>
+            <input type="number" id="decisionTimeoutInput" min="1" max="300" step="1">
+          </label>
+        </div>
+
+        <div class="prompt-workspace">
+          <label class="prompt-editor">
+            <span class="field-label">判断提示词</span>
+            <textarea id="decisionPromptInput" rows="12" spellcheck="false" placeholder="留空则恢复默认提示词"></textarea>
+          </label>
+          <section class="prompt-preview-panel" aria-labelledby="promptPreviewTitle">
+            <div class="prompt-preview-head">
+              <h4 id="promptPreviewTitle">提示词预览</h4>
+              <span class="muted">示例变量</span>
+            </div>
+            <pre class="prompt-preview" id="promptPreview" aria-live="polite"></pre>
+          </section>
+        </div>
+
+        <div class="actions compact-actions">
+          <button class="btn secondary" id="resetPromptBtn" type="button">恢复默认提示词</button>
+        </div>
+
+        <details class="prompt-help">
+          <summary>提示词变量帮助</summary>
+          <div class="details-body">
+            <p class="muted">预览窗口使用下方变量的示例值；真实运行时，插件会按当前会话、触发方式和最近消息替换。</p>
+            <dl class="variable-list">
+              <div>
+                <dt>{session}</dt>
+                <dd>当前会话 UMO，用于区分平台、群聊或私聊。</dd>
+              </div>
+              <div>
+                <dt>{trigger}</dt>
+                <dd>触发类型，例如消息延迟、后台巡检或手动检查。</dd>
+              </div>
+              <div>
+                <dt>{bot_aliases}</dt>
+                <dd>Bot 名称和别名列表，帮助判断用户是否在叫 Bot。</dd>
+              </div>
+              <div>
+                <dt>{latest_message}</dt>
+                <dd>最近一条可观察的用户消息文本。</dd>
+              </div>
+              <div>
+                <dt>{recent_messages}</dt>
+                <dd>最近上下文消息，通常是判断是否适合接话的主要依据。</dd>
+              </div>
+              <div>
+                <dt>{last_message_age_sec}</dt>
+                <dd>距离最近一条消息过去的秒数。</dd>
+              </div>
+              <div>
+                <dt>{last_reply_age_sec}</dt>
+                <dd>距离本插件上次主动回复过去的秒数。</dd>
+              </div>
+            </dl>
+          </div>
+        </details>
+      </section>
+
+      <!-- 第五层：看不看图。可选增强，默认收起 -->
+      <details class="panel panel-collapsible">
+        <summary>
+          <span class="summary-title">图片识别</span>
+          <span class="muted">可选增强，默认关闭</span>
+        </summary>
+        <div class="details-body">
+          <label class="toggle-row">
+            <input type="checkbox" id="visionJudgeEnabledInput">
+            <span>判断模型识图（判断是否接话时看图）</span>
+          </label>
+          <label class="toggle-row">
+            <input type="checkbox" id="visionMainEnabledInput">
+            <span>主模型识图（生成回复正文时看图）</span>
+          </label>
+          <label class="toggle-row">
+            <input type="checkbox" id="visionSkipStickersInput">
+            <span>跳过表情包识图（按 QQ 图片标记过滤）</span>
+          </label>
+
+          <div class="field-grid">
+            <label class="field provider-cell">
+              <span class="field-label">识图模型 Provider</span>
+              <div class="provider-field vision-provider-field">
+                <select id="visionProviderSelect">
+                  <option value="">使用当前会话模型</option>
+                </select>
+                <input type="text" id="visionProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
+                <button type="button" class="btn-link" id="visionProviderManualBtn">手动输入</button>
+              </div>
+            </label>
+            <label class="field provider-cell">
+              <span class="field-label">判断阶段识图 Provider</span>
+              <div class="provider-field vision-provider-field">
+                <select id="visionJudgeProviderSelect">
+                  <option value="">与识图模型一致</option>
+                </select>
+                <input type="text" id="visionJudgeProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
+                <button type="button" class="btn-link" id="visionJudgeProviderManualBtn">手动输入</button>
+              </div>
+            </label>
+            <label class="field">
+              <span class="field-label">单次最多识别图片数<em>张</em></span>
+              <input type="number" id="visionMaxImagesInput" min="1" max="5">
+            </label>
+            <label class="field">
+              <span class="field-label">图片有效时间<em>秒</em></span>
+              <input type="number" id="visionImageAgeInput" min="60" max="86400">
+            </label>
+            <label class="field">
+              <span class="field-label">识图超时<em>秒</em></span>
+              <input type="number" id="visionTimeoutInput" min="1" max="120" step="1">
+            </label>
+          </div>
+
+          <div class="actions compact-actions image-cache-actions">
+            <button class="btn secondary" id="cleanupImageCacheBtn" type="button">立即清理过期图片</button>
+            <span class="muted" id="cleanupImageCacheState" aria-live="polite">自动清理运行中</span>
+          </div>
+
+          <p class="muted">两个识图开关独立。判断阶段触发频率高，只开主模型识图更省 token。开启「跳过表情包识图」后，QQ OneBot 标记为表情包的图片（通常为 subType=1）不会调用 Vision。图片描述仅作为不可信聊天上下文参与判断与生成，不会写入会话历史。缓存按钮只清理已超过有效时间且未被当前任务使用的图片。</p>
+        </div>
+      </details>
+
+      <div class="actions form-actions">
+        <button class="btn primary" type="submit">保存配置</button>
+        <span class="save-state" id="configSaveState"></span>
+        <span class="muted form-actions-hint">改动后需要保存才会生效</span>
       </div>
-    </main>
+    </form>
   </div>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script type="module" src="./app.js"></script>
 </body>
