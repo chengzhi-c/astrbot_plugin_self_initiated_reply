@@ -84,7 +84,10 @@
 :root[data-theme="dark"]  { color-scheme: dark; }
 
 /* Chrome 的 light-dark() 在 custom property 里遇到动态 color-scheme 切换时有缓存失效 bug。
-   对会被切换的功能色（accent / ornament），用显式覆写而非 light-dark()。*/
+   对会被切换的功能色（accent / ornament），用显式覆写而非 light-dark()。
+   同时必须覆盖「跟随系统」时的暗色分支，否则 auto 档在系统暗色下会卡住。*/
+
+/* 手动选深色时，直接覆盖，不走 media query（避免被浅色系统压回去）*/
 :root[data-theme="dark"] {
   --accent:        #e0a040;
   --accent-strong: #eeb45c;
@@ -94,6 +97,20 @@
 
   --ornament:      #a06020;
   --ornament-soft: rgba(160, 96, 32, .22);
+}
+
+/* 跟随系统时（无 data-theme），在暗色系统下也要覆盖深色值 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --accent:        #e0a040;
+    --accent-strong: #eeb45c;
+    --accent-text:   #e8ae52;
+    --accent-soft:   rgba(224, 160, 64, .15);
+    --ring:          rgba(224, 160, 64, .34);
+
+    --ornament:      #a06020;
+    --ornament-soft: rgba(160, 96, 32, .22);
+  }
 }
 
 /* --------------------------------------------------------------------------
