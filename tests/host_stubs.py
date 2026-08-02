@@ -70,7 +70,7 @@ def install_astrbot_stubs() -> None:
     if not hasattr(event_filter, "PermissionType"):
         event_filter.PermissionType = _FakeEnum("ADMIN")
     if not hasattr(event_filter, "permission_type"):
-        event_filter.permission_type = _passthrough_decorator
+        event_filter.permission_type = _permission_type
 
     if not hasattr(star, "Star"):
         class Star:
@@ -226,6 +226,26 @@ class _FakeEnum:
 def _passthrough_decorator(*_args: Any, **_kwargs: Any) -> Any:
     def decorate(func: Any) -> Any:
         return func
+
+    return decorate
+
+
+def _permission_type(*_args: Any, **_kwargs: Any) -> Any:
+    """Mirror register_permission_type with real host semantics.
+
+    真实宿主（4.26.8/4.27.0）在装饰时会对被装饰对象调用 get_handler_full_name
+    （访问 ``__name__``）。RegisteringCommandable 没有 ``__name__``，因此把
+    @permission_type 叠在 @command_group 外层会在插件加载时抛 AttributeError。
+    桩复刻该行为，让这种顺序错误在测试期就炸出来（0.7.15 曾因此线上安装失败）。
+    """
+
+    def decorate(obj: Any) -> Any:
+        if not hasattr(obj, "__name__"):
+            raise AttributeError(
+                f"'{type(obj).__name__}' object has no attribute '__name__' "
+                "(permission_type must wrap a function, not a command group)"
+            )
+        return obj
 
     return decorate
 
