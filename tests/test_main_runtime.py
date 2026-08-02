@@ -723,14 +723,22 @@ def test_command_group_and_help_are_admin_gated() -> None:
     text = source.read_text(encoding="utf-8")
     lines = text.splitlines()
 
-    guarded: list[int] = []
-    for index, line in enumerate(lines):
-        if "@filter.command_group(\"selfreply\")" in line or ".command(" in line:
-            guarded.append(index)
-    assert len(guarded) >= 9, "命令组入口 + 9 个子命令都应找到"
+    group_index = next(
+        i for i, line in enumerate(lines) if "@filter.command_group(\"selfreply\")" in line
+    )
+    # 组入口：permission_type 必须在 command_group 内层（下方一行）。真实宿主的
+    # permission_type 会访问被装饰对象的 __name__，RegisteringCommandable 没有，
+    # 因此放外层（上方）会在加载时抛 AttributeError（0.7.15 线上事故）。
+    assert lines[group_index + 1].strip() == "@permission_type(PermissionType.ADMIN)", (
+        f"行 {group_index + 1} 的 command_group 缺少内层 ADMIN 权限门"
+    )
 
-    for index in guarded:
-        # 权限装饰器必须在命令装饰器正上方一行
+    subcommand_indexes = [
+        i for i, line in enumerate(lines) if ".command(" in line
+    ]
+    assert len(subcommand_indexes) >= 9, "9 个子命令都应找到"
+    for index in subcommand_indexes:
+        # 子命令：permission_type 在命令装饰器正上方一行（函数形态，顺序安全）
         assert lines[index - 1].strip() == "@permission_type(PermissionType.ADMIN)", (
             f"行 {index + 1} 的命令缺少 ADMIN 权限门: {lines[index].strip()}"
         )
