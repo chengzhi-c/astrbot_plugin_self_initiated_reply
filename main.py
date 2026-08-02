@@ -1854,8 +1854,8 @@ class SelfInitiatedReplyPlugin(Star):
         except Exception:
             pass
 
-    # 注意：permission_type 必须在 command_group 内层。真实宿主（4.26.8+）的
-    # register_permission_type 会对被装饰对象调用 get_handler_full_name（访问
+    # 注意：permission_type 必须在 command_group 内层。真实宿主（4.26.8/4.27.0
+    # 已验证）的 register_permission_type 会对被装饰对象调用 get_handler_full_name（访问
     # __name__），而 command_group 返回的 RegisteringCommandable 没有 __name__；
     # 顺序反了插件加载即报 AttributeError（0.7.15 曾因此线上安装失败）。
     @filter.command_group("selfreply")

@@ -771,4 +771,4 @@ def test_version_consistency_across_metadata() -> None:
     assert f"version: {version}" in metadata
     assert f"当前版本：`{version}`" in readme
     # 宿主下限声明保持一致
-    assert '">=4.26.8,<5"' in metadata
+    assert '">=4.26.1,<5"' in metadata
