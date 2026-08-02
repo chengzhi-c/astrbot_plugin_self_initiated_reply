@@ -122,6 +122,44 @@ def test_malformed_session_record_does_not_abort_load(tmp_path: Path) -> None:
     assert "qq:GroupMessage:789" not in sessions
 
 
+def test_corrupt_state_file_is_backed_up_and_load_continues(tmp_path: Path) -> None:
+    """JSON 损坏时备份原文件（corrupt-<ts>）并继续以空状态加载，不得抛错。"""
+    _, _, storage = _load_modules()
+    path = tmp_path / "state.json"
+    path.write_text("{not valid json", encoding="utf-8")
+
+    sessions = storage.load_sessions(path, {"123"}, 5)
+
+    backups = sorted(tmp_path.glob("state.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "{not valid json"
+    assert "123" in sessions  # 白名单会话仍以空状态创建
+
+
+def test_version_mismatch_state_file_is_backed_up_and_best_effort_loaded(tmp_path: Path) -> None:
+    """version 不符时备份原文件，仍尽力解析仍兼容的数据。"""
+    _, _, storage = _load_modules()
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 999,
+                "sessions": {
+                    "qq:GroupMessage:123": {"last_active_at": 1.5, "daily_count": 3}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sessions = storage.load_sessions(path, {"123"}, 5)
+
+    backups = sorted(tmp_path.glob("state.json.corrupt-*"))
+    assert len(backups) == 1
+    assert sessions["qq:GroupMessage:123"].last_active_at == 1.5
+    assert sessions["qq:GroupMessage:123"].daily_count == 3
+
+
 def test_atomic_state_writer_leaves_previous_file_on_serialization_failure(tmp_path: Path) -> None:
     _, _, storage = _load_modules()
     path = tmp_path / "state.json"

@@ -21,7 +21,17 @@ class AstrBotRuntimeAdapter:
     """Keep private AstrBot Agent imports and compatibility checks in one place."""
 
     _BUILD_REQUIRED = frozenset({"event", "plugin_context", "config", "req", "apply_reset"})
-    _RUN_REQUIRED = frozenset({"agent_runner", "max_step"})
+    _RUN_REQUIRED = frozenset(
+        {
+            "agent_runner",
+            "max_step",
+            "show_tool_use",
+            "show_tool_call_result",
+            "stream_to_general",
+            "show_reasoning",
+            "buffer_intermediate_messages",
+        }
+    )
 
     def __init__(self, capabilities: AgentRuntimeCapabilities):
         self.capabilities = capabilities
@@ -123,6 +133,52 @@ class AstrBotRuntimeAdapter:
 
     def new_tool_set(self) -> Any:
         return self.tool_set()
+
+    def final_tool_ids(self, req: Any) -> list[str] | None:
+        """Enumerate the tool ids that would actually reach the provider.
+
+        AstrBot resolves tools from ``req.func_tool`` at reset/run time, so the
+        request object is the authoritative post-build snapshot. Returns
+        ``None`` when the tool set cannot be enumerated (callers must fail
+        closed).
+        """
+        tool_set = getattr(req, "func_tool", None)
+        if tool_set is None:
+            return []
+        tools = getattr(tool_set, "tools", None)
+        if tools is None:
+            return None
+        try:
+            return [str(getattr(tool, "name", "") or "").strip() for tool in tools]
+        except Exception:
+            return None
+
+    def restrict_final_tools(self, req: Any, allowed_tool_ids: set[str]) -> bool:
+        """Enforce the proactive tool allowlist on the final request tool set.
+
+        Removes every tool whose id is not in ``allowed_tool_ids`` directly from
+        ``req.func_tool``, which is the same object the agent runner reads at
+        reset and run time. Returns ``False`` when the tool set cannot be
+        enumerated or a removal fails; callers must then abort the proactive
+        run (fail closed).
+        """
+        tool_set = getattr(req, "func_tool", None)
+        if tool_set is None:
+            return True  # No tool set at all: nothing can be called.
+        tools = getattr(tool_set, "tools", None)
+        if tools is None:
+            return False
+        try:
+            for tool in list(tools):
+                name = str(getattr(tool, "name", "") or "").strip()
+                if name and name not in allowed_tool_ids:
+                    tool_set.remove_tool(name)
+        except Exception:
+            return False
+        remaining = self.final_tool_ids(req)
+        return remaining is not None and all(
+            name in allowed_tool_ids for name in remaining
+        )
 
     def new_build_config(self, **kwargs: Any) -> Any:
         self.validate()

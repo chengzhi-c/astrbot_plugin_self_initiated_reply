@@ -8,7 +8,7 @@
   "decision_model_enabled": {
     "type": "bool",
     "description": "启用判断模型",
-    "hint": "开启后，普通消息会先用提示词判断是否适合主动回复；关闭后只响应明确接话/表情包请求和手动检查。回复生成仍走 AstrBot 主 Agent 管线。",
+    "hint": "开启后，普通消息会先用提示词判断是否适合主动回复；关闭后只响应明确接话/表情包请求和手动检查（后台巡检仍会触发）。回复生成仍走 AstrBot 主 Agent 管线。",
     "default": true
   },
   "judge_provider_id": {
@@ -102,7 +102,7 @@
   "ignored_sender_ids": {
     "type": "list",
     "description": "忽略发送者 ID",
-    "hint": "这些 QQ/用户 ID 的消息不会触发主动回复。管理员不会被自动屏蔽。",
+    "hint": "这些 QQ/用户 ID 的消息不会触发主动回复；显式列出的 ID 一律忽略，包括管理员。指令路径（/selfreply 等）不受忽略列表影响。",
     "default": []
   },
   "whitelist_sessions": {

@@ -10,7 +10,7 @@ from typing import Any
 
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.7.13"
+PLUGIN_VERSION = "0.7.15"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -26,8 +26,12 @@ MAX_CACHED_IMAGE_EVENTS = 20  # 每会话临时保留的含图事件数
 MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024  # 图片冻结缓存总容量上限
 
 # 插件运行常量
-MAX_AGENT_STEPS = 15  # Agent 最大步数：为表情包搜索+记忆检索+生成预留足够步数
+MAX_AGENT_STEPS = 15  # Agent 最大步数：为主 Agent 生成预留足够步数
 MAX_DIRECT_TOOL_SENDS = 2  # 每次主动回复最多允许工具直接发出的消息数
+# 0.7.x 主动 Agent 工具允许列表：默认空集，未列入的工具在 build/hook 后一律移除，
+# 无法验证时终止本次主动运行（fail closed）。后续如需放行工具，必须提供稳定工具
+# ID、明确 owner、行为测试和独立安全评审后才能加入。
+PROACTIVE_ALLOWED_TOOL_IDS: frozenset[str] = frozenset()
 REPLY_REQUEST_WINDOW_SEC = 180  # 明确请求窗口：3分钟内的接话请求视为有效
 EVENT_CLEANUP_INTERVAL_SEC = 3600  # 事件清理间隔：1小时清理一次陈旧事件
 MAX_CACHED_EVENTS = 100  # 最大缓存事件数：防止内存无限增长

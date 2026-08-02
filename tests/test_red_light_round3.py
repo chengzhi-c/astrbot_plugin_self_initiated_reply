@@ -231,6 +231,22 @@ def test_clean_reply_still_collapses_when_multiline_disabled() -> None:
     assert reply == "第一行内容 第二行内容"
 
 
+def test_reply_request_detection_truncates_overlong_input() -> None:
+    """超长畸形输入只检测头部语义，不会造成正则放大或误报。"""
+    _, utils, _, _, _ = _load_modules()
+
+    # 标准别名接话请求不受影响
+    assert utils.looks_like_reply_request("阿c回一下", ["阿c"]) is True
+    assert utils.looks_like_reply_request("阿c在吗", ["阿c"]) is True
+    # 别名 + 超长尾巴：全匹配语义下本就不是接话请求，截断后行为一致
+    assert utils.looks_like_reply_request("阿c" + "很长的尾巴" * 200, ["阿c"]) is False
+    # 超长普通闲聊不得误判为接话请求
+    assert utils.looks_like_reply_request("今天天气不错" + "啊" * 500, []) is False
+    # 全匹配语义："在吗"+超长尾巴截断后仍不得误匹配锚定模式（glm52 红灯复核场景）
+    assert utils.looks_like_reply_request("在吗" + "普通聊天内容" * 50, []) is False
+    assert utils.looks_like_reply_request("发个表情包" + "了" * 300, []) is False
+
+
 # ============================================================================
 # RL-3 判断提示词的多行结构被清洗破坏（中危）
 # ============================================================================
@@ -443,16 +459,22 @@ def test_proactive_agent_starts_with_restricted_tool_scope() -> None:
     """主动 Agent 默认不得继承全局插件、跨会话消息和高危工具。"""
     source = _main_source()
     start = source.index("    async def _generate_reply_via_pipeline(")
-    end = source.index("\n    def _main_agent_build_config(", start)
+    end = source.index("\n    def _enforce_final_tool_policy(", start)
     method = source[start:end]
 
     assert "req.func_tool = _AGENT_RUNTIME.new_tool_set()" in method
     assert "_install_agent_tool_boundary(last_event)" in method
+    assert "_enforce_final_tool_policy(req)" in method
     boundary_start = source.index("    def _install_agent_tool_boundary(")
     boundary_end = source.index("\n    @staticmethod\n    def _resolve_paths", boundary_start)
     boundary = source[boundary_start:boundary_end]
     assert "setattr(event, \"plugins_name\", [])" in boundary
-    assert "support_proactive_message = False" in boundary
+    # 共享 platform_meta 是适配器单例，禁止原地修改；边界必须靠最终工具集策略。
+    assert "support_proactive_message" not in boundary
+    policy_start = source.index("    def _enforce_final_tool_policy(")
+    policy_end = source.index("\n    def _main_agent_build_config(", policy_start)
+    policy = source[policy_start:policy_end]
+    assert "restrict_final_tools(req, PROACTIVE_ALLOWED_TOOL_IDS)" in policy
     assert "_restore_agent_tool_boundary" in method
 
 

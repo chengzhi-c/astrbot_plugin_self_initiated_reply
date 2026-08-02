@@ -80,6 +80,39 @@ def test_context_none_result_is_unknown_while_event_none_is_delivered() -> None:
     assert context_result.outcome.status is outbound.SendStatus.UNKNOWN
 
 
+def test_sender_false_is_failed_before_submit() -> None:
+    """``False``（如 Context.send_message 未找到平台）是确定未提交，不得消耗配额。"""
+
+    outbound = _load_gateway()
+
+    async def sender(_message):
+        return False
+
+    gateway = outbound.OutboundGateway(
+        sender,
+        none_status=outbound.SendStatus.UNKNOWN,
+    )
+    result = asyncio.run(gateway.send("message"))
+
+    assert result.outcome.status is outbound.SendStatus.FAILED_BEFORE_SUBMIT
+    assert result.submitted is False
+
+
+def test_sender_exception_is_unknown() -> None:
+    """send 抛异常可能已提交到适配器：UNKNOWN，不可重试，计入 submitted。"""
+
+    outbound = _load_gateway()
+
+    async def sender(_message):
+        raise RuntimeError("adapter disconnected")
+
+    gateway = outbound.OutboundGateway(sender)
+    result = asyncio.run(gateway.send("message"))
+
+    assert result.outcome.status is outbound.SendStatus.UNKNOWN
+    assert result.submitted is True
+
+
 def test_missing_sender_fails_before_submit() -> None:
     outbound = _load_gateway()
 

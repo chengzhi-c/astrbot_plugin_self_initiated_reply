@@ -297,7 +297,9 @@ def is_alias_call(text: str, aliases: list[str]) -> bool:
 
 
 def _compact_reply_request_text(text: str) -> str:
-    return re.sub(r"\s+", "", str(text or "").lower())
+    # 去空白后硬截断：超长畸形输入（如粘贴长文本）只需检测头部语义，
+    # 同时避免超长输入喂给后续正则造成线性放大。
+    return re.sub(r"\s+", "", str(text or "").lower())[:200]
 
 
 def _alias_request_tail(text: str, aliases: list[str]) -> str:
