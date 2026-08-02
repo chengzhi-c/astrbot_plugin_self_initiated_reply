@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from html import unescape
+import ntpath
+import os
+import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -15,6 +19,34 @@ if TYPE_CHECKING:
 
 
 _IMAGE_TYPES = {"image", "img", "picture", "photo"}
+_CQ_COMPONENT_RE = re.compile(
+    r"\[CQ:(?P<type>[^,\]]+)(?:,(?P<body>[^\]]*))?\]",
+    re.IGNORECASE,
+)
+
+
+def _parse_raw_cq_components(raw: Any) -> list[dict[str, Any]]:
+    """Recover image segments when an adapter exposes only raw CQ text."""
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8", errors="replace")
+        except Exception:
+            return []
+    if not isinstance(raw, str):
+        return []
+    components: list[dict[str, Any]] = []
+    for match in _CQ_COMPONENT_RE.finditer(raw):
+        component_type = str(match.group("type") or "").strip().lower()
+        if component_type not in _IMAGE_TYPES:
+            continue
+        data: dict[str, str] = {}
+        for item in str(match.group("body") or "").split(","):
+            key, separator, value = item.partition("=")
+            if not separator:
+                continue
+            data[unescape(key).strip()] = unescape(value).strip()
+        components.append({"type": component_type, "data": data})
+    return components
 
 
 def _component_field(component: Any, name: str) -> Any:
@@ -50,6 +82,15 @@ def _component_value(component: Any, *names: str) -> str:
         if value is not None and str(value).strip():
             return str(value).strip()
     return ""
+
+
+def _is_absolute_local_source(value: str) -> bool:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return False
+    if urlparse(normalized).scheme in {"http", "https", "file"}:
+        return False
+    return os.path.isabs(normalized) or ntpath.isabs(normalized)
 
 
 def _is_sticker_marker(value: Any) -> bool:
@@ -119,7 +160,11 @@ def _raw_image_components(event: Any) -> list[Any]:
     raw = _event_raw_message(event)
     if raw is None:
         return []
+    if isinstance(raw, (str, bytes)):
+        return _parse_raw_cq_components(raw)
     segments = _field_value(raw, "message")
+    if isinstance(segments, (str, bytes)):
+        return _parse_raw_cq_components(segments)
     if segments is None and isinstance(raw, (list, tuple)):
         segments = raw
     if not isinstance(segments, (list, tuple)):
@@ -192,7 +237,16 @@ class ImageExtractor:
                 if skip_stickers and is_sticker:
                     continue
                 raw_url = _component_value(component, "url", "src")
-                raw_file = _component_value(component, "file", "path", "local_path")
+                normalized_file = _component_value(component, "file", "path", "local_path")
+                # Only a non-mapping, normalized AstrBot component may mark an
+                # absolute local source as host-trusted. Raw mappings can carry
+                # user/platform data and remain untrusted by default.
+                normalized_local_source = normalized_file or raw_url
+                trusted_local_path = bool(
+                    not isinstance(component, Mapping)
+                    and _is_absolute_local_source(normalized_local_source)
+                )
+                raw_file = normalized_file
                 # AstrBot may normalize an Image's source to a temporary local
                 # file before this plugin runs.  Prefer it, but recover the
                 # original OneBot URL/file metadata when the normalized object
@@ -226,6 +280,7 @@ class ImageExtractor:
                         sender_id=str(sender_id or ""),
                         is_sticker=is_sticker,
                         timestamp=float(timestamp or 0.0),
+                        trusted_local_path=trusted_local_path,
                     )
                 )
         except Exception as exc:

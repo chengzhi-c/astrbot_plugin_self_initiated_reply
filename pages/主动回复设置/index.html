@@ -223,7 +223,11 @@
               <label><span>图片有效时间（秒）</span><input type="number" id="visionImageAgeInput" min="60" max="86400"></label>
               <label><span>识图超时（秒）</span><input type="number" id="visionTimeoutInput" min="1" max="120" step="1"></label>
             </div>
-            <p class="muted">两个识图开关独立。判断阶段触发频率高，只开主模型识图更省 token。开启“跳过表情包识图”后，QQ OneBot 标记为表情包的图片（通常为 subType=1）不会调用 Vision。图片描述仅作为不可信聊天上下文参与判断与生成，不会写入会话历史。</p>
+            <div class="actions compact-actions image-cache-actions">
+              <button class="btn secondary" id="cleanupImageCacheBtn" type="button">立即清理过期图片</button>
+              <span class="muted" id="cleanupImageCacheState" aria-live="polite">自动清理运行中</span>
+            </div>
+            <p class="muted">两个识图开关独立。判断阶段触发频率高，只开主模型识图更省 token。开启“跳过表情包识图”后，QQ OneBot 标记为表情包的图片（通常为 subType=1）不会调用 Vision。图片描述仅作为不可信聊天上下文参与判断与生成，不会写入会话历史。缓存按钮只清理已超过有效时间且未被当前任务使用的图片。</p>
           </section>
 
           <details class="advanced-panel">

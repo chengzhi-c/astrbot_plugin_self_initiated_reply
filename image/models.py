@@ -36,6 +36,9 @@ class ImageInfo:
     sender_id: str = ""
     timestamp: float = 0.0
     is_sticker: bool = False
+    # AstrBot 归一化消息对象提供的本地媒体路径；只有提取层明确标记后，
+    # 解析器才允许在宿主临时目录读取一次并复制到插件缓存。
+    trusted_local_path: bool = False
     # 事件级图片冻结：消息到达时先把图片转成 data URL，避免 QQ CDN
     # 链接在主动回复延迟窗口内过期。仅存于内存，不写入配置/状态文件。
     prepared_source: str = ""

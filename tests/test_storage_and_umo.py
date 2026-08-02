@@ -66,7 +66,7 @@ def test_final_send_path_rechecks_generation_after_decorating_hook() -> None:
     method_end = source.find("\n    def ", method_start)
     method = source[method_start:method_end if method_end != -1 else None]
     hook_marker = "await call_event_hook(last_event, EventType.OnDecoratingResultEvent)"
-    send_marker = "await last_event.send(result)"
+    send_marker = "send_result = await outbound.send(result)"
 
     assert "expected_generation" in method.splitlines()[0]
     hook_offset = method.index(hook_marker)
