@@ -10,7 +10,7 @@ from typing import Any
 
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.7.16"
+PLUGIN_VERSION = "0.7.17"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
