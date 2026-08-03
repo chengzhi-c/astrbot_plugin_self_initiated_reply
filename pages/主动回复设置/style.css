@@ -12,8 +12,11 @@
    两边都得往可读的方向压：图里的青紫 L72 在白底上根本读不出，
    所以功能色取同色相的深值，只保留色相不保留明度。
 
-   命名统一用职能（accent / ornament），不用具体颜色，
+   命名统一用职能（accent / ornament / spirit），不用具体颜色，
    免得出现「--teal 解析成琥珀色」这种自相矛盾的令牌。
+
+   深色新增品牌青焰（spirit）：琥珀管功能，青焰管品牌，
+   只落在品牌井、氛围层与主题切换图标，功能交互色仍是琥珀。
 
    配色用 light-dark() 单点定义，浅深两值写在同一行，
    避免旧版那种「两处深色块必须手工同步」的维护陷阱。
@@ -24,15 +27,15 @@
   color-scheme: light dark;
 
   /* 浅色＝雪地的冷灰白；深色＝烛火房里的褐黑 */
-  --bg:            light-dark(#eceef3, #17100a);
-  --surface:       light-dark(#fbfcfe, #241810);
-  --surface-2:     light-dark(#f3f5f9, #2d1f14);
+  --bg:            light-dark(#eceef3, #120d09);
+  --surface:       light-dark(#fbfcfe, #1f1710);
+  --surface-2:     light-dark(#f3f5f9, #2b2116);
   /* 输入框底色：与面板只差一步，拉得太开会把每个字段变成沉重的色块 */
-  --surface-3:     light-dark(#eef1f6, #1c1310);
-  --surface-hover: light-dark(#e7eaf1, #362518);
+  --surface-3:     light-dark(#eef1f6, #19130d);
+  --surface-hover: light-dark(#e7eaf1, #362a1b);
 
-  --border:        light-dark(rgba(48, 48, 64, .14), rgba(224, 160, 64, .17));
-  --border-strong: light-dark(rgba(48, 48, 64, .30), rgba(224, 160, 64, .32));
+  --border:        light-dark(rgba(48, 48, 64, .18), rgba(224, 160, 64, .30));
+  --border-strong: light-dark(rgba(48, 48, 64, .36), rgba(224, 160, 64, .42));
 
   --text:      light-dark(#22222e, #f4ece0);
   --text-soft: light-dark(#3a3a4a, #ddcdb8);
@@ -49,10 +52,14 @@
   --ring:          rgba(74, 85, 128, .30);
 
   /* 装饰色：浅色是雪影的蓝紫，深色是者老木的琥珀。只描边、只点缀 */
-  --ornament:      #7b86ab;
-  --ornament-soft: rgba(123, 134, 171, .15);
+  --ornament:      #6e7a9e;
+  --ornament-soft: rgba(110, 122, 158, .15);
 
-  --mirror-well: light-dark(#303040, #201000);
+  --mirror-well: light-dark(#303040, #0e1b1d);
+
+  /* 品牌青焰：只用于品牌井、氛围层与主题切换图标，不作功能色 */
+  --spirit:      #7fccce;
+  --spirit-soft: rgba(127, 204, 206, .13);
 
   --ok:          light-dark(#4a6b2a, #b8d89a);
   --ok-soft:     light-dark(rgba(74, 107, 42, .13), rgba(184, 216, 154, .16));
@@ -61,7 +68,7 @@
   --danger:      light-dark(#9e3316, #e8a68a);
   --danger-soft: light-dark(rgba(158, 51, 22, .11), rgba(232, 166, 138, .16));
 
-  --switch-track: light-dark(#d8dae3, #3a2a1a);
+  --switch-track: light-dark(#d8dae3, #3a2d1e);
   --switch-knob:  light-dark(#fbfcfe, #f4ece0);
   --dot-halo:     light-dark(rgba(48, 48, 64, .10), rgba(224, 160, 64, .14));
   --scroll-thumb: light-dark(rgba(48, 48, 64, .22), rgba(224, 160, 64, .24));
@@ -69,12 +76,19 @@
   --toast-bg:   light-dark(rgba(34, 34, 46, .96), rgba(28, 19, 16, .97));
   --toast-text: light-dark(#fbfcfe, #f4ece0);
 
-  /* 单层阴影：light-dark() 的逗号是参数分隔符，多层 box-shadow 不能写在里面 */
+  /* 单层阴影：light-dark() 的逗号是参数分隔符，多层 box-shadow 不能写在里面；
+     反过来，var(--shadow-sm) 也不能被拼进多层列表——light-dark() 占整个 layer 位时组合无效，
+     IACVT 会让整条 box-shadow 静默变成 none。多层组合用 --shadow-btn。 */
   --shadow-sm: light-dark(0 1px 2px rgba(34, 34, 46, .07), 0 1px 2px rgba(0, 0, 0, .55));
+
+  /* 按钮标准投影（顶面高光 + 落影），纯字面值可安全拼进多层列表。
+     与 accent 同款缓存 bug，深色在两个分支显式覆写 */
+  --shadow-btn: inset 0 1px 0 rgba(255, 255, 255, .55), 0 1px 2px rgba(34, 34, 46, .07);
 
   --radius: 14px;
   --radius-sm: 10px;
   --radius-xs: 8px;
+  --radius-btn: 6px;
   --control-h: 40px;
   --shell-pad: 26px;
   --ease: cubic-bezier(.2, .7, .3, 1);
@@ -95,9 +109,19 @@
   --accent-soft:   rgba(224, 160, 64, .15);
   --ring:          rgba(224, 160, 64, .34);
 
-  --ornament:      #a06020;
-  --ornament-soft: rgba(160, 96, 32, .22);
+  --ornament:      #b4762e;
+  --ornament-soft: rgba(180, 118, 46, .20);
+
+  --shadow-btn:    inset 0 1px 0 rgba(244, 236, 224, .08), 0 1px 2px rgba(0, 0, 0, .55);
 }
+
+/* 深色下 select 下拉箭头换暖灰（浅色箭头是冷灰，色系不合） */
+:root[data-theme="dark"] select {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23b09a80' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+}
+
+/* 深色态月亮图标用青焰 */
+:root[data-theme="dark"] .theme-toggle .icon-dark { color: var(--spirit); }
 
 /* 跟随系统时（无 data-theme），在暗色系统下也要覆盖深色值 */
 @media (prefers-color-scheme: dark) {
@@ -108,9 +132,17 @@
     --accent-soft:   rgba(224, 160, 64, .15);
     --ring:          rgba(224, 160, 64, .34);
 
-    --ornament:      #a06020;
-    --ornament-soft: rgba(160, 96, 32, .22);
+    --ornament:      #b4762e;
+    --ornament-soft: rgba(180, 118, 46, .20);
+
+    --shadow-btn:    inset 0 1px 0 rgba(244, 236, 224, .08), 0 1px 2px rgba(0, 0, 0, .55);
   }
+
+  :root:not([data-theme]) select {
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23b09a80' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  }
+
+  :root:not([data-theme]) .theme-toggle .icon-dark { color: var(--spirit); }
 }
 
 /* --------------------------------------------------------------------------
@@ -197,7 +229,8 @@ code {
   pointer-events: none;
   background:
     radial-gradient(900px 260px at 20% -55%, var(--ornament-soft), transparent 70%),
-    radial-gradient(760px 240px at 84% -45%, var(--accent-soft), transparent 72%);
+    radial-gradient(760px 240px at 84% -45%, var(--accent-soft), transparent 72%),
+    radial-gradient(700px 250px at 55% -50%, var(--spirit-soft), transparent 70%);
   mask-image: linear-gradient(180deg, #000 0%, #000 38%, transparent 100%);
   -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 38%, transparent 100%);
 }
@@ -237,12 +270,15 @@ code {
   height: 44px;
   border-radius: 13px;
   border: 1px solid var(--border-strong);
-  background: var(--mirror-well);
+  /* 井底叠一层青焰径向微光，衬托透明底徽标 */
+  background:
+    radial-gradient(circle at 50% 62%, var(--spirit-soft), transparent 72%),
+    var(--mirror-well);
 }
 
-.brand-mark svg {
-  width: 25px;
-  height: 25px;
+.brand-mark img {
+  width: 34px;
+  height: 34px;
 }
 
 .brand-text { min-width: 0; }
@@ -273,14 +309,14 @@ code {
   min-height: 38px;
   padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
+  border-radius: var(--radius-btn);
   background: var(--surface);
   color: var(--text-soft);
   cursor: pointer;
   font: inherit;
   font-size: 13px;
   font-weight: 600;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-btn);
   transition: border-color .18s var(--ease), color .18s var(--ease), background .18s var(--ease);
 }
 
@@ -469,6 +505,8 @@ code {
 
 .readout.is-on strong { color: var(--accent-text); }
 
+/* 顺序锁定：以下 is-off / is-info 与上方 .master.is-on/.readout.is-on 同为 (0,3,0)，
+   靠书写顺序保证「总闸开但单项关」时圆点显示为灰/装饰色，重排会错色 */
 .readout.is-off .stat-dot {
   background: var(--faint);
   box-shadow: 0 0 0 3px var(--dot-halo);
@@ -606,7 +644,7 @@ code {
 }
 
 /* 前两组的 code 是提示词里真存在的时钟变量；
-   「与时间无关」组没有对应变量，所以不给它配 chip，避免暂充成变量名 */
+   上下文场景数组没有对应变量，所以不给它配 chip，避免暂充成变量名 */
 .origin-count .origin-head { min-height: 24px; }
 
 /* --------------------------------------------------------------------------
@@ -670,7 +708,9 @@ select:focus-visible,
 textarea:focus-visible {
   outline: none;
   border-color: var(--accent);
-  background: var(--surface);
+  /* 只换底色：background 简写会把 select 箭头的 repeat/position/size 打回初始值，
+     深色下箭头图靠高特异性覆写幸存但平铺参数被重置 → 箭头铺满整框；浅色下箭头直接消失 */
+  background-color: var(--surface);
   box-shadow: 0 0 0 3px var(--ring);
 }
 
@@ -791,8 +831,6 @@ textarea {
   align-items: center;
 }
 
-.provider-mode-btn { white-space: nowrap; }
-
 .provider-manual-input { display: none; }
 .provider-field.manual .provider-manual-input { display: block; }
 .provider-field.manual .provider-control select { display: none; }
@@ -816,6 +854,14 @@ textarea {
 
 /* 识图 Provider 控件含下拉 + 切换按钮，比纯数字输入需要更多横向空间 */
 .field-grid > .provider-cell { grid-column: span 2; }
+
+/* 三个数字字段独占一行均分，避免在 provider 行下面吊出两窄三空 */
+.field-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
 
 /* --------------------------------------------------------------------------
    提示词工作区
@@ -1018,7 +1064,7 @@ textarea {
   min-height: 38px;
   padding: 0 15px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
+  border-radius: var(--radius-btn);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
@@ -1026,10 +1072,12 @@ textarea {
   font: inherit;
   font-size: 13.5px;
   font-weight: 600;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-btn);
   transition: transform .14s var(--ease), border-color .16s var(--ease), background .16s var(--ease),
-    color .16s var(--ease), box-shadow .16s var(--ease);
+    color .16s var(--ease), box-shadow .16s var(--ease), filter .16s var(--ease);
 }
+
+.btn:not(:disabled):hover { transform: translateY(-1px); }
 
 .btn:active { transform: translateY(1px); }
 
@@ -1040,13 +1088,27 @@ textarea {
 
 .btn.primary {
   border-color: transparent;
-  background: var(--accent);
-  color: light-dark(#fbfcfe, #17100a);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent), #fff 10%), var(--accent));
+  color: light-dark(#fbfcfe, #120d09);
+  letter-spacing: .02em;
+}
+
+.btn.primary:not(:disabled):hover {
+  filter: brightness(1.06);
+  box-shadow: var(--shadow-btn),
+    0 8px 18px -8px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 .btn.primary.is-dirty {
   position: relative;
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: var(--shadow-btn), 0 0 0 3px var(--ring);
+}
+
+/* dirty + hover 时特异性须压过 .btn.primary:not(:disabled):hover (0,4,0)，ring 与光晕并存 */
+.btn.primary.is-dirty:not(:disabled):hover {
+  box-shadow: var(--shadow-btn),
+    0 8px 18px -8px color-mix(in srgb, var(--accent) 55%, transparent),
+    0 0 0 3px var(--ring);
 }
 
 .btn.primary.is-dirty::after {
@@ -1064,7 +1126,7 @@ textarea {
 .btn.secondary:hover {
   border-color: var(--accent);
   color: var(--accent-text);
-  background: var(--surface-hover);
+  background: color-mix(in srgb, var(--accent-soft) 60%, var(--surface));
 }
 
 .btn:disabled {
@@ -1077,7 +1139,7 @@ textarea {
   min-height: var(--control-h);
   padding: 0 12px;
   border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-xs);
+  border-radius: var(--radius-btn);
   background: transparent;
   color: var(--muted);
   cursor: pointer;
@@ -1085,7 +1147,8 @@ textarea {
   font-size: 12.5px;
   font-weight: 600;
   white-space: nowrap;
-  transition: border-color .16s var(--ease), color .16s var(--ease), background .16s var(--ease);
+  transition: border-color .16s var(--ease), color .16s var(--ease), background .16s var(--ease),
+    box-shadow .16s var(--ease);
 }
 
 .btn-link:hover {
@@ -1107,7 +1170,6 @@ textarea {
   transition: color .16s var(--ease);
 }
 
-.save-state.is-pending { color: var(--muted); }
 .save-state.is-ok { color: var(--ok); }
 .save-state.is-error { color: var(--danger); }
 
@@ -1201,6 +1263,8 @@ textarea {
   .origin-groups { grid-template-columns: 1fr; }
 
   .field-grid > .provider-cell { grid-column: auto; }
+
+  .field-row { grid-template-columns: 1fr; }
 
   .panel { padding: 16px; }
   .panel-collapsible > summary { padding: 15px 16px; }

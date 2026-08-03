@@ -27,7 +27,7 @@
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">
-          <img src="./brand-mirror.png" alt="业镜" style="width: 34px; height: 34px;" />
+          <img src="./brand-mirror.png" alt="业镜" />
         </span>
         <div class="brand-text">
           <p class="eyebrow">业镜 · 主动回复</p>
@@ -97,7 +97,7 @@
       <!-- 第三层：什么时候开口。按「量的是什么」分组，显式标注起算点 -->
       <section class="panel">
         <div class="panel-head">
-          <h2>开口节奏</h2>
+          <h2>触发条件</h2>
           <span class="muted">四个阈值互不影响，各自独立生效</span>
         </div>
 
@@ -134,7 +134,7 @@
 
           <fieldset class="origin origin-count">
             <legend class="origin-head">
-              <span class="origin-title">与时间无关</span>
+              <span class="origin-title">上下文场景数</span>
             </legend>
             <div class="field-grid">
               <label class="field">
@@ -178,7 +178,7 @@
               <select id="judgeProviderSelect">
                 <option value="">使用当前会话默认模型</option>
               </select>
-              <button class="btn secondary provider-mode-btn" id="providerManualBtn" type="button">手动输入</button>
+              <button class="btn-link" id="providerManualBtn" type="button">手动输入</button>
             </div>
             <input class="provider-manual-input" type="text" id="judgeProviderInput" placeholder="手动填写 Provider ID">
             <span class="muted provider-hint" id="providerHint">留空表示使用当前会话默认模型</span>
@@ -208,7 +208,7 @@
         </div>
 
         <div class="actions compact-actions">
-          <button class="btn secondary" id="resetPromptBtn" type="button">恢复默认提示词</button>
+          <button class="btn-link" id="resetPromptBtn" type="button">恢复默认提示词</button>
         </div>
 
         <details class="prompt-help">
@@ -290,21 +290,23 @@
                 <button type="button" class="btn-link" id="visionJudgeProviderManualBtn">手动输入</button>
               </div>
             </div>
-            <label class="field">
-              <span class="field-label">单次最多识别图片数<em>张</em></span>
-              <input type="number" id="visionMaxImagesInput" min="1" max="5">
-            </label>
-            <label class="field">
-              <span class="field-label">图片有效时间<em>秒</em></span>
-              <input type="number" id="visionImageAgeInput" min="60" max="86400">
-            </label>
-            <label class="field">
-              <span class="field-label">识图超时<em>秒</em></span>
-              <input type="number" id="visionTimeoutInput" min="1" max="120" step="1">
-            </label>
+            <div class="field-row">
+              <label class="field">
+                <span class="field-label">单次最多识别图片数<em>张</em></span>
+                <input type="number" id="visionMaxImagesInput" min="1" max="5">
+              </label>
+              <label class="field">
+                <span class="field-label">图片有效时间<em>秒</em></span>
+                <input type="number" id="visionImageAgeInput" min="60" max="86400">
+              </label>
+              <label class="field">
+                <span class="field-label">识图超时<em>秒</em></span>
+                <input type="number" id="visionTimeoutInput" min="1" max="120" step="1">
+              </label>
+            </div>
           </div>
 
-          <div class="actions compact-actions image-cache-actions">
+          <div class="actions compact-actions">
             <button class="btn secondary" id="cleanupImageCacheBtn" type="button">立即清理过期图片</button>
             <span class="muted" id="cleanupImageCacheState" aria-live="polite">自动清理运行中</span>
           </div>

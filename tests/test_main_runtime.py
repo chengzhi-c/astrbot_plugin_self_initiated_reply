@@ -808,7 +808,8 @@ def test_version_consistency_across_metadata() -> None:
     assert match is not None
     version = match.group(1)
     assert f"version: {version}" in metadata
-    assert f"当前版本：`{version}`" in readme
+    # README 版本号由 shields 徽章承载（0.7.22 起，原「当前版本」行随 README 重写移除）
+    assert f"版本-{version}-" in readme
     # 宿主下限声明保持一致
     assert '">=4.26.1,<5"' in metadata
 

@@ -1,5 +1,5 @@
 name: astrbot_plugin_self_initiated_reply
-display_name: 主动回复
+display_name: 业镜 · 主动回复
 desc: 主动回复插件：白名单会话内，避开 @Bot/命令后由判断模型决定是否自然接话，回复走 AstrBot 主 Agent 管线，主动运行默认收紧第三方工具边界，可放开
 help: |
   指令组：/selfreply
@@ -11,7 +11,7 @@ help: |
   /selfreply on: 临时启用
   /selfreply off: 临时暂停
   /selfreply debug: 查看当前会话识别信息
-version: 0.7.21
+version: 0.7.22
 astrbot_version: ">=4.26.1,<5"
 author: chengzhi-c
 repo: "https://github.com/chengzhi-c/astrbot_plugin_self_initiated_reply"
