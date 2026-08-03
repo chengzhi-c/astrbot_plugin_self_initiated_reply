@@ -6,10 +6,6 @@
   </picture>
 </p>
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/logo1.png" alt="logo" width="88">
-</p>
-
 <h1 align="center">业镜 · 主动回复</h1>
 
 <p align="center">
