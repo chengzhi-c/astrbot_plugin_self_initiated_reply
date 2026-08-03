@@ -97,7 +97,7 @@ def test_runtime_adapter_enforces_run_contract_params() -> None:
         adapter.validate()
 
 
-def test_restrict_final_tools_enforces_allowlist() -> None:
+def test_filter_final_tools_modes() -> None:
     runtime = _load_adapter()
     adapter = runtime.AstrBotRuntimeAdapter(
         runtime.AgentRuntimeCapabilities(
@@ -129,13 +129,26 @@ def test_restrict_final_tools_enforces_allowlist() -> None:
     tool_set.add_tool(Tool("web_search"))
     req = type("Req", (), {"func_tool": tool_set})()
 
-    assert adapter.restrict_final_tools(req, set()) is True
+    assert adapter.filter_final_tools(req, keep=frozenset()) is True
     assert tool_set.tools == []
 
     # 无法枚举 -> fail closed
     bad_req = type("Req", (), {"func_tool": type("Bad", (), {"tools": None})()})()
-    assert adapter.restrict_final_tools(bad_req, set()) is False
+    assert adapter.filter_final_tools(bad_req, keep=frozenset()) is False
 
     # 无工具集 -> 天然空，放行
     empty_req = type("Req", (), {"func_tool": None})()
-    assert adapter.restrict_final_tools(empty_req, set()) is True
+    assert adapter.filter_final_tools(empty_req, keep=frozenset()) is True
+
+    # denylist 模式：只移除指定工具，其余保留
+    tool_set2 = ToolSet()
+    tool_set2.add_tool(Tool("astr_kb_search"))
+    tool_set2.add_tool(Tool("third_party_weather"))
+    req2 = type("Req", (), {"func_tool": tool_set2})()
+    assert (
+        adapter.filter_final_tools(
+            req2, drop=frozenset({"astr_kb_search", "create_future_task"})
+        )
+        is True
+    )
+    assert [t.name for t in tool_set2.tools] == ["third_party_weather"]

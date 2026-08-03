@@ -10,7 +10,7 @@ from typing import Any
 
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.7.18"
+PLUGIN_VERSION = "0.7.21"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -32,6 +32,38 @@ MAX_DIRECT_TOOL_SENDS = 2  # 每次主动回复最多允许工具直接发出的
 # 无法验证时终止本次主动运行（fail closed）。后续如需放行工具，必须提供稳定工具
 # ID、明确 owner、行为测试和独立安全评审后才能加入。
 PROACTIVE_ALLOWED_TOOL_IDS: frozenset[str] = frozenset()
+# 宿主级危险能力工具 ID（实证于 AstrBot 4.26/4.27 源码 astrbot/core/{computer,tools,cron_tools,knowledge_base_tools}）：
+# cron（create_future_task 等）、电脑使用（shell/python/browser/fs）、文档提取、知识库 agentic。
+# 无论 proactive_inherit_tools 开关如何，这些工具在主动运行中一律拒绝；
+# 该清单是 build config 硬关闭（add_cron_tools/computer_use_runtime/file_extract/kb_agentic）
+# 之外的最终防线，用于拦截 hook 在 build 后注入的宿主危险工具。
+HOST_DANGEROUS_TOOL_IDS: frozenset[str] = frozenset(
+    {
+        # cron（astrbot/core/tools/cron_tools.py）
+        "create_future_task",
+        "delete_future_task",
+        "list_future_tasks",
+        # shell / python（astrbot/core/computer/tools/{shell,python}.py）
+        "astrbot_execute_shell",
+        "astrbot_execute_ipython",
+        "astrbot_execute_python",
+        # browser / computer use（astrbot/core/computer/tools/browser.py）
+        "astrbot_execute_browser",
+        "astrbot_execute_browser_batch",
+        "astrbot_run_browser_skill",
+        # filesystem（astrbot/core/computer/tools/fs.py）
+        "astrbot_upload_file",
+        "astrbot_download_file",
+        "astrbot_create_file",
+        "astrbot_read_file",
+        "astrbot_read_file_tool",
+        "astrbot_file_write_tool",
+        "astrbot_file_edit_tool",
+        "astrbot_grep_tool",
+        # knowledge base agentic（astrbot/core/tools/knowledge_base_tools.py）
+        "astr_kb_search",
+    }
+)
 REPLY_REQUEST_WINDOW_SEC = 180  # 明确请求窗口：3分钟内的接话请求视为有效
 EVENT_CLEANUP_INTERVAL_SEC = 3600  # 事件清理间隔：1小时清理一次陈旧事件
 MAX_CACHED_EVENTS = 100  # 最大缓存事件数：防止内存无限增长
@@ -288,6 +320,7 @@ class Settings:
     check_interval_sec: int
     patrol_inactive_after_sec: int
     generation_timeout_sec: float
+    proactive_inherit_tools: bool
     vision_judge_enabled: bool
     vision_main_enabled: bool
     vision_provider_id: str
@@ -398,6 +431,9 @@ class Settings:
                 config.get("patrol_inactive_after_sec", 1800), 1800, 0, 604800
             ),
             generation_timeout_sec=as_float(config.get("generation_timeout_sec", 60), 60, 1, 300),
+            proactive_inherit_tools=as_bool(
+                config.get("proactive_inherit_tools", False), False
+            ),
             vision_judge_enabled=vision_judge_enabled,
             vision_main_enabled=vision_main_enabled,
             vision_provider_id=str(config.get("vision_provider_id", "") or "").strip(),
@@ -448,6 +484,7 @@ class Settings:
             "enabled_message_trigger": self.enabled_message_trigger,
             "enabled_patrol_trigger": self.enabled_patrol_trigger,
             "generation_timeout_sec": self.generation_timeout_sec,
+            "proactive_inherit_tools": self.proactive_inherit_tools,
             "vision_judge_enabled": self.vision_judge_enabled,
             "vision_main_enabled": self.vision_main_enabled,
             "vision_provider_id": self.vision_provider_id,

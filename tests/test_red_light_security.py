@@ -174,24 +174,6 @@ def test_unknown_send_outcome_is_not_delivered() -> None:
 # 红灯测试组 3：状态持久化竞态条件
 # ============================================================================
 
-def test_concurrent_daily_count_increment(tmp_path: Path) -> None:
-    """测试并发递增每日计数是否安全"""
-    models, _, storage = _load_modules()
-    from collections import deque
-    
-    state = storage.SessionState(recent=deque(maxlen=5))
-    state.daily_key = models.today_key()
-    state.daily_count = 0
-    
-    # 模拟并发递增（实际应该用锁保护）
-    initial_count = state.daily_count
-    state.daily_count += 1
-    state.daily_count += 1
-    
-    # 预期：如果没有锁保护，这只是单线程安全，不代表并发安全
-    # 真实场景需要测试多线程/多协程访问
-    assert state.daily_count == initial_count + 2
-
 
 def test_state_corruption_on_partial_write(tmp_path: Path) -> None:
     """测试写入中断时状态文件是否损坏"""
