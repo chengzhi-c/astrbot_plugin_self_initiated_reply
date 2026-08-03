@@ -153,14 +153,27 @@ class AstrBotRuntimeAdapter:
         except Exception:
             return None
 
-    def restrict_final_tools(self, req: Any, allowed_tool_ids: set[str]) -> bool:
-        """Enforce the proactive tool allowlist on the final request tool set.
+    def filter_final_tools(
+        self,
+        req: Any,
+        *,
+        keep: frozenset[str] | None = None,
+        drop: frozenset[str] = frozenset(),
+    ) -> bool:
+        """Filter ``req.func_tool`` down to ``keep`` minus ``drop``.
 
-        Removes every tool whose id is not in ``allowed_tool_ids`` directly from
-        ``req.func_tool``, which is the same object the agent runner reads at
-        reset and run time. Returns ``False`` when the tool set cannot be
-        enumerated or a removal fails; callers must then abort the proactive
-        run (fail closed).
+        One of two modes is used per call:
+        - ``keep`` is not None: allowlist mode. Removes every tool not in
+          ``keep`` (the default proactive policy: empty allowlist removes all).
+        - ``keep`` is None: denylist mode. Removes only tools in ``drop`` and
+          leaves everything else untouched (inherit mode guard against
+          host-dangerous capabilities, including tools a hook injected after
+          build).
+
+        Operates on ``req.func_tool`` directly, the same object the agent
+        runner reads at reset and run time. Returns ``False`` when the tool
+        set cannot be enumerated or a removal fails; callers must then abort
+        the proactive run (fail closed).
         """
         tool_set = getattr(req, "func_tool", None)
         if tool_set is None:
@@ -171,14 +184,21 @@ class AstrBotRuntimeAdapter:
         try:
             for tool in list(tools):
                 name = str(getattr(tool, "name", "") or "").strip()
-                if name and name not in allowed_tool_ids:
+                if not name:
+                    continue
+                if keep is not None:
+                    if name not in keep:
+                        tool_set.remove_tool(name)
+                elif name in drop:
                     tool_set.remove_tool(name)
         except Exception:
             return False
         remaining = self.final_tool_ids(req)
-        return remaining is not None and all(
-            name in allowed_tool_ids for name in remaining
-        )
+        if remaining is None:
+            return False
+        if keep is not None:
+            return all(name in keep for name in remaining)
+        return all(name not in drop for name in remaining)
 
     def new_build_config(self, **kwargs: Any) -> Any:
         self.validate()

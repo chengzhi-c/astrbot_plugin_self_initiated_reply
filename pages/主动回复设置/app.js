@@ -1,53 +1,69 @@
 const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
 
-const els = {
-  refreshBtn: document.getElementById("refreshBtn"),
-  saveTopBtn: document.getElementById("saveTopBtn"),
-  themeToggle: document.getElementById("themeToggle"),
-  selfStat: document.getElementById("selfStat"),
-  selfStatus: document.getElementById("selfStatus"),
-  decisionModelStat: document.getElementById("decisionModelStat"),
-  decisionModelStatus: document.getElementById("decisionModelStatus"),
-  whitelistCount: document.getElementById("whitelistCount"),
-  configForm: document.getElementById("configForm"),
-  enabledInput: document.getElementById("enabledInput"),
-  decisionModelInput: document.getElementById("decisionModelInput"),
-  providerField: document.querySelector(".provider-field"),
-  judgeProviderSelect: document.getElementById("judgeProviderSelect"),
-  judgeProviderInput: document.getElementById("judgeProviderInput"),
-  providerManualBtn: document.getElementById("providerManualBtn"),
-  visionProviderSelect: document.getElementById("visionProviderSelect"),
-  visionProviderInput: document.getElementById("visionProviderInput"),
-  visionProviderManualBtn: document.getElementById("visionProviderManualBtn"),
-  visionJudgeProviderSelect: document.getElementById("visionJudgeProviderSelect"),
-  visionJudgeProviderInput: document.getElementById("visionJudgeProviderInput"),
-  visionJudgeProviderManualBtn: document.getElementById("visionJudgeProviderManualBtn"),
-  providerHint: document.getElementById("providerHint"),
-  decisionTempInput: document.getElementById("decisionTempInput"),
-  decisionTimeoutInput: document.getElementById("decisionTimeoutInput"),
-  decisionPromptInput: document.getElementById("decisionPromptInput"),
-  promptPreview: document.getElementById("promptPreview"),
-  resetPromptBtn: document.getElementById("resetPromptBtn"),
-  minContextInput: document.getElementById("minContextInput"),
-  messageDelayInput: document.getElementById("messageDelayInput"),
-  minSilenceInput: document.getElementById("minSilenceInput"),
-  cooldownInput: document.getElementById("cooldownInput"),
-  visionJudgeEnabledInput: document.getElementById("visionJudgeEnabledInput"),
-  visionMainEnabledInput: document.getElementById("visionMainEnabledInput"),
-  visionSkipStickersInput: document.getElementById("visionSkipStickersInput"),
-  visionMaxImagesInput: document.getElementById("visionMaxImagesInput"),
-  visionImageAgeInput: document.getElementById("visionImageAgeInput"),
-  visionTimeoutInput: document.getElementById("visionTimeoutInput"),
-  cleanupImageCacheBtn: document.getElementById("cleanupImageCacheBtn"),
-  cleanupImageCacheState: document.getElementById("cleanupImageCacheState"),
-  whitelistInput: document.getElementById("whitelistInput"),
-  configSaveState: document.getElementById("configSaveState"),
-  toast: document.getElementById("toast"),
-};
+let els = null;
+
+function getEls() {
+  if (els) return els;
+  els = {
+    refreshBtn: document.getElementById("refreshBtn"),
+    saveTopBtn: document.getElementById("saveTopBtn"),
+    themeToggle: document.getElementById("themeToggle"),
+    selfStat: document.getElementById("selfStat"),
+    selfStatus: document.getElementById("selfStatus"),
+    decisionModelStat: document.getElementById("decisionModelStat"),
+    decisionModelStatus: document.getElementById("decisionModelStatus"),
+    whitelistCount: document.getElementById("whitelistCount"),
+    configForm: document.getElementById("configForm"),
+    enabledInput: document.getElementById("enabledInput"),
+    decisionModelInput: document.getElementById("decisionModelInput"),
+    providerField: document.querySelector(".provider-field"),
+    judgeProviderSelect: document.getElementById("judgeProviderSelect"),
+    judgeProviderInput: document.getElementById("judgeProviderInput"),
+    providerManualBtn: document.getElementById("providerManualBtn"),
+    visionProviderSelect: document.getElementById("visionProviderSelect"),
+    visionProviderInput: document.getElementById("visionProviderInput"),
+    visionProviderManualBtn: document.getElementById("visionProviderManualBtn"),
+    visionJudgeProviderSelect: document.getElementById("visionJudgeProviderSelect"),
+    visionJudgeProviderInput: document.getElementById("visionJudgeProviderInput"),
+    visionJudgeProviderManualBtn: document.getElementById("visionJudgeProviderManualBtn"),
+    providerHint: document.getElementById("providerHint"),
+    decisionTempInput: document.getElementById("decisionTempInput"),
+    decisionTimeoutInput: document.getElementById("decisionTimeoutInput"),
+    decisionPromptInput: document.getElementById("decisionPromptInput"),
+    promptPreview: document.getElementById("promptPreview"),
+    resetPromptBtn: document.getElementById("resetPromptBtn"),
+    minContextInput: document.getElementById("minContextInput"),
+    messageDelayInput: document.getElementById("messageDelayInput"),
+    minSilenceInput: document.getElementById("minSilenceInput"),
+    cooldownInput: document.getElementById("cooldownInput"),
+    visionJudgeEnabledInput: document.getElementById("visionJudgeEnabledInput"),
+    visionMainEnabledInput: document.getElementById("visionMainEnabledInput"),
+    visionSkipStickersInput: document.getElementById("visionSkipStickersInput"),
+    visionMaxImagesInput: document.getElementById("visionMaxImagesInput"),
+    visionImageAgeInput: document.getElementById("visionImageAgeInput"),
+    visionTimeoutInput: document.getElementById("visionTimeoutInput"),
+    proactiveInheritToolsInput: document.getElementById("proactiveInheritToolsInput"),
+    cleanupImageCacheBtn: document.getElementById("cleanupImageCacheBtn"),
+    cleanupImageCacheState: document.getElementById("cleanupImageCacheState"),
+    whitelistInput: document.getElementById("whitelistInput"),
+    configSaveState: document.getElementById("configSaveState"),
+    toast: document.getElementById("toast"),
+  };
+  return els;
+}
+
+// 初始化时立即调用一次，确保后续代码能直接用 els
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', getEls);
+} else {
+  getEls();
+}
 
 let bridgeReady = null;
 let providerOptions = [];
 let providerManualMode = false;
+let savingConfig = false;
+let configLoaded = false;
 
 const PROMPT_PREVIEW_VALUES = {
   session: "aiocqhttp:GroupMessage:123456789",
@@ -78,17 +94,45 @@ function applyTheme(theme) {
   } else {
     document.documentElement.setAttribute("data-theme", theme);
   }
+  cacheThemeLocally(theme);
+}
+
+// AstrBot 插件页面以 iframe 嵌入 Dashboard，localStorage 不可用（访问即抛异常），
+// 持久化必须走后端 ui/theme API；localStorage 仅作为直接打开页面时的缓存。
+function cacheThemeLocally(theme) {
   try {
     if (theme === "auto") localStorage.removeItem(THEME_KEY);
     else localStorage.setItem(THEME_KEY, theme);
   } catch (error) {
-    /* localStorage 不可用时仅当次生效 */
+    /* iframe 环境 localStorage 不可用，忽略 */
+  }
+}
+
+async function persistTheme(theme) {
+  cacheThemeLocally(theme);
+  try {
+    await apiPost("ui/theme", { theme });
+  } catch (error) {
+    /* 后端持久化失败仅当次生效 */
+  }
+}
+
+async function restoreTheme() {
+  // 后端是 iframe 环境下的权威主题源；localStorage 缓存仅作首帧防闪
+  try {
+    const result = await apiGet("ui/theme");
+    const saved = result && result.ok !== false ? String(result.theme || "auto").trim() : "auto";
+    const next = saved === "light" || saved === "dark" ? saved : "auto";
+    if (next !== currentTheme()) applyTheme(next);
+  } catch (error) {
+    /* 后端不可用时保持当前（localStorage/系统）主题 */
   }
 }
 
 function cycleTheme() {
   const next = THEME_CYCLE[(THEME_CYCLE.indexOf(currentTheme()) + 1) % THEME_CYCLE.length];
   applyTheme(next);
+  persistTheme(next);
 }
 
 function setStatState(element, state) {
@@ -97,14 +141,39 @@ function setStatState(element, state) {
   element.classList.add(state);
 }
 
-function setSaveState(text, kind) {
+function setSaveState(message, state) {
   if (!els.configSaveState) return;
-  els.configSaveState.textContent = text || "";
+  els.configSaveState.textContent = message;
   els.configSaveState.classList.remove("is-pending", "is-ok", "is-error");
-  if (kind) els.configSaveState.classList.add(`is-${kind}`);
+  if (state) els.configSaveState.classList.add(`is-${state}`);
+}
+
+let isDirty = false;
+
+function setDirty(dirty = true) {
+  isDirty = dirty;
+  if (els.saveTopBtn) els.saveTopBtn.classList.toggle("is-dirty", isDirty);
+  const bottomSave = els.configForm ? els.configForm.querySelector('.form-actions button[type="submit"]') : null;
+  if (bottomSave) bottomSave.classList.toggle("is-dirty", isDirty);
+  if (dirty && els.configSaveState && !els.configSaveState.textContent.includes("保存中")) {
+    setSaveState("有未保存改动", "pending");
+  } else if (!dirty && els.configSaveState && els.configSaveState.textContent === "有未保存改动") {
+    setSaveState("", "");
+  }
+}
+
+function attachDirtyListeners() {
+  if (!els.configForm) return;
+  els.configForm.addEventListener("change", () => setDirty(true));
+  els.configForm.addEventListener("input", (e) => {
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") {
+      setDirty(true);
+    }
+  });
 }
 
 function showToast(message) {
+  if (!els.toast) return;
   els.toast.textContent = message;
   els.toast.classList.add("show");
   window.clearTimeout(showToast.timer);
@@ -128,7 +197,11 @@ async function apiGet(endpoint, params = {}) {
     if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
   });
   const response = await fetch(url, { credentials: "include" });
-  return response.json();
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(result?.error || `请求失败 (${response.status})`);
+  }
+  return result;
 }
 
 async function apiPost(endpoint, body = {}) {
@@ -161,10 +234,27 @@ function fmtBool(value) {
   return value ? "启用" : "关闭";
 }
 
-function renderPromptTemplate(template, values) {
-  return String(template || "").replace(/\{([a-zA-Z0-9_]+)\}/g, (match, key) => {
+function num(value, fallback) {
+  if (value === "" || value === undefined || value === null) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function escapeHtml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function renderPromptTemplateHtml(template, values) {
+  const escapedTemplate = escapeHtml(template);
+  return escapedTemplate.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, key) => {
     if (Object.prototype.hasOwnProperty.call(values, key)) {
-      return values[key];
+      const val = escapeHtml(values[key]);
+      return `<span class="prompt-var-tag" title="变量 {${key}}">${val}</span>`;
     }
     return match;
   });
@@ -173,7 +263,7 @@ function renderPromptTemplate(template, values) {
 function renderPromptPreview() {
   if (!els.promptPreview) return;
   const template = els.decisionPromptInput.value || els.decisionPromptInput.dataset.defaultPrompt || "";
-  els.promptPreview.textContent = renderPromptTemplate(template, PROMPT_PREVIEW_VALUES);
+  els.promptPreview.innerHTML = renderPromptTemplateHtml(template, PROMPT_PREVIEW_VALUES);
 }
 
 function setProviderManualMode(enabled) {
@@ -339,6 +429,11 @@ async function loadProviders() {
 
 async function loadConfig() {
   const config = await apiGet("config");
+  // 后端异常时返回 {ok: false, error}，此时不得用假默认值填表单（防止
+  // 用户保存时把未加载的默认值写回真实配置）。
+  if (!config || config.ok === false) {
+    throw new Error(config?.error || "配置加载失败");
+  }
   els.enabledInput.checked = Boolean(config.enabled);
   els.decisionModelInput.checked = config.decision_model_enabled !== false;
   syncProviderControl(config.judge_provider_id || "");
@@ -358,6 +453,7 @@ async function loadConfig() {
   els.visionMaxImagesInput.value = config.vision_max_images ?? 2;
   els.visionImageAgeInput.value = config.vision_image_age_sec ?? 300;
   els.visionTimeoutInput.value = config.vision_timeout_sec ?? 20;
+  els.proactiveInheritToolsInput.checked = Boolean(config.proactive_inherit_tools);
   const whitelist = Array.isArray(config.whitelist) ? config.whitelist : [];
   els.whitelistInput.value = whitelist.join("\n");
   els.whitelistCount.textContent = String(whitelist.length);
@@ -367,46 +463,78 @@ async function loadConfig() {
     setStatState(els.decisionModelStat, decisionOn ? "is-on" : "is-off");
   }
   renderPromptPreview();
+  // 状态点三态：持久关闭 / 持久开启但 /off 暂停 / 运行中。开关 checked 保持持久值，
+  // 避免全量保存把临时暂停固化成永久关闭（与后端 enabled/runtime_enabled 契约一致）。
+  const runtimeOn = config.runtime_enabled !== false;
+  els.selfStatus.textContent = config.enabled
+    ? (runtimeOn ? "启用" : "已暂停（/off）")
+    : "关闭";
+  // 状态染色与文案同源（config 端点），避免与 overview 端点并发互相覆盖。
+  setStatState(els.selfStat, runtimeOn ? "is-on" : "is-off");
+  configLoaded = true;
+  setDirty(false);
 }
 
 async function saveConfig(event) {
   event.preventDefault();
-  setSaveState("保存中", "pending");
-  const whitelist = els.whitelistInput.value
-    .split(/[\n,，]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const result = await apiPost("config", {
-    enabled: els.enabledInput.checked,
-    decision_model_enabled: els.decisionModelInput.checked,
-    judge_provider_id: currentProviderId(),
-    decision_temperature: Number(els.decisionTempInput.value || 0.2),
-    decision_timeout_sec: Number(els.decisionTimeoutInput.value || 20),
-    decision_prompt_template: els.decisionPromptInput.value.trim(),
-    min_context_messages: Number(els.minContextInput.value || 5),
-    message_delay_sec: Number(els.messageDelayInput.value || 60),
-    min_silence_sec: Number(els.minSilenceInput.value || 45),
-    cooldown_sec: Number(els.cooldownInput.value || 900),
-    vision_judge_enabled: els.visionJudgeEnabledInput.checked,
-    vision_main_enabled: els.visionMainEnabledInput.checked,
-    vision_skip_stickers: els.visionSkipStickersInput.checked,
-    vision_provider_id: visionProviderControl.value(),
-    vision_judge_provider_id: visionJudgeProviderControl.value(),
-    vision_max_images: Number(els.visionMaxImagesInput.value || 2),
-    vision_image_age_sec: Number(els.visionImageAgeInput.value || 300),
-    vision_timeout_sec: Number(els.visionTimeoutInput.value || 20),
-    whitelist,
-  });
-  if (!result || result.ok !== true) {
-    setSaveState("保存失败", "error");
-    showToast(result?.error || "保存失败");
+  if (savingConfig) {
+    showToast("正在保存…");
     return;
   }
-  setSaveState("已保存", "ok");
-  els.whitelistCount.textContent = String(whitelist.length);
-  showToast("配置已保存");
-  await loadOverview();
-  await loadConfig();
+  if (!configLoaded) {
+    showToast("配置尚未成功加载，请先刷新页面");
+    return;
+  }
+  savingConfig = true;
+  els.configForm.inert = true; // 保存期间禁编辑，防止 reload 冲掉新输入
+  setSaveState("保存中", "pending");
+  try {
+    const whitelist = els.whitelistInput.value
+      .split(/[\n,，]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const result = await apiPost("config", {
+      enabled: els.enabledInput.checked,
+      decision_model_enabled: els.decisionModelInput.checked,
+      judge_provider_id: currentProviderId(),
+      decision_temperature: num(els.decisionTempInput.value, 0.2),
+      decision_timeout_sec: num(els.decisionTimeoutInput.value, 20),
+      decision_prompt_template: els.decisionPromptInput.value.trim(),
+      min_context_messages: num(els.minContextInput.value, 5),
+      message_delay_sec: num(els.messageDelayInput.value, 60),
+      min_silence_sec: num(els.minSilenceInput.value, 45),
+      cooldown_sec: num(els.cooldownInput.value, 900),
+      vision_judge_enabled: els.visionJudgeEnabledInput.checked,
+      vision_main_enabled: els.visionMainEnabledInput.checked,
+      vision_skip_stickers: els.visionSkipStickersInput.checked,
+      vision_provider_id: visionProviderControl.value(),
+      vision_judge_provider_id: visionJudgeProviderControl.value(),
+      vision_max_images: num(els.visionMaxImagesInput.value, 2),
+      vision_image_age_sec: num(els.visionImageAgeInput.value, 300),
+      vision_timeout_sec: num(els.visionTimeoutInput.value, 20),
+      proactive_inherit_tools: els.proactiveInheritToolsInput.checked,
+      whitelist,
+    });
+    if (!result || result.ok !== true) {
+      setSaveState("保存失败", "error");
+      showToast(result?.error || "保存失败");
+      return;
+    }
+    setSaveState("已保存", "ok");
+    setDirty(false);
+    els.whitelistCount.textContent = String(whitelist.length);
+    showToast("配置已保存");
+    // 保存成功即定案；刷新显示失败不再回写"保存失败"（已落盘，避免误导重存）
+    try {
+      await loadOverview();
+      await loadConfig();
+    } catch (error) {
+      showToast("已保存，但刷新显示失败，请点刷新");
+    }
+  } finally {
+    savingConfig = false;
+    els.configForm.inert = false;
+  }
 }
 
 async function cleanupImageCache() {
@@ -436,9 +564,8 @@ async function cleanupImageCache() {
 async function loadOverview() {
   const overview = await apiGet("unified/overview");
   const self = overview.self_reply || {};
-  const enabled = Boolean(self.enabled);
-  els.selfStatus.textContent = fmtBool(enabled);
-  setStatState(els.selfStat, enabled ? "is-on" : "is-off");
+  // 状态点文案与染色均由 loadConfig 统一管理（config 端点同时含持久/运行时两态）；
+  // 这里只刷新会话计数。
   els.whitelistCount.textContent = String(self.whitelist_count || 0);
 }
 
@@ -447,7 +574,10 @@ async function loadAll() {
   await Promise.all([loadConfig(), loadOverview()]);
 }
 
-els.refreshBtn.addEventListener("click", () => loadAll().catch((err) => showToast(err.message || "刷新失败")));
+els.refreshBtn.addEventListener("click", () => {
+  if (isDirty && !window.confirm("有未保存改动，刷新将丢弃，确定刷新？")) return;
+  loadAll().catch((err) => showToast(err.message || "刷新失败"));
+});
 if (els.cleanupImageCacheBtn) {
   els.cleanupImageCacheBtn.addEventListener("click", () => cleanupImageCache());
 }
@@ -471,9 +601,21 @@ if (els.judgeProviderSelect) {
 els.resetPromptBtn.addEventListener("click", () => {
   els.decisionPromptInput.value = els.decisionPromptInput.dataset.defaultPrompt || "";
   renderPromptPreview();
+  setDirty(true);
   showToast("已恢复默认提示词，点击保存后生效");
 });
 els.decisionPromptInput.addEventListener("input", renderPromptPreview);
+// 本地开关即时反馈：未保存前文案标记「（未保存）」，保存后由 loadConfig 以服务端态覆盖
+els.enabledInput.addEventListener("change", () => {
+  els.selfStatus.textContent = els.enabledInput.checked ? "启用（未保存）" : "关闭（未保存）";
+  setDirty(true);
+});
+els.decisionModelInput.addEventListener("change", () => {
+  const on = els.decisionModelInput.checked;
+  els.decisionModelStatus.textContent = fmtBool(on);
+  setStatState(els.decisionModelStat, on ? "is-on" : "is-off");
+  setDirty(true);
+});
 els.configForm.addEventListener("submit", (event) => saveConfig(event).catch((err) => {
   setSaveState("保存失败", "error");
   showToast(err.message || "保存失败");
@@ -484,6 +626,16 @@ if (els.themeToggle) {
   els.themeToggle.addEventListener("click", cycleTheme);
 }
 
+// 页面加载时恢复保存的主题
+try {
+  const saved = localStorage.getItem(THEME_KEY);
+  if (saved === "light" || saved === "dark") {
+    applyTheme(saved);
+  }
+} catch (error) {
+  /* localStorage 不可用时使用默认 */
+}
+
 // 顶部保存按钮
 if (els.saveTopBtn) {
   els.saveTopBtn.addEventListener("click", () => {
@@ -491,17 +643,15 @@ if (els.saveTopBtn) {
   });
 }
 
-// 标签页切换
-document.querySelectorAll(".tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    const viewId = tab.dataset.view;
-    if (!viewId) return;
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-    document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
-    tab.classList.add("active");
-    const view = document.getElementById(viewId);
-    if (view) view.classList.add("active");
-  });
+attachDirtyListeners();
+
+window.addEventListener("beforeunload", (e) => {
+  if (isDirty) {
+    e.preventDefault();
+    e.returnValue = "";
+  }
 });
 
 loadAll().catch((err) => showToast(err.message || "加载失败"));
+// 主题权威源在后端（iframe 下 localStorage 不可用），加载完成后异步恢复
+restoreTheme();

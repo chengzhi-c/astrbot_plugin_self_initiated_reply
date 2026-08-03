@@ -146,7 +146,20 @@
         </div>
       </section>
 
-      <!-- 第四层：怎么判断。判断模型 Provider 必须是文档中第一个 .provider-field -->
+      <!-- 第四层：运行边界。主动回复能调用什么能力 -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2>运行边界</h2>
+          <span class="muted">主动回复默认不碰插件工具</span>
+        </div>
+        <label class="toggle-row">
+          <input type="checkbox" id="proactiveInheritToolsInput">
+          <span>允许继承插件工具（与正常 @Bot 回复一致）</span>
+        </label>
+        <p class="muted">默认关闭：主动回复只允许内置低副作用能力，第三方插件工具、Shell/Python、文件读写、浏览器、定时任务、技能管理和跨会话发送一律不可用。开启后，群聊里的普通消息可能间接触发插件能力（如发图、记忆、搜索），仅在你信任群聊环境并确认插件工具副作用可控时开启。</p>
+      </section>
+
+      <!-- 第五层：怎么判断。判断模型 Provider 必须是文档中第一个 .provider-field -->
       <section class="panel">
         <div class="panel-head">
           <h2>判断方式</h2>
@@ -236,7 +249,7 @@
         </details>
       </section>
 
-      <!-- 第五层：看不看图。可选增强，默认收起 -->
+      <!-- 第六层：看不看图。可选增强，默认收起 -->
       <details class="panel panel-collapsible">
         <summary>
           <span class="summary-title">图片识别</span>
@@ -257,7 +270,7 @@
           </label>
 
           <div class="field-grid">
-            <label class="field provider-cell">
+            <div class="field provider-cell">
               <span class="field-label">识图模型 Provider</span>
               <div class="provider-field vision-provider-field">
                 <select id="visionProviderSelect">
@@ -266,8 +279,8 @@
                 <input type="text" id="visionProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
                 <button type="button" class="btn-link" id="visionProviderManualBtn">手动输入</button>
               </div>
-            </label>
-            <label class="field provider-cell">
+            </div>
+            <div class="field provider-cell">
               <span class="field-label">判断阶段识图 Provider</span>
               <div class="provider-field vision-provider-field">
                 <select id="visionJudgeProviderSelect">
@@ -276,7 +289,7 @@
                 <input type="text" id="visionJudgeProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
                 <button type="button" class="btn-link" id="visionJudgeProviderManualBtn">手动输入</button>
               </div>
-            </label>
+            </div>
             <label class="field">
               <span class="field-label">单次最多识别图片数<em>张</em></span>
               <input type="number" id="visionMaxImagesInput" min="1" max="5">

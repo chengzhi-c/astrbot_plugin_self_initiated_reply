@@ -55,7 +55,7 @@ def test_install_boundary_only_touches_event_plugins_name(tmp_path: Path) -> Non
         event.platform_meta.support_proactive_message = True
         event.plugins_name = list(original_plugins_name)
 
-        state = plugin._install_agent_tool_boundary(event)
+        state = plugin._install_agent_tool_boundary(event, False)
         assert event.plugins_name == []
         assert event.platform_meta.support_proactive_message is True
 
@@ -65,7 +65,46 @@ def test_install_boundary_only_touches_event_plugins_name(tmp_path: Path) -> Non
     with_plugin(tmp_path, scenario)
 
 
-def test_restrict_final_tools_removes_injected_tools(tmp_path: Path) -> None:
+def test_inherit_tools_mode_keeps_plugin_names_and_skips_policy(tmp_path: Path) -> None:
+    """开关开启时：主动运行不清空插件工具边界，最终工具集也不清理。"""
+
+    async def scenario(plugin, main):
+        event = _make_event()
+        event.plugins_name = ["stealer", "living_memory"]
+
+        state = plugin._install_agent_tool_boundary(event, True)
+        assert state == {}
+        assert event.plugins_name == ["stealer", "living_memory"]
+
+        tool_set = FakeToolSet()
+        tool_set.add_tool(type("T", (), {"name": "stealer_fetch"})())
+        req = type("Req", (), {"func_tool": tool_set})()
+        assert plugin._enforce_final_tool_policy(req, True) is True
+        assert [tool.name for tool in tool_set.tools] == ["stealer_fetch"]
+
+    with_plugin(tmp_path, scenario, proactive_inherit_tools=True)
+
+
+def test_inherit_tools_default_off_and_persisted_via_api(tmp_path: Path) -> None:
+    """开关默认关闭；API 可持久化开启并回读。"""
+
+    async def scenario(plugin, main):
+        assert plugin.settings.proactive_inherit_tools is False
+
+        await _post_config(plugin, {"proactive_inherit_tools": True})
+        assert plugin.settings.proactive_inherit_tools is True
+
+        config = await plugin._api_get_config()
+        assert config.get("proactive_inherit_tools") is True
+
+        # 非法类型必须拒绝
+        await _post_config(plugin, {"proactive_inherit_tools": "yes"})
+        assert plugin.settings.proactive_inherit_tools is True  # 未变化
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_filter_final_tools_removes_injected_tools(tmp_path: Path) -> None:
     """宿主 build 注入的工具必须在 reset/run 前被清空。"""
 
     async def scenario(plugin, main):
@@ -75,35 +114,35 @@ def test_restrict_final_tools_removes_injected_tools(tmp_path: Path) -> None:
         tool_set.add_tool(type("T", (), {"name": "mcp_anything"})())
         req = type("Req", (), {"func_tool": tool_set})()
 
-        ok = main._AGENT_RUNTIME.restrict_final_tools(req, set())
+        ok = main._AGENT_RUNTIME.filter_final_tools(req, keep=frozenset())
         assert ok is True
         assert tool_set.tools == []
 
     with_plugin(tmp_path, scenario)
 
 
-def test_restrict_final_tools_keeps_only_allowed(tmp_path: Path) -> None:
+def test_filter_final_tools_keeps_only_allowed(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         tool_set = FakeToolSet()
         tool_set.add_tool(type("T", (), {"name": "safe_tool"})())
         tool_set.add_tool(type("T", (), {"name": "danger_tool"})())
         req = type("Req", (), {"func_tool": tool_set})()
 
-        ok = main._AGENT_RUNTIME.restrict_final_tools(req, {"safe_tool"})
+        ok = main._AGENT_RUNTIME.filter_final_tools(req, keep=frozenset({"safe_tool"}))
         assert ok is True
         assert [tool.name for tool in tool_set.tools] == ["safe_tool"]
 
     with_plugin(tmp_path, scenario)
 
 
-def test_restrict_final_tools_fails_closed_when_unverifiable(tmp_path: Path) -> None:
+def test_filter_final_tools_fails_closed_when_unverifiable(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         req = type("Req", (), {"func_tool": type("Bad", (), {"tools": None})()})()
-        assert main._AGENT_RUNTIME.restrict_final_tools(req, set()) is False
+        assert main._AGENT_RUNTIME.filter_final_tools(req, keep=frozenset()) is False
 
         # 无 func_tool 视为天然空集，允许通过
         empty_req = type("Req", (), {"func_tool": None})()
-        assert main._AGENT_RUNTIME.restrict_final_tools(empty_req, set()) is True
+        assert main._AGENT_RUNTIME.filter_final_tools(empty_req, keep=frozenset()) is True
 
     with_plugin(tmp_path, scenario)
 
@@ -113,12 +152,12 @@ def test_enforce_final_tool_policy_fail_closed_aborts_run(tmp_path: Path) -> Non
 
     async def scenario(plugin, main):
         bad_req = type("Req", (), {"func_tool": type("Bad", (), {"tools": None})()})()
-        assert plugin._enforce_final_tool_policy(bad_req) is False
+        assert plugin._enforce_final_tool_policy(bad_req, False) is False
 
         tool_set = FakeToolSet()
         tool_set.add_tool(type("T", (), {"name": "send_message_to_user"})())
         clean_req = type("Req", (), {"func_tool": tool_set})()
-        assert plugin._enforce_final_tool_policy(clean_req) is True
+        assert plugin._enforce_final_tool_policy(clean_req, False) is True
         assert tool_set.tools == []
 
     with_plugin(tmp_path, scenario)
@@ -213,8 +252,8 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
         enforce_tool_snapshots: list[list[str]] = []
         original_enforce = plugin._enforce_final_tool_policy
 
-        def counting_enforce(req):
-            ok = original_enforce(req)
+        def counting_enforce(req, inherit_tools):
+            ok = original_enforce(req, inherit_tools)
             enforce_tool_snapshots.append(
                 sorted(main._AGENT_RUNTIME.final_tool_ids(req) or [])
             )
@@ -772,3 +811,48 @@ def test_version_consistency_across_metadata() -> None:
     assert f"当前版本：`{version}`" in readme
     # 宿主下限声明保持一致
     assert '">=4.26.1,<5"' in metadata
+
+
+# ============================================================================
+# UI 主题偏好持久化（iframe 下 localStorage 不可用，走后端 ui/theme）
+# ============================================================================
+
+
+def test_ui_theme_defaults_to_auto(tmp_path: Path) -> None:
+    """未设置时 GET ui/theme 返回 auto。"""
+
+    async def scenario(plugin, main):
+        cfg = await plugin._api_get_ui_theme()
+        assert cfg == {"ok": True, "theme": "auto"}
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_ui_theme_persists_across_instances(tmp_path: Path) -> None:
+    """主题写入后端文件后，新实例（模拟页面刷新）仍能恢复。"""
+
+    async def scenario(plugin, main):
+        import sys
+
+        web = sys.modules["astrbot.api.web"]
+        web.request.payload = {"theme": "light"}
+        result = await plugin._api_post_ui_theme()
+        assert result == {"ok": True, "theme": "light"}
+        # 文件已落盘
+        prefs_path = plugin._ui_prefs_path
+        assert prefs_path.exists()
+        assert "\"theme\": \"light\"" in prefs_path.read_text(encoding="utf-8")
+        # 非法主题被拒且不改变状态
+        web.request.payload = {"theme": "blue"}
+        bad = await plugin._api_post_ui_theme()
+        assert bad.get("ok") is False
+        assert plugin._ui_theme == "light"
+
+    with_plugin(tmp_path, scenario)
+
+    # 同一数据目录新建实例：模拟刷新/重启后主题仍在（iframe 场景的关键）
+    async def reopen(plugin, main):
+        cfg = await plugin._api_get_ui_theme()
+        assert cfg == {"ok": True, "theme": "light"}
+
+    with_plugin(tmp_path, reopen)

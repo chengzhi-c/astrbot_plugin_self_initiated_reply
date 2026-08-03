@@ -463,8 +463,8 @@ def test_proactive_agent_starts_with_restricted_tool_scope() -> None:
     method = source[start:end]
 
     assert "req.func_tool = _AGENT_RUNTIME.new_tool_set()" in method
-    assert "_install_agent_tool_boundary(last_event)" in method
-    assert "_enforce_final_tool_policy(req)" in method
+    assert "_install_agent_tool_boundary(last_event, inherit_tools)" in method
+    assert "_enforce_final_tool_policy(req, inherit_tools)" in method
     boundary_start = source.index("    def _install_agent_tool_boundary(")
     boundary_end = source.index("\n    @staticmethod\n    def _resolve_paths", boundary_start)
     boundary = source[boundary_start:boundary_end]
@@ -474,7 +474,7 @@ def test_proactive_agent_starts_with_restricted_tool_scope() -> None:
     policy_start = source.index("    def _enforce_final_tool_policy(")
     policy_end = source.index("\n    def _main_agent_build_config(", policy_start)
     policy = source[policy_start:policy_end]
-    assert "restrict_final_tools(req, PROACTIVE_ALLOWED_TOOL_IDS)" in policy
+    assert "filter_final_tools(req, keep=PROACTIVE_ALLOWED_TOOL_IDS)" in policy
     assert "_restore_agent_tool_boundary" in method
 
 

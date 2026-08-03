@@ -217,6 +217,12 @@
       "step": 1
     }
   },
+  "proactive_inherit_tools": {
+    "type": "bool",
+    "description": "主动回复继承插件工具",
+    "hint": "默认关闭：主动回复只允许内置低副作用能力，第三方插件工具、Shell/Python、文件读写、浏览器、定时任务、技能管理和跨会话发送一律不可用。开启后主动回复与正常 @Bot 回复使用同一套插件工具（如发图、记忆、搜索等），群聊普通消息可能间接触发这些能力；仅在你信任群聊环境并确认插件工具副作用可控时开启。",
+    "default": false
+  },
   "vision_judge_enabled": {
     "type": "bool",
     "description": "判断模型启用图片识别",

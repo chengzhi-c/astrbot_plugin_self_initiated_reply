@@ -234,6 +234,11 @@ class AstrBotBridge:
             provider_id = await self._call_first_supported(get_current, umo, "get_current_chat_provider_id")
             if provider_id:
                 return str(provider_id).strip()
+        get_using_id = getattr(self.context, "get_using_provider_id", None)
+        if callable(get_using_id):
+            provider_id = await self._call_first_supported(get_using_id, umo, "get_using_provider_id")
+            if provider_id:
+                return str(provider_id).strip()
         get_using = getattr(self.context, "get_using_provider", None)
         if callable(get_using):
             provider = await self._call_first_supported(get_using, umo, "get_using_provider")

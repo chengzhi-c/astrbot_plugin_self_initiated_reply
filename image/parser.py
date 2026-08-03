@@ -462,7 +462,7 @@ class ImageParser:
                 # write_bytes 中断会留下半截文件，命中分支先校验大小；
                 # 同大小内容被外部替换时重算哈希兜底，不符即重写。
                 if target.stat().st_size != len(content) or (
-                    hashlib.sha256(target.read_bytes()).digest() != digest.encode()
+                    hashlib.sha256(target.read_bytes()).hexdigest() != digest
                 ):
                     target.write_bytes(content)
             else:
