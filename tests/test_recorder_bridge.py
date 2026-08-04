@@ -1,0 +1,306 @@
+"""MessageRecorderBridge 补盲测试（0.8.4 批次3：低覆盖模块）。
+
+覆盖 image/recorder_bridge.py 的全部分支：_ensure_api 的探测回退链、
+get_local_image_path / resolve_relative_path / image_to_data_url 的
+拒绝路径与成功路径（含 MIME 魔数校验）。
+"""
+
+from __future__ import annotations
+
+import base64
+import importlib
+import sys
+import types
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_NAME = "selfreply_recorder_test_package"
+
+# 1x1 透明 PNG
+PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def _load_bridge():
+    package = types.ModuleType(PACKAGE_NAME)
+    package.__path__ = [str(ROOT)]
+    sys.modules[PACKAGE_NAME] = package
+    return importlib.import_module(f"{PACKAGE_NAME}.image.recorder_bridge")
+
+
+@pytest.fixture(scope="module")
+def bridge_mod():
+    from .host_stubs import install_astrbot_stubs
+
+    install_astrbot_stubs()
+    return _load_bridge()
+
+
+def _api_with(record=None, resolver=None, *, record_result=None):
+    """构造 recorder API 桩。"""
+
+    class FakeRecorderApi:
+        async def get_by_platform_message_id(self, message_id):
+            if record_result is not None:
+                return record_result
+            return record
+
+        def get_media_absolute_path(self, value):
+            if resolver is None:
+                return None
+            return resolver(value)
+
+    return FakeRecorderApi()
+
+
+def _context_with(api):
+    class Meta:
+        star_instance = type("Star", (), {"get_api": lambda self: api})()
+
+    class FakeContext:
+        def get_registered_star(self, name):
+            return Meta()
+
+    return FakeContext()
+
+
+def _record_with(*images: dict[str, Any]) -> Any:
+    class Record:
+        def get_message_chain_list(self):
+            return list(images)
+
+    return Record()
+
+
+# ============================================================================
+# _ensure_api
+# ============================================================================
+
+
+def test_ensure_api_false_without_context(bridge_mod) -> None:
+    bridge = bridge_mod.MessageRecorderBridge(None)
+    assert bridge._ensure_api() is False
+    assert bridge._api is None
+
+
+def test_ensure_api_false_without_get_registered_star(bridge_mod) -> None:
+    ctx = type("Ctx", (), {})()
+    bridge = bridge_mod.MessageRecorderBridge(ctx)
+    assert bridge._ensure_api() is False
+
+
+def test_ensure_api_false_when_star_missing(bridge_mod) -> None:
+    def get_registered_star(name):
+        return None
+
+    ctx = type("Ctx", (), {"get_registered_star": get_registered_star})()
+    bridge = bridge_mod.MessageRecorderBridge(ctx)
+    assert bridge._ensure_api() is False
+
+
+def test_ensure_api_false_when_no_api_method(bridge_mod) -> None:
+    class Meta:
+        star_instance = type("Star", (), {})()
+
+    def get_registered_star(name):
+        return Meta()
+
+    ctx = type("Ctx", (), {"get_registered_star": get_registered_star})()
+    bridge = bridge_mod.MessageRecorderBridge(ctx)
+    assert bridge._ensure_api() is False
+
+
+def test_ensure_api_false_on_exception(bridge_mod) -> None:
+    def get_registered_star(name):
+        raise OSError("boom")
+
+    ctx = type("Ctx", (), {"get_registered_star": get_registered_star})()
+    bridge = bridge_mod.MessageRecorderBridge(ctx)
+    assert bridge._ensure_api() is False
+
+
+def test_ensure_api_caches_result(bridge_mod) -> None:
+    api = _api_with(record=None)
+    ctx = _context_with(api)
+    bridge = bridge_mod.MessageRecorderBridge(ctx)
+    assert bridge._ensure_api() is True
+    assert bridge._api is api
+    # 二次调用走缓存
+    assert bridge._ensure_api() is True
+
+
+# ============================================================================
+# get_local_image_path
+# ============================================================================
+
+
+async def test_get_local_image_path_empty_message_id(bridge_mod) -> None:
+    bridge = bridge_mod.MessageRecorderBridge(_context_with(_api_with(record=None)))
+    assert await bridge.get_local_image_path("") is None
+
+
+async def test_get_local_image_path_no_record(bridge_mod) -> None:
+    bridge = bridge_mod.MessageRecorderBridge(_context_with(_api_with(record=None)))
+    assert await bridge.get_local_image_path("m1") is None
+
+
+async def test_get_local_image_path_record_without_images(bridge_mod) -> None:
+    record = _record_with({"type": "text", "content": "hi"})
+    bridge = bridge_mod.MessageRecorderBridge(_context_with(_api_with(record=record)))
+    assert await bridge.get_local_image_path("m1") is None
+
+
+async def test_get_local_image_path_no_local_path(bridge_mod) -> None:
+    record = _record_with({"type": "image", "url": "u1", "local_path": ""})
+    bridge = bridge_mod.MessageRecorderBridge(_context_with(_api_with(record=record)))
+    assert await bridge.get_local_image_path("m1") is None
+
+
+async def test_get_local_image_path_url_match(bridge_mod, tmp_path) -> None:
+    target = tmp_path / "target.png"
+    target.write_bytes(PNG_BYTES)
+
+    def resolver(value):
+        return str(target)
+
+    record = _record_with(
+        {"type": "image", "url": "other", "local_path": "ignored"},
+        {"type": "image", "url": "u1", "local_path": str(target)},
+    )
+    bridge = bridge_mod.MessageRecorderBridge(
+        _context_with(_api_with(record=record, resolver=resolver))
+    )
+    result = await bridge.get_local_image_path("m1", "u1")
+    assert result == target
+
+
+async def test_get_local_image_path_first_image_fallback(bridge_mod, tmp_path) -> None:
+    """无匹配 URL 时取第一个 image 组件。"""
+
+    target = tmp_path / "first.png"
+    target.write_bytes(PNG_BYTES)
+
+    def resolver(value):
+        return str(target)
+
+    record = _record_with({"type": "image", "url": "a", "local_path": str(target)})
+    bridge = bridge_mod.MessageRecorderBridge(
+        _context_with(_api_with(record=record, resolver=resolver))
+    )
+    result = await bridge.get_local_image_path("m1")
+    assert result == target
+
+
+async def test_get_local_image_path_resolution_failure(bridge_mod) -> None:
+    record = _record_with({"type": "image", "url": "u1", "local_path": "missing.png"})
+    bridge = bridge_mod.MessageRecorderBridge(
+        _context_with(_api_with(record=record, resolver=lambda value: None))
+    )
+    assert await bridge.get_local_image_path("m1") is None
+
+
+async def test_get_local_image_path_exception(bridge_mod) -> None:
+    async def boom(message_id):
+        raise OSError("db down")
+
+    api = type("FakeRecorderApi", (), {"get_by_platform_message_id": boom})()
+    bridge = bridge_mod.MessageRecorderBridge(_context_with(api))
+    assert await bridge.get_local_image_path("m1") is None
+
+
+# ============================================================================
+# resolve_relative_path
+# ============================================================================
+
+
+async def test_resolve_relative_path_empty(bridge_mod) -> None:
+    bridge = bridge_mod.MessageRecorderBridge(_context_with(_api_with(record=None)))
+    assert bridge.resolve_relative_path("") is None
+
+
+async def test_resolve_relative_path_without_resolver(bridge_mod) -> None:
+    api = _api_with(record=None, resolver=None)
+    bridge = bridge_mod.MessageRecorderBridge(_context_with(api))
+    assert bridge.resolve_relative_path("x.png") is None
+
+
+async def test_resolve_relative_path_missing_file(bridge_mod) -> None:
+    api = _api_with(record=None, resolver=lambda value: str(ROOT / "no_such.png"))
+    bridge = bridge_mod.MessageRecorderBridge(_context_with(api))
+    assert bridge.resolve_relative_path("no_such.png") is None
+
+
+async def test_resolve_relative_path_success(bridge_mod, tmp_path) -> None:
+    target = tmp_path / "ok.png"
+    target.write_bytes(PNG_BYTES)
+    api = _api_with(record=None, resolver=lambda value: str(target))
+    bridge = bridge_mod.MessageRecorderBridge(_context_with(api))
+    assert bridge.resolve_relative_path("ok.png") == target
+
+
+async def test_resolve_relative_path_exception(bridge_mod) -> None:
+    def boom(value):
+        raise OSError("boom")
+
+    api = _api_with(record=None, resolver=boom)
+    bridge = bridge_mod.MessageRecorderBridge(_context_with(api))
+    assert bridge.resolve_relative_path("x.png") is None
+
+
+# ============================================================================
+# image_to_data_url
+# ============================================================================
+
+
+def test_image_to_data_url_missing_file(bridge_mod, tmp_path) -> None:
+    assert bridge_mod.MessageRecorderBridge.image_to_data_url(tmp_path / "none.png") is None
+
+
+def test_image_to_data_url_empty_or_oversized(bridge_mod, tmp_path) -> None:
+    empty = tmp_path / "empty.png"
+    empty.write_bytes(b"")
+    assert bridge_mod.MessageRecorderBridge.image_to_data_url(empty) is None
+
+    huge = tmp_path / "huge.png"
+    huge.write_bytes(b"x" * (10 * 1024 * 1024 + 1))
+    assert bridge_mod.MessageRecorderBridge.image_to_data_url(huge) is None
+
+
+def test_image_to_data_url_rejects_non_image(bridge_mod, tmp_path) -> None:
+    text = tmp_path / "secret.txt"
+    text.write_bytes(b"not an image at all")
+    assert bridge_mod.MessageRecorderBridge.image_to_data_url(text) is None
+
+
+def test_image_to_data_url_success(bridge_mod, tmp_path) -> None:
+    img = tmp_path / "img.png"
+    img.write_bytes(PNG_BYTES)
+    data_url = bridge_mod.MessageRecorderBridge.image_to_data_url(img)
+    assert data_url is not None
+    assert data_url.startswith("data:image/png;base64,")
+    assert data_url.split(",", 1)[1] == base64.b64encode(PNG_BYTES).decode("ascii")
+
+
+def test_image_to_data_url_os_error(bridge_mod, tmp_path) -> None:
+    # 目录路径 read_bytes 抛 IsADirectoryError（OSError 子类）
+    assert bridge_mod.MessageRecorderBridge.image_to_data_url(tmp_path) is None
+
+
+# ============================================================================
+# _maybe_await
+# ============================================================================
+
+
+async def test_maybe_await_both_forms(bridge_mod) -> None:
+    async def async_fn():
+        return 1
+
+    def sync_fn():
+        return 2
+
+    assert await bridge_mod._maybe_await(async_fn()) == 1
+    assert await bridge_mod._maybe_await(sync_fn()) == 2
