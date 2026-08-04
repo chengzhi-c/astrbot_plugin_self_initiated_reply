@@ -492,31 +492,19 @@ class SelfInitiatedReplyPlugin(Star):
         return self._gate.advance(umo)
 
     # 只读视图：数据归属 SessionGate，以下 property 供既有调用点与测试
-    # 以原字段名访问，避免同步迁移动辄数十处引用面。setter 仅用于
-    # 配置回滚整表覆盖（webapi._restore_plugin_state）。
+    # 以原字段名访问，避免同步迁移动辄数十处引用面。回滚整表覆盖
+    # 经 SessionGate.restore 封装，不再暴露 setter。
     @property
     def _session_generation(self) -> dict[str, int]:
         return self._gate._session_generation
-
-    @_session_generation.setter
-    def _session_generation(self, value: dict[str, int]) -> None:
-        self._gate._session_generation = value
 
     @property
     def _running_sessions(self) -> set[str]:
         return self._gate._running_sessions
 
-    @_running_sessions.setter
-    def _running_sessions(self, value: set[str]) -> None:
-        self._gate._running_sessions = value
-
     @property
     def _session_locks(self) -> dict[str, asyncio.Lock]:
         return self._gate._session_locks
-
-    @_session_locks.setter
-    def _session_locks(self, value: dict[str, asyncio.Lock]) -> None:
-        self._gate._session_locks = value
 
     def _track_background_task(self, coro: Any) -> asyncio.Task[Any] | None:
         if self._stopping:

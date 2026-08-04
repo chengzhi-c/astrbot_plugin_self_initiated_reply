@@ -7,6 +7,7 @@
 import asyncio
 import itertools
 from collections.abc import Iterator
+from typing import Any
 
 
 class SessionGate:
@@ -51,6 +52,21 @@ class SessionGate:
     def release_event(self, umo: str) -> asyncio.Event:
         """等待该会话当前运行结束的惰性事件（等完后再查 is_running）。"""
         return self._session_release.setdefault(umo, asyncio.Event())
+
+    def snapshot(self) -> dict[str, Any]:
+        """代次/运行集/锁三张表的浅拷贝快照，供配置回滚整表恢复。"""
+        return {
+            "generation": dict(self._session_generation),
+            "running": set(self._running_sessions),
+            "locks": dict(self._session_locks),
+        }
+
+    def restore(self, snap: dict[str, Any]) -> None:
+        """整表替换为快照内容。运行中的 async with 持有旧锁对象引用，
+        替换表项即可，无需深拷贝。"""
+        self._session_generation = snap["generation"]
+        self._running_sessions = snap["running"]
+        self._session_locks = snap["locks"]
 
     def prune(self, umo: str) -> None:
         """会话移出白名单后回收全部映射与运行标记。"""

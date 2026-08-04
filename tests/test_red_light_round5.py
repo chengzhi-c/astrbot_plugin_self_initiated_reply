@@ -376,3 +376,21 @@ def test_r11_concurrent_checks_are_mutexed(tmp_path: Path) -> None:
             main._AGENT_RUNTIME = original_runtime
 
     with_plugin(tmp_path, scenario)
+
+
+# ============================================================================
+# R12：非 force 检查的白名单闸门
+# ============================================================================
+
+
+def test_r12_non_force_check_rejected_for_non_whitelisted_session(tmp_path: Path) -> None:
+    """非白名单会话的非 force 检查必须被闸门拒绝，不进入决策管线。"""
+
+    async def scenario(plugin, main):
+        plugin._last_events[UMO] = _make_event()
+        plugin._last_event_at[UMO] = 1.0
+        plugin.settings.whitelist = set()
+        result = await plugin._check_session(UMO, trigger="patrol", force=False)
+        assert result == "会话不在主动回复白名单。"
+
+    with_plugin(tmp_path, scenario)

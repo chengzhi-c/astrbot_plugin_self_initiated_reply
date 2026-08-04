@@ -361,7 +361,6 @@ def test_generation_is_monotonic_and_survives_whitelist_aba(tmp_path: Path) -> N
         first = plugin._advance_session_generation(UMO)
         # 移除白名单：invalidate 推进代次，旧任务 token 从此失效
         plugin._replace_whitelist(set())
-        plugin._advance_session_generation(UMO)
         # 重新加入：会话 token 继续增大
         plugin._replace_whitelist({UMO})
         after_readd = plugin._advance_session_generation(UMO)
