@@ -27,7 +27,7 @@
 
 ### 批次3（质量增强）
 
-- **低覆盖模块补盲**：adapters.py 37%→97%（`tests/test_adapters.py` 38 用例：兼容调用降级/探测/宿主差异全分支）、recorder_bridge.py 38%→95%（`tests/test_recorder_bridge.py` 25 用例：探测回退链/路径解析/MIME 魔数校验）；生产口径覆盖率 68.19%→75.43%，门槛按"实测-5%"校准 65→70。
+- **低覆盖模块补盲**：adapters.py 37%→97%（`tests/test_adapters.py` 38 用例：兼容调用降级/探测/宿主差异全分支）、recorder_bridge.py 38%→95%（`tests/test_recorder_bridge.py` 28 用例：探测回退链/路径解析/MIME 魔数校验）；生产口径覆盖率 68.19%→75.43%，门槛按"实测-5%"校准 65→70。
 - **mutation 扩面 11→19**（P2-23）：SSRF 三变异（scheme 白名单旁路/非标准端口旁路/私有 IP 放行，test_vision 补 ftp:// 用例）、webapi 拒绝路径三变异（bool 接受/非法字符放行/未知键旁路）、storage 恢复两变异（损坏不备份/版本不符不备份）；实测 19/19 击杀。
 - **SessionGate 只读视图**（P2-24）：generation_view/locks_view 用 MappingProxyType 实时映射、running_sessions_view 用 frozenset；main.py 三个转发 property 改返回只读视图（全仓调用点均只读，行为零变更）；误写运行时抛错，杜绝绕过语义；两个测试搭场景写点改用公开入口 lock_for。
 
@@ -38,7 +38,7 @@
   - `test_image_to_data_url_os_error`：目录路径被 is_file() 先行拒绝，IsADirectoryError 永不发生——名为 os_error 实为 is_file 分支。改用 monkeypatch 真实触发 read_bytes OSError，recorder_bridge.py 95%→99%（仅剩 110 行 size 检查双保险死分支）。
   - 补 `test_ensure_api_false_when_get_api_not_callable`（探测链 get_api 不可调用分支）与 `test_resolve_relative_path_resolver_not_callable`（resolver 不可调用分支）。
 - **SessionGate 只读视图守护测试**：`test_gate_views_are_read_only_and_live`——三视图写抛错（TypeError/AttributeError）、读实时（advance/mark_running 后视图反映最新状态）、locks_view 引用同一锁对象；session_gate.py 覆盖率 98%→100%。
-- 复审后状态：284 passed、覆盖率 75.73%（adapters 99%/recorder_bridge 99%/session_gate 100%）。
+- 复审后状态：286 passed、覆盖率 75.73%（adapters 99%/recorder_bridge 99%/session_gate 100%，当前实测；提交时 75.43%）。
 
 ## [0.8.3] - 2026-08-04
 

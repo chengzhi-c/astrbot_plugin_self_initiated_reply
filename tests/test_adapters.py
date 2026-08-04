@@ -84,7 +84,7 @@ async def test_call_compat_direct_call(bridge) -> None:
     assert calls == [{"a": 1}]
 
 
-async def test_call_compat_falls_back_to_minimal_on_bind_error(bridge) -> None:
+async def test_call_compat_binds_via_aliases_without_fallback(bridge) -> None:
     calls: list[dict[str, Any]] = []
 
     def target(a: int) -> str:
@@ -212,8 +212,10 @@ async def test_call_first_supported_raises_business_error(bridge) -> None:
 
 
 async def test_call_first_supported_all_unsupported_returns_none(bridge) -> None:
+    # 每个形态都能绑定成功，但函数体抛 TypeError 使该形态被判定为不支持，
+    # 全部形态耗尽后返回 None（语义：找不到可执行形态）
     def target(required: int) -> str:
-        raise TypeError("never binds")
+        raise TypeError("body boom")
 
     assert await bridge._call_first_supported(target, "umo1", "probe") is None
 
