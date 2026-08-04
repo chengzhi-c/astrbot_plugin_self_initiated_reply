@@ -124,6 +124,69 @@ MUTANTS = [
         ),
         "call_compat",
     ),
+    # ---- 批次3-2：P2-23 mutation 扩面（webapi 拒绝路径 / parser SSRF / storage 恢复） ----
+    (
+        "ssrf-scheme-bypass",
+        "image/parser.py",
+        '        if parsed.scheme not in {"http", "https"} or not parsed.hostname:',
+        "        if not parsed.hostname:",
+        "rejects_private",
+    ),
+    (
+        "ssrf-port-bypass",
+        "image/parser.py",
+        "        if parsed.port is not None and parsed.port not in {80, 443}:",
+        "        if False:",
+        "non_standard_ports",
+    ),
+    (
+        "ssrf-private-ip-allowed",
+        "image/parser.py",
+        "        return await asyncio.to_thread(_host_all_global, parsed.hostname)",
+        "        return True",
+        "rejects_private",
+    ),
+    (
+        "webapi-bool-accepted",
+        "webapi.py",
+        '    if isinstance(value, bool):\n        raise ValueError(f"{field} 必须是整数")',
+        '    if False:\n        raise ValueError(f"{field} 必须是整数")',
+        "rejects_invalid",
+    ),
+    (
+        "webapi-illegal-chars-allowed",
+        "webapi.py",
+        "        if re.search(",
+        "        if False:  # ",
+        "illegal_whitelist",
+    ),
+    (
+        "webapi-unknown-key-accepted",
+        "webapi.py",
+        "    if unknown:",
+        "    if False:",
+        "r16_unknown",
+    ),
+    (
+        "storage-corrupt-not-backed-up",
+        "storage.py",
+        (
+            '        logger.error("[%s] failed to load state (backing up): %s", PLUGIN_ID, exc)\n'
+            "            _backup_state_file(path)"
+        ),
+        (
+            '        logger.error("[%s] failed to load state (backing up): %s", PLUGIN_ID, exc)\n'
+            "            pass"
+        ),
+        "corrupt_state",
+    ),
+    (
+        "storage-version-not-backed-up",
+        "storage.py",
+        "                if file_version is not None and file_version != STATE_VERSION:",
+        "                if False:",
+        "version_mismatch",
+    ),
 ]
 
 
