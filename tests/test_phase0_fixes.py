@@ -439,6 +439,26 @@ def test_config_rollback_reschedules_cancelled_delayed_checks(tmp_path: Path) ->
     with_plugin(tmp_path, scenario, enabled_patrol_trigger=True)
 
 
+def test_gate_restore_recovers_running_set(tmp_path: Path) -> None:
+    """restore 必须恢复运行集快照，否则回滚后运行标记漂移。
+
+    变异锚定：session_gate.restore 删除 ``self._running_sessions = snap["running"]``
+    后本测试必须变红（该变异曾在 0.8.2 三方审查中实测存活）。
+    """
+
+    async def scenario(plugin, main):
+        gate = plugin._gate
+        gate.mark_running(UMO)
+        snap = gate.snapshot()
+        gate.unmark_running(UMO)
+        gate.mark_running("other:session")
+        gate.restore(snap)
+        assert gate.is_running(UMO) is True
+        assert gate.is_running("other:session") is False
+
+    with_plugin(tmp_path, scenario)
+
+
 # ============================================================================
 # 0.5 P2：_call_compat TypeError 重试双执行
 # ============================================================================

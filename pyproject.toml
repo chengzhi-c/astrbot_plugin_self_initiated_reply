@@ -44,9 +44,9 @@ asyncio_mode = "auto"
 addopts = "--cov=. --cov-report=term-missing"
 
 [tool.coverage.report]
-# 门槛 72%：全量复审后实测 77.97%（2026-08-04），留 ~6 个百分点缓冲；
+# 门槛 76%：三方审查后实测 81.27%（2026-08-04），按"实测-5%"留缓冲；
 # 门槛提升以 CI 覆盖率工件实测为准，杜绝拍脑袋定数。
-fail_under = 72
+fail_under = 76
 
 [tool.mypy]
 # 仓库目录名含连字符，mypy 无法按包发现；显式列出源码文件 + 忽略宿主
