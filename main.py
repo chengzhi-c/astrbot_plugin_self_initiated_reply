@@ -637,7 +637,7 @@ class SelfInitiatedReplyPlugin(Star):
             state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
             silence_left = self._remaining_silence_sec(state)
             while not force and silence_left > 0:
-                logger.info(
+                logger.debug(
                     "[%s] wait for minimum silence session=%s trigger=%s remaining=%.2fs",
                     PLUGIN_ID,
                     umo,
@@ -870,7 +870,7 @@ class SelfInitiatedReplyPlugin(Star):
         state.refresh_day()
         gate = self._local_gate(state, force=force)
         if gate:
-            logger.info("[%s] skip session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
+            logger.debug("[%s] skip session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
             return gate
 
         self._running_sessions.add(umo)
@@ -887,7 +887,7 @@ class SelfInitiatedReplyPlugin(Star):
 
             if not self._generation_is_current(umo, expected_generation):
                 return "会话已经更新，放弃旧任务。"
-            logger.info(
+            logger.debug(
                 "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
                 PLUGIN_ID,
                 umo,
@@ -920,7 +920,7 @@ class SelfInitiatedReplyPlugin(Star):
             if not gate:
                 gate = self._local_gate(state, force=force)
             if gate:
-                logger.info("[%s] skip before send session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
+                logger.debug("[%s] skip before send session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
                 if direct_send_count:
                     await self._record_proactive_state(
                         umo,
@@ -970,12 +970,12 @@ class SelfInitiatedReplyPlugin(Star):
 
             if self.settings.log_reply_content and reply:
                 preview = reply if len(reply) <= 80 else reply[:80] + "…"
-                logger.info(
+                logger.debug(
                     "[%s] proactive reply sent session=%s chars=%d direct_tools=%d text=%s",
                     PLUGIN_ID, umo, len(reply), direct_send_count, preview,
                 )
             else:
-                logger.info(
+                logger.debug(
                     "[%s] proactive reply sent session=%s chars=%d direct_tools=%d",
                     PLUGIN_ID, umo, len(reply), direct_send_count,
                 )
@@ -1435,7 +1435,7 @@ class SelfInitiatedReplyPlugin(Star):
                     except Exception:
                         pass
                     return send_result.outcome
-                logger.info(
+                logger.debug(
                     "[%s] event send completed session=%s chars=%d; platform adapter completion is not a delivery receipt",
                     PLUGIN_ID,
                     umo,
