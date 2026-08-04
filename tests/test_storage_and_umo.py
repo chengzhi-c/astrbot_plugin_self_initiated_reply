@@ -82,7 +82,7 @@ def test_final_send_path_rechecks_generation_after_decorating_hook() -> None:
     assert "expected_generation: int | None = None" in method.splitlines()[1]
     hook_offset = method.index(hook_marker)
     send_offset = method.index(send_marker, hook_offset)
-    assert "_generation_is_current(umo, expected_generation)" in method[hook_offset:send_offset]
+    assert "_gate.is_current(umo, expected_generation)" in method[hook_offset:send_offset]
     assert (
         "expected_generation=expected_generation"
         in source[source.index("sent = await self._send_reply") :]

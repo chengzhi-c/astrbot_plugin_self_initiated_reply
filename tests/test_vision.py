@@ -277,7 +277,7 @@ def test_on_message_keeps_image_eligibility_out_of_generic_ignore_gate() -> None
     end = source.index("\n    def _is_command_entry(", start)
     handler = source[start:end]
     ignore_start = source.index("    def _should_ignore_event(")
-    ignore_end = source.index("\n    def _advance_session_generation(", ignore_start)
+    ignore_end = source.index("\n    def _cancel_delay_task(", ignore_start)
     ignore_method = source[ignore_start:ignore_end]
 
     # 资格判断与提取都引用同一 settings 字段；若将来合并为单次调用，

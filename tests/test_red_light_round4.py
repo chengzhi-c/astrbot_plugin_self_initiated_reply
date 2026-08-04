@@ -112,7 +112,7 @@ def _install_tool_injecting_pipeline(plugin, main, *, event):
 
 async def _run_pipeline(plugin):
     state = plugin._state_for(UMO)
-    token = plugin._advance_session_generation(UMO)
+    token = plugin._gate.advance(UMO)
     return await plugin._generate_reply_via_pipeline(
         UMO, state, expected_generation=token, force=True
     )
