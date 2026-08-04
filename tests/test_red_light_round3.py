@@ -505,7 +505,7 @@ def test_new_message_does_not_cancel_running_decorating_hook() -> None:
     bulk_end = source.index("\n    async def _stop_patrol_task(", bulk_start)
     bulk_method = source[bulk_start:bulk_end]
 
-    assert "self._running_sessions" in cancel_method
+    assert "self._gate.is_running(umo)" in cancel_method
     assert "force" in cancel_method
     assert "force_cancel" in invalidate_method
     assert "force_cancel=True" in bulk_method

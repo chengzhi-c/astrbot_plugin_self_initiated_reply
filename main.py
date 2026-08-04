@@ -570,7 +570,7 @@ class SelfInitiatedReplyPlugin(Star):
     def _cancel_delay_task(self, umo: str, *, force: bool = False) -> None:
         task = self._delay_tasks.get(umo)
         running_task = self._running_check_tasks.get(umo)
-        if not force and (umo in self._running_sessions or running_task is not None):
+        if not force and (self._gate.is_running(umo) or running_task is not None):
             # A new message invalidates the running check through the
             # generation counter, but must not cancel its await chain.  The
             # old task will reach its generation gates and cleanly suppress
@@ -867,7 +867,7 @@ class SelfInitiatedReplyPlugin(Star):
                                 > self.settings.patrol_inactive_after_sec
                             ):
                                 continue
-                            if umo in self._running_sessions:
+                            if self._gate.is_running(umo):
                                 continue
                             generation = self._session_generation.get(umo, 0)
                             result = await self._check_session(
@@ -993,7 +993,7 @@ class SelfInitiatedReplyPlugin(Star):
             return "会话已经更新，放弃旧任务。"
         if not force and not self._last_events.get(umo):
             return "没有可用的最近消息事件。"
-        if umo in self._running_sessions:
+        if self._gate.is_running(umo):
             return "已有判断任务在运行。"
         return None
 
