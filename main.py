@@ -387,7 +387,7 @@ class SelfInitiatedReplyPlugin(Star):
             # Image-only events remain observable when Vision is explicitly enabled.
             clean_text = "[图片]"
 
-        generation = self._advance_session_generation(umo)
+        generation = self._gate.advance(umo)
         active_at = now_ts()
         state = self._state_for(state_key)
         state.last_active_at = active_at
@@ -488,9 +488,6 @@ class SelfInitiatedReplyPlugin(Star):
             return True
         return is_explicit_direct_call(event, text)
 
-    def _advance_session_generation(self, umo: str) -> int:
-        return self._gate.advance(umo)
-
     # 只读视图：数据归属 SessionGate，以下 property 供既有调用点与测试
     # 以原字段名访问，避免同步迁移动辄数十处引用面。回滚整表覆盖
     # 经 SessionGate.restore 封装，不再暴露 setter。
@@ -540,7 +537,7 @@ class SelfInitiatedReplyPlugin(Star):
                 timeout=max(5.0, min(30.0, float(self.settings.vision_timeout_sec) * 2)),
             )
             # A stale freeze must not mutate the current session's image index.
-            if self._stopping or not self._generation_is_current(umo, generation):
+            if self._stopping or not self._gate.is_current(umo, generation):
                 return
             cached_images = [image for image, ok in zip(images, prepared, strict=True) if ok]
             if not cached_images:
@@ -570,13 +567,10 @@ class SelfInitiatedReplyPlugin(Star):
         except Exception as exc:
             logger.warning("[%s] image capture failed for umo=%s error=%s", PLUGIN_ID, umo, exc)
 
-    def _generation_is_current(self, umo: str, generation: int | None) -> bool:
-        return self._gate.is_current(umo, generation)
-
     def _cancel_delay_task(self, umo: str, *, force: bool = False) -> None:
         task = self._delay_tasks.get(umo)
         running_task = self._running_check_tasks.get(umo)
-        if not force and (umo in self._running_sessions or running_task is not None):
+        if not force and (self._gate.is_running(umo) or running_task is not None):
             # A new message invalidates the running check through the
             # generation counter, but must not cancel its await chain.  The
             # old task will reach its generation gates and cleanly suppress
@@ -600,7 +594,7 @@ class SelfInitiatedReplyPlugin(Star):
         self._recent_image_events.pop(umo, None)
 
     def _invalidate_session(self, umo: str, *, force_cancel: bool = False) -> int:
-        generation = self._advance_session_generation(umo)
+        generation = self._gate.advance(umo)
         self._cancel_delay_task(umo, force=force_cancel)
         self._clear_cached_event(umo)
         return generation
@@ -626,12 +620,8 @@ class SelfInitiatedReplyPlugin(Star):
         generation: int | None = None,
     ) -> None:
         if generation is None:
-            generation = self._advance_session_generation(umo)
-        if (
-            self._stopping
-            or not self.runtime_enabled
-            or not self._generation_is_current(umo, generation)
-        ):
+            generation = self._gate.advance(umo)
+        if self._stopping or not self.runtime_enabled or not self._gate.is_current(umo, generation):
             logger.debug(
                 "[%s] skip stale delayed-task registration session=%s generation=%s",
                 PLUGIN_ID,
@@ -672,7 +662,7 @@ class SelfInitiatedReplyPlugin(Star):
             if (
                 self._stopping
                 or not self.runtime_enabled
-                or not self._generation_is_current(umo, generation)
+                or not self._gate.is_current(umo, generation)
             ):
                 return
             state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
@@ -689,7 +679,7 @@ class SelfInitiatedReplyPlugin(Star):
                 if (
                     self._stopping
                     or not self.runtime_enabled
-                    or not self._generation_is_current(umo, generation)
+                    or not self._gate.is_current(umo, generation)
                 ):
                     return
                 silence_left = self._remaining_silence_sec(state)
@@ -704,7 +694,7 @@ class SelfInitiatedReplyPlugin(Star):
                 if (
                     self._stopping
                     or not self.runtime_enabled
-                    or not self._generation_is_current(umo, generation)
+                    or not self._gate.is_current(umo, generation)
                 ):
                     return
             running_task = asyncio.current_task()
@@ -877,7 +867,7 @@ class SelfInitiatedReplyPlugin(Star):
                                 > self.settings.patrol_inactive_after_sec
                             ):
                                 continue
-                            if umo in self._running_sessions:
+                            if self._gate.is_running(umo):
                                 continue
                             generation = self._session_generation.get(umo, 0)
                             result = await self._check_session(
@@ -999,11 +989,11 @@ class SelfInitiatedReplyPlugin(Star):
             return "插件未启用。"
         if not force and not session_whitelisted(umo, self.settings.whitelist):
             return "会话不在主动回复白名单。"
-        if not self._generation_is_current(umo, expected_generation):
+        if not self._gate.is_current(umo, expected_generation):
             return "会话已经更新，放弃旧任务。"
         if not force and not self._last_events.get(umo):
             return "没有可用的最近消息事件。"
-        if umo in self._running_sessions:
+        if self._gate.is_running(umo):
             return "已有判断任务在运行。"
         return None
 
@@ -1028,7 +1018,7 @@ class SelfInitiatedReplyPlugin(Star):
                 else await self._ask_decision_model(umo, state, trigger=trigger)
             )
 
-        if not self._generation_is_current(umo, expected_generation):
+        if not self._gate.is_current(umo, expected_generation):
             return "会话已经更新，放弃旧任务。"
         logger.debug(
             "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
@@ -1058,9 +1048,7 @@ class SelfInitiatedReplyPlugin(Star):
     ) -> str:
         """发送前门卫与发送状态机；返回结果消息。"""
         gate = (
-            ""
-            if self._generation_is_current(umo, expected_generation)
-            else "会话已经更新，放弃旧任务。"
+            "" if self._gate.is_current(umo, expected_generation) else "会话已经更新，放弃旧任务。"
         )
         if not gate:
             gate = self._local_gate(state, force=force)
@@ -1111,7 +1099,7 @@ class SelfInitiatedReplyPlugin(Star):
                         expected_generation=expected_generation,
                         observed_active_at=observed_active_at,
                     )
-                if not self._generation_is_current(umo, expected_generation):
+                if not self._gate.is_current(umo, expected_generation):
                     return "会话已更新，放弃旧回复。"
                 if sent.status is SendStatus.SUPPRESSED:
                     return "会话已更新，放弃旧回复。"
@@ -1168,12 +1156,12 @@ class SelfInitiatedReplyPlugin(Star):
         the no-retry policy). It does not write an assistant history entry.
         """
         at = now_ts()
-        state.last_proactive_at = at
-        state.daily_count += 1
+        text = reply.strip() or f"[工具主动发送 x{direct_send_count}]"
+        state.record_proactive_attempt(confirmed=confirmed, text=text, at=at)
         if not confirmed:
             # UNKNOWN may have been delivered: advance the observed window so a
             # later patrol does not regenerate a reply for the same event.
-            if self._generation_is_current(umo, expected_generation):
+            if self._gate.is_current(umo, expected_generation):
                 state.last_proactive_observed_at = (
                     state.last_active_at if observed_active_at is None else observed_active_at
                 )
@@ -1188,9 +1176,7 @@ class SelfInitiatedReplyPlugin(Star):
             except Exception as exc:
                 logger.warning("[%s] proactive state save failed: %s", PLUGIN_ID, exc)
                 return False
-        text = reply.strip() or f"[工具主动发送 x{direct_send_count}]"
-        state.last_proactive_text = text
-        if self._generation_is_current(umo, expected_generation):
+        if self._gate.is_current(umo, expected_generation):
             state.last_proactive_observed_at = (
                 state.last_active_at if observed_active_at is None else observed_active_at
             )
@@ -1200,7 +1186,6 @@ class SelfInitiatedReplyPlugin(Star):
                 PLUGIN_ID,
                 umo,
             )
-        state.recent.append(MessageRecord(role="assistant", name="Bot", text=text, at=at))
         try:
             await self._save_storage()
             return True
@@ -1291,7 +1276,7 @@ class SelfInitiatedReplyPlugin(Star):
             original_send,
             max_direct_sends=MAX_DIRECT_TOOL_SENDS,
             allow_direct=lambda: (
-                self._generation_is_current(umo, expected_generation)
+                self._gate.is_current(umo, expected_generation)
                 and not self._local_gate(state, force=force)
             ),
         )
@@ -1569,7 +1554,7 @@ class SelfInitiatedReplyPlugin(Star):
         self, umo: str, reply: str, *, expected_generation: int | None = None
     ) -> SendOutcome:
         """Send one proactive reply without retrying an unknown submission."""
-        if not self._generation_is_current(umo, expected_generation):
+        if not self._gate.is_current(umo, expected_generation):
             logger.info("[%s] suppress stale reply before hooks session=%s", PLUGIN_ID, umo)
             return SendOutcome(SendStatus.SUPPRESSED, "generation changed before hooks")
 
@@ -1583,7 +1568,7 @@ class SelfInitiatedReplyPlugin(Star):
                     .set_result_content_type(ResultContentType.LLM_RESULT)
                 )
                 await call_event_hook(last_event, EventType.OnDecoratingResultEvent)
-                if not self._generation_is_current(umo, expected_generation):
+                if not self._gate.is_current(umo, expected_generation):
                     try:
                         last_event.clear_result()
                     except Exception:
@@ -1601,7 +1586,7 @@ class SelfInitiatedReplyPlugin(Star):
                     return SendOutcome(
                         SendStatus.FAILED_BEFORE_SUBMIT, "decorating hook produced no result"
                     )
-                if not self._generation_is_current(umo, expected_generation):
+                if not self._gate.is_current(umo, expected_generation):
                     try:
                         last_event.clear_result()
                     except Exception:
@@ -1669,7 +1654,7 @@ class SelfInitiatedReplyPlugin(Star):
                     return SendOutcome(SendStatus.UNKNOWN, str(exc))
                 return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, str(exc))
 
-        if not self._generation_is_current(umo, expected_generation):
+        if not self._gate.is_current(umo, expected_generation):
             logger.info("[%s] suppress stale reply before context send session=%s", PLUGIN_ID, umo)
             return SendOutcome(SendStatus.SUPPRESSED, "generation changed before context send")
         try:

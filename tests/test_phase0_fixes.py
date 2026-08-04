@@ -135,7 +135,7 @@ def test_delayed_check_waits_for_running_session_release(tmp_path: Path) -> None
                     delay_sec=0,
                     trigger="patrol",
                     force=True,
-                    generation=plugin._advance_session_generation(UMO),
+                    generation=plugin._gate.advance(UMO),
                 )
             )
             await asyncio.wait_for(entered_wait.wait(), timeout=2)
@@ -172,7 +172,7 @@ def test_prune_wakes_waiting_delayed_check(tmp_path: Path) -> None:
                     delay_sec=0,
                     trigger="patrol",
                     force=True,
-                    generation=plugin._advance_session_generation(UMO),
+                    generation=plugin._gate.advance(UMO),
                 )
             )
             await asyncio.wait_for(entered_wait.wait(), timeout=2)
@@ -193,8 +193,8 @@ def test_stale_generation_rejected_at_session_entry(tmp_path: Path) -> None:
         event = _make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
-        token = plugin._advance_session_generation(UMO)
-        plugin._advance_session_generation(UMO)  # 抬代次使 token 过期
+        token = plugin._gate.advance(UMO)
+        plugin._gate.advance(UMO)  # 抬代次使 token 过期
         result = await plugin._check_session(
             UMO, trigger="patrol", force=True, expected_generation=token
         )

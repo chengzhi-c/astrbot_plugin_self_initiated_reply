@@ -262,7 +262,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
         plugin._enforce_final_tool_policy = counting_enforce
         try:
             state = plugin._state_for(UMO)
-            token = plugin._advance_session_generation(UMO)
+            token = plugin._gate.advance(UMO)
             result = await plugin._generate_reply_via_pipeline(
                 UMO, state, expected_generation=token, force=True
             )
@@ -332,7 +332,7 @@ def test_pipeline_hook_early_exit_still_restores_event(tmp_path: Path) -> None:
         main.call_event_hook = stop_hook
         try:
             state = plugin._state_for(UMO)
-            token = plugin._advance_session_generation(UMO)
+            token = plugin._gate.advance(UMO)
             result = await plugin._generate_reply_via_pipeline(
                 UMO, state, expected_generation=token, force=True
             )
@@ -358,27 +358,27 @@ def test_generation_is_monotonic_and_survives_whitelist_aba(tmp_path: Path) -> N
     """移除白名单后旧任务 token 必须永远失效，重新加入不能复活旧任务。"""
 
     async def scenario(plugin, main):
-        first = plugin._advance_session_generation(UMO)
+        first = plugin._gate.advance(UMO)
         # 移除白名单：invalidate 推进代次，旧任务 token 从此失效
         plugin._replace_whitelist(set())
         # 重新加入：会话 token 继续增大
         plugin._replace_whitelist({UMO})
-        after_readd = plugin._advance_session_generation(UMO)
+        after_readd = plugin._gate.advance(UMO)
 
         assert after_readd > first
-        assert plugin._generation_is_current(UMO, first) is False
+        assert plugin._gate.is_current(UMO, first) is False
         # 旧任务在任何检查点都必须被拒绝
-        assert plugin._generation_is_current(UMO, first - 1) is False
+        assert plugin._gate.is_current(UMO, first - 1) is False
 
     with_plugin(tmp_path, scenario)
 
 
 def test_generation_rejects_stale_expected_token(tmp_path: Path) -> None:
     async def scenario(plugin, main):
-        token = plugin._advance_session_generation(UMO)
-        assert plugin._generation_is_current(UMO, token) is True
-        plugin._advance_session_generation(UMO)
-        assert plugin._generation_is_current(UMO, token) is False
+        token = plugin._gate.advance(UMO)
+        assert plugin._gate.is_current(UMO, token) is True
+        plugin._gate.advance(UMO)
+        assert plugin._gate.is_current(UMO, token) is False
 
     with_plugin(tmp_path, scenario)
 
@@ -452,7 +452,7 @@ def test_send_reply_unknown_skips_after_send_hook(tmp_path: Path) -> None:
         event.send = failing_send
         reset_hook_calls()
         outcome = await plugin._send_reply(
-            UMO, "测试回复", expected_generation=plugin._advance_session_generation(UMO)
+            UMO, "测试回复", expected_generation=plugin._gate.advance(UMO)
         )
 
         assert outcome.status.value == "unknown"
@@ -474,7 +474,7 @@ def test_send_reply_delivered_triggers_after_send_hook(tmp_path: Path) -> None:
 
         reset_hook_calls()
         outcome = await plugin._send_reply(
-            UMO, "测试回复", expected_generation=plugin._advance_session_generation(UMO)
+            UMO, "测试回复", expected_generation=plugin._gate.advance(UMO)
         )
 
         assert outcome.status.value == "delivered"
@@ -610,7 +610,7 @@ def test_state_for_refreshes_daily_count_across_midnight(tmp_path: Path) -> None
 
 def test_terminate_clears_tasks_and_saves(tmp_path: Path) -> None:
     async def scenario(plugin, main):
-        plugin._advance_session_generation(UMO)
+        plugin._gate.advance(UMO)
         await plugin.terminate()
         assert plugin._stopping is True
         assert plugin._delay_tasks == {}
