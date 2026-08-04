@@ -1156,8 +1156,8 @@ class SelfInitiatedReplyPlugin(Star):
         the no-retry policy). It does not write an assistant history entry.
         """
         at = now_ts()
-        state.last_proactive_at = at
-        state.daily_count += 1
+        text = reply.strip() or f"[工具主动发送 x{direct_send_count}]"
+        state.record_proactive_attempt(confirmed=confirmed, text=text, at=at)
         if not confirmed:
             # UNKNOWN may have been delivered: advance the observed window so a
             # later patrol does not regenerate a reply for the same event.
@@ -1176,8 +1176,6 @@ class SelfInitiatedReplyPlugin(Star):
             except Exception as exc:
                 logger.warning("[%s] proactive state save failed: %s", PLUGIN_ID, exc)
                 return False
-        text = reply.strip() or f"[工具主动发送 x{direct_send_count}]"
-        state.last_proactive_text = text
         if self._gate.is_current(umo, expected_generation):
             state.last_proactive_observed_at = (
                 state.last_active_at if observed_active_at is None else observed_active_at
@@ -1188,7 +1186,6 @@ class SelfInitiatedReplyPlugin(Star):
                 PLUGIN_ID,
                 umo,
             )
-        state.recent.append(MessageRecord(role="assistant", name="Bot", text=text, at=at))
         try:
             await self._save_storage()
             return True

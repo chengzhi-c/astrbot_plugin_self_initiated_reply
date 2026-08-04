@@ -178,3 +178,24 @@ def test_atomic_state_writer_leaves_previous_file_on_serialization_failure(tmp_p
     path.write_text('{"previous": true}', encoding="utf-8")
     assert not storage.write_sessions_payload(path, {"bad": object()})
     assert json.loads(path.read_text(encoding="utf-8")) == {"previous": True}
+
+
+def test_session_state_record_proactive_attempt_confirmed_and_unconfirmed() -> None:
+    """record_proactive_attempt 单点写入语义：confirmed 写历史，unconfirmed 只消耗配额。"""
+    models, _, _ = _load_modules()
+
+    state = models.SessionState()
+    state.record_proactive_attempt(confirmed=True, text="你好呀", at=10.0)
+    assert state.last_proactive_at == 10.0
+    assert state.daily_count == 1
+    assert state.last_proactive_text == "你好呀"
+    assert len(state.recent) == 1
+    assert state.recent[-1].role == "assistant"
+    assert state.recent[-1].text == "你好呀"
+
+    state.record_proactive_attempt(confirmed=False, text="", at=20.0)
+    assert state.last_proactive_at == 20.0
+    assert state.daily_count == 2
+    # UNKNOWN 投递不写历史条目
+    assert len(state.recent) == 1
+    assert state.last_proactive_text == "你好呀"
