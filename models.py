@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Any
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.8.1"
+PLUGIN_VERSION = "0.9.0"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -299,6 +299,19 @@ class SessionState:
         if self.daily_key != key:
             self.daily_key = key
             self.daily_count = 0
+
+    def record_proactive_attempt(self, *, confirmed: bool, text: str, at: float) -> None:
+        """记录一次主动回复尝试的状态字段更新（单点写入）。
+
+        ``confirmed=False`` 表示 UNKNOWN 投递：只消耗冷却与日配额，
+        不写历史条目。
+        """
+        self.last_proactive_at = at
+        self.daily_count += 1
+        if not confirmed:
+            return
+        self.last_proactive_text = text
+        self.recent.append(MessageRecord(role="assistant", name="Bot", text=text, at=at))
 
 
 @dataclass
