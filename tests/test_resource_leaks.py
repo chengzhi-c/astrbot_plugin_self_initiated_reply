@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from .host_stubs import with_plugin, until
+from .host_stubs import until, with_plugin
 from .test_main_runtime import UMO, _make_event
 
 

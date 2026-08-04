@@ -176,7 +176,8 @@ def _assert_clean_worktree() -> None:
             suspects.append((name, rel))
     print("mutation_check: 前置守卫拒绝——以下目标文件存在未提交改动：", file=sys.stderr)
     for name, rel in suspects:
-        print(f"  [疑似变异残留] {name} → {rel}（可用 git checkout -- {rel} 恢复）", file=sys.stderr)
+        hint = f"  [疑似变异残留] {name} → {rel}（可用 git checkout -- {rel} 恢复）"
+        print(hint, file=sys.stderr)
     print("  请先 git status 确认改动归属（提交或 stash）后重试。", file=sys.stderr)
     sys.exit(2)
 
@@ -199,7 +200,8 @@ def _assert_anchor_tests_green() -> None:
         timeout=300,
     )
     if r.returncode != 0:
-        print("mutation_check: 锚点测试基线未全绿，拒绝执行变异（先修复测试再跑）。", file=sys.stderr)
+        msg = "mutation_check: 锚点测试基线未全绿，拒绝执行变异（先修复测试再跑）。"
+        print(msg, file=sys.stderr)
         tail = (r.stdout or "")[-2000:] + (r.stderr or "")[-2000:]
         print(tail, file=sys.stderr)
         sys.exit(2)

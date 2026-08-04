@@ -188,6 +188,7 @@ async def until(predicate: Any, timeout: float = 2.0) -> None:
     until the condition holds or the timeout expires, so slow CI runners no
     longer produce flaky failures (and fast runners don't waste wall time).
     """
+
     async def _loop() -> None:
         while not predicate():
             await asyncio.sleep(0.01)

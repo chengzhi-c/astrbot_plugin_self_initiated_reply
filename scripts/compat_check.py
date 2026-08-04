@@ -97,7 +97,8 @@ def main() -> int:
 
     star_handler = importlib.import_module("astrbot.core.star.star_handler")
     for member in EVENT_TYPE_MEMBERS:
-        assert hasattr(star_handler.EventType, member), f"EventType.{member} 缺失——宿主私有 API 漂移"
+        missing = not hasattr(star_handler.EventType, member)
+        assert not missing, f"EventType.{member} 缺失——宿主私有 API 漂移"
 
     adapter = runtime_adapter.AstrBotRuntimeAdapter.from_host()
     adapter.validate()
