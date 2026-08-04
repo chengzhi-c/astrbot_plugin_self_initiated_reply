@@ -15,6 +15,7 @@
 
 ### 工程化
 
+- **红绿灯测试第七轮**（`tests/test_red_light_round7.py`，R13-R17）：MP1-3 越权取消、MP1-4 webapi 新键与 fail loud、MP1-8 bridge 缓存复用；五个测试在修复前基线实测全红，捕获能力非推演（R14 断言曾因 asyncio `cancelling` 态假绿，改用任务表引用断言修正）。
 - **mutation_check 四道守卫**（均实测红→绿）：① 目标文件工作区洁净检查（脏则拒绝）；② 锁文件并发互斥（O_EXCL + 超龄回收）；③ 变异残留识别（特征串比对 HEAD，给出恢复命令）；④ 变异前锚点测试基线预检（基线本红拒绝执行）。
 - **compat_check 扩展**：CHECKS 补 4 个私有 API 模块 + EventType 三枚举成员；新增宿主危险工具全集覆盖断言（枚举宿主 FunctionTool 子类 name ⊆ denylist，宿主改名/新增即 CI 报错）。
 - **flaky 测试修复**：三处固定 sleep 时序断言改事件驱动 `until()` 条件等待（test_phase0_fixes / test_resource_leaks）。
