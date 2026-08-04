@@ -90,8 +90,8 @@
   "log_reply_content": {
     "type": "bool",
     "description": "日志记录主动回复内容",
-    "hint": "开启后发送成功日志会附带文本预览，方便排查；担心隐私可关闭。",
-    "default": true
+    "hint": "开启后发送成功日志会附带文本预览，方便排查；担心隐私可关闭。默认关闭以保护隐私。",
+    "default": false
   },
   "bot_aliases": {
     "type": "list",

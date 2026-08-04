@@ -412,7 +412,7 @@ class Settings:
             ),
             allow_multiline_reply=as_bool(config.get("allow_multiline_reply", True), True),
             max_reply_chars=as_int(config.get("max_reply_chars", 220), 220, 0, 2000),
-            log_reply_content=as_bool(config.get("log_reply_content", True), True),
+            log_reply_content=as_bool(config.get("log_reply_content", False), False),
             bot_aliases=as_list(config.get("bot_aliases", [])),
             whitelist=set(whitelist_raw),
             ignored_sender_ids=set(as_list(config.get("ignored_sender_ids", []))),
