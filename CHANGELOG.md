@@ -10,7 +10,7 @@
 - **webapi 静默吞字段**：`_parse_config_updates` 补全 13 个 schema 键处理分支（recent_message_limit/reply_length_mode/allow_multiline_reply/max_reply_chars/log_reply_content/bot_aliases/ignored_sender_ids/check_interval_sec/max_daily_replies_per_session/quiet_hours/enabled_message_trigger/enabled_patrol_trigger/generation_timeout_sec），`decision_history_min_messages` 支持规范键；schema 之外的键 fail loud 拒绝（400 列出未知键）。
 - **denylist 死条目**：`HOST_DANGEROUS_TOOL_IDS` 删除 6 个实测不存在的 ID（create/delete/list_future_task、astrbot_create_file、astrbot_read_file、astrbot_read_file_tool），补真实名 `future_task`（4.23.3 实测单工具 multiCommand）、`astrbot_file_read_tool`、`astrbot_shell_session`（4.27.1）。
 - **私有 API 加载即崩缺口**：main.py 四个宿主私有 import 统一守卫，缺失时给出可诊断的加载失败提示。
-- **覆盖率口径**：`--cov=.` 排除 tests/（历史假绿灯根因），生产口径实测 68.19%，门槛 76 → 65（保持"实测-5%"缓冲）。
+- **覆盖率口径**：`--cov=.` 排除 tests/（历史假绿灯根因，含 tests 口径 81.62% 不实），生产口径实测 68.19%，fail_under 沿用 0.8.3 起 65（ffb733a 引入，当时含 tests 口径 77.4%；此前 76 为文档门槛无强制，65 非 -5% 公式产物）。
 - **parse 路径文件 IO 阻塞事件循环**：`_resolve_image_url` 三处 `_file_to_data_url` 同步调用改 `asyncio.to_thread`，与 snapshot 路径对齐（分歧裁决 #2）。
 
 ### 工程化
@@ -38,7 +38,7 @@
   - `test_image_to_data_url_os_error`：目录路径被 is_file() 先行拒绝，IsADirectoryError 永不发生——名为 os_error 实为 is_file 分支。改用 monkeypatch 真实触发 read_bytes OSError，recorder_bridge.py 95%→99%（仅剩 110 行 size 检查双保险死分支）。
   - 补 `test_ensure_api_false_when_get_api_not_callable`（探测链 get_api 不可调用分支）与 `test_resolve_relative_path_resolver_not_callable`（resolver 不可调用分支）。
 - **SessionGate 只读视图守护测试**：`test_gate_views_are_read_only_and_live`——三视图写抛错（TypeError/AttributeError）、读实时（advance/mark_running 后视图反映最新状态）、locks_view 引用同一锁对象；session_gate.py 覆盖率 98%→100%。
-- 复审后状态：286 passed、覆盖率 75.73%（adapters 99%/recorder_bridge 99%/session_gate 100%，当前实测；提交时 75.43%）。
+- 复审后状态：287 passed、覆盖率 75.79%（adapters 100%/recorder_bridge 99%/session_gate 100%，当前实测；提交时 75.43%）。
 
 ## [0.8.3] - 2026-08-04
 

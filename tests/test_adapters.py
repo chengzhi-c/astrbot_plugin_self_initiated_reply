@@ -115,22 +115,32 @@ async def test_call_compat_minimal_rebind_succeeds(bridge) -> None:
 
 async def test_call_compat_minimal_same_as_call_raises(bridge) -> None:
     """minimal == call_kwargs 时不再重试，直接上抛。"""
+    calls: list[Any] = []
 
     def target(a: int) -> str:  # pragma: no cover - 不应被调用
+        calls.append(a)
         return f"a={a}"
 
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="missing a required argument"):
         await bridge._call_compat(target, kwargs={"b": 2}, minimal_kwargs={"b": 2})
+    # 若误实现为继续调用 func(**minimal)（{}），缺参 TypeError 消息与原始 bind
+    # 错误相同，仅靠 match 无法区分；必须断言 target 未被调用
+    assert calls == []
 
 
 async def test_call_compat_minimal_also_type_error_raises_original(bridge) -> None:
     """minimal 重试也抛 TypeError（函数体内）时，上抛原始 bind 错误。"""
+    calls: list[Any] = []
 
     def target(a: int) -> str:
+        calls.append(a)
         raise TypeError("inner boom")
 
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="missing a required argument"):
         await bridge._call_compat(target, kwargs={"z": 1}, minimal_kwargs={"a": 1})
+    # match 区分"原始 bind 错误"（missing 'z'）与函数体内 TypeError（inner boom）；
+    # calls == [1] 证明 minimal 重试确实执行过（与上例零调用形成对照）
+    assert calls == [1]
 
 
 async def test_call_compat_signature_unavailable_direct_call(bridge) -> None:
@@ -307,6 +317,28 @@ async def test_llm_generate_direct_via_context(bridge) -> None:
     result = await bridge(ctx).llm_generate_direct(provider_id="p1", prompt="hi", image_urls=["u1"])
     assert result == "direct"
     assert captured["image_urls"] == ["u1"]
+
+
+async def test_llm_generate_direct_passes_temperature_and_max_tokens(bridge) -> None:
+    from types import SimpleNamespace
+
+    captured: dict[str, Any] = {}
+
+    class Provider:
+        async def text_chat(self, **kwargs):
+            captured.update(kwargs)
+            return "direct"
+
+    async def get_provider_by_id(pid):
+        return Provider() if pid == "p1" else None
+
+    ctx = SimpleNamespace(get_provider_by_id=get_provider_by_id)
+    result = await bridge(ctx).llm_generate_direct(
+        provider_id="p1", prompt="hi", image_urls=["u1"], temperature=0.7, max_tokens=128
+    )
+    assert result == "direct"
+    assert captured["temperature"] == 0.7
+    assert captured["max_tokens"] == 128
 
 
 async def test_llm_generate_direct_via_provider_manager(bridge) -> None:
