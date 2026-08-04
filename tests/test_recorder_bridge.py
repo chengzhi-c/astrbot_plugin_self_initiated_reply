@@ -143,7 +143,12 @@ def test_ensure_api_caches_result(bridge_mod) -> None:
     bridge = bridge_mod.MessageRecorderBridge(ctx)
     assert bridge._ensure_api() is True
     assert bridge._api is api
-    # 二次调用走缓存
+
+    # 缓存命中证明：破坏探测源后二次调用仍成功（_checked 短路，不重新探测）
+    def boom(name):
+        raise OSError("probe must not rerun")
+
+    ctx.get_registered_star = boom
     assert bridge._ensure_api() is True
 
 

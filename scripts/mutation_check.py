@@ -156,8 +156,8 @@ MUTANTS = [
     (
         "webapi-illegal-chars-allowed",
         "webapi.py",
-        "        if re.search(",
-        "        if False:  # ",
+        '        if re.search(r"[\\x00-\\x1f\\"\'\\\\]", text):',
+        "        if False:",
         "illegal_whitelist",
     ),
     (
@@ -171,11 +171,13 @@ MUTANTS = [
         "storage-corrupt-not-backed-up",
         "storage.py",
         (
-            '        logger.error("[%s] failed to load state (backing up): %s", PLUGIN_ID, exc)\n'
+            '            logger.error("[%s] failed to load state '
+            '(backing up): %s", PLUGIN_ID, exc)\n'
             "            _backup_state_file(path)"
         ),
         (
-            '        logger.error("[%s] failed to load state (backing up): %s", PLUGIN_ID, exc)\n'
+            '            logger.error("[%s] failed to load state '
+            '(backing up): %s", PLUGIN_ID, exc)\n'
             "            pass"
         ),
         "corrupt_state",
