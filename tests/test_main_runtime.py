@@ -568,7 +568,7 @@ def test_track_background_task_barrier_after_stop(tmp_path: Path) -> None:
 
 def test_whitelist_remove_recycles_session_lock(tmp_path: Path) -> None:
     async def scenario(plugin, main):
-        plugin._session_locks[UMO] = asyncio.Lock()
+        plugin._gate.lock_for(UMO)
         plugin._replace_whitelist(set())
         assert UMO not in plugin._session_locks
 

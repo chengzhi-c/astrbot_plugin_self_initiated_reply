@@ -7,6 +7,7 @@
 import asyncio
 import itertools
 from collections.abc import Iterator
+from types import MappingProxyType
 from typing import Any
 
 
@@ -15,6 +16,9 @@ class SessionGate:
 
     全局单调代次计数器：白名单移除/重加不会再产生 ABA，旧任务持有的
     token 永远小于会话当前 token，任何 check 点都会拒绝它。
+
+    外部只读经 ``*_view`` property 访问（MappingProxyType / frozenset），
+    写入一律走本类方法或 restore 整表覆盖，防误写绕过语义。
     """
 
     def __init__(self) -> None:
@@ -23,6 +27,21 @@ class SessionGate:
         self._running_sessions: set[str] = set()
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_release: dict[str, asyncio.Event] = {}
+
+    @property
+    def generation_view(self) -> MappingProxyType[str, int]:
+        """代次表只读视图（实时映射，外部不可写）。"""
+        return MappingProxyType(self._session_generation)
+
+    @property
+    def running_sessions_view(self) -> frozenset[str]:
+        """运行中会话集合只读视图（快照）。"""
+        return frozenset(self._running_sessions)
+
+    @property
+    def locks_view(self) -> MappingProxyType[str, asyncio.Lock]:
+        """会话锁表只读视图（实时映射，外部不可写）。"""
+        return MappingProxyType(self._session_locks)
 
     def advance(self, umo: str) -> int:
         generation = next(self._generation_counter)

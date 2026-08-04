@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import importlib
@@ -289,7 +288,7 @@ def test_r5_config_rollback_restores_sessions_and_locks(tmp_path: Path) -> None:
 
         umo = UMO
         plugin.sessions[umo] = plugin._state_for(umo)
-        plugin._session_locks[umo] = asyncio.Lock()
+        plugin._gate.lock_for(umo)
         plugin.settings.whitelist = {umo}
 
         async def boom():
