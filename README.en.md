@@ -78,6 +78,8 @@ The UI ships with light and dark themes — light "Boon of Compassion", dark "Co
 
 After changing settings, click "Save" and the page re-reads the server-side config. If you want to see the latest page assets after reloading the plugin or restarting AstrBot, hard-refresh the browser.
 
+> ⚠️ Security note: the plugin settings page and Web API (e.g. `/api/plugin/selfreply/config`) do **not** provide independent authentication; access control relies entirely on the host AstrBot Dashboard's login and permission system. Do not expose AstrBot's web port to untrusted networks. Changes to security-sensitive config (e.g. `proactive_inherit_tools`, whitelist) are recorded in the plugin INFO logs for later audit.
+
 ## About the Whitelist
 
 The whitelist has two layers: AstrBot's global whitelist intercepts first, and only after passing it does the plugin whitelist decide whether to reply proactively. `/selfreply add` adds the whole group session. The "Advanced: Whitelist Session IDs" section supports batch editing — full UMO or bare group IDs.

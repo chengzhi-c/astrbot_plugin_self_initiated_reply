@@ -2,6 +2,28 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式。
 
+## [Unreleased]
+
+### 修复
+
+- **越权取消**：`/selfreply` 写指令（add/remove/check/on/off）的会话取消移入管理员权限校验之后；无权限用户不再能取消在途主动回复（只读指令不打断进行中的检查）。
+- **webapi 静默吞字段**：`_parse_config_updates` 补全 13 个 schema 键处理分支（recent_message_limit/reply_length_mode/allow_multiline_reply/max_reply_chars/log_reply_content/bot_aliases/ignored_sender_ids/check_interval_sec/max_daily_replies_per_session/quiet_hours/enabled_message_trigger/enabled_patrol_trigger/generation_timeout_sec），`decision_history_min_messages` 支持规范键；schema 之外的键 fail loud 拒绝（400 列出未知键）。
+- **denylist 死条目**：`HOST_DANGEROUS_TOOL_IDS` 删除 6 个实测不存在的 ID（create/delete/list_future_task、astrbot_create_file、astrbot_read_file、astrbot_read_file_tool），补真实名 `future_task`（4.23.3 实测单工具 multiCommand）、`astrbot_file_read_tool`、`astrbot_shell_session`（4.27.1）。
+- **私有 API 加载即崩缺口**：main.py 四个宿主私有 import 统一守卫，缺失时给出可诊断的加载失败提示。
+- **覆盖率口径**：`--cov=.` 排除 tests/（历史假绿灯根因），生产口径实测 68.2%，门槛 76 → 65（保持"实测-5%"缓冲）。
+- **parse 路径文件 IO 阻塞事件循环**：`_resolve_image_url` 三处 `_file_to_data_url` 同步调用改 `asyncio.to_thread`，与 snapshot 路径对齐（分歧裁决 #2）。
+
+### 工程化
+
+- **mutation_check 四道守卫**（均实测红→绿）：① 目标文件工作区洁净检查（脏则拒绝）；② 锁文件并发互斥（O_EXCL + 超龄回收）；③ 变异残留识别（特征串比对 HEAD，给出恢复命令）；④ 变异前锚点测试基线预检（基线本红拒绝执行）。
+- **compat_check 扩展**：CHECKS 补 4 个私有 API 模块 + EventType 三枚举成员；新增宿主危险工具全集覆盖断言（枚举宿主 FunctionTool 子类 name ⊆ denylist，宿主改名/新增即 CI 报错）。
+- **flaky 测试修复**：三处固定 sleep 时序断言改事件驱动 `until()` 条件等待（test_phase0_fixes / test_resource_leaks）。
+- **测试排序依赖**：`test_phase0_fixes._load_main()` 显式安装 astrbot stubs，可独立运行。
+- **bridge 缓存击溃**：`get_recorder_bridge` 首次构造后复用缓存实例（唯一调用点 context 生命周期内稳定）。
+- **mypy**：files 补 webapi.py、session_gate.py（18 文件零问题），新增 CI job。
+- **CI 矩阵**：测试矩阵加 Python 3.13/3.14；lint 钉 ruff==0.16.1 与 pre-commit 对齐。
+- **webapi 审计**：enabled/proactive_inherit_tools/whitelist 变更记 INFO 审计日志；README 声明鉴权依赖宿主 Dashboard。
+
 ## [0.8.3] - 2026-08-04
 
 ### 修复（文档）
