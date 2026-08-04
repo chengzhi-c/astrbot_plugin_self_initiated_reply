@@ -10,7 +10,7 @@
 
 <p align="center">
   <em>Yejing (业镜, lit. "Mirror of Karma")</em> — a plugin that lets AstrBot naturally chime into conversations in whitelisted sessions.<br>
-  <img alt="Version" src="https://img.shields.io/badge/version-0.8.5-4a5580">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.8.6-4a5580">
   <img alt="AstrBot plugin" src="https://img.shields.io/badge/AstrBot-plugin-7b86ab">
 </p>
 
