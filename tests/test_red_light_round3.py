@@ -367,8 +367,8 @@ def test_session_generation_map_is_pruned_on_whitelist_removal() -> None:
     end = source.index("\n    async def _add_whitelist_session(", start)
     method = source[start:end]
 
-    assert "_session_generation" in method, (
-        "_replace_whitelist 未清理 _session_generation；"
+    assert "_gate.prune" in method, (
+        "_replace_whitelist 未通过 gate.prune 清理代次/锁/运行集；"
         "该字典按 UMO 累积且从不回收，长期运行会持续增长"
     )
 

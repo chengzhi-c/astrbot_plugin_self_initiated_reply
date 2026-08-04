@@ -151,6 +151,41 @@ def test_delayed_check_waits_for_running_session_release(tmp_path: Path) -> None
     with_plugin(tmp_path, scenario)
 
 
+def test_prune_wakes_waiting_delayed_check(tmp_path: Path) -> None:
+    """移出白名单时 gate.prune 须唤醒挂起在运行释放上的延迟检查。"""
+
+    async def scenario(plugin, main):
+        entered_wait = asyncio.Event()
+        original_release = plugin._gate.release_event
+
+        def patched_release(umo):
+            ev = original_release(umo)
+            entered_wait.set()
+            return ev
+
+        plugin._gate.release_event = patched_release
+        plugin._gate.mark_running(UMO)  # 模拟正在运行的 check 占住运行集
+        try:
+            task = asyncio.create_task(
+                plugin._delayed_check(
+                    UMO,
+                    delay_sec=0,
+                    trigger="patrol",
+                    force=True,
+                    generation=plugin._advance_session_generation(UMO),
+                )
+            )
+            await asyncio.wait_for(entered_wait.wait(), timeout=2)
+            assert not task.done(), "白名单移除前延迟检查应等待"
+            plugin._replace_whitelist(set())  # 移出全部会话
+            done, _pending = await asyncio.wait({task}, timeout=2)
+            assert task in done, "白名单移除后挂起的延迟检查应被唤醒退出"
+        finally:
+            plugin._gate.release_event = original_release
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_stale_generation_rejected_at_session_entry(tmp_path: Path) -> None:
     """旧代次任务在会话入口即被放弃，不进入决策与发送。"""
 
