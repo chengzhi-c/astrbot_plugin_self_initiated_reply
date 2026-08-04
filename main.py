@@ -924,7 +924,7 @@ class SelfInitiatedReplyPlugin(Star):
         force: bool,
         expected_generation: int | None = None,
     ) -> str:
-        lock = self._session_locks.setdefault(umo, asyncio.Lock())
+        lock = self._gate.lock_for(umo)
         if lock.locked():
             return "已有判断任务在运行。"
         async with lock:
@@ -2055,11 +2055,11 @@ class SelfInitiatedReplyPlugin(Star):
         }
         for umo in invalid_sessions:
             self._invalidate_session(umo)
-            # 代次表按 UMO 累积且从不回收；移出白名单时清理内存。全局单调
-            # token 保证即使会话重新加入，旧任务持有的旧 token 也必然失效。
-            self._session_generation.pop(umo, None)
-            # 会话锁只在会话活动时存在，移出白名单时一并回收。
-            self._session_locks.pop(umo, None)
+            # 代次表按 UMO 累积且从不回收；移出白名单时清理内存（含会话锁
+            # 与运行标记）。全局单调 token 保证即使会话重新加入，旧任务
+            # 持有的旧 token 也必然失效。prune 同时唤醒仍在等待运行释放的
+            # 挂起任务，由代次门使其退出，避免悬挂。
+            self._gate.prune(umo)
             # 会话状态（含 recent 历史）从内存回收；磁盘由 build_sessions_payload
             # 写盘时过滤非白名单条目，重启后不会复活。
             self.sessions.pop(umo, None)
