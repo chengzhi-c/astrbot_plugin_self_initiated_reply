@@ -385,9 +385,7 @@ def _parse_config_updates(data: Any) -> dict[str, Any]:
     if "max_reply_chars" in data:
         updates["max_reply_chars"] = _strict_int(data["max_reply_chars"], "max_reply_chars")
     if "log_reply_content" in data:
-        updates["log_reply_content"] = _strict_bool(
-            data["log_reply_content"], "log_reply_content"
-        )
+        updates["log_reply_content"] = _strict_bool(data["log_reply_content"], "log_reply_content")
     if "bot_aliases" in data:
         updates["bot_aliases"] = _string_list(data, "bot_aliases")
     if "ignored_sender_ids" in data:
@@ -613,7 +611,9 @@ async def _apply_config_updates(plugin, updates: dict[str, Any]) -> dict[str, An
         raise
 
 
-def _log_audited_changes(snapshot: dict[str, Any], new_settings: Settings, updates: dict[str, Any]) -> None:
+def _log_audited_changes(
+    snapshot: dict[str, Any], new_settings: Settings, updates: dict[str, Any]
+) -> None:
     """安全敏感键发生实际变化时记 INFO 审计日志。"""
     changed: list[str] = []
     for key in _AUDITED_CONFIG_KEYS:

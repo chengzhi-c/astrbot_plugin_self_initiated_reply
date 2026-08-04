@@ -34,8 +34,7 @@ try:
     from astrbot.core.star.star_handler import EventType
 except ImportError as exc:  # pragma: no cover - host compatibility guard
     raise RuntimeError(
-        "[selfreply] 宿主 AstrBot 缺少插件所需私有 API："
-        f"{exc}。请升级 AstrBot 至 >=4.23.3 后重试。"
+        f"[selfreply] 宿主 AstrBot 缺少插件所需私有 API：{exc}。请升级 AstrBot 至 >=4.23.3 后重试。"
     ) from exc
 
 try:
