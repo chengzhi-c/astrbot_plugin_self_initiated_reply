@@ -2,9 +2,9 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式。
 
-## [0.9.0] - 2026-08-04
+## [0.8.2] - 2026-08-04
 
-### 工程化（上帝类第二刀：会话状态收口）
+### 工程化（上帝类第二刀：会话状态收口，行为零变更）
 
 - 移除主类两个纯转发委托（`_advance_session_generation` / `_generation_is_current`），全部调用点直连 `SessionGate.advance / is_current`。
 - 运行成员判断（延迟取消守卫、patrol 循环、会话检查门卫、等待循环）统一走 `SessionGate.is_running`。
