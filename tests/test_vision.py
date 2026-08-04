@@ -718,6 +718,16 @@ def test_image_parser_rejects_private_network_targets() -> None:
     assert not asyncio.run(image.ImageParser._is_safe_url("file:///etc/passwd"))
 
 
+def test_image_parser_rejects_non_standard_ports() -> None:
+    """图片下载仅允许 80/443 端口，收缩公网主机任意端口可达的 SSRF 面。"""
+    _, image, _ = _load_modules()
+
+    assert not asyncio.run(image.ImageParser._is_safe_url("http://8.8.8.8:8080/x.png"))
+    assert not asyncio.run(image.ImageParser._is_safe_url("https://8.8.8.8:8443/x.png"))
+    assert asyncio.run(image.ImageParser._is_safe_url("http://8.8.8.8/x.png"))
+    assert asyncio.run(image.ImageParser._is_safe_url("https://8.8.8.8:443/x.png"))
+
+
 def test_bridge_direct_vision_call_forwards_images_without_context_hooks() -> None:
     adapters, _, _ = _load_modules()
 
