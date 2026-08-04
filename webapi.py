@@ -281,207 +281,223 @@ async def _api_post_config_locked(plugin):
     """更新配置。"""
     try:
         data = await _request_json()
-        if not isinstance(data, dict):
-            raise ValueError("请求体必须是 JSON 对象")
-
-        updates: dict[str, Any] = {}
-        if "enabled" in data:
-            updates["enabled"] = _strict_bool(data["enabled"], "enabled")
-        if "decision_model_enabled" in data:
-            updates["decision_model_enabled"] = _strict_bool(
-                data["decision_model_enabled"], "decision_model_enabled"
-            )
-        if "judge_provider_id" in data:
-            updates["judge_provider_id"] = str(data["judge_provider_id"] or "").strip()
-        if "decision_prompt_template" in data:
-            prompt = str(data["decision_prompt_template"] or "").strip()
-            updates["decision_prompt_template"] = prompt or DEFAULT_DECISION_PROMPT_TEMPLATE
-        if "decision_temperature" in data:
-            updates["decision_temperature"] = _strict_float(
-                data["decision_temperature"], "decision_temperature"
-            )
-        if "decision_timeout_sec" in data:
-            updates["decision_timeout_sec"] = _strict_float(
-                data["decision_timeout_sec"], "decision_timeout_sec"
-            )
-        cooldown_value = data.get("cooldown_sec", data.get("cooldown_seconds"))
-        if cooldown_value is not None:
-            updates["cooldown_sec"] = _strict_int(cooldown_value, "cooldown_sec")
-        message_delay_value = data.get("message_delay_sec", data.get("idle_trigger_seconds"))
-        if message_delay_value is not None:
-            updates["message_delay_sec"] = _strict_int(message_delay_value, "message_delay_sec")
-        if "min_silence_sec" in data:
-            updates["min_silence_sec"] = _strict_int(data["min_silence_sec"], "min_silence_sec")
-        if "patrol_inactive_after_sec" in data:
-            updates["patrol_inactive_after_sec"] = _strict_int(
-                data["patrol_inactive_after_sec"], "patrol_inactive_after_sec"
-            )
-        min_context_value = data.get("min_context_messages", data.get("proactive_threshold"))
-        if min_context_value is not None:
-            updates["decision_history_min_messages"] = _strict_int(
-                min_context_value, "decision_history_min_messages"
-            )
-        if "proactive_inherit_tools" in data:
-            updates["proactive_inherit_tools"] = _strict_bool(
-                data["proactive_inherit_tools"], "proactive_inherit_tools"
-            )
-        if "vision_judge_enabled" in data:
-            updates["vision_judge_enabled"] = _strict_bool(
-                data["vision_judge_enabled"], "vision_judge_enabled"
-            )
-        if "vision_main_enabled" in data:
-            updates["vision_main_enabled"] = _strict_bool(
-                data["vision_main_enabled"], "vision_main_enabled"
-            )
-        if "vision_enabled" in data and not (
-            "vision_judge_enabled" in data or "vision_main_enabled" in data
-        ):
-            # 旧前端只会发聚合开关，同步到两个新开关
-            legacy_vision = _strict_bool(data["vision_enabled"], "vision_enabled")
-            updates["vision_judge_enabled"] = legacy_vision
-            updates["vision_main_enabled"] = legacy_vision
-        if "vision_provider_id" in data:
-            updates["vision_provider_id"] = str(data["vision_provider_id"] or "").strip()
-        if "vision_judge_provider_id" in data:
-            updates["vision_judge_provider_id"] = str(
-                data["vision_judge_provider_id"] or ""
-            ).strip()
-        if "vision_skip_stickers" in data:
-            updates["vision_skip_stickers"] = _strict_bool(
-                data["vision_skip_stickers"], "vision_skip_stickers"
-            )
-        if "vision_max_images" in data:
-            updates["vision_max_images"] = _strict_int(
-                data["vision_max_images"], "vision_max_images"
-            )
-        if "vision_image_age_sec" in data:
-            updates["vision_image_age_sec"] = _strict_int(
-                data["vision_image_age_sec"], "vision_image_age_sec"
-            )
-        if "vision_timeout_sec" in data:
-            updates["vision_timeout_sec"] = _strict_float(
-                data["vision_timeout_sec"], "vision_timeout_sec"
-            )
-        if "whitelist" in data:
-            if not isinstance(data["whitelist"], list):
-                raise ValueError("whitelist 必须是数组")
-            items: list[str] = []
-            for item in data["whitelist"]:
-                raw = str(item).strip()
-                if not raw:
-                    continue
-                if len(raw) > MAX_WHITELIST_ITEM_LEN:
-                    raise ValueError(f"白名单条目过长: {raw[:20]}…")
-                if re.search(r"[\x00-\x1f\"'\\]", raw):
-                    raise ValueError("白名单条目含非法字符")
-                items.append(raw)
-            updates["whitelist"] = items
-
-        old_settings = copy.deepcopy(plugin.settings)
-        old_runtime_enabled = plugin.runtime_enabled
-        old_last_events = dict(plugin._last_events)
-        old_last_event_at = dict(plugin._last_event_at)
-        old_recent_image_events = {
-            key: deque(values, maxlen=MAX_CACHED_IMAGE_EVENTS)
-            for key, values in plugin._recent_image_events.items()
-        }
-        old_whitelist_runtime_umos = {
-            key: set(values) for key, values in plugin._whitelist_runtime_umos.items()
-        }
-        old_session_generation = dict(plugin._session_generation)
-        old_sessions = dict(plugin.sessions)
-        old_session_locks = dict(plugin._session_locks)
-        old_delay_umos = set(plugin._delay_tasks)
-        try:
-            candidate = plugin.settings.to_config_dict()
-            for key, value in updates.items():
-                if key == "whitelist":
-                    candidate["whitelist_sessions"] = list(value)
-                else:
-                    candidate[key] = value
-            new_settings = Settings.from_config(candidate)
-            vision_changed = any(
-                getattr(plugin.settings, key) != getattr(new_settings, key)
-                for key in (
-                    "vision_judge_enabled",
-                    "vision_main_enabled",
-                    "vision_provider_id",
-                    "vision_judge_provider_id",
-                    "vision_timeout_sec",
-                )
-            )
-            plugin.settings = new_settings
-            if "whitelist" in updates:
-                plugin._replace_whitelist(new_settings.whitelist)
-            if vision_changed:
-                plugin._image_parsers.clear()
-                plugin._image_parser_timeout = None
-            if updates:
-                plugin._sync_whitelist()
-                await plugin._save_storage()
-
-            # 持久 enabled 真正变化才清除临时覆盖并同步任务拓扑；全量表单
-            # 重复提交相同值不得影响 /on /off 建立的临时运行态。
-            enabled_persisted_changed = (
-                "enabled" in updates and old_settings.enabled != new_settings.enabled
-            )
-            if enabled_persisted_changed:
-                plugin.runtime_enabled = new_settings.enabled
-                if plugin.runtime_enabled:
-                    plugin._ensure_patrol_task()
-                    plugin._ensure_image_cleanup_task()
-                else:
-                    plugin._cancel_delay_tasks()
-                    await plugin._stop_patrol_task()
-            elif plugin.runtime_enabled:
-                plugin._ensure_image_cleanup_task()
-            return {"ok": True}
-        except Exception:
-            plugin.settings = old_settings
-            plugin.runtime_enabled = old_runtime_enabled
-            plugin._last_events = old_last_events
-            plugin._last_event_at = old_last_event_at
-            plugin._recent_image_events = old_recent_image_events
-            plugin._whitelist_runtime_umos = old_whitelist_runtime_umos
-            plugin._session_generation = old_session_generation
-            plugin.sessions = old_sessions
-            plugin._session_locks = old_session_locks
-            # 回滚后重新调度被白名单变更取消的延迟检查（已取消的任务对象
-            # 不可复用，只能按默认 message_delay 语义重建）。
-            for umo in old_delay_umos:
-                if umo in plugin.sessions and not plugin._stopping:
-                    try:
-                        plugin._schedule_delayed_check(
-                            umo, delay_sec=None, trigger="message_delay", force=False
-                        )
-                    except Exception as re_exc:
-                        logger.debug(
-                            "[%s] delayed check reschedule failed on rollback session=%s error=%s",
-                            PLUGIN_ID,
-                            umo,
-                            re_exc,
-                        )
-                else:
-                    logger.debug(
-                        "[%s] delayed check dropped on rollback session=%s", PLUGIN_ID, umo
-                    )
-            # 回滚后一律丢弃 parser 缓存，避免残留按失败配置建的实例
-            plugin._image_parsers.clear()
-            plugin._image_parser_timeout = None
-            # 回滚后恢复任务拓扑：禁用路径可能已停掉 patrol/cleanup，
-            # 否则出现 runtime_enabled=True 但巡检永久停止的不一致态。
-            if old_runtime_enabled and not plugin._stopping:
-                plugin._ensure_patrol_task()
-                plugin._ensure_image_cleanup_task()
-            try:
-                plugin._sync_whitelist()
-                await plugin._save_storage()
-            except Exception as rollback_exc:
-                logger.error("[%s] config rollback persistence failed: %s", PLUGIN_ID, rollback_exc)
-            raise
+        updates = _parse_config_updates(data)
+        return await _apply_config_updates(plugin, updates)
     except Exception as exc:
         logger.warning("[%s] api post config failed: %s", PLUGIN_ID, exc)
         return {"ok": False, "error": str(exc)}
+
+
+def _parse_config_updates(data: Any) -> dict[str, Any]:
+    """从请求体提取合法配置变更并做严格类型校验；非法字段抛 ValueError。"""
+    if not isinstance(data, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+
+    updates: dict[str, Any] = {}
+    if "enabled" in data:
+        updates["enabled"] = _strict_bool(data["enabled"], "enabled")
+    if "decision_model_enabled" in data:
+        updates["decision_model_enabled"] = _strict_bool(
+            data["decision_model_enabled"], "decision_model_enabled"
+        )
+    if "judge_provider_id" in data:
+        updates["judge_provider_id"] = str(data["judge_provider_id"] or "").strip()
+    if "decision_prompt_template" in data:
+        prompt = str(data["decision_prompt_template"] or "").strip()
+        updates["decision_prompt_template"] = prompt or DEFAULT_DECISION_PROMPT_TEMPLATE
+    if "decision_temperature" in data:
+        updates["decision_temperature"] = _strict_float(
+            data["decision_temperature"], "decision_temperature"
+        )
+    if "decision_timeout_sec" in data:
+        updates["decision_timeout_sec"] = _strict_float(
+            data["decision_timeout_sec"], "decision_timeout_sec"
+        )
+    cooldown_value = data.get("cooldown_sec", data.get("cooldown_seconds"))
+    if cooldown_value is not None:
+        updates["cooldown_sec"] = _strict_int(cooldown_value, "cooldown_sec")
+    message_delay_value = data.get("message_delay_sec", data.get("idle_trigger_seconds"))
+    if message_delay_value is not None:
+        updates["message_delay_sec"] = _strict_int(message_delay_value, "message_delay_sec")
+    if "min_silence_sec" in data:
+        updates["min_silence_sec"] = _strict_int(data["min_silence_sec"], "min_silence_sec")
+    if "patrol_inactive_after_sec" in data:
+        updates["patrol_inactive_after_sec"] = _strict_int(
+            data["patrol_inactive_after_sec"], "patrol_inactive_after_sec"
+        )
+    min_context_value = data.get("min_context_messages", data.get("proactive_threshold"))
+    if min_context_value is not None:
+        updates["decision_history_min_messages"] = _strict_int(
+            min_context_value, "decision_history_min_messages"
+        )
+    if "proactive_inherit_tools" in data:
+        updates["proactive_inherit_tools"] = _strict_bool(
+            data["proactive_inherit_tools"], "proactive_inherit_tools"
+        )
+    if "vision_judge_enabled" in data:
+        updates["vision_judge_enabled"] = _strict_bool(
+            data["vision_judge_enabled"], "vision_judge_enabled"
+        )
+    if "vision_main_enabled" in data:
+        updates["vision_main_enabled"] = _strict_bool(
+            data["vision_main_enabled"], "vision_main_enabled"
+        )
+    if "vision_enabled" in data and not (
+        "vision_judge_enabled" in data or "vision_main_enabled" in data
+    ):
+        # 旧前端只会发聚合开关，同步到两个新开关
+        legacy_vision = _strict_bool(data["vision_enabled"], "vision_enabled")
+        updates["vision_judge_enabled"] = legacy_vision
+        updates["vision_main_enabled"] = legacy_vision
+    if "vision_provider_id" in data:
+        updates["vision_provider_id"] = str(data["vision_provider_id"] or "").strip()
+    if "vision_judge_provider_id" in data:
+        updates["vision_judge_provider_id"] = str(data["vision_judge_provider_id"] or "").strip()
+    if "vision_skip_stickers" in data:
+        updates["vision_skip_stickers"] = _strict_bool(
+            data["vision_skip_stickers"], "vision_skip_stickers"
+        )
+    if "vision_max_images" in data:
+        updates["vision_max_images"] = _strict_int(data["vision_max_images"], "vision_max_images")
+    if "vision_image_age_sec" in data:
+        updates["vision_image_age_sec"] = _strict_int(
+            data["vision_image_age_sec"], "vision_image_age_sec"
+        )
+    if "vision_timeout_sec" in data:
+        updates["vision_timeout_sec"] = _strict_float(
+            data["vision_timeout_sec"], "vision_timeout_sec"
+        )
+    if "whitelist" in data:
+        if not isinstance(data["whitelist"], list):
+            raise ValueError("whitelist 必须是数组")
+        items: list[str] = []
+        for item in data["whitelist"]:
+            raw = str(item).strip()
+            if not raw:
+                continue
+            if len(raw) > MAX_WHITELIST_ITEM_LEN:
+                raise ValueError(f"白名单条目过长: {raw[:20]}…")
+            if re.search(r"[\x00-\x1f\"'\\]", raw):
+                raise ValueError("白名单条目含非法字符")
+            items.append(raw)
+        updates["whitelist"] = items
+    return updates
+
+
+def _snapshot_plugin_state(plugin) -> dict[str, Any]:
+    """对应用配置前会变更的全部运行态做快照，供回滚恢复。"""
+    return {
+        "settings": copy.deepcopy(plugin.settings),
+        "runtime_enabled": plugin.runtime_enabled,
+        "last_events": dict(plugin._last_events),
+        "last_event_at": dict(plugin._last_event_at),
+        "recent_image_events": {
+            key: deque(values, maxlen=MAX_CACHED_IMAGE_EVENTS)
+            for key, values in plugin._recent_image_events.items()
+        },
+        "whitelist_runtime_umos": {
+            key: set(values) for key, values in plugin._whitelist_runtime_umos.items()
+        },
+        "session_generation": dict(plugin._session_generation),
+        "sessions": dict(plugin.sessions),
+        "session_locks": dict(plugin._session_locks),
+        "delay_umos": set(plugin._delay_tasks),
+    }
+
+
+async def _restore_plugin_state(plugin, snapshot: dict[str, Any]) -> None:
+    """恢复配置应用前快照，重建被取消的延迟检查并恢复任务拓扑。"""
+    plugin.settings = snapshot["settings"]
+    plugin.runtime_enabled = snapshot["runtime_enabled"]
+    plugin._last_events = snapshot["last_events"]
+    plugin._last_event_at = snapshot["last_event_at"]
+    plugin._recent_image_events = snapshot["recent_image_events"]
+    plugin._whitelist_runtime_umos = snapshot["whitelist_runtime_umos"]
+    plugin._session_generation = snapshot["session_generation"]
+    plugin.sessions = snapshot["sessions"]
+    plugin._session_locks = snapshot["session_locks"]
+    # 回滚后重新调度被白名单变更取消的延迟检查（已取消的任务对象
+    # 不可复用，只能按默认 message_delay 语义重建）。
+    for umo in snapshot["delay_umos"]:
+        if umo in plugin.sessions and not plugin._stopping:
+            try:
+                plugin._schedule_delayed_check(
+                    umo, delay_sec=None, trigger="message_delay", force=False
+                )
+            except Exception as re_exc:
+                logger.debug(
+                    "[%s] delayed check reschedule failed on rollback session=%s error=%s",
+                    PLUGIN_ID,
+                    umo,
+                    re_exc,
+                )
+        else:
+            logger.debug("[%s] delayed check dropped on rollback session=%s", PLUGIN_ID, umo)
+    # 回滚后一律丢弃 parser 缓存，避免残留按失败配置建的实例
+    plugin._image_parsers.clear()
+    plugin._image_parser_timeout = None
+    # 回滚后恢复任务拓扑：禁用路径可能已停掉 patrol/cleanup，
+    # 否则出现 runtime_enabled=True 但巡检永久停止的不一致态。
+    if snapshot["runtime_enabled"] and not plugin._stopping:
+        plugin._ensure_patrol_task()
+        plugin._ensure_image_cleanup_task()
+    try:
+        plugin._sync_whitelist()
+        await plugin._save_storage()
+    except Exception as rollback_exc:
+        logger.error("[%s] config rollback persistence failed: %s", PLUGIN_ID, rollback_exc)
+
+
+async def _apply_config_updates(plugin, updates: dict[str, Any]) -> dict[str, Any]:
+    """应用配置变更；任何失败回滚全部运行态后重新抛出。"""
+    snapshot = _snapshot_plugin_state(plugin)
+    try:
+        candidate = plugin.settings.to_config_dict()
+        for key, value in updates.items():
+            if key == "whitelist":
+                candidate["whitelist_sessions"] = list(value)
+            else:
+                candidate[key] = value
+        new_settings = Settings.from_config(candidate)
+        vision_changed = any(
+            getattr(plugin.settings, key) != getattr(new_settings, key)
+            for key in (
+                "vision_judge_enabled",
+                "vision_main_enabled",
+                "vision_provider_id",
+                "vision_judge_provider_id",
+                "vision_timeout_sec",
+            )
+        )
+        plugin.settings = new_settings
+        if "whitelist" in updates:
+            plugin._replace_whitelist(new_settings.whitelist)
+        if vision_changed:
+            plugin._image_parsers.clear()
+            plugin._image_parser_timeout = None
+        if updates:
+            plugin._sync_whitelist()
+            await plugin._save_storage()
+
+        # 持久 enabled 真正变化才清除临时覆盖并同步任务拓扑；全量表单
+        # 重复提交相同值不得影响 /on /off 建立的临时运行态。
+        enabled_persisted_changed = (
+            "enabled" in updates and snapshot["settings"].enabled != new_settings.enabled
+        )
+        if enabled_persisted_changed:
+            plugin.runtime_enabled = new_settings.enabled
+            if plugin.runtime_enabled:
+                plugin._ensure_patrol_task()
+                plugin._ensure_image_cleanup_task()
+            else:
+                plugin._cancel_delay_tasks()
+                await plugin._stop_patrol_task()
+        elif plugin.runtime_enabled:
+            plugin._ensure_image_cleanup_task()
+        return {"ok": True}
+    except Exception:
+        await _restore_plugin_state(plugin, snapshot)
+        raise
 
 
 async def _api_status(plugin):

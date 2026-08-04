@@ -114,6 +114,23 @@ def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario, generation_timeout_sec=60)
 
 
+def test_stale_generation_rejected_at_session_entry(tmp_path: Path) -> None:
+    """旧代次任务在会话入口即被放弃，不进入决策与发送。"""
+
+    async def scenario(plugin, main):
+        event = _make_event()
+        plugin._last_events[UMO] = event
+        plugin._last_event_at[UMO] = 1.0
+        token = plugin._advance_session_generation(UMO)
+        plugin._advance_session_generation(UMO)  # 抬代次使 token 过期
+        result = await plugin._check_session(
+            UMO, trigger="patrol", force=True, expected_generation=token
+        )
+        assert result == "会话已经更新，放弃旧任务。"
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_force_cancel_converges_before_grace_timeout(tmp_path: Path) -> None:
     """显式 cancel 应在 grace 超时前收敛 run_task（第一层保险的时序守卫）。"""
 
