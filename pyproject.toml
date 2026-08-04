@@ -44,9 +44,9 @@ asyncio_mode = "auto"
 addopts = "--cov=. --cov-report=term-missing"
 
 [tool.coverage.report]
-# 基线 62%（实测），门槛取 65%：先过门槛再逐步提升；tests/ 行已计入导致
-# 数值偏高，如显式 exclude 测试目录后门槛按新基线重校
-fail_under = 65
+# 门槛 72%：全量复审后实测 77.97%（2026-08-04），留 ~6 个百分点缓冲；
+# 门槛提升以 CI 覆盖率工件实测为准，杜绝拍脑袋定数。
+fail_under = 72
 
 [tool.mypy]
 # 仓库目录名含连字符，mypy 无法按包发现；显式列出源码文件 + 忽略宿主

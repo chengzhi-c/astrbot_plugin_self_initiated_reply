@@ -114,6 +114,81 @@ def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario, generation_timeout_sec=60)
 
 
+def test_force_cancel_converges_before_grace_timeout(tmp_path: Path) -> None:
+    """显式 cancel 应在 grace 超时前收敛 run_task（第一层保险的时序守卫）。"""
+
+    from types import SimpleNamespace
+
+    from .host_stubs import FakeBuildResult, _FakeResetCoro
+
+    run_finished: list[bool] = []
+
+    async def scenario(plugin, main):
+        event = _make_event()
+        plugin._last_events[UMO] = event
+        plugin._last_event_at[UMO] = 1.0
+        entered = asyncio.Event()
+
+        class HangingRunner:
+            def reset(self, **_):
+                return _FakeResetCoro()
+
+            def request_stop(self):
+                pass
+
+            def get_final_llm_resp(self):
+                return SimpleNamespace(completion_text="", result_chain=None)
+
+            def close(self):
+                pass
+
+        async def build_effect(kwargs, result):
+            return FakeBuildResult(
+                agent_runner=HangingRunner(),
+                provider_request=kwargs["req"],
+                provider=None,
+                reset_coro=_FakeResetCoro(),
+            )
+
+        def run_effect(_runner, **_kwargs):
+            async def gen():
+                try:
+                    entered.set()
+                    await asyncio.sleep(3600)  # 永不结束的 run_agent
+                    yield None
+                finally:
+                    run_finished.append(True)
+
+            return gen()
+
+        original_runtime = main._AGENT_RUNTIME
+        main._AGENT_RUNTIME = _PipelineTestAdapter(
+            original_runtime, build_effect=build_effect, run_effect=run_effect
+        )
+        original_grace = main.GRACEFUL_STOP_GRACE_SEC
+        # 30s 宽限期：若缺少显式 cancel（第一层保险），收敛只能等 grace 超时
+        main.GRACEFUL_STOP_GRACE_SEC = 30
+        try:
+            task = asyncio.create_task(
+                plugin._generate_reply_via_pipeline(
+                    UMO, plugin._state_for(UMO), expected_generation=1, force=True
+                )
+            )
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            task.cancel()  # 模拟 /off / terminate 等 force cancel
+            await asyncio.sleep(0.5)  # 显式 cancel 应立即收敛，无需等待 30s grace
+            assert run_finished == [True], "run_task 未在 grace 超时前收敛（显式 cancel 兜底缺失）"
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        finally:
+            main.GRACEFUL_STOP_GRACE_SEC = original_grace
+            main._AGENT_RUNTIME = original_runtime
+
+    with_plugin(tmp_path, scenario, generation_timeout_sec=60)
+
+
 # ============================================================================
 # 0.2 P1：context 兜底发送误记 UNKNOWN
 # ============================================================================
