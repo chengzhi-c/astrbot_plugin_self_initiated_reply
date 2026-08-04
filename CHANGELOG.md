@@ -25,6 +25,12 @@
 - **CI 矩阵**：测试矩阵加 Python 3.13/3.14；lint 钉 ruff==0.16.1 与 pre-commit 对齐。
 - **webapi 审计**：enabled/proactive_inherit_tools/whitelist 变更记 INFO 审计日志；README 声明鉴权依赖宿主 Dashboard。
 
+### 批次3（质量增强）
+
+- **低覆盖模块补盲**：adapters.py 37%→97%（`tests/test_adapters.py` 38 用例：兼容调用降级/探测/宿主差异全分支）、recorder_bridge.py 38%→95%（`tests/test_recorder_bridge.py` 25 用例：探测回退链/路径解析/MIME 魔数校验）；生产口径覆盖率 68.35%→75.43%，门槛按"实测-5%"校准 65→70。
+- **mutation 扩面 11→19**（P2-23）：SSRF 三变异（scheme 白名单旁路/非标准端口旁路/私有 IP 放行，test_vision 补 ftp:// 用例）、webapi 拒绝路径三变异（bool 接受/非法字符放行/未知键旁路）、storage 恢复两变异（损坏不备份/版本不符不备份）；实测 19/19 击杀。
+- **SessionGate 只读视图**（P2-24）：generation_view/locks_view 用 MappingProxyType 实时映射、running_sessions_view 用 frozenset；main.py 三个转发 property 改返回只读视图（全仓调用点均只读，行为零变更）；误写运行时抛错，杜绝绕过语义；两个测试搭场景写点改用公开入口 lock_for。
+
 ## [0.8.3] - 2026-08-04
 
 ### 修复（文档）
