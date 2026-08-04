@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
 import json
 import re
 import time
@@ -15,6 +14,7 @@ from astrbot.api.event.filter import PermissionType, permission_type
 from astrbot.api.star import Context, Star, register
 
 from .runtime_adapter import AstrBotRuntimeAdapter
+from .session_gate import SessionGate
 
 _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
 # 宿主有真实 build config 类则沿用，否则回退 Any（宿主兼容层）。
@@ -158,10 +158,7 @@ class SelfInitiatedReplyPlugin(Star):
         self._running_check_tasks: dict[str, asyncio.Task[Any]] = {}
         # 全局单调代次计数器：白名单移除/重加不会再产生 ABA，旧任务持有的
         # token 永远小于会话当前 token，任何 check 点都会拒绝它。
-        self._generation_counter: itertools.count[int] = itertools.count(1)
-        self._session_generation: dict[str, int] = {}
-        self._running_sessions: set[str] = set()
-        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._gate = SessionGate()
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._patrol_task: asyncio.Task[Any] | None = None
         self._image_cleanup_task: asyncio.Task[Any] | None = None
@@ -492,9 +489,34 @@ class SelfInitiatedReplyPlugin(Star):
         return is_explicit_direct_call(event, text)
 
     def _advance_session_generation(self, umo: str) -> int:
-        generation = next(self._generation_counter)
-        self._session_generation[umo] = generation
-        return generation
+        return self._gate.advance(umo)
+
+    # 只读视图：数据归属 SessionGate，以下 property 供既有调用点与测试
+    # 以原字段名访问，避免同步迁移动辄数十处引用面。setter 仅用于
+    # 配置回滚整表覆盖（webapi._restore_plugin_state）。
+    @property
+    def _session_generation(self) -> dict[str, int]:
+        return self._gate._session_generation
+
+    @_session_generation.setter
+    def _session_generation(self, value: dict[str, int]) -> None:
+        self._gate._session_generation = value
+
+    @property
+    def _running_sessions(self) -> set[str]:
+        return self._gate._running_sessions
+
+    @_running_sessions.setter
+    def _running_sessions(self, value: set[str]) -> None:
+        self._gate._running_sessions = value
+
+    @property
+    def _session_locks(self) -> dict[str, asyncio.Lock]:
+        return self._gate._session_locks
+
+    @_session_locks.setter
+    def _session_locks(self, value: dict[str, asyncio.Lock]) -> None:
+        self._gate._session_locks = value
 
     def _track_background_task(self, coro: Any) -> asyncio.Task[Any] | None:
         if self._stopping:
@@ -561,7 +583,7 @@ class SelfInitiatedReplyPlugin(Star):
             logger.warning("[%s] image capture failed for umo=%s error=%s", PLUGIN_ID, umo, exc)
 
     def _generation_is_current(self, umo: str, generation: int | None) -> bool:
-        return generation is None or self._session_generation.get(umo, 0) == generation
+        return self._gate.is_current(umo, generation)
 
     def _cancel_delay_task(self, umo: str, *, force: bool = False) -> None:
         task = self._delay_tasks.get(umo)
