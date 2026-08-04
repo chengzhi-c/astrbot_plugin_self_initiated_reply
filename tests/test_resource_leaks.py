@@ -41,8 +41,8 @@ def test_multi_session_cancel_converges_all_tables(tmp_path: Path) -> None:
         assert len(plugin._background_tasks) == baseline_tasks
         assert not plugin._delay_tasks
         assert not plugin._running_check_tasks
-        assert not plugin._gate._session_release
-        assert not plugin._gate._running_sessions
+        assert not plugin._gate._session_release  # release 表无公开视图，读侧断言残留即可
+        assert not plugin._gate.running_sessions_view
 
     with_plugin(tmp_path, scenario)
 

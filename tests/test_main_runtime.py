@@ -575,6 +575,31 @@ def test_whitelist_remove_recycles_session_lock(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+def test_gate_views_are_read_only_and_live(tmp_path: Path) -> None:
+    """P2-24：SessionGate 只读视图——写抛错、读实时、语义不被绕过。"""
+
+    async def scenario(plugin, main):
+        # 写操作必须抛错（MappingProxyType / frozenset）
+        with pytest.raises(TypeError):
+            plugin._session_generation[UMO] = 1
+        with pytest.raises(TypeError):
+            plugin._session_locks[UMO] = asyncio.Lock()
+        with pytest.raises(AttributeError):
+            plugin._running_sessions.add(UMO)
+        # 读正常且反映最新状态（实时视图）
+        assert plugin._session_generation.get(UMO, 0) == 0
+        plugin._gate.advance(UMO)
+        assert plugin._session_generation[UMO] == 1
+        plugin._gate.mark_running(UMO)
+        assert UMO in plugin._running_sessions
+        plugin._gate.unmark_running(UMO)
+        assert UMO not in plugin._running_sessions
+        lock = plugin._gate.lock_for(UMO)
+        assert plugin._session_locks[UMO] is lock
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_whitelist_remove_recycles_session_state(tmp_path: Path) -> None:
     """移出白名单后，会话状态（含 recent 历史）从内存回收，避免缓慢增长。"""
 
