@@ -2,6 +2,22 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式。
 
+## [0.8.3] - 2026-08-04
+
+### 修复（文档）
+
+- README.en.md 版本徽章同步到当前版本（三方审查遗漏项）。
+
+### 工程化（行为零变更）
+
+- 版本一致性守卫扩展：metadata.yaml / models.py / 中英双语 README 徽章四处同源（双语 badge 先红后绿验证）。
+- 新增资源泄漏回归套件（`tests/test_resource_leaks.py`）：多会话取消后 `_background_tasks`/`_delay_tasks`/`_running_check_tasks`/`_session_release`/`_running_sessions` 全部回基线、常驻任务不误杀、terminate 幂等；两个泄漏变异实测红→绿。
+- `SessionGate.restore` 运行集恢复锚定测试（restore 删 running 表变异实测红→绿）。
+- `_cancel_delay_task(force=True)` 运行中检查任务取消分支锚定测试（force 分支失效变异实测红→绿，mutation 巡检发现该缺口）。
+- 变异检测制度化（`scripts/mutation_check.py`）：首批 11 个历史实测变异点全击杀，锚定串漂移即报错，恢复逐字节校验；挂 CI nightly。
+- 宿主兼容冒烟（`scripts/compat_check.py`）+ 多版本 AstrBot 兼容矩阵 CI（4.26.1 硬门禁，latest 预警）。
+- 覆盖率门槛 72 → 76（实测 81.62%，按实测-5% 校准）。
+
 ## [0.8.2] - 2026-08-04
 
 ### 工程化（上帝类第二刀：会话状态收口，行为零变更）
