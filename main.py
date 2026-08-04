@@ -1367,7 +1367,9 @@ class SelfInitiatedReplyPlugin(Star):
                 try:
                     await asyncio.wait_for(run_task, timeout=GRACEFUL_STOP_GRACE_SEC)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
-                    pass
+                    # 收敛失败（run_agent 吞掉取消仍继续跑）：再注入一次
+                    # 取消，与下方超时分支的兜底行为保持一致，避免留下孤儿任务。
+                    run_task.cancel()
                 raise
             except asyncio.TimeoutError:
                 request_stop = getattr(build_result.agent_runner, "request_stop", None)
