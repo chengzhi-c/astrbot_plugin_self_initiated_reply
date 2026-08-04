@@ -26,6 +26,57 @@ from .models import (
     Settings,
 )
 
+# 配置 schema 全键（_conf_schema.json）+ 历史兼容别名。此名单之外的键
+# 一律 fail loud 拒绝，防止前端/未来代码提交新字段时被静默吞掉。
+CONFIG_SCHEMA_KEYS = frozenset(
+    {
+        "enabled",
+        "decision_model_enabled",
+        "judge_provider_id",
+        "decision_prompt_template",
+        "decision_history_min_messages",
+        "decision_temperature",
+        "decision_timeout_sec",
+        "reply_length_mode",
+        "allow_multiline_reply",
+        "max_reply_chars",
+        "log_reply_content",
+        "bot_aliases",
+        "ignored_sender_ids",
+        "whitelist_sessions",
+        "check_interval_sec",
+        "patrol_inactive_after_sec",
+        "message_delay_sec",
+        "min_silence_sec",
+        "cooldown_sec",
+        "max_daily_replies_per_session",
+        "recent_message_limit",
+        "quiet_hours",
+        "enabled_message_trigger",
+        "enabled_patrol_trigger",
+        "generation_timeout_sec",
+        "proactive_inherit_tools",
+        "vision_judge_enabled",
+        "vision_main_enabled",
+        "vision_provider_id",
+        "vision_judge_provider_id",
+        "vision_skip_stickers",
+        "vision_max_images",
+        "vision_image_age_sec",
+        "vision_timeout_sec",
+        # 兼容别名（旧前端 / 历史使用）：
+        "cooldown_seconds",
+        "idle_trigger_seconds",
+        "min_context_messages",
+        "proactive_threshold",
+        "vision_enabled",
+        "whitelist",
+    }
+)
+
+# 枚举型字符串键 → 合法取值集合（schema options 的运行时镜像）
+_REPLY_LENGTH_MODES = {"short", "balanced", "expressive"}
+
 
 def _config_value(config: Any, key: str, default: Any = "") -> Any:
     if isinstance(config, dict):
@@ -245,6 +296,24 @@ def _strict_int(value: Any, field: str) -> int:
         raise ValueError(f"{field} 必须是整数") from exc
 
 
+def _string_list(data: dict[str, Any], key: str) -> list[str]:
+    """规范化字符串列表：strip、去空，条目长度/字符规则与白名单一致。"""
+    raw = data[key]
+    if not isinstance(raw, list):
+        raise ValueError(f"{key} 必须是数组")
+    items: list[str] = []
+    for item in raw:
+        text = str(item).strip()
+        if not text:
+            continue
+        if len(text) > MAX_WHITELIST_ITEM_LEN:
+            raise ValueError(f"{key} 条目过长: {text[:20]}…")
+        if re.search(r"[\x00-\x1f\"'\\]", text):
+            raise ValueError(f"{key} 条目含非法字符")
+        items.append(text)
+    return items
+
+
 def _strict_float(value: Any, field: str) -> float:
     if isinstance(value, bool):
         raise ValueError(f"{field} 必须是数字")
@@ -293,9 +362,58 @@ def _parse_config_updates(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("请求体必须是 JSON 对象")
 
+    unknown = sorted(set(data) - CONFIG_SCHEMA_KEYS)
+    if unknown:
+        raise ValueError(f"未知配置键: {', '.join(unknown)}")
+
     updates: dict[str, Any] = {}
     if "enabled" in data:
         updates["enabled"] = _strict_bool(data["enabled"], "enabled")
+    if "recent_message_limit" in data:
+        updates["recent_message_limit"] = _strict_int(
+            data["recent_message_limit"], "recent_message_limit"
+        )
+    if "reply_length_mode" in data:
+        mode = str(data["reply_length_mode"] or "").strip()
+        if mode not in _REPLY_LENGTH_MODES:
+            raise ValueError(f"reply_length_mode 必须是 {'/'.join(sorted(_REPLY_LENGTH_MODES))}")
+        updates["reply_length_mode"] = mode
+    if "allow_multiline_reply" in data:
+        updates["allow_multiline_reply"] = _strict_bool(
+            data["allow_multiline_reply"], "allow_multiline_reply"
+        )
+    if "max_reply_chars" in data:
+        updates["max_reply_chars"] = _strict_int(data["max_reply_chars"], "max_reply_chars")
+    if "log_reply_content" in data:
+        updates["log_reply_content"] = _strict_bool(
+            data["log_reply_content"], "log_reply_content"
+        )
+    if "bot_aliases" in data:
+        updates["bot_aliases"] = _string_list(data, "bot_aliases")
+    if "ignored_sender_ids" in data:
+        updates["ignored_sender_ids"] = _string_list(data, "ignored_sender_ids")
+    if "check_interval_sec" in data:
+        updates["check_interval_sec"] = _strict_int(
+            data["check_interval_sec"], "check_interval_sec"
+        )
+    if "max_daily_replies_per_session" in data:
+        updates["max_daily_replies_per_session"] = _strict_int(
+            data["max_daily_replies_per_session"], "max_daily_replies_per_session"
+        )
+    if "quiet_hours" in data:
+        updates["quiet_hours"] = _string_list(data, "quiet_hours")
+    if "enabled_message_trigger" in data:
+        updates["enabled_message_trigger"] = _strict_bool(
+            data["enabled_message_trigger"], "enabled_message_trigger"
+        )
+    if "enabled_patrol_trigger" in data:
+        updates["enabled_patrol_trigger"] = _strict_bool(
+            data["enabled_patrol_trigger"], "enabled_patrol_trigger"
+        )
+    if "generation_timeout_sec" in data:
+        updates["generation_timeout_sec"] = _strict_float(
+            data["generation_timeout_sec"], "generation_timeout_sec"
+        )
     if "decision_model_enabled" in data:
         updates["decision_model_enabled"] = _strict_bool(
             data["decision_model_enabled"], "decision_model_enabled"
@@ -325,7 +443,10 @@ def _parse_config_updates(data: Any) -> dict[str, Any]:
         updates["patrol_inactive_after_sec"] = _strict_int(
             data["patrol_inactive_after_sec"], "patrol_inactive_after_sec"
         )
-    min_context_value = data.get("min_context_messages", data.get("proactive_threshold"))
+    min_context_value = data.get(
+        "decision_history_min_messages",
+        data.get("min_context_messages", data.get("proactive_threshold")),
+    )
     if min_context_value is not None:
         updates["decision_history_min_messages"] = _strict_int(
             min_context_value, "decision_history_min_messages"
@@ -368,20 +489,13 @@ def _parse_config_updates(data: Any) -> dict[str, Any]:
             data["vision_timeout_sec"], "vision_timeout_sec"
         )
     if "whitelist" in data:
-        if not isinstance(data["whitelist"], list):
-            raise ValueError("whitelist 必须是数组")
-        items: list[str] = []
-        for item in data["whitelist"]:
-            raw = str(item).strip()
-            if not raw:
-                continue
-            if len(raw) > MAX_WHITELIST_ITEM_LEN:
-                raise ValueError(f"白名单条目过长: {raw[:20]}…")
-            if re.search(r"[\x00-\x1f\"'\\]", raw):
-                raise ValueError("白名单条目含非法字符")
-            items.append(raw)
-        updates["whitelist"] = items
+        updates["whitelist"] = _string_list(data, "whitelist")
     return updates
+
+
+# 安全敏感配置键：变更记 INFO 审计日志。webapi 无独立鉴权，
+# 访问控制依赖宿主 Dashboard；留痕便于事后追溯。
+_AUDITED_CONFIG_KEYS = ("enabled", "proactive_inherit_tools", "whitelist")
 
 
 def _snapshot_plugin_state(plugin) -> dict[str, Any]:
@@ -492,10 +606,28 @@ async def _apply_config_updates(plugin, updates: dict[str, Any]) -> dict[str, An
                 await plugin._stop_patrol_task()
         elif plugin.runtime_enabled:
             plugin._ensure_image_cleanup_task()
+        _log_audited_changes(snapshot, new_settings, updates)
         return {"ok": True}
     except Exception:
         await _restore_plugin_state(plugin, snapshot)
         raise
+
+
+def _log_audited_changes(snapshot: dict[str, Any], new_settings: Settings, updates: dict[str, Any]) -> None:
+    """安全敏感键发生实际变化时记 INFO 审计日志。"""
+    changed: list[str] = []
+    for key in _AUDITED_CONFIG_KEYS:
+        if key not in updates:
+            continue
+        attr = "whitelist_sessions" if key == "whitelist" else key
+        old_value = getattr(snapshot["settings"], attr, None)
+        new_value = getattr(new_settings, attr, None)
+        old_norm = sorted(old_value) if isinstance(old_value, (set, list)) else old_value
+        new_norm = sorted(new_value) if isinstance(new_value, (set, list)) else new_value
+        if old_norm != new_norm:
+            changed.append(f"{key}={new_norm!r}")
+    if changed:
+        logger.info("[%s] webapi config audit: %s", PLUGIN_ID, ", ".join(changed))
 
 
 async def _api_status(plugin):

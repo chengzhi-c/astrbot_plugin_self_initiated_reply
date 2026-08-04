@@ -382,7 +382,9 @@ class ImageParser:
             if prepared.startswith("data:"):
                 return prepared
             prepared_path = Path(prepared)
-            data_url = self._file_to_data_url(prepared_path, trusted=True)
+            data_url = await asyncio.to_thread(
+                self._file_to_data_url, prepared_path, trusted=True
+            )
             if data_url:
                 return data_url
 
@@ -392,7 +394,9 @@ class ImageParser:
                 image_info.url,
             )
             if local_path:
-                data_url = self._file_to_data_url(local_path, trusted=True)
+                data_url = await asyncio.to_thread(
+                    self._file_to_data_url, local_path, trusted=True
+                )
                 if data_url:
                     return data_url
 
@@ -412,7 +416,9 @@ class ImageParser:
                 if resolved is not None:
                     path = resolved
                     trusted = True
-            data_url = self._file_to_data_url(path, trusted=trusted)
+            data_url = await asyncio.to_thread(
+                self._file_to_data_url, path, trusted=trusted
+            )
             if data_url:
                 return data_url
 

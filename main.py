@@ -20,10 +20,23 @@ _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
 # 宿主有真实 build config 类则沿用，否则回退 Any（宿主兼容层）。
 MainAgentBuildConfig = _AGENT_RUNTIME.capabilities.build_config or Any
 
-from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
-from astrbot.core.pipeline.context import call_event_hook
-from astrbot.core.provider.entities import ProviderRequest
-from astrbot.core.star.star_handler import EventType
+# 宿主私有 API：声明版本区间（>=4.23.3）内必须存在，统一守卫防止构造器
+# 加载即崩且无诊断；缺失一律拒绝加载并提示修复方向，而非回退 None 后
+# 在 Agent 管线深处更晚、更隐蔽地崩溃。compat_check.py 的 CHECKS 与 CI
+# 已同步覆盖这些符号，漂移会在发布前变红。
+try:
+    from astrbot.core.message.message_event_result import (
+        MessageEventResult,
+        ResultContentType,
+    )
+    from astrbot.core.pipeline.context import call_event_hook
+    from astrbot.core.provider.entities import ProviderRequest
+    from astrbot.core.star.star_handler import EventType
+except ImportError as exc:  # pragma: no cover - host compatibility guard
+    raise RuntimeError(
+        "[selfreply] 宿主 AstrBot 缺少插件所需私有 API："
+        f"{exc}。请升级 AstrBot 至 >=4.23.3 后重试。"
+    ) from exc
 
 try:
     from astrbot.core.utils.astrbot_path import (
@@ -62,6 +75,7 @@ from .models import (
     PLUGIN_VERSION,
     PROACTIVE_ALLOWED_TOOL_IDS,
     REPLY_REQUEST_WINDOW_SEC,
+    SESSION_CANCEL_COMMAND_ACTIONS,
     MessageRecord,
     PipelineReply,
     SendOutcome,
@@ -349,7 +363,6 @@ class SelfInitiatedReplyPlugin(Star):
             return
         parsed = parse_command_text(text)
         if parsed is not None and self._is_command_entry(event, text):
-            self._cancel_event_session(event)
             await self._handle_inline_command(event, parsed)
             return
 
@@ -2126,6 +2139,9 @@ class SelfInitiatedReplyPlugin(Star):
         if action in ADMIN_COMMAND_ACTIONS and not is_admin_event(event, self._refresh_admin_ids()):
             await self._send_command_text(event, "没有权限执行该主动回复管理指令。")
             return
+        # 越权拒绝先行：写操作才取消在途回复，只读动作不打断进行中的检查。
+        if action in SESSION_CANCEL_COMMAND_ACTIONS:
+            self._cancel_event_session(event)
         await self._send_command_text(event, await self._command_text(event, action, arg))
 
     async def _command_text(self, event: AstrMessageEvent, action: str, arg: str = "") -> str:

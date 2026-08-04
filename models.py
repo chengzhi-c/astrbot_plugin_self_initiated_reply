@@ -34,6 +34,9 @@ GRACEFUL_STOP_GRACE_SEC = 3.0
 # 指令动作集合：help/status/list/debug 为只读，不触碰会话任务；
 # add/remove/check/on/off 为写操作，各自内部处理会话失效语义。
 ADMIN_COMMAND_ACTIONS = {"status", "list", "add", "remove", "check", "on", "off", "debug"}
+# 进入命令即需取消在途主动回复的写操作集合。只读动作（help/status/list/debug）
+# 不打断正在进行的回复检查；写操作在权限校验通过后才触发取消。
+SESSION_CANCEL_COMMAND_ACTIONS = frozenset({"add", "remove", "check", "on", "off"})
 # 0.7.x 主动 Agent 工具允许列表：默认空集，未列入的工具在 build/hook 后一律移除，
 # 无法验证时终止本次主动运行（fail closed）。后续如需放行工具，必须提供稳定工具
 # ID、明确 owner、行为测试和独立安全评审后才能加入。
@@ -46,24 +49,24 @@ PROACTIVE_ALLOWED_TOOL_IDS: frozenset[str] = frozenset()
 # 之外的最终防线，用于拦截 hook 在 build 后注入的宿主危险工具。
 HOST_DANGEROUS_TOOL_IDS: frozenset[str] = frozenset(
     {
-        # cron（astrbot/core/tools/cron_tools.py）
-        "create_future_task",
-        "delete_future_task",
-        "list_future_tasks",
+        # cron（astrbot/core/tools/cron_tools.py，4.23.3 实测为单工具 multiCommand：
+        # create/delete/list 均为子命令，FunctionTool.name 为 future_task）
+        "future_task",
         # shell / python（astrbot/core/computer/tools/{shell,python}.py）
         "astrbot_execute_shell",
         "astrbot_execute_ipython",
         "astrbot_execute_python",
+        # shell 会话（astrbot 4.27.1 新增，本机无此版本，采信审查方 wheel 证据）
+        "astrbot_shell_session",
         # browser / computer use（astrbot/core/computer/tools/browser.py）
         "astrbot_execute_browser",
         "astrbot_execute_browser_batch",
         "astrbot_run_browser_skill",
-        # filesystem（astrbot/core/computer/tools/fs.py）
+        # filesystem（astrbot/core/computer/tools/fs.py，4.23.3 实测实际 name；
+        # astrbot_create_file/astrbot_read_file/astrbot_read_file_tool 为死条目已删）
         "astrbot_upload_file",
         "astrbot_download_file",
-        "astrbot_create_file",
-        "astrbot_read_file",
-        "astrbot_read_file_tool",
+        "astrbot_file_read_tool",
         "astrbot_file_write_tool",
         "astrbot_file_edit_tool",
         "astrbot_grep_tool",

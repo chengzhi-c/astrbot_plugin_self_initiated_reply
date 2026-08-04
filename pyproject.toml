@@ -43,10 +43,15 @@ asyncio_mode = "auto"
 # 覆盖率必须用路径方式（.）追踪——动态加载使模块名 cov 失效（实测）
 addopts = "--cov=. --cov-report=term-missing"
 
+[tool.coverage.run]
+# 生产口径：排除测试自身，恢复指标真实性（历史问题：--cov=. 把 tests/ 也计入分母）
+omit = ["tests/*"]
+
 [tool.coverage.report]
-# 门槛 76%：三方审查后实测 81.27%（2026-08-04），按"实测-5%"留缓冲；
-# 门槛提升以 CI 覆盖率工件实测为准，杜绝拍脑袋定数。
-fail_under = 76
+# 门槛 65%：生产口径（omit tests/）实测 68.19%（2026-08-04），按"实测-5%"留缓冲。
+# 门槛调整以生产口径覆盖率工件实测为准，杜绝拍脑袋定数。
+# 历史：0.8.3 及之前 --cov=. 把 tests/ 计入分母，81.62% 为假绿灯，本次已修正口径。
+fail_under = 65
 
 [tool.mypy]
 # 仓库目录名含连字符，mypy 无法按包发现；显式列出源码文件 + 忽略宿主
@@ -63,5 +68,7 @@ files = [
   "utils.py",
   "unified_manager.py",
   "runtime_adapter.py",
+  "webapi.py",
+  "session_gate.py",
   "image",
 ]
