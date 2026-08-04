@@ -7,7 +7,6 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "selfreply_outbound_test_package"
 
@@ -53,8 +52,12 @@ def test_tool_direct_exception_is_unknown_and_still_consumes_budget() -> None:
         raise RuntimeError("adapter disconnected")
 
     gateway = outbound.OutboundGateway(sender, max_direct_sends=1)
-    first = asyncio.run(gateway.send(SimpleNamespace(type="tool_direct_result"), kind="tool_direct"))
-    second = asyncio.run(gateway.send(SimpleNamespace(type="tool_direct_result"), kind="tool_direct"))
+    first = asyncio.run(
+        gateway.send(SimpleNamespace(type="tool_direct_result"), kind="tool_direct")
+    )
+    second = asyncio.run(
+        gateway.send(SimpleNamespace(type="tool_direct_result"), kind="tool_direct")
+    )
 
     assert first.outcome.status.value == "unknown"
     assert second.outcome.status.value == "suppressed"

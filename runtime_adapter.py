@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,7 @@ class AstrBotRuntimeAdapter:
         self.capabilities = capabilities
 
     @classmethod
-    def from_host(cls) -> "AstrBotRuntimeAdapter":
+    def from_host(cls) -> AstrBotRuntimeAdapter:
         try:
             from astrbot.core.agent.tool import ToolSet
             from astrbot.core.astr_agent_run_util import run_agent
@@ -99,9 +100,7 @@ class AstrBotRuntimeAdapter:
             return
         missing = sorted(required_params - set(params))
         if missing:
-            raise RuntimeError(
-                f"当前 AstrBot 的 {name} 签名不兼容，缺少参数：{', '.join(missing)}"
-            )
+            raise RuntimeError(f"当前 AstrBot 的 {name} 签名不兼容，缺少参数：{', '.join(missing)}")
 
     @property
     def tool_set(self) -> type[Any]:

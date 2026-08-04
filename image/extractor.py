@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from html import unescape
 import ntpath
 import os
 import re
+from collections.abc import Mapping
+from html import unescape
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -52,7 +52,9 @@ def _parse_raw_cq_components(raw: Any) -> list[dict[str, Any]]:
 def _component_field(component: Any, name: str) -> Any:
     """Read a component field across AstrBot objects and raw mapping shapes."""
     sources = [component]
-    nested = component.get("data") if isinstance(component, dict) else getattr(component, "data", None)
+    nested = (
+        component.get("data") if isinstance(component, dict) else getattr(component, "data", None)
+    )
     if nested is not None:
         sources.append(nested)
     for source in sources:
@@ -97,7 +99,18 @@ def _is_sticker_marker(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     normalized = str(value or "").strip().lower()
-    return normalized in {"1", "true", "yes", "on", "sticker", "emoji", "face", "表情", "表情包", "贴图"}
+    return normalized in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "sticker",
+        "emoji",
+        "face",
+        "表情",
+        "表情包",
+        "贴图",
+    }
 
 
 def _explicit_sticker_marker(component: Any) -> tuple[bool, bool]:
@@ -169,11 +182,7 @@ def _raw_image_components(event: Any) -> list[Any]:
         segments = raw
     if not isinstance(segments, (list, tuple)):
         return []
-    return [
-        component
-        for component in segments
-        if _component_type(component) in _IMAGE_TYPES
-    ]
+    return [component for component in segments if _component_type(component) in _IMAGE_TYPES]
 
 
 def _image_entries(event: Any) -> list[tuple[Any, Any]]:
@@ -186,11 +195,7 @@ def _image_entries(event: Any) -> list[tuple[Any, Any]]:
     for component in components or []:
         if _component_type(component) not in _IMAGE_TYPES:
             continue
-        raw_component = (
-            raw_components[raw_index]
-            if raw_index < len(raw_components)
-            else None
-        )
+        raw_component = raw_components[raw_index] if raw_index < len(raw_components) else None
         raw_index += 1
         entries.append((component, raw_component))
     return entries
@@ -220,7 +225,7 @@ class ImageExtractor:
 
     @staticmethod
     def extract_images(
-        event: "AstrMessageEvent",
+        event: AstrMessageEvent,
         *,
         sender_id: str = "",
         timestamp: float = 0.0,
@@ -288,7 +293,7 @@ class ImageExtractor:
         return images
 
     @staticmethod
-    def has_images(event: "AstrMessageEvent", *, skip_stickers: bool = False) -> bool:
+    def has_images(event: AstrMessageEvent, *, skip_stickers: bool = False) -> bool:
         try:
             return any(
                 not (

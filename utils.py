@@ -18,9 +18,7 @@ _INLINE_AT_PATTERN = re.compile(r"\[CQ:at,[^\]]+\]")
 _INLINE_MENTION_PATTERN = re.compile(r"\[At:[^\]]+\]")
 _TOOL_CALL_LEAK_PATTERN = re.compile(r"^\s*\[(?:historical )?tool call\]", re.IGNORECASE)
 # 工具标记及其同行残留（不跨行，避免吃掉后续正常内容）
-_TOOL_CALL_INLINE_PATTERN = re.compile(
-    r"\[(?:historical\s+)?tool\s+call\][^\n]*", re.IGNORECASE
-)
+_TOOL_CALL_INLINE_PATTERN = re.compile(r"\[(?:historical\s+)?tool\s+call\][^\n]*", re.IGNORECASE)
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 # 行内空白：不含换行，用于保留多行结构时压缩空格
 _INLINE_SPACE_PATTERN = re.compile(r"[^\S\n]+")
@@ -70,21 +68,21 @@ def parse_json(text: str) -> Any:
 
 def parse_decision_json(text: str) -> dict[str, Any] | None:
     """严格解析判断模型的 JSON 响应，带类型校验和规范化。
-    
+
     Args:
         text: 判断模型返回的原始文本
-        
+
     Returns:
         规范化后的字典 {"should_reply": bool, "reason": str}，解析失败返回 None
     """
     parsed = parse_json(text)
     if not isinstance(parsed, dict):
         return None
-    
+
     # 必须包含 should_reply
     if "should_reply" not in parsed:
         return None
-    
+
     # 规范化 should_reply 为布尔值
     raw_reply = parsed["should_reply"]
     if isinstance(raw_reply, bool):
@@ -95,12 +93,12 @@ def parse_decision_json(text: str) -> dict[str, Any] | None:
         should_reply = bool(raw_reply)
     else:
         return None  # 无效类型
-    
+
     # 规范化 reason
     reason = str(parsed.get("reason") or "未提供理由").strip()
     if len(reason) > 200:
         reason = reason[:200] + "..."
-    
+
     return {
         "should_reply": should_reply,
         "reason": reason,

@@ -9,7 +9,6 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "selfreply_vision_test_package"
 
@@ -36,7 +35,7 @@ def _install_astrbot_stubs() -> None:
     event.AstrMessageEvent = AstrMessageEvent
     star.Context = Context
     components.At = At
-    setattr(astrbot, "api", api)
+    astrbot.api = api
 
 
 def _load_modules():
@@ -837,9 +836,7 @@ def test_legacy_vision_enabled_migrates_to_both_toggles() -> None:
     assert off.vision_main_enabled is False
 
     # 新开关显式给值时优先于旧聚合开关
-    override = models.Settings.from_config(
-        {"vision_enabled": True, "vision_judge_enabled": False}
-    )
+    override = models.Settings.from_config({"vision_enabled": True, "vision_judge_enabled": False})
     assert override.vision_judge_enabled is False
     assert override.vision_main_enabled is True
 
@@ -992,4 +989,3 @@ def test_judge_vision_provider_is_declared_in_schema() -> None:
     assert entry.get("_special") == "select_provider", (
         "应使用 select_provider 以便在配置页直接选择 Provider"
     )
-

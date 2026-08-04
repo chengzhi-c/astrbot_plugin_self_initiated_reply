@@ -12,9 +12,9 @@ from .utils import (
     event_umo,
     is_at_or_wake_command_event,
     is_explicit_direct_call,
-    session_whitelisted,
     looks_like_reply_request,
     raw_umo,
+    session_whitelisted,
     strip_leading_mentions,
 )
 
@@ -80,7 +80,9 @@ def list_text(settings: Settings) -> str:
     return "主动回复白名单：\n" + "\n".join(f"- {item}" for item in sorted(settings.whitelist))
 
 
-def status_text(settings: Settings, event: AstrMessageEvent, state: object, runtime_enabled: bool) -> str:
+def status_text(
+    settings: Settings, event: AstrMessageEvent, state: object, runtime_enabled: bool
+) -> str:
     umo = event_umo(event)
     return "\n".join(
         [
@@ -89,14 +91,17 @@ def status_text(settings: Settings, event: AstrMessageEvent, state: object, runt
             f"当前会话: {umo or '-'}",
             f"当前会话在白名单: {'是' if session_whitelisted(umo, settings.whitelist) else '否'}",
             f"白名单数量: {len(settings.whitelist)}",
-            f"判断模型: {'启用' if settings.decision_model_enabled else '关闭'}，Provider: {settings.judge_provider_id or '当前会话模型'}",
+            f"判断模型: {'启用' if settings.decision_model_enabled else '关闭'}，"
+            f"Provider: {settings.judge_provider_id or '当前会话模型'}",
             f"判断提示词: {'自定义' if settings.decision_prompt_custom else '默认'}",
             f"最少上下文消息数: {settings.decision_history_min_messages} 条",
-            f"消息后触发: {settings.enabled_message_trigger}，延迟 {settings.message_delay_sec}s，最小静默 {settings.min_silence_sec}s",
+            f"消息后触发: {settings.enabled_message_trigger}，延迟 {settings.message_delay_sec}s，"
+            f"最小静默 {settings.min_silence_sec}s",
             f"后台巡检: {settings.enabled_patrol_trigger}",
             "直接 @Bot: 始终交给 AstrBot 主回复链，主动回复不抢答",
             f"忽略发送者: {', '.join(sorted(settings.ignored_sender_ids)) or '-'}",
-            f"冷却: {settings.cooldown_sec}s，今日上限: {settings.max_daily_replies_per_session or '不限'}",
+            f"冷却: {settings.cooldown_sec}s，今日上限: "
+            f"{settings.max_daily_replies_per_session or '不限'}",
             f"今日已回复: {getattr(state, 'daily_count', 0)}",
             f"上次主动回复: {fmt_ts(getattr(state, 'last_proactive_at', 0.0))}",
             "回复生成: AstrBot 正常 LLM 管线模式",
@@ -119,6 +124,7 @@ def debug_text(settings: Settings, event: AstrMessageEvent, ignored_sender: bool
             f"is_at_or_wake_command: {is_at_or_wake_command_event(event)}",
             f"ignored_sender: {ignored_sender}",
             f"explicit_direct_call: {is_explicit_direct_call(event, text)}",
-            f"reply_request: {looks_like_reply_request(clean_chat_text(text), settings.bot_aliases)}",
+            f"reply_request: "
+            f"{looks_like_reply_request(clean_chat_text(text), settings.bot_aliases)}",
         ]
     )

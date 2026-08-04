@@ -16,8 +16,8 @@ from urllib.parse import urlparse
 
 from astrbot.api import logger
 
-from .cache import ImageCache
 from ..models import MAX_IMAGE_CACHE_BYTES
+from .cache import ImageCache
 from .models import ImageInfo
 from .recorder_bridge import MAX_IMAGE_BYTES, MessageRecorderBridge
 from .safety import sniff_image_mime
@@ -103,9 +103,7 @@ class ImageParser:
             except OSError as exc:
                 logger.warning("[selfreply] image cache directory unavailable: %s", exc)
         self._allowed_local_roots = (
-            {self._source_cache_dir.resolve()}
-            if self._source_cache_dir is not None
-            else set()
+            {self._source_cache_dir.resolve()} if self._source_cache_dir is not None else set()
         )
 
     async def prepare(self, image_info: ImageInfo) -> bool:
@@ -137,7 +135,9 @@ class ImageParser:
                 image_info.prepared_source = image_url
                 logger.debug("[selfreply] image frozen as in-memory data URL")
                 return True
-            logger.warning("[selfreply] image source was not materialized; refusing delayed raw URL")
+            logger.warning(
+                "[selfreply] image source was not materialized; refusing delayed raw URL"
+            )
             return False
         except Exception as exc:
             logger.warning("[selfreply] image capture failed: %s", exc)
@@ -481,8 +481,7 @@ class ImageParser:
                 return None
             candidate = path.resolve(strict=True)
             if not trusted and not any(
-                candidate == root or root in candidate.parents
-                for root in self._allowed_local_roots
+                candidate == root or root in candidate.parents for root in self._allowed_local_roots
             ):
                 logger.warning("[selfreply] rejected local image outside trusted roots: %s", path)
                 return None

@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import logging
 import sys
 import types
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "selfreply_round3_package"
@@ -44,7 +44,7 @@ def _install_astrbot_stubs() -> None:
         star.Context = Context
     if not hasattr(components, "At"):
         components.At = At
-    setattr(astrbot, "api", api)
+    astrbot.api = api
 
 
 def _load_modules():
@@ -99,8 +99,7 @@ def test_resolver_rejects_absolute_path_outside_media_scope(tmp_path: Path) -> N
     resolved = asyncio.run(parser._resolve_image_url(info))
 
     assert resolved is None, (
-        "任意绝对路径被读取并 base64 化：缺少扩展名白名单与目录约束，"
-        "存在本地文件读取与外传风险"
+        "任意绝对路径被读取并 base64 化：缺少扩展名白名单与目录约束，存在本地文件读取与外传风险"
     )
 
 
@@ -113,9 +112,7 @@ def test_image_extension_allowlist_is_enforced(tmp_path: Path) -> None:
 
     result = recorder.MessageRecorderBridge.image_to_data_url(fake)
 
-    assert result is None, (
-        "缺少图片魔数校验：任意内容只要改成 .png 后缀就会被当作图片外传"
-    )
+    assert result is None, "缺少图片魔数校验：任意内容只要改成 .png 后缀就会被当作图片外传"
 
 
 # --- 对照组：收紧后合法图片必须仍能通过（防止误杀识图功能）---
@@ -264,8 +261,7 @@ def test_recent_messages_block_keeps_line_structure() -> None:
     safe = models.sanitize_prompt_variable(block, max_length=2000, allow_newlines=True)
 
     assert "\n" in safe, (
-        "allow_newlines=True 时多行聊天记录被压成单行，"
-        "判断模型无法区分发言人和轮次"
+        "allow_newlines=True 时多行聊天记录被压成单行，判断模型无法区分发言人和轮次"
     )
 
 
@@ -286,8 +282,7 @@ def test_sanitize_does_not_inject_literal_backslashes() -> None:
     safe = models.sanitize_prompt_variable('他说"确实如此"', max_length=200)
 
     assert '\\"' not in safe, (
-        "纯文本提示词里出现了 JSON 转义反斜杠，"
-        "模型看到的是被污染的字面量而不是原始引号"
+        "纯文本提示词里出现了 JSON 转义反斜杠，模型看到的是被污染的字面量而不是原始引号"
     )
 
 
@@ -326,13 +321,10 @@ def test_inline_command_requires_slash_or_mention() -> None:
 
 def test_help_action_is_reachable_without_admin() -> None:
     """确认 help 不在管理员动作集合内（用于说明上一条的影响面）。"""
-    source = _main_source()
-    line = next(
-        item for item in source.splitlines() if item.startswith("ADMIN_COMMAND_ACTIONS")
-    )
-    assert '"help"' not in line, (
-        "help 不受管理员限制，配合缺失的前缀校验构成无门槛触发面"
-    )
+    models, _, _, _, _ = _load_modules()
+    source = inspect.getsource(models)
+    line = next(item for item in source.splitlines() if item.startswith("ADMIN_COMMAND_ACTIONS"))
+    assert '"help"' not in line, "help 不受管理员限制，配合缺失的前缀校验构成无门槛触发面"
 
 
 def test_bare_command_word_is_parsed_as_command() -> None:
@@ -354,7 +346,7 @@ def test_api_get_config_returns_payload_on_failure() -> None:
     end = source.index("\n    async def _api_providers(", start)
     method = source[start:end]
 
-    tail = method[method.index("except Exception"):]
+    tail = method[method.index("except Exception") :]
     stripped = [item.strip() for item in tail.splitlines()]
 
     assert "return" not in stripped, (
@@ -384,7 +376,7 @@ def test_session_generation_map_is_pruned_on_whitelist_removal() -> None:
 def test_terminate_clears_image_event_cache() -> None:
     """terminate 应清理含图事件缓存，避免插件重载时残留事件对象。"""
     source = _main_source()
-    method = source[source.index("    async def terminate("):]
+    method = source[source.index("    async def terminate(") :]
 
     assert "_recent_image_events" in method, (
         "terminate 未清理 _recent_image_events，每会话最多 20 个事件对象残留"
@@ -394,7 +386,7 @@ def test_terminate_clears_image_event_cache() -> None:
 def test_terminate_waits_for_cancelled_background_tasks() -> None:
     """取消后台任务后必须等待其收尾，避免旧任务越过终止边界。"""
     source = _main_source()
-    terminate = source[source.index("    async def terminate("):]
+    terminate = source[source.index("    async def terminate(") :]
     wait_method_start = source.index("    async def _wait_background_tasks(")
     wait_method_end = source.index("\n    async def _stop_patrol_task(", wait_method_start)
     wait_method = source[wait_method_start:wait_method_end]
@@ -415,7 +407,14 @@ def test_image_cache_cleanup_has_manual_api_and_startup_sweep() -> None:
     assert '"POST"' in registration
     assert "_api_cleanup_image_cache" in registration
     assert "self._cleanup_image_sources(now=now_ts())" in source
-    assert "if not self.settings.vision_enabled" not in source[source.index("    def _cleanup_image_sources("):source.index("    def _cleanup_old_events_if_needed(")]
+    assert (
+        "if not self.settings.vision_enabled"
+        not in source[
+            source.index("    def _cleanup_image_sources(") : source.index(
+                "    def _cleanup_old_events_if_needed("
+            )
+        ]
+    )
 
 
 def test_plugin_logo_is_root_square_png() -> None:
@@ -435,10 +434,23 @@ def test_successful_image_cache_logs_are_debug_only() -> None:
     source = _main_source()
     parser_source = (ROOT / "image" / "parser.py").read_text(encoding="utf-8")
 
-    assert 'logger.debug(\n                "[%s] captured %s/%s images into local vision cache for umo=%s",' in source
-    assert 'logger.info(\n                "[%s] captured %s/%s images into local vision cache for umo=%s",' not in source
-    assert 'logger.debug(\n                "[selfreply] host image snapshot created: %s",' in parser_source
-    assert 'logger.info(\n                "[selfreply] host image snapshot created: %s",' not in parser_source
+    assert (
+        "logger.debug(\n"
+        '                "[%s] captured %s/%s images into local vision cache for umo=%s",' in source
+    )
+    assert (
+        "logger.info(\n"
+        '                "[%s] captured %s/%s images into local vision cache for umo=%s",'
+        not in source
+    )
+    assert (
+        'logger.debug(\n                "[selfreply] host image snapshot created: %s",'
+        in parser_source
+    )
+    assert (
+        'logger.info(\n                "[selfreply] host image snapshot created: %s",'
+        not in parser_source
+    )
 
 
 def test_config_mutations_share_one_lock_and_settings_normalizer() -> None:
@@ -468,7 +480,7 @@ def test_proactive_agent_starts_with_restricted_tool_scope() -> None:
     boundary_start = source.index("    def _install_agent_tool_boundary(")
     boundary_end = source.index("\n    @staticmethod\n    def _resolve_paths", boundary_start)
     boundary = source[boundary_start:boundary_end]
-    assert "setattr(event, \"plugins_name\", [])" in boundary
+    assert "event.plugins_name = []" in boundary
     # 共享 platform_meta 是适配器单例，禁止原地修改；边界必须靠最终工具集策略。
     assert "support_proactive_message" not in boundary
     policy_start = source.index("    def _enforce_final_tool_policy(")

@@ -11,7 +11,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .models import MessageRecord, PLUGIN_ID, STATE_VERSION, SessionState, Settings
+from .models import PLUGIN_ID, STATE_VERSION, MessageRecord, SessionState, Settings
 from .utils import session_whitelisted, whitelist_storage_key
 
 
@@ -245,7 +245,9 @@ def write_sessions_payload(path: Path, payload: dict[str, Any]) -> bool:
     return _write_json_atomic(path, payload)
 
 
-def save_sessions(path: Path, sessions: dict[str, SessionState], whitelist: set[str], recent_limit: int) -> bool:
+def save_sessions(
+    path: Path, sessions: dict[str, SessionState], whitelist: set[str], recent_limit: int
+) -> bool:
     try:
         payload = build_sessions_payload(sessions, whitelist, recent_limit)
     except Exception as exc:

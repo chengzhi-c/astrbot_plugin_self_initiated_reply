@@ -18,10 +18,8 @@ import sys
 import types
 from pathlib import Path
 
-import pytest
-
 from .host_stubs import with_plugin
-from .test_main_runtime import UMO, _PipelineTestAdapter, _make_event
+from .test_main_runtime import UMO, _make_event, _PipelineTestAdapter
 
 
 def _load_modules():
@@ -40,7 +38,7 @@ def _install_tool_injecting_pipeline(plugin, main, *, event):
     """构造 build 注入工具 + hook 注入工具的管线脚手架，返回控制器。"""
     from types import SimpleNamespace
 
-    from .host_stubs import FakeBuildResult, _FakeMessageChain, _FakeResetCoro
+    from .host_stubs import FakeBuildResult, _FakeResetCoro
 
     class DirectSendingRunner:
         def __init__(self, target_event):
@@ -93,9 +91,7 @@ def _install_tool_injecting_pipeline(plugin, main, *, event):
 
     def counting_enforce(req, inherit_tools):
         ok = original_enforce(req, inherit_tools)
-        enforce_snapshots.append(
-            sorted(main._AGENT_RUNTIME.final_tool_ids(req) or [])
-        )
+        enforce_snapshots.append(sorted(main._AGENT_RUNTIME.final_tool_ids(req) or []))
         if len(enforce_snapshots) == 1:
             # 模拟 hook 在第一次 enforce 之后向 req 注入工具
             req.func_tool.add_tool(SimpleNamespace(name="hook_injected"))
@@ -179,9 +175,7 @@ def test_r1_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> N
 
         def counting_enforce(req, inherit_tools):
             ok = original_enforce(req, inherit_tools)
-            enforce_snapshots.append(
-                sorted(main._AGENT_RUNTIME.final_tool_ids(req) or [])
-            )
+            enforce_snapshots.append(sorted(main._AGENT_RUNTIME.final_tool_ids(req) or []))
             if len(enforce_snapshots) == 1:
                 req.func_tool.add_tool(SimpleNamespace(name="hook_injected"))
             return ok
