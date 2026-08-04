@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrbot_plugin_self_initiated_reply"
-version = "0.9.0"
+version = "0.8.2"
 requires-python = ">=3.10"
 # 运行时零第三方依赖：全部复用宿主 AstrBot API
 
