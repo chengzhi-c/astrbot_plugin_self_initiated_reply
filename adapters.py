@@ -59,15 +59,27 @@ class AstrBotBridge:
     ) -> Any:
         call_kwargs = AstrBotBridge._supported_kwargs(func, kwargs, aliases)
         try:
-            return await maybe_await(func(**call_kwargs))
-        except TypeError as exc:
-            minimal = AstrBotBridge._supported_kwargs(func, minimal_kwargs, aliases)
-            if minimal == call_kwargs:
-                raise
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is not None and not any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in signature.parameters.values()
+        ):
+            # 预校验参数绑定：只有签名不匹配（绑定失败）才回退 minimal；
+            # 函数体内部抛出的 TypeError 直接上抛，绝不重试——重试意味着
+            # 同一函数可能执行两次（对 LLM 调用即重复计费）。
             try:
-                return await maybe_await(func(**minimal))
-            except TypeError:
-                raise exc
+                signature.bind(**call_kwargs)
+            except TypeError as exc:
+                minimal = AstrBotBridge._supported_kwargs(func, minimal_kwargs, aliases)
+                if minimal == call_kwargs:
+                    raise
+                try:
+                    return await maybe_await(func(**minimal))
+                except TypeError:
+                    raise exc
+        return await maybe_await(func(**call_kwargs))
 
     @staticmethod
     def _method_call_options(func: Any, umo: str) -> list[tuple[tuple[Any, ...], dict[str, Any]]]:

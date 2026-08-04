@@ -1234,6 +1234,8 @@ class SelfInitiatedReplyPlugin(Star):
                     pass
 
             run_task = asyncio.ensure_future(_run())
+            self._background_tasks.add(run_task)
+            run_task.add_done_callback(self._discard_background_task)
             try:
                 # shield：超时不硬取消 run_agent，先走优雅停止，让宿主
                 # run_agent 正常清理内部任务（如 stop_watcher），避免
@@ -1242,6 +1244,22 @@ class SelfInitiatedReplyPlugin(Star):
                     asyncio.shield(run_task),
                     timeout=self.settings.generation_timeout_sec,
                 )
+            except asyncio.CancelledError:
+                # 调用方取消（force cancel / terminate）时，shield 保住的
+                # run_task 不会自动停止：必须显式收敛，否则成为孤儿任务
+                # 继续在后台运行，其工具直发还会绕过预算与代次闸门。
+                request_stop = getattr(build_result.agent_runner, "request_stop", None)
+                if callable(request_stop):
+                    try:
+                        request_stop()
+                    except Exception:
+                        pass
+                run_task.cancel()
+                try:
+                    await asyncio.wait_for(run_task, timeout=GRACEFUL_STOP_GRACE_SEC)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+                raise
             except asyncio.TimeoutError:
                 request_stop = getattr(build_result.agent_runner, "request_stop", None)
                 if callable(request_stop):
@@ -1457,7 +1475,10 @@ class SelfInitiatedReplyPlugin(Star):
         try:
             outbound = OutboundGateway(
                 lambda message: self.context.send_message(umo, message),
-                none_status=SendStatus.UNKNOWN,
+                # Context.send_message 正常完成返回 None（True 也代表送达），
+                # False 已被单独区分为 FAILED_BEFORE_SUBMIT；未抛异常即视为已
+                # 提交，记 DELIVERED 才能写入 assistant 历史供后续决策参考。
+                none_status=SendStatus.DELIVERED,
             )
             send_result = await outbound.send(MessageChain().message(reply))
             if send_result.outcome.status is SendStatus.UNKNOWN:
@@ -1858,8 +1879,6 @@ class SelfInitiatedReplyPlugin(Star):
 
     async def _command_text(self, event: AstrMessageEvent, action: str, arg: str = "") -> str:
         umo = event_umo(event)
-        if umo:
-            self._invalidate_session(umo)
         if action == "help":
             return help_text()
         if action == "status":
@@ -1876,7 +1895,8 @@ class SelfInitiatedReplyPlugin(Star):
             removed = await self._remove_whitelist_session(umo)
             return f"已移出主动回复白名单：{umo}" if removed else f"当前会话本不在主动回复白名单：{umo}"
         if action == "check":
-            generation = self._advance_session_generation(umo)
+            # 立即强制检查：取消待执行的延迟检查并清空旧缓存（写操作语义）。
+            generation = self._invalidate_session(umo)
             self._last_events[umo] = event
             self._last_event_at[umo] = now_ts()
             state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
@@ -2527,6 +2547,11 @@ class SelfInitiatedReplyPlugin(Star):
                 # 回滚后一律丢弃 parser 缓存，避免残留按失败配置建的实例
                 self._image_parsers.clear()
                 self._image_parser_timeout = None
+                # 回滚后恢复任务拓扑：禁用路径可能已停掉 patrol/cleanup，
+                # 否则出现 runtime_enabled=True 但巡检永久停止的不一致态。
+                if old_runtime_enabled and not self._stopping:
+                    self._ensure_patrol_task()
+                    self._ensure_image_cleanup_task()
                 try:
                     self._sync_whitelist()
                     await self._save_storage()
