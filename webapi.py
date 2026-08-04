@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - compatibility with older AstrBot hosts
 from .models import (
     DEFAULT_DECISION_PROMPT_TEMPLATE,
     MAX_CACHED_IMAGE_EVENTS,
-    MAX_WHITELIST_ITEM_LEN,
+    MAX_STRING_LIST_ITEM_LEN,
     PLUGIN_ID,
     Settings,
 )
@@ -297,7 +297,7 @@ def _strict_int(value: Any, field: str) -> int:
 
 
 def _string_list(data: dict[str, Any], key: str) -> list[str]:
-    """规范化字符串列表：strip、去空，条目长度/字符规则与白名单一致。"""
+    """规范化字符串列表：strip、去空，条目长度/字符规则与白名单共用。"""
     raw = data[key]
     if not isinstance(raw, list):
         raise ValueError(f"{key} 必须是数组")
@@ -306,7 +306,7 @@ def _string_list(data: dict[str, Any], key: str) -> list[str]:
         text = str(item).strip()
         if not text:
             continue
-        if len(text) > MAX_WHITELIST_ITEM_LEN:
+        if len(text) > MAX_STRING_LIST_ITEM_LEN:
             raise ValueError(f"{key} 条目过长: {text[:20]}…")
         if re.search(r"[\x00-\x1f\"'\\]", text):
             raise ValueError(f"{key} 条目含非法字符")

@@ -20,16 +20,18 @@ from .test_main_runtime import _make_event
 
 
 def test_api_post_config_rejects_oversized_whitelist_item(tmp_path: Path) -> None:
-    """超过 MAX_WHITELIST_ITEM_LEN 的白名单条目必须被拒绝且不落库。"""
+    """超过 MAX_STRING_LIST_ITEM_LEN 的白名单条目必须被拒绝且不落库。"""
 
     async def scenario(plugin, main):
         models = importlib.import_module(f"{main.__package__}.models")
         web = sys.modules["astrbot.api.web"]
-        web.request.payload = {"whitelist": ["x" * (models.MAX_WHITELIST_ITEM_LEN + 1)]}
+        web.request.payload = {"whitelist": ["x" * (models.MAX_STRING_LIST_ITEM_LEN + 1)]}
         result = await plugin._api_post_config()
         assert result.get("ok") is False
         assert "过长" in result.get("error", "")
-        assert all(len(item) <= models.MAX_WHITELIST_ITEM_LEN for item in plugin.settings.whitelist)
+        assert all(
+            len(item) <= models.MAX_STRING_LIST_ITEM_LEN for item in plugin.settings.whitelist
+        )
         # 合法更新仍须生效（防误杀正常白名单）
         web.request.payload = {"whitelist": ["正常会话"]}
         result = await plugin._api_post_config()
