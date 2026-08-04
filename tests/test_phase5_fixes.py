@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from .host_stubs import with_plugin
-from .test_main_runtime import UMO, _make_event
+from .test_main_runtime import _make_event
 
 
 def test_api_post_config_rejects_oversized_whitelist_item(tmp_path: Path) -> None:
