@@ -2,43 +2,21 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式。
 
-## [Unreleased]
+## [0.8.4] - 2026-08-04
 
 ### 修复
 
-- **越权取消**：`/selfreply` 写指令（add/remove/check/on/off）的会话取消移入管理员权限校验之后；无权限用户不再能取消在途主动回复（只读指令不打断进行中的检查）。
-- **webapi 静默吞字段**：`_parse_config_updates` 补全 13 个 schema 键处理分支（recent_message_limit/reply_length_mode/allow_multiline_reply/max_reply_chars/log_reply_content/bot_aliases/ignored_sender_ids/check_interval_sec/max_daily_replies_per_session/quiet_hours/enabled_message_trigger/enabled_patrol_trigger/generation_timeout_sec），`decision_history_min_messages` 支持规范键；schema 之外的键 fail loud 拒绝（400 列出未知键）。
-- **denylist 死条目**：`HOST_DANGEROUS_TOOL_IDS` 删除 6 个实测不存在的 ID（create/delete/list_future_task、astrbot_create_file、astrbot_read_file、astrbot_read_file_tool），补真实名 `future_task`（4.23.3 实测单工具 multiCommand）、`astrbot_file_read_tool`、`astrbot_shell_session`（4.27.1）。
-- **私有 API 加载即崩缺口**：main.py 四个宿主私有 import 统一守卫，缺失时给出可诊断的加载失败提示。
-- **覆盖率口径**：`--cov=.` 排除 tests/（历史假绿灯根因，含 tests 口径 81.62% 不实），生产口径实测 68.19%，fail_under 沿用 0.8.3 起 65（ffb733a 引入，当时含 tests 口径 77.4%；此前 76 为文档门槛无强制，65 非 -5% 公式产物）。
-- **parse 路径文件 IO 阻塞事件循环**：`_resolve_image_url` 三处 `_file_to_data_url` 同步调用改 `asyncio.to_thread`，与 snapshot 路径对齐（分歧裁决 #2）。
+- **越权取消**：写指令的会话取消移入权限校验之后，无权限用户不再能打断在途主动回复。
+- **webapi 静默吞字段**：13 个 schema 键补全 + 未知键 fail loud（400 列出未知键）。
+- **denylist 死条目清理**（4.23.3 实测校准）+ **私有 API 导入守卫**（缺失即可诊断）。
+- **覆盖率口径修正**：生产口径 omit tests/，历史 81.62% 为假绿灯；图片解析文件 IO 改 `asyncio.to_thread` 防事件循环阻塞。
 
 ### 工程化
 
-- **红绿灯测试第七轮**（`tests/test_red_light_round7.py`，R13-R17）：MP1-3 越权取消、MP1-4 webapi 新键与 fail loud、MP1-8 bridge 缓存复用；五个测试在修复前基线实测全红，捕获能力非推演（R14 断言曾因 asyncio `cancelling` 态假绿，改用任务表引用断言修正）。
-- **mutation_check 四道守卫**（均实测红→绿）：① 目标文件工作区洁净检查（脏则拒绝）；② 锁文件并发互斥（O_EXCL + 超龄回收）；③ 变异残留识别（特征串比对 HEAD，给出恢复命令）；④ 变异前锚点测试基线预检（基线本红拒绝执行）。
-- **compat_check 扩展**：CHECKS 补 4 个私有 API 模块 + EventType 三枚举成员；新增宿主危险工具全集覆盖断言（枚举宿主 FunctionTool 子类 name ⊆ denylist，宿主改名/新增即 CI 报错）。
-- **flaky 测试修复**：三处固定 sleep 时序断言改事件驱动 `until()` 条件等待（test_phase0_fixes / test_resource_leaks）。
-- **测试排序依赖**：`test_phase0_fixes._load_main()` 显式安装 astrbot stubs，可独立运行。
-- **bridge 缓存击溃**：`get_recorder_bridge` 首次构造后复用缓存实例（唯一调用点 context 生命周期内稳定）。
-- **mypy**：files 补 webapi.py、session_gate.py（18 文件零问题），新增 CI job。
-- **CI 矩阵**：测试矩阵加 Python 3.13/3.14；lint 钉 ruff==0.16.1 与 pre-commit 对齐。
-- **webapi 审计**：enabled/proactive_inherit_tools/whitelist 变更记 INFO 审计日志；README 声明鉴权依赖宿主 Dashboard。
-
-### 批次3（质量增强）
-
-- **低覆盖模块补盲**：adapters.py 37%→97%（`tests/test_adapters.py` 38 用例：兼容调用降级/探测/宿主差异全分支）、recorder_bridge.py 38%→95%（`tests/test_recorder_bridge.py` 28 用例：探测回退链/路径解析/MIME 魔数校验）；生产口径覆盖率 68.19%→75.43%，门槛按"实测-5%"校准 65→70。
-- **mutation 扩面 11→19**（P2-23）：SSRF 三变异（scheme 白名单旁路/非标准端口旁路/私有 IP 放行，test_vision 补 ftp:// 用例）、webapi 拒绝路径三变异（bool 接受/非法字符放行/未知键旁路）、storage 恢复两变异（损坏不备份/版本不符不备份）；实测 19/19 击杀。
-- **SessionGate 只读视图**（P2-24）：generation_view/locks_view 用 MappingProxyType 实时映射、running_sessions_view 用 frozenset；main.py 三个转发 property 改返回只读视图（全仓调用点均只读，行为零变更）；误写运行时抛错，杜绝绕过语义；两个测试搭场景写点改用公开入口 lock_for。
-
-#### 批次3 复审修复（2026-08-04 晚，全方面复审）
-
-- **补盲测试抓出 2 个假断言并修复**：
-  - `test_read_history_filters_and_maps`：`history[-limit:]` 截断把无效数据（system/非 dict/空文本）全切出窗口，过滤分支 continue 从未执行——测试名说"过滤"实际只测截断+映射。重排数据 + limit=6 全量遍历（过滤分支真实执行）+ limit=5 验证截断，adapters.py 97%→99%。
-  - `test_image_to_data_url_os_error`：目录路径被 is_file() 先行拒绝，IsADirectoryError 永不发生——名为 os_error 实为 is_file 分支。改用 monkeypatch 真实触发 read_bytes OSError，recorder_bridge.py 95%→99%（仅剩 110 行 size 检查双保险死分支）。
-  - 补 `test_ensure_api_false_when_get_api_not_callable`（探测链 get_api 不可调用分支）与 `test_resolve_relative_path_resolver_not_callable`（resolver 不可调用分支）。
-- **SessionGate 只读视图守护测试**：`test_gate_views_are_read_only_and_live`——三视图写抛错（TypeError/AttributeError）、读实时（advance/mark_running 后视图反映最新状态）、locks_view 引用同一锁对象；session_gate.py 覆盖率 98%→100%。
-- 复审后状态：287 passed、覆盖率 75.79%（adapters 100%/recorder_bridge 99%/session_gate 100%，当前实测；提交时 75.43%）。
+- **质量门禁**：红绿灯 R13-R17、mutation 11→19 全击杀、compat_check 扩展、CI 矩阵 +3.13/3.14、mypy 18 文件零问题。
+- **补盲**：adapters 37%→100%、recorder_bridge 38%→99%，总覆盖 75.79%，门槛 65→70。
+- **SessionGate 只读视图**（MappingProxyType）+ bridge 缓存复用 + flaky 测试事件驱动化。
+- **五轮独立审查**（两轴子代理 + 三份盲审），假断言清零。
 
 ## [0.8.3] - 2026-08-04
 
