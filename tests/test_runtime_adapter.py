@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "selfreply_runtime_test_package"
 
@@ -146,9 +145,7 @@ def test_filter_final_tools_modes() -> None:
     tool_set2.add_tool(Tool("third_party_weather"))
     req2 = type("Req", (), {"func_tool": tool_set2})()
     assert (
-        adapter.filter_final_tools(
-            req2, drop=frozenset({"astr_kb_search", "create_future_task"})
-        )
+        adapter.filter_final_tools(req2, drop=frozenset({"astr_kb_search", "create_future_task"}))
         is True
     )
     assert [t.name for t in tool_set2.tools] == ["third_party_weather"]

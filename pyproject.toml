@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "astrbot_plugin_self_initiated_reply"
+version = "0.7.22"
+requires-python = ">=3.10"
+# 运行时零第三方依赖：全部复用宿主 AstrBot API
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio", "pytest-cov", "ruff", "mypy", "httpx"]
+
+[tool.hatch.build.targets.wheel]
+# AstrBot 插件布局：仓库根即包（含 __init__.py），整目录打包验证分发。
+packages = ["."]
+# Web 页面、资源与元数据不在 wheel 默认的 .py 收集中，需显式纳入。
+artifacts = [
+  "metadata.yaml",
+  "pages/**",
+  "assets/**",
+  "logo.png",
+  "LICENSE",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+lint.select = ["E", "F", "I", "UP", "B"]
+lint.ignore = []  # 按存量修复后的实际结果收敛
+
+[tool.ruff.lint.per-file-ignores]
+# main.py 的 E402 是设计使然：_AGENT_RUNTIME 必须先实例化（capabilities 决定
+# MainAgentBuildConfig），后续核心模块导入依赖该别名，无法整体上移。
+"main.py" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# 覆盖率必须用路径方式（.）追踪——动态加载使模块名 cov 失效（实测）
+addopts = "--cov=. --cov-report=term-missing"
+
+[tool.coverage.report]
+# 基线 62%（实测），门槛取 65%：先过门槛再逐步提升；tests/ 行已计入导致
+# 数值偏高，如显式 exclude 测试目录后门槛按新基线重校
+fail_under = 65
+
+[tool.mypy]
+# 仓库目录名含连字符，mypy 无法按包发现；显式列出源码文件 + 忽略宿主
+# astrbot/quart 缺失 stub（宿主兼容层，不设 strict 门槛）。
+explicit_package_bases = true
+ignore_missing_imports = true
+files = [
+  "main.py",
+  "models.py",
+  "storage.py",
+  "adapters.py",
+  "outbound.py",
+  "commands.py",
+  "utils.py",
+  "unified_manager.py",
+  "runtime_adapter.py",
+  "image",
+]

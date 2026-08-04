@@ -18,7 +18,7 @@ import types
 from pathlib import Path
 
 from .host_stubs import with_plugin
-from .test_main_runtime import UMO, _PipelineTestAdapter, _make_event
+from .test_main_runtime import UMO, _make_event, _PipelineTestAdapter
 
 
 def _load_main():
@@ -86,9 +86,7 @@ def test_r6_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
 
         def counting_enforce(req, inherit_tools):
             ok = original_enforce(req, inherit_tools)
-            enforce_snapshots.append(
-                sorted(main._AGENT_RUNTIME.final_tool_ids(req) or [])
-            )
+            enforce_snapshots.append(sorted(main._AGENT_RUNTIME.final_tool_ids(req) or []))
             if len(enforce_snapshots) == 1:
                 # 模拟 hook 在第一次 enforce 后注入危险工具（kb agentic）与普通工具
                 req.func_tool.add_tool(SimpleNamespace(name="astr_kb_search"))
@@ -129,7 +127,6 @@ def test_r7_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) ->
         plugin._last_event_at[UMO] = 1.0
         state = plugin._state_for(UMO)
         state.last_active_at = main.now_ts() - 300
-        original_send = event.send
 
         class Runner:
             def __init__(self, target):
@@ -206,9 +203,7 @@ def test_r8_rollback_reschedules_delayed_check(tmp_path: Path) -> None:
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         plugin._state_for(UMO)
-        plugin._schedule_delayed_check(
-            UMO, delay_sec=None, trigger="message_delay", force=False
-        )
+        plugin._schedule_delayed_check(UMO, delay_sec=None, trigger="message_delay", force=False)
         old_task = plugin._delay_tasks.get(UMO)
         assert old_task is not None and not old_task.cancelled()
 

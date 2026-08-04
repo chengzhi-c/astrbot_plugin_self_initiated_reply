@@ -14,13 +14,13 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from .host_stubs import (
     FakeToolSet,
     hook_calls,
-    make_plugin,
     reset_hook_calls,
     with_plugin,
 )
@@ -202,7 +202,6 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
         event = _make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
-        original_send = event.send
         original_plugins_name = ["other_plugin"]
         event.plugins_name = list(original_plugins_name)
 
@@ -254,9 +253,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
 
         def counting_enforce(req, inherit_tools):
             ok = original_enforce(req, inherit_tools)
-            enforce_tool_snapshots.append(
-                sorted(main._AGENT_RUNTIME.final_tool_ids(req) or [])
-            )
+            enforce_tool_snapshots.append(sorted(main._AGENT_RUNTIME.final_tool_ids(req) or []))
             if len(enforce_tool_snapshots) == 1:
                 # 模拟 hook 在第一次 enforce 之后向 req 注入工具
                 req.func_tool.add_tool(SimpleNamespace(name="hook_injected"))
@@ -300,7 +297,6 @@ def test_pipeline_hook_early_exit_still_restores_event(tmp_path: Path) -> None:
         event = _make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
-        original_send = event.send
         original_plugins_name = ["other_plugin"]
         event.plugins_name = list(original_plugins_name)
 
@@ -433,9 +429,7 @@ def test_unknown_send_stale_generation_does_not_advance_observation(tmp_path: Pa
 def test_confirmed_send_writes_history_and_observation(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         state = plugin._state_for(UMO)
-        ok = await plugin._record_proactive_state(
-            UMO, state, "你好", 0, observed_active_at=123.0
-        )
+        ok = await plugin._record_proactive_state(UMO, state, "你好", 0, observed_active_at=123.0)
         assert ok is True
         assert state.daily_count == 1
         assert state.last_proactive_text == "你好"
@@ -567,9 +561,7 @@ def test_track_background_task_barrier_after_stop(tmp_path: Path) -> None:
         task = plugin._track_background_task(innocent())
         assert task is None
         # 延迟调度在停止后不得注册
-        plugin._schedule_delayed_check(
-            UMO, delay_sec=0, trigger="message_delay", force=False
-        )
+        plugin._schedule_delayed_check(UMO, delay_sec=0, trigger="message_delay", force=False)
         assert UMO not in plugin._delay_tasks
 
     with_plugin(tmp_path, scenario)
@@ -624,9 +616,7 @@ def test_terminate_clears_tasks_and_saves(tmp_path: Path) -> None:
         assert plugin._stopping is True
         assert plugin._delay_tasks == {}
         assert plugin._last_events == {}
-        assert (
-            tmp_path / "data" / "astrbot_plugin_self_initiated_reply" / "state.json"
-        ).exists()
+        assert (tmp_path / "data" / "astrbot_plugin_self_initiated_reply" / "state.json").exists()
 
     with_plugin(tmp_path, scenario)
 
@@ -763,7 +753,7 @@ def test_command_group_and_help_are_admin_gated() -> None:
     lines = text.splitlines()
 
     group_index = next(
-        i for i, line in enumerate(lines) if "@filter.command_group(\"selfreply\")" in line
+        i for i, line in enumerate(lines) if '@filter.command_group("selfreply")' in line
     )
     # 组入口：permission_type 必须在 command_group 内层（下方一行）。真实宿主的
     # permission_type 会访问被装饰对象的 __name__，RegisteringCommandable 没有，
@@ -772,9 +762,7 @@ def test_command_group_and_help_are_admin_gated() -> None:
         f"行 {group_index + 1} 的 command_group 缺少内层 ADMIN 权限门"
     )
 
-    subcommand_indexes = [
-        i for i, line in enumerate(lines) if ".command(" in line
-    ]
+    subcommand_indexes = [i for i, line in enumerate(lines) if ".command(" in line]
     assert len(subcommand_indexes) >= 9, "9 个子命令都应找到"
     for index in subcommand_indexes:
         # 子命令：permission_type 在命令装饰器正上方一行（函数形态，顺序安全）
@@ -842,7 +830,7 @@ def test_ui_theme_persists_across_instances(tmp_path: Path) -> None:
         # 文件已落盘
         prefs_path = plugin._ui_prefs_path
         assert prefs_path.exists()
-        assert "\"theme\": \"light\"" in prefs_path.read_text(encoding="utf-8")
+        assert '"theme": "light"' in prefs_path.read_text(encoding="utf-8")
         # 非法主题被拒且不改变状态
         web.request.payload = {"theme": "blue"}
         bad = await plugin._api_post_ui_theme()

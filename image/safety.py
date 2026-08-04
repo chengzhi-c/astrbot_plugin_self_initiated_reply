@@ -9,7 +9,6 @@ never reaches a Vision provider.
 
 from __future__ import annotations
 
-
 # Longest prefix we need to inspect (RIFF/WEBP needs 12 bytes).
 IMAGE_SNIFF_BYTES = 12
 

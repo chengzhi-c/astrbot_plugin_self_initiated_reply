@@ -8,9 +8,9 @@ from dataclasses import dataclass
 @dataclass
 class ImageInfo:
     """图片信息数据类
-    
+
     存储单张图片的完整信息，包括 URL、文件路径和元数据。
-    
+
     Attributes:
         url: 图片URL（网络图片）
         file_path: 图片本地文件路径（本地图片）
@@ -18,7 +18,7 @@ class ImageInfo:
         message_id: 关联的消息ID
         sender_id: 发送者ID
         timestamp: 时间戳
-    
+
     Examples:
         >>> info = ImageInfo(
         ...     url="https://example.com/image.jpg",
@@ -28,7 +28,7 @@ class ImageInfo:
         >>> info.has_url
         True
     """
-    
+
     url: str = ""
     file_path: str = ""
     format: str = ""
@@ -42,34 +42,34 @@ class ImageInfo:
     # 事件级图片冻结：消息到达时先把图片转成 data URL，避免 QQ CDN
     # 链接在主动回复延迟窗口内过期。仅存于内存，不写入配置/状态文件。
     prepared_source: str = ""
-    
+
     @property
     def has_url(self) -> bool:
         """是否有URL
-        
+
         Returns:
             是否有URL
         """
         return bool(self.url)
-    
+
     @property
     def has_file_path(self) -> bool:
         """是否有文件路径
-        
+
         Returns:
             是否有文件路径
         """
         return bool(self.file_path)
-    
+
     @property
     def has_any_source(self) -> bool:
         """是否有任何可用的图片源
-        
+
         Returns:
             是否有URL或文件路径
         """
         return self.has_url or self.has_file_path
-    
+
     def cache_key(self) -> str:
         """生成缓存键
 

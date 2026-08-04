@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
 PLUGIN_VERSION = "0.7.22"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
@@ -28,11 +27,18 @@ MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024  # 图片冻结缓存总容量上限
 # 插件运行常量
 MAX_AGENT_STEPS = 15  # Agent 最大步数：为主 Agent 生成预留足够步数
 MAX_DIRECT_TOOL_SENDS = 2  # 每次主动回复最多允许工具直接发出的消息数
+# 生成超时后留给 run_agent 优雅退出的宽限秒数：request_stop 后宿主会
+# 正常清理内部任务（如 stop_watcher），宽限过后仍未退出才兜底取消。
+GRACEFUL_STOP_GRACE_SEC = 3.0
+# 指令动作集合：help/status/list/debug 为只读，不触碰会话任务；
+# add/remove/check/on/off 为写操作，各自内部处理会话失效语义。
+ADMIN_COMMAND_ACTIONS = {"status", "list", "add", "remove", "check", "on", "off", "debug"}
 # 0.7.x 主动 Agent 工具允许列表：默认空集，未列入的工具在 build/hook 后一律移除，
 # 无法验证时终止本次主动运行（fail closed）。后续如需放行工具，必须提供稳定工具
 # ID、明确 owner、行为测试和独立安全评审后才能加入。
 PROACTIVE_ALLOWED_TOOL_IDS: frozenset[str] = frozenset()
-# 宿主级危险能力工具 ID（实证于 AstrBot 4.26/4.27 源码 astrbot/core/{computer,tools,cron_tools,knowledge_base_tools}）：
+# 宿主级危险能力工具 ID（实证于 AstrBot 4.26/4.27 源码
+# astrbot/core/{computer,tools,cron_tools,knowledge_base_tools}）：
 # cron（create_future_task 等）、电脑使用（shell/python/browser/fs）、文档提取、知识库 agentic。
 # 无论 proactive_inherit_tools 开关如何，这些工具在主动运行中一律拒绝；
 # 该清单是 build config 硬关闭（add_cron_tools/computer_use_runtime/file_extract/kb_agentic）
@@ -108,6 +114,7 @@ Bot昵称: {bot_aliases}
 
 DECISION_JSON_CONTRACT = """输出 JSON:
 {"should_reply": true/false, "reason": "一句简短理由"}"""
+
 
 def now_ts() -> float:
     return time.time()
@@ -359,9 +366,9 @@ class Settings:
         return bool(prompt and prompt != DEFAULT_DECISION_PROMPT_TEMPLATE.strip())
 
     @classmethod
-    def from_config(cls, config: Any) -> "Settings":
+    def from_config(cls, config: Any) -> Settings:
         from astrbot.api import logger
-        
+
         # 提示词长度限制
         prompt_template = str(
             config.get("decision_prompt_template", "") or DEFAULT_DECISION_PROMPT_TEMPLATE
@@ -374,7 +381,7 @@ class Settings:
                 MAX_PROMPT_LENGTH,
             )
             prompt_template = prompt_template[:MAX_PROMPT_LENGTH]
-        
+
         # 白名单条目数限制
         whitelist_raw = as_list(config.get("whitelist_sessions", []))
         if len(whitelist_raw) > MAX_WHITELIST_SIZE:
@@ -385,7 +392,7 @@ class Settings:
                 MAX_WHITELIST_SIZE,
             )
             whitelist_raw = whitelist_raw[:MAX_WHITELIST_SIZE]
-        
+
         # 旧版本只有一个 vision_enabled 开关，作为两个新开关的默认值迁移。
         # 只读不写：to_config_dict() 不再写回该键，否则它不在 schema 里，
         # AstrBot 配置页会把它渲染成一个既无效又可编辑的裸文本框。
@@ -401,7 +408,9 @@ class Settings:
             enabled=as_bool(config.get("enabled", True), True),
             judge_provider_id=str(config.get("judge_provider_id", "") or "").strip(),
             decision_prompt_template=prompt_template,
-            decision_history_min_messages=as_int(config.get("decision_history_min_messages", 5), 5, 0, 30),
+            decision_history_min_messages=as_int(
+                config.get("decision_history_min_messages", 5), 5, 0, 30
+            ),
             decision_temperature=as_float(config.get("decision_temperature", 0.2), 0.2, 0.0, 2.0),
             decision_timeout_sec=as_float(config.get("decision_timeout_sec", 20), 20, 1, 300),
             decision_model_enabled=as_bool(config.get("decision_model_enabled", True), True),
@@ -416,7 +425,9 @@ class Settings:
             bot_aliases=as_list(config.get("bot_aliases", [])),
             whitelist=set(whitelist_raw),
             ignored_sender_ids=set(as_list(config.get("ignored_sender_ids", []))),
-            recent_message_limit=as_int(config.get("recent_message_limit", 20), 20, 3, MAX_RECENT_MESSAGE_LIMIT),
+            recent_message_limit=as_int(
+                config.get("recent_message_limit", 20), 20, 3, MAX_RECENT_MESSAGE_LIMIT
+            ),
             message_delay_sec=as_int(config.get("message_delay_sec", 60), 60, 5, 86400),
             min_silence_sec=as_int(config.get("min_silence_sec", 45), 45, 0, 86400),
             cooldown_sec=as_int(config.get("cooldown_sec", 900), 900, 0, 86400),
@@ -431,15 +442,11 @@ class Settings:
                 config.get("patrol_inactive_after_sec", 1800), 1800, 0, 604800
             ),
             generation_timeout_sec=as_float(config.get("generation_timeout_sec", 60), 60, 1, 300),
-            proactive_inherit_tools=as_bool(
-                config.get("proactive_inherit_tools", False), False
-            ),
+            proactive_inherit_tools=as_bool(config.get("proactive_inherit_tools", False), False),
             vision_judge_enabled=vision_judge_enabled,
             vision_main_enabled=vision_main_enabled,
             vision_provider_id=str(config.get("vision_provider_id", "") or "").strip(),
-            vision_judge_provider_id=str(
-                config.get("vision_judge_provider_id", "") or ""
-            ).strip(),
+            vision_judge_provider_id=str(config.get("vision_judge_provider_id", "") or "").strip(),
             vision_skip_stickers=as_bool(config.get("vision_skip_stickers", False), False),
             vision_max_images=as_int(config.get("vision_max_images", 2), 2, 1, MAX_VISION_IMAGES),
             vision_image_age_sec=as_int(

@@ -8,7 +8,6 @@ import types
 from collections import deque
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "selfreply_test_package"
 
@@ -53,10 +52,22 @@ def _load_modules():
 
 def test_tool_call_marker_is_not_sent_as_a_reply() -> None:
     _, utils, _ = _load_modules()
-    assert utils.clean_reply("[tool call] send_emoji_by_id", allow_multiline=True, max_chars=200) == ""
-    assert utils.clean_reply("[historical tool call] search_emoji", allow_multiline=True, max_chars=200) == ""
-    assert utils.clean_reply("[tool call]send_emoji_by_id", allow_multiline=True, max_chars=200) == ""
-    assert utils.clean_reply("[historical tool call]search_emoji", allow_multiline=True, max_chars=200) == ""
+    assert (
+        utils.clean_reply("[tool call] send_emoji_by_id", allow_multiline=True, max_chars=200) == ""
+    )
+    assert (
+        utils.clean_reply(
+            "[historical tool call] search_emoji", allow_multiline=True, max_chars=200
+        )
+        == ""
+    )
+    assert (
+        utils.clean_reply("[tool call]send_emoji_by_id", allow_multiline=True, max_chars=200) == ""
+    )
+    assert (
+        utils.clean_reply("[historical tool call]search_emoji", allow_multiline=True, max_chars=200)
+        == ""
+    )
     assert utils.clean_reply("自然回复", allow_multiline=True, max_chars=200) == "自然回复"
 
 
@@ -64,15 +75,18 @@ def test_final_send_path_rechecks_generation_after_decorating_hook() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     method_start = source.index("    async def _send_reply(")
     method_end = source.find("\n    def ", method_start)
-    method = source[method_start:method_end if method_end != -1 else None]
+    method = source[method_start : method_end if method_end != -1 else None]
     hook_marker = "await call_event_hook(last_event, EventType.OnDecoratingResultEvent)"
     send_marker = "send_result = await outbound.send(result)"
 
-    assert "expected_generation" in method.splitlines()[0]
+    assert "expected_generation: int | None = None" in method.splitlines()[1]
     hook_offset = method.index(hook_marker)
     send_offset = method.index(send_marker, hook_offset)
     assert "_generation_is_current(umo, expected_generation)" in method[hook_offset:send_offset]
-    assert "expected_generation=expected_generation" in source[source.index("sent = await self._send_reply"):]
+    assert (
+        "expected_generation=expected_generation"
+        in source[source.index("sent = await self._send_reply") :]
+    )
 
 
 def test_bare_group_whitelist_keeps_platform_state_isolated(tmp_path: Path) -> None:
@@ -144,9 +158,7 @@ def test_version_mismatch_state_file_is_backed_up_and_best_effort_loaded(tmp_pat
         json.dumps(
             {
                 "version": 999,
-                "sessions": {
-                    "qq:GroupMessage:123": {"last_active_at": 1.5, "daily_count": 3}
-                },
+                "sessions": {"qq:GroupMessage:123": {"last_active_at": 1.5, "daily_count": 3}},
             }
         ),
         encoding="utf-8",
@@ -163,6 +175,6 @@ def test_version_mismatch_state_file_is_backed_up_and_best_effort_loaded(tmp_pat
 def test_atomic_state_writer_leaves_previous_file_on_serialization_failure(tmp_path: Path) -> None:
     _, _, storage = _load_modules()
     path = tmp_path / "state.json"
-    path.write_text("{\"previous\": true}", encoding="utf-8")
+    path.write_text('{"previous": true}', encoding="utf-8")
     assert not storage.write_sessions_payload(path, {"bad": object()})
     assert json.loads(path.read_text(encoding="utf-8")) == {"previous": True}

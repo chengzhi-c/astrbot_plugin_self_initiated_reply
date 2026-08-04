@@ -7,7 +7,7 @@ from typing import Any
 from astrbot.api import logger
 from astrbot.api.star import Context
 
-from .models import MessageRecord, PLUGIN_ID
+from .models import PLUGIN_ID, MessageRecord
 from .utils import content_to_text, maybe_await
 
 
@@ -38,7 +38,8 @@ class AstrBotBridge:
         supported = {
             name
             for name, param in signature.parameters.items()
-            if param.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+            if param.kind
+            in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
         }
         mapped: dict[str, Any] = {}
         aliases = aliases or {}
@@ -63,8 +64,7 @@ class AstrBotBridge:
         except (TypeError, ValueError):
             signature = None
         if signature is not None and not any(
-            param.kind == inspect.Parameter.VAR_KEYWORD
-            for param in signature.parameters.values()
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()
         ):
             # 预校验参数绑定：只有签名不匹配（绑定失败）才回退 minimal；
             # 函数体内部抛出的 TypeError 直接上抛，绝不重试——重试意味着
@@ -78,7 +78,7 @@ class AstrBotBridge:
                 try:
                     return await maybe_await(func(**minimal))
                 except TypeError:
-                    raise exc
+                    raise exc from None
         return await maybe_await(func(**call_kwargs))
 
     @staticmethod
@@ -96,7 +96,8 @@ class AstrBotBridge:
         positional = [
             param
             for param in params.values()
-            if param.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+            if param.kind
+            in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
             and param.default is inspect.Parameter.empty
         ]
         if positional:
@@ -141,7 +142,7 @@ class AstrBotBridge:
         llm_generate = getattr(self.context, "llm_generate", None)
         if not callable(llm_generate):
             raise RuntimeError("当前 AstrBot Context 不支持 llm_generate")
-        kwargs = {"chat_provider_id": provider_id, "prompt": prompt}
+        kwargs: dict[str, Any] = {"chat_provider_id": provider_id, "prompt": prompt}
         if system_prompt:
             kwargs["system_prompt"] = system_prompt
         if temperature is not None:
@@ -243,12 +244,16 @@ class AstrBotBridge:
             return preferred
         get_current = getattr(self.context, "get_current_chat_provider_id", None)
         if callable(get_current):
-            provider_id = await self._call_first_supported(get_current, umo, "get_current_chat_provider_id")
+            provider_id = await self._call_first_supported(
+                get_current, umo, "get_current_chat_provider_id"
+            )
             if provider_id:
                 return str(provider_id).strip()
         get_using_id = getattr(self.context, "get_using_provider_id", None)
         if callable(get_using_id):
-            provider_id = await self._call_first_supported(get_using_id, umo, "get_using_provider_id")
+            provider_id = await self._call_first_supported(
+                get_using_id, umo, "get_using_provider_id"
+            )
             if provider_id:
                 return str(provider_id).strip()
         get_using = getattr(self.context, "get_using_provider", None)
@@ -285,7 +290,9 @@ class AstrBotBridge:
             raw = getattr(conversation, "history", "")
             history = json.loads(raw) if isinstance(raw, str) else raw
         except Exception as exc:
-            logger.debug("[%s] read astrobot history failed session=%s error=%s", PLUGIN_ID, umo, exc)
+            logger.debug(
+                "[%s] read astrobot history failed session=%s error=%s", PLUGIN_ID, umo, exc
+            )
             return []
         if not isinstance(history, list):
             return []

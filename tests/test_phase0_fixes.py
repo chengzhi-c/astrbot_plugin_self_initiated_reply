@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from .host_stubs import with_plugin
-from .test_main_runtime import UMO, _PipelineTestAdapter, _make_event
+from .test_main_runtime import UMO, _make_event, _PipelineTestAdapter
 
 
 def _load_main():
@@ -198,9 +198,7 @@ def test_readonly_commands_do_not_invalidate_session(tmp_path: Path) -> None:
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         plugin._state_for(UMO)
-        plugin._schedule_delayed_check(
-            UMO, delay_sec=None, trigger="message_delay", force=False
-        )
+        plugin._schedule_delayed_check(UMO, delay_sec=None, trigger="message_delay", force=False)
         task = plugin._delay_tasks.get(UMO)
         assert task is not None and not task.done()
 

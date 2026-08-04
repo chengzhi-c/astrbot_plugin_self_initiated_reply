@@ -11,7 +11,6 @@ from astrbot.api import logger
 from ..models import PLUGIN_ID
 from .safety import sniff_image_mime
 
-
 RECORDER_PLUGIN_NAME = "astrbot_plugin_message_recorder"
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
@@ -55,7 +54,8 @@ class MessageRecorderBridge:
                 return None
             chain = record.get_message_chain_list()
             image_components = [
-                item for item in (chain or [])
+                item
+                for item in (chain or [])
                 if isinstance(item, dict) and str(item.get("type") or "").lower() == "image"
             ]
             if not image_components:
@@ -110,9 +110,7 @@ class MessageRecorderBridge:
                 return None
             mime = sniff_image_mime(data)
             if not mime:
-                logger.debug(
-                    "[%s] rejected non-image payload path=%s", PLUGIN_ID, path
-                )
+                logger.debug("[%s] rejected non-image payload path=%s", PLUGIN_ID, path)
                 return None
             return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
         except (OSError, ValueError):

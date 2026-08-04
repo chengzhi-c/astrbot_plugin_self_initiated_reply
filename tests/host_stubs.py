@@ -73,6 +73,7 @@ def install_astrbot_stubs() -> None:
         event_filter.permission_type = _permission_type
 
     if not hasattr(star, "Star"):
+
         class Star:
             def __init__(self, context: Any) -> None:
                 self.context = context
@@ -100,6 +101,7 @@ def install_astrbot_stubs() -> None:
         msg_evt_result.ResultContentType = _FakeEnum("LLM_RESULT")
 
     if not hasattr(provider_entities, "ProviderRequest"):
+
         class ProviderRequest:
             def __init__(self) -> None:
                 self.prompt = ""
@@ -271,7 +273,7 @@ class _FakeMessageChain:
         self.type = type
         self.chain = chain if chain is not None else []
 
-    def message(self, text: str) -> "_FakeMessageChain":
+    def message(self, text: str) -> _FakeMessageChain:
         self.chain.append(text)
         return self
 
@@ -284,12 +286,12 @@ class _FakeMessageEventResult:
         self.text = ""
         self.chain: list[Any] = []
 
-    def message(self, text: str) -> "_FakeMessageEventResult":
+    def message(self, text: str) -> _FakeMessageEventResult:
         self.text = str(text or "")
         self.chain = [self.text]
         return self
 
-    def set_result_content_type(self, _content_type: Any) -> "_FakeMessageEventResult":
+    def set_result_content_type(self, _content_type: Any) -> _FakeMessageEventResult:
         return self
 
 
