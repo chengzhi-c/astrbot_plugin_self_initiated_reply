@@ -49,8 +49,8 @@
 界面自带浅深双主题 —— 浅色「慈爱之惠」，深色「审判之司」，右上角切换，默认跟随系统：
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/%E6%85%88%E7%88%B1%E4%B9%8B%E6%83%A0.png" alt="浅色主题 · 慈爱之惠" width="49%">
-  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/%E5%AE%A1%E5%88%A4%E4%B9%8B%E5%8F%B8.png" alt="深色主题 · 审判之司" width="49%">
+  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/慈爱之惠.png" alt="浅色主题 · 慈爱之惠" width="49%">
+  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/审判之司.png" alt="深色主题 · 审判之司" width="49%">
 </p>
 
 **判断模型调参**是最常用入口：
