@@ -921,16 +921,9 @@ class SelfInitiatedReplyPlugin(Star):
         force: bool,
         expected_generation: int | None = None,
     ) -> str:
-        if self._stopping or (not force and not self.runtime_enabled):
-            return "插件未启用。"
-        if not force and not session_whitelisted(umo, self.settings.whitelist):
-            return "会话不在主动回复白名单。"
-        if not self._generation_is_current(umo, expected_generation):
-            return "会话已经更新，放弃旧任务。"
-        if not force and not self._last_events.get(umo):
-            return "没有可用的最近消息事件。"
-        if umo in self._running_sessions:
-            return "已有判断任务在运行。"
+        guard = self._session_check_guard(umo, force=force, expected_generation=expected_generation)
+        if guard is not None:
+            return guard
         state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
         observed_active_at = state.last_active_at
 
@@ -942,33 +935,15 @@ class SelfInitiatedReplyPlugin(Star):
 
         self._running_sessions.add(umo)
         try:
-            decision: dict[str, Any]
-            if force:
-                decision = {"should_reply": True, "reason": "手动强制检查", "elapsed_sec": 0.0}
-            else:
-                intent_reason = (
-                    "" if trigger == "patrol" else self._recent_reply_request_reason(state)
-                )
-                decision = (
-                    {"should_reply": True, "reason": intent_reason, "elapsed_sec": 0.0}
-                    if intent_reason
-                    else await self._ask_decision_model(umo, state, trigger=trigger)
-                )
-
-            if not self._generation_is_current(umo, expected_generation):
-                return "会话已经更新，放弃旧任务。"
-            logger.debug(
-                "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
-                PLUGIN_ID,
+            decision = await self._decide_session_reply(
                 umo,
-                trigger,
-                decision.get("should_reply"),
-                float(decision.get("elapsed_sec") or 0.0),
-                decision.get("reason") or "-",
+                state,
+                trigger=trigger,
+                force=force,
+                expected_generation=expected_generation,
             )
-
-            if not decision.get("should_reply"):
-                return f"判断不回复：{decision.get('reason') or '未说明'}"
+            if isinstance(decision, str):
+                return decision
 
             pipeline_reply = await self._generate_reply_via_pipeline(
                 umo,
@@ -993,21 +968,130 @@ class SelfInitiatedReplyPlugin(Star):
             if not reply and not direct_send_count:
                 return "管线未生成内容。"
 
-            gate = (
-                ""
-                if self._generation_is_current(umo, expected_generation)
-                else "会话已经更新，放弃旧任务。"
+            return await self._deliver_session_reply(
+                umo,
+                state,
+                reply,
+                direct_send_count,
+                expected_generation=expected_generation,
+                observed_active_at=observed_active_at,
+                force=force,
+                trigger=trigger,
             )
-            if not gate:
-                gate = self._local_gate(state, force=force)
-            if gate:
-                logger.debug(
-                    "[%s] skip before send session=%s trigger=%s reason=%s",
-                    PLUGIN_ID,
+        finally:
+            self._running_sessions.discard(umo)
+
+    def _session_check_guard(
+        self, umo: str, *, force: bool, expected_generation: int | None
+    ) -> str | None:
+        """会话级前置门卫：全部通过返回 None，否则返回跳过原因。"""
+        if self._stopping or (not force and not self.runtime_enabled):
+            return "插件未启用。"
+        if not force and not session_whitelisted(umo, self.settings.whitelist):
+            return "会话不在主动回复白名单。"
+        if not self._generation_is_current(umo, expected_generation):
+            return "会话已经更新，放弃旧任务。"
+        if not force and not self._last_events.get(umo):
+            return "没有可用的最近消息事件。"
+        if umo in self._running_sessions:
+            return "已有判断任务在运行。"
+        return None
+
+    async def _decide_session_reply(
+        self,
+        umo: str,
+        state: SessionState,
+        *,
+        trigger: str,
+        force: bool,
+        expected_generation: int | None,
+    ) -> dict[str, Any] | str:
+        """产生一次判断：通过返回 decision dict，早退返回跳过原因。"""
+        decision: dict[str, Any]
+        if force:
+            decision = {"should_reply": True, "reason": "手动强制检查", "elapsed_sec": 0.0}
+        else:
+            intent_reason = "" if trigger == "patrol" else self._recent_reply_request_reason(state)
+            decision = (
+                {"should_reply": True, "reason": intent_reason, "elapsed_sec": 0.0}
+                if intent_reason
+                else await self._ask_decision_model(umo, state, trigger=trigger)
+            )
+
+        if not self._generation_is_current(umo, expected_generation):
+            return "会话已经更新，放弃旧任务。"
+        logger.debug(
+            "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
+            PLUGIN_ID,
+            umo,
+            trigger,
+            decision.get("should_reply"),
+            float(decision.get("elapsed_sec") or 0.0),
+            decision.get("reason") or "-",
+        )
+
+        if not decision.get("should_reply"):
+            return f"判断不回复：{decision.get('reason') or '未说明'}"
+        return decision
+
+    async def _deliver_session_reply(
+        self,
+        umo: str,
+        state: SessionState,
+        reply: str,
+        direct_send_count: int,
+        *,
+        expected_generation: int | None,
+        observed_active_at: float | None,
+        force: bool,
+        trigger: str,
+    ) -> str:
+        """发送前门卫与发送状态机；返回结果消息。"""
+        gate = (
+            ""
+            if self._generation_is_current(umo, expected_generation)
+            else "会话已经更新，放弃旧任务。"
+        )
+        if not gate:
+            gate = self._local_gate(state, force=force)
+        if gate:
+            logger.debug(
+                "[%s] skip before send session=%s trigger=%s reason=%s",
+                PLUGIN_ID,
+                umo,
+                trigger,
+                gate,
+            )
+            if direct_send_count:
+                await self._record_proactive_state(
                     umo,
-                    trigger,
-                    gate,
+                    state,
+                    "",
+                    direct_send_count,
+                    expected_generation=expected_generation,
+                    observed_active_at=observed_active_at,
                 )
+                return f"工具主动回复已完成；{gate}"
+            return gate
+
+        if reply:
+            sent = await self._send_reply(umo, reply, expected_generation=expected_generation)
+            if not sent.delivered:
+                if sent.status is SendStatus.UNKNOWN:
+                    # 可能已经提交：不自动重试；消耗冷却与日配额并推进观察窗口
+                    # （视为已尝试），防止巡检或新消息立刻对同一事件重复处理。
+                    # 注意：即使工具已直发也必须记录——否则观察窗口不推进，
+                    # 同一事件会被再次处理并可能再次直发。
+                    await self._record_proactive_state(
+                        umo,
+                        state,
+                        "",
+                        direct_send_count,
+                        expected_generation=expected_generation,
+                        observed_active_at=observed_active_at,
+                        confirmed=False,
+                    )
+                    return "主动发送状态未知，未自动重试。"
                 if direct_send_count:
                     await self._record_proactive_state(
                         umo,
@@ -1017,74 +1101,42 @@ class SelfInitiatedReplyPlugin(Star):
                         expected_generation=expected_generation,
                         observed_active_at=observed_active_at,
                     )
-                    return f"工具主动回复已完成；{gate}"
-                return gate
+                if not self._generation_is_current(umo, expected_generation):
+                    return "会话已更新，放弃旧回复。"
+                if sent.status is SendStatus.SUPPRESSED:
+                    return "会话已更新，放弃旧回复。"
+                return "主动发送失败。"
+        else:
+            sent = SendOutcome(SendStatus.DELIVERED, "仅有工具直发")
 
-            if reply:
-                sent = await self._send_reply(umo, reply, expected_generation=expected_generation)
-                if not sent.delivered:
-                    if sent.status is SendStatus.UNKNOWN:
-                        # 可能已经提交：不自动重试；消耗冷却与日配额并推进观察窗口
-                        # （视为已尝试），防止巡检或新消息立刻对同一事件重复处理。
-                        # 注意：即使工具已直发也必须记录——否则观察窗口不推进，
-                        # 同一事件会被再次处理并可能再次直发。
-                        await self._record_proactive_state(
-                            umo,
-                            state,
-                            "",
-                            direct_send_count,
-                            expected_generation=expected_generation,
-                            observed_active_at=observed_active_at,
-                            confirmed=False,
-                        )
-                        return "主动发送状态未知，未自动重试。"
-                    if direct_send_count:
-                        await self._record_proactive_state(
-                            umo,
-                            state,
-                            "",
-                            direct_send_count,
-                            expected_generation=expected_generation,
-                            observed_active_at=observed_active_at,
-                        )
-                    if not self._generation_is_current(umo, expected_generation):
-                        return "会话已更新，放弃旧回复。"
-                    if sent.status is SendStatus.SUPPRESSED:
-                        return "会话已更新，放弃旧回复。"
-                    return "主动发送失败。"
-            else:
-                sent = SendOutcome(SendStatus.DELIVERED, "仅有工具直发")
-
-            if self.settings.log_reply_content and reply:
-                preview = reply if len(reply) <= 80 else reply[:80] + "…"
-                logger.debug(
-                    "[%s] proactive reply sent session=%s chars=%d direct_tools=%d text=%s",
-                    PLUGIN_ID,
-                    umo,
-                    len(reply),
-                    direct_send_count,
-                    preview,
-                )
-            else:
-                logger.debug(
-                    "[%s] proactive reply sent session=%s chars=%d direct_tools=%d",
-                    PLUGIN_ID,
-                    umo,
-                    len(reply),
-                    direct_send_count,
-                )
-
-            await self._record_proactive_state(
+        if self.settings.log_reply_content and reply:
+            preview = reply if len(reply) <= 80 else reply[:80] + "…"
+            logger.debug(
+                "[%s] proactive reply sent session=%s chars=%d direct_tools=%d text=%s",
+                PLUGIN_ID,
                 umo,
-                state,
-                reply,
+                len(reply),
                 direct_send_count,
-                expected_generation=expected_generation,
-                observed_active_at=observed_active_at,
+                preview,
             )
-            return "已通过工具主动回复。" if direct_send_count and not reply else "已主动回复。"
-        finally:
-            self._running_sessions.discard(umo)
+        else:
+            logger.debug(
+                "[%s] proactive reply sent session=%s chars=%d direct_tools=%d",
+                PLUGIN_ID,
+                umo,
+                len(reply),
+                direct_send_count,
+            )
+
+        await self._record_proactive_state(
+            umo,
+            state,
+            reply,
+            direct_send_count,
+            expected_generation=expected_generation,
+            observed_active_at=observed_active_at,
+        )
+        return "已通过工具主动回复。" if direct_send_count and not reply else "已主动回复。"
 
     async def _record_proactive_state(
         self,
