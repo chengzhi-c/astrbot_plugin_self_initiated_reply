@@ -341,9 +341,9 @@ def test_bare_command_word_is_parsed_as_command() -> None:
 
 def test_api_get_config_returns_payload_on_failure() -> None:
     """Quart 路由不能返回 None，否则失败时抛 TypeError 变成 500。"""
-    source = _main_source()
-    start = source.index("    async def _api_get_config(")
-    end = source.index("\n    async def _api_providers(", start)
+    source = (ROOT / "webapi.py").read_text(encoding="utf-8")
+    start = source.index("async def _api_get_config(")
+    end = source.index("\nasync def _api_providers(", start)
     method = source[start:end]
 
     tail = method[method.index("except Exception") :]
@@ -399,9 +399,10 @@ def test_terminate_waits_for_cancelled_background_tasks() -> None:
 def test_image_cache_cleanup_has_manual_api_and_startup_sweep() -> None:
     """图片缓存既要能手动清理，也要在插件重载时立即扫一次。"""
     source = _main_source()
-    register_start = source.index("    def _register_web_apis(")
-    register_end = source.index("\n    @staticmethod\n    def _config_value", register_start)
-    registration = source[register_start:register_end]
+    webapi_source = (ROOT / "webapi.py").read_text(encoding="utf-8")
+    register_start = webapi_source.index("def register_web_apis(")
+    register_end = webapi_source.index("\ndef bind_api_handlers(", register_start)
+    registration = webapi_source[register_start:register_end]
 
     assert 'f"{route}/image-cache/cleanup"' in registration
     assert '"POST"' in registration
@@ -456,11 +457,12 @@ def test_successful_image_cache_logs_are_debug_only() -> None:
 def test_config_mutations_share_one_lock_and_settings_normalizer() -> None:
     """白名单和 Web 配置更新不能交错覆盖，配置必须经统一入口规范化。"""
     source = _main_source()
-    api_start = source.index("    async def _api_post_config(")
-    api_end = source.index("\n    async def _api_status(", api_start)
-    api = source[api_start:api_end]
+    webapi_source = (ROOT / "webapi.py").read_text(encoding="utf-8")
+    api_start = webapi_source.index("async def _api_post_config(")
+    api_end = webapi_source.index("\nasync def _api_status(", api_start)
+    api = webapi_source[api_start:api_end]
 
-    assert "async with self._config_lock" in api
+    assert "async with plugin._config_lock" in api
     assert "_api_post_config_locked" in api
     assert "_add_whitelist_session_locked" in source
     assert "_remove_whitelist_session_locked" in source
