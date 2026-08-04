@@ -114,6 +114,40 @@ def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario, generation_timeout_sec=60)
 
 
+def test_force_cancel_kills_running_check_task(tmp_path: Path) -> None:
+    """_cancel_delay_task(force=True) 必须同时取消运行中的检查任务。
+
+    变异锚定：cancel_delay_task 的 force 分支失效（不取消 running_task）
+    后本测试必须变红。
+    """
+
+    async def scenario(plugin, main):
+        started = asyncio.Event()
+
+        async def hanging():
+            started.set()
+            await asyncio.sleep(3600)
+
+        running = asyncio.create_task(hanging())
+        await started.wait()
+        plugin._running_check_tasks[UMO] = running
+        delay_task = asyncio.create_task(asyncio.sleep(3600))
+        plugin._delay_tasks[UMO] = delay_task
+
+        plugin._cancel_delay_task(UMO, force=True)
+        await asyncio.sleep(0)  # cancel 请求异步生效
+
+        assert running.done() and running.cancelled()
+        assert delay_task.done() and delay_task.cancelled()
+        assert UMO not in plugin._delay_tasks
+        for t in (running, delay_task):  # 变异下兜底取消，避免 gather 长挂
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(running, delay_task, return_exceptions=True)
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_delayed_check_waits_for_running_session_release(tmp_path: Path) -> None:
     """延迟检查须等待前一个 check 结束（事件驱动，非轮询）。"""
 

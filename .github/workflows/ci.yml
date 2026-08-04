@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # nightly mutation sweep，UTC 18:00
+    - cron: "0 18 * * *"
+  workflow_dispatch:
 
 jobs:
   lint:
@@ -52,3 +56,39 @@ jobs:
         run: pip install hatch
       - name: Build
         run: hatch build
+
+  compat:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        astrbot: ["4.26.1", "latest"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install real AstrBot
+        run: |
+          if [ "${{ matrix.astrbot }}" = "latest" ]; then
+            pip install astrbot
+          else
+            pip install "astrbot==${{ matrix.astrbot }}"
+          fi
+          pip install -e ".[dev]"
+      - name: Host compatibility smoke
+        # 锁定版是硬门禁；latest 是上游漂移预警，不阻塞
+        run: python scripts/compat_check.py
+        continue-on-error: ${{ matrix.astrbot == 'latest' }}
+
+  mutation:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Mutation sweep
+        run: python scripts/mutation_check.py
