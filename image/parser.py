@@ -131,11 +131,11 @@ class ImageParser:
                 if path:
                     image_info.file_path = str(path)
                     image_info.prepared_source = str(path)
-                    logger.info("[selfreply] image frozen to local cache: %s", path.name)
+                    logger.debug("[selfreply] image frozen to local cache: %s", path.name)
                     return True
             if image_url.startswith("data:"):
                 image_info.prepared_source = image_url
-                logger.info("[selfreply] image frozen as in-memory data URL")
+                logger.debug("[selfreply] image frozen as in-memory data URL")
                 return True
             logger.warning("[selfreply] image source was not materialized; refusing delayed raw URL")
             return False
