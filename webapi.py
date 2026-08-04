@@ -398,9 +398,8 @@ def _snapshot_plugin_state(plugin) -> dict[str, Any]:
         "whitelist_runtime_umos": {
             key: set(values) for key, values in plugin._whitelist_runtime_umos.items()
         },
-        "session_generation": dict(plugin._session_generation),
+        "gate": plugin._gate.snapshot(),
         "sessions": dict(plugin.sessions),
-        "session_locks": dict(plugin._session_locks),
         "delay_umos": set(plugin._delay_tasks),
     }
 
@@ -413,9 +412,8 @@ async def _restore_plugin_state(plugin, snapshot: dict[str, Any]) -> None:
     plugin._last_event_at = snapshot["last_event_at"]
     plugin._recent_image_events = snapshot["recent_image_events"]
     plugin._whitelist_runtime_umos = snapshot["whitelist_runtime_umos"]
-    plugin._session_generation = snapshot["session_generation"]
+    plugin._gate.restore(snapshot["gate"])
     plugin.sessions = snapshot["sessions"]
-    plugin._session_locks = snapshot["session_locks"]
     # 回滚后重新调度被白名单变更取消的延迟检查（已取消的任务对象
     # 不可复用，只能按默认 message_delay 语义重建）。
     for umo in snapshot["delay_umos"]:
