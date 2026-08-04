@@ -110,7 +110,7 @@ from .webapi import bind_api_handlers, load_ui_theme, register_web_apis
 
 @register(
     PLUGIN_ID,
-    "chengzhi-c/Codex",
+    "chengzhi-c",
     "精简主动回复插件：白名单会话内，避开 @Bot/命令后自然接话",
     PLUGIN_VERSION,
 )
@@ -170,7 +170,9 @@ class SelfInitiatedReplyPlugin(Star):
         self._save_lock = asyncio.Lock()
         self._config_lock = asyncio.Lock()
         self._invalid_quiet_hours_logged: set[str] = set()
-        self._admin_ids = self._load_global_admin_ids()
+        self._admin_file_mtime: float | None = None
+        self._admin_ids: set[str] = set()
+        self._refresh_admin_ids()
         self._last_event_cleanup = now_ts()  # 事件清理时间戳
 
         self._save_storage_sync()
@@ -263,16 +265,21 @@ class SelfInitiatedReplyPlugin(Star):
             plugin_data_path = config_path.parent.parent / "plugin_data" / PLUGIN_ID
         return config_path, plugin_data_path / "state.json"
 
-    def _load_global_admin_ids(self) -> set[str]:
+    def _refresh_admin_ids(self) -> set[str]:
+        """按 cmd_config.json mtime 缓存热读管理员列表，运行期改管理员即生效。"""
         path = self._data_path / "cmd_config.json"
         try:
             if path.exists():
+                mtime = path.stat().st_mtime
+                if mtime == self._admin_file_mtime:
+                    return self._admin_ids
                 data = json.loads(path.read_text(encoding="utf-8-sig"))
                 admins = data.get("admins_id", []) if isinstance(data, dict) else []
-                return {str(item).strip() for item in admins if str(item).strip()}
+                self._admin_ids = {str(item).strip() for item in admins if str(item).strip()}
+                self._admin_file_mtime = mtime
         except Exception as exc:
             logger.debug("[%s] load admins failed path=%s error=%s", PLUGIN_ID, path, exc)
-        return set()
+        return self._admin_ids
 
     def _state_for(self, umo: str) -> SessionState:
         state = self.sessions.get(umo)
@@ -793,6 +800,22 @@ class SelfInitiatedReplyPlugin(Star):
                     removed,
                     len(self._last_events),
                 )
+
+        # 回收长期无活动的运行时 UMO 映射，避免 _whitelist_runtime_umos
+        # 对白名单内会话只增不减（巡检对无事件会话会自然跳过，移除安全）。
+        active_umos = set(self._running_sessions)
+        active_umos.update(
+            umo for umo, at in self._last_event_at.items() if now - at < EVENT_CLEANUP_INTERVAL_SEC
+        )
+        active_umos.update(
+            umo for umo, task in self._delay_tasks.items() if task and not task.done()
+        )
+        for key, values in list(self._whitelist_runtime_umos.items()):
+            kept = values & active_umos
+            if kept:
+                self._whitelist_runtime_umos[key] = kept
+            else:
+                self._whitelist_runtime_umos.pop(key, None)
 
     def _ensure_image_cleanup_task(self) -> None:
         if self._stopping or not self.runtime_enabled:
@@ -2051,7 +2074,7 @@ class SelfInitiatedReplyPlugin(Star):
     ) -> None:
         action, arg = parsed
         self._set_command_handled(event)
-        if action in ADMIN_COMMAND_ACTIONS and not is_admin_event(event, self._admin_ids):
+        if action in ADMIN_COMMAND_ACTIONS and not is_admin_event(event, self._refresh_admin_ids()):
             await self._send_command_text(event, "没有权限执行该主动回复管理指令。")
             return
         await self._send_command_text(event, await self._command_text(event, action, arg))

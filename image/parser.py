@@ -533,6 +533,9 @@ class ImageParser:
             return False
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             return False
+        if parsed.port is not None and parsed.port not in {80, 443}:
+            # 仅允许标准 Web 端口，收缩公网主机任意端口可达的 SSRF 面
+            return False
         return await asyncio.to_thread(_host_all_global, parsed.hostname)
 
     @staticmethod
