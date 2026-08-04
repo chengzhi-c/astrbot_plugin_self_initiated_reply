@@ -407,6 +407,35 @@ def test_config_rollback_restores_task_topology(tmp_path: Path) -> None:
         finally:
             plugin._stop_patrol_task = original_stop
 
+
+def test_config_rollback_reschedules_cancelled_delayed_checks(tmp_path: Path) -> None:
+    """回滚后按快照重建被取消的延迟检查（message_delay 语义）。"""
+
+    async def scenario(plugin, main):
+        plugin._state_for(UMO)
+        plugin._schedule_delayed_check(UMO, delay_sec=None, trigger="message_delay", force=False)
+        original_task = plugin._delay_tasks.get(UMO)
+        assert original_task is not None and not original_task.done()
+
+        original_stop = plugin._stop_patrol_task
+
+        async def failing_stop():
+            await original_stop()
+            raise OSError("stop patrol failed")
+
+        plugin._stop_patrol_task = failing_stop
+        try:
+            web = sys.modules["astrbot.api.web"]
+            web.request.payload = {"enabled": False}
+            result = await plugin._api_post_config()
+            assert result.get("ok") is False
+            new_task = plugin._delay_tasks.get(UMO)
+            assert new_task is not None and not new_task.done(), "回滚后延迟检查未重建"
+        finally:
+            plugin._stop_patrol_task = original_stop
+
+    with_plugin(tmp_path, scenario)
+
     with_plugin(tmp_path, scenario, enabled_patrol_trigger=True)
 
 

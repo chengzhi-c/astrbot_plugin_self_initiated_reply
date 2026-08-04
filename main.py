@@ -2212,10 +2212,10 @@ class SelfInitiatedReplyPlugin(Star):
             finally:
                 if self._last_events.get(umo) is event:
                     self._clear_cached_event(umo)
-                # force 检查可能发生在非白名单会话：结束后回收临时锁与代次条目
+                # force 检查可能发生在非白名单会话：结束后统一回收
+                # 代次/锁/运行标记与 release 事件
                 if not session_whitelisted(umo, self.settings.whitelist):
-                    self._session_locks.pop(umo, None)
-                    self._session_generation.pop(umo, None)
+                    self._gate.prune(umo)
             return f"主动回复检查结果：{result}"
         if action == "on":
             async with self._config_lock:
