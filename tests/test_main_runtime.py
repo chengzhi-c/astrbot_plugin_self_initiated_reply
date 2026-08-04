@@ -789,14 +789,17 @@ def test_version_consistency_across_metadata() -> None:
     root = Path(__file__).resolve().parents[1]
     models = (root / "models.py").read_text(encoding="utf-8")
     metadata = (root / "metadata.yaml").read_text(encoding="utf-8")
-    readme = (root / "README.md").read_text(encoding="utf-8")
 
     match = re.search(r'PLUGIN_VERSION = "([^"]+)"', models)
     assert match is not None
     version = match.group(1)
     assert f"version: {version}" in metadata
-    # README 版本号由 shields 徽章承载（0.7.22 起，原「当前版本」行随 README 重写移除）
-    assert f"版本-{version}-" in readme
+    # README 版本号由 shields 徽章承载（0.7.22 起，原「当前版本」行随 README 重写移除）；
+    # 中英双语 badge 都校验（中文版「版本-0.8.2」，英文版「version-0.8.2」，
+    # 统一用 -{version}- 子串兼容）
+    for readme_name in ("README.md", "README.en.md"):
+        text = (root / readme_name).read_text(encoding="utf-8")
+        assert f"-{version}-" in text, f"{readme_name} badge 版本与 PLUGIN_VERSION 不一致"  # noqa: E501
     # 宿主下限声明保持一致
     assert '">=4.26.1,<5"' in metadata
 
