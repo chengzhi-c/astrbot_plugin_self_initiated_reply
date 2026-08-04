@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import math
+import re
 from collections import deque
 from functools import partial
 from typing import Any
@@ -20,6 +21,7 @@ except ImportError:  # pragma: no cover - compatibility with older AstrBot hosts
 from .models import (
     DEFAULT_DECISION_PROMPT_TEMPLATE,
     MAX_CACHED_IMAGE_EVENTS,
+    MAX_WHITELIST_ITEM_LEN,
     PLUGIN_ID,
     Settings,
 )
@@ -116,6 +118,7 @@ async def _api_get_config(plugin):
     try:
         min_context_messages = plugin.settings.decision_history_min_messages
         return {
+            "ok": True,
             # enabled 是持久配置；runtime_enabled 是 /on /off 临时运行态。
             # 返回持久值可避免前端全量保存把临时暂停固化成永久关闭。
             "enabled": plugin.settings.enabled,
@@ -362,9 +365,17 @@ async def _api_post_config_locked(plugin):
         if "whitelist" in data:
             if not isinstance(data["whitelist"], list):
                 raise ValueError("whitelist 必须是数组")
-            updates["whitelist"] = [
-                str(item).strip() for item in data["whitelist"] if str(item).strip()
-            ]
+            items: list[str] = []
+            for item in data["whitelist"]:
+                raw = str(item).strip()
+                if not raw:
+                    continue
+                if len(raw) > MAX_WHITELIST_ITEM_LEN:
+                    raise ValueError(f"白名单条目过长: {raw[:20]}…")
+                if re.search(r"[\x00-\x1f\"'\\]", raw):
+                    raise ValueError("白名单条目含非法字符")
+                items.append(raw)
+            updates["whitelist"] = items
 
         old_settings = copy.deepcopy(plugin.settings)
         old_runtime_enabled = plugin.runtime_enabled
@@ -476,6 +487,7 @@ async def _api_post_config_locked(plugin):
 async def _api_status(plugin):
     """返回插件集成状态。"""
     return {
+        "ok": True,
         "loaded": True,
         "runtime_enabled": plugin.runtime_enabled,
         "whitelist_count": len(plugin.settings.whitelist),
