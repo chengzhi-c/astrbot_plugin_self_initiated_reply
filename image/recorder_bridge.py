@@ -127,7 +127,14 @@ _default_bridge: MessageRecorderBridge | None = None
 
 
 def get_recorder_bridge(context: Any | None = None) -> MessageRecorderBridge:
+    """Return the process-wide recorder bridge, creating it once.
+
+    ``context`` is only used on first construction; later calls return the
+    cached instance. The sole caller (``main.py``) passes ``self.context``,
+    which is stable for the lifetime of the plugin instance, so a
+    per-context registry would be complexity without a current consumer.
+    """
     global _default_bridge
-    if _default_bridge is None or context is not None:
+    if _default_bridge is None:
         _default_bridge = MessageRecorderBridge(context)
     return _default_bridge

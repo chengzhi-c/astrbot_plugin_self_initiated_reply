@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from .host_stubs import with_plugin
+from .host_stubs import with_plugin, until
 from .test_main_runtime import UMO, _make_event
 
 
@@ -55,10 +55,8 @@ def test_completed_checks_leave_no_running_check_residue(tmp_path: Path) -> None
         for umo in umos:
             plugin._last_events[umo] = _make_event()
             plugin._schedule_delayed_check(umo, delay_sec=0, trigger="message_delay", force=False)
-        for _ in range(50):
-            if not plugin._delay_tasks:
-                break
-            await asyncio.sleep(0.05)
+        # 事件驱动等待自清理完成，替代固定 50×0.05s 轮询（flaky 修复）
+        await until(lambda: not plugin._delay_tasks and not plugin._running_check_tasks)
         assert not plugin._delay_tasks
         assert not plugin._running_check_tasks
 

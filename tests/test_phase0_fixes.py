@@ -17,13 +17,18 @@ from pathlib import Path
 
 import pytest
 
-from .host_stubs import with_plugin
+from .host_stubs import with_plugin, until
 from .test_main_runtime import UMO, _make_event, _PipelineTestAdapter
 
 
 def _load_main():
     import tests.test_vision as vision
 
+    from .host_stubs import install_astrbot_stubs
+
+    # 本文件可独立运行：stub 安装不能依赖 test_vision 先跑（排序依赖），
+    # 加载前显式安装，幂等，重复调用无副作用。
+    install_astrbot_stubs()
     root = Path(vision.ROOT)
     package = vision.PACKAGE_NAME
     if package not in sys.modules:
@@ -135,7 +140,8 @@ def test_force_cancel_kills_running_check_task(tmp_path: Path) -> None:
         plugin._delay_tasks[UMO] = delay_task
 
         plugin._cancel_delay_task(UMO, force=True)
-        await asyncio.sleep(0)  # cancel 请求异步生效
+        # 事件驱动等待 cancel 生效，替代单次 sleep(0)（flaky 修复）
+        await until(lambda: running.done() and delay_task.done())
 
         assert running.done() and running.cancelled()
         assert delay_task.done() and delay_task.cancelled()

@@ -181,6 +181,23 @@ def run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
+async def until(predicate: Any, timeout: float = 2.0) -> None:
+    """Wait until ``predicate()`` is truthy, yielding to the loop meanwhile.
+
+    Event-driven replacement for fixed-sleep polling: the loop keeps yielding
+    until the condition holds or the timeout expires, so slow CI runners no
+    longer produce flaky failures (and fast runners don't waste wall time).
+    """
+    async def _loop() -> None:
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+    try:
+        await asyncio.wait_for(_loop(), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise AssertionError(f"等待条件超时（{timeout}s）") from exc
+
+
 def with_plugin(tmp_path: Path, scenario: Any, **config_overrides: Any) -> Any:
     """Instantiate the plugin inside a running loop, run a scenario, terminate.
 

@@ -3,21 +3,27 @@
 每个变异点 = (名称, 目标文件, 原始串, 变异串, 应击杀的测试 -k 表达式)。
 - 锚定串漂移（不存在）直接报错，强制人工更新变异定义——防止变异静默失效变成假绿灯。
 - 恢复用 copy2 唯一命名备份 + 逐字节校验，禁止 git checkout。
+- 入口守卫：目标文件工作区必须干净（拒绝把用户未提交改动与变异残留混淆），
+  并以锁文件互斥并发运行；疑似上次强杀残留的变异会被识别并提示恢复方式。
 - 挂 nightly，不进 PR 门禁。
 
-用法：python scripts/mutation_check.py   （退出码：0 全击杀，1 有存活）
+用法：python scripts/mutation_check.py
+退出码：0 全击杀，1 有存活，2 前置守卫拒绝
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PY = sys.executable
+STALE_LOCK_SEC = 3600  # 运行时长上限：超龄锁文件视为上次强杀残留
 
 # (名称, 目标文件, 原始串, 变异串, 应击杀的测试 -k 表达式)
 MUTANTS = [
@@ -121,7 +127,95 @@ MUTANTS = [
 ]
 
 
+def _target_files() -> set[Path]:
+    return {ROOT / rel for _, rel, _, _, _ in MUTANTS}
+
+
+def _acquire_lock(lock_path: Path) -> Path:
+    """O_EXCL 独占锁：并发第二次运行直接拒绝；超龄锁视为强杀残留并回收。"""
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        age = time.time() - lock_path.stat().st_mtime
+        if age <= STALE_LOCK_SEC:
+            print("mutation_check: 另一个实例正在运行（锁文件存在）。", file=sys.stderr)
+            sys.exit(2)
+        print(f"mutation_check: 移除过期锁文件（{age:.0f}s 前创建，视为强杀残留）")
+        lock_path.unlink()
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    os.write(fd, f"pid={os.getpid()} started={int(time.time())}\n".encode())
+    os.close(fd)
+    return lock_path
+
+
+def _assert_clean_worktree() -> None:
+    """目标文件存在未提交改动时拒绝执行。
+
+    变异脚本会临时改写目标文件再恢复；若工作区本就脏，强杀后无法区分
+    变异残留与用户改动，copy2 恢复也可能盖上用户未提交的编辑。
+    """
+    r = subprocess.run(
+        ["git", "diff", "--exit-code", "--", *[str(p) for p in sorted(_target_files())]],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode == 0:
+        return
+    # 残留识别：变异串是故意构造的破坏性代码，正常 HEAD 中不应出现；
+    # 若目标文件含变异串而锚定串已消失，判定为上次强杀残留。
+    suspects = []
+    for name, rel, old, new, _ in MUTANTS:
+        head = subprocess.run(
+            ["git", "show", f"HEAD:{rel}"], cwd=ROOT, capture_output=True, text=True
+        ).stdout
+        if new in head:
+            continue  # 变异串在 HEAD 中存在则无特征，跳过识别
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        if old not in src and new in src:
+            suspects.append((name, rel))
+    print("mutation_check: 前置守卫拒绝——以下目标文件存在未提交改动：", file=sys.stderr)
+    for name, rel in suspects:
+        print(f"  [疑似变异残留] {name} → {rel}（可用 git checkout -- {rel} 恢复）", file=sys.stderr)
+    print("  请先 git status 确认改动归属（提交或 stash）后重试。", file=sys.stderr)
+    sys.exit(2)
+
+
+def _assert_anchor_tests_green() -> None:
+    """变异前预检：所有锚点测试（各变异的 -k 表达式并集）基线必须全绿。
+
+    基线本红时变异击杀/存活判定会失真（假击杀或假存活），直接拒绝执行。
+    """
+    seen: list[str] = []
+    for _, _, _, _, k in MUTANTS:
+        if k not in seen:
+            seen.append(k)
+    expression = " or ".join(f"({k})" for k in seen)
+    r = subprocess.run(
+        [PY, "-m", "pytest", "tests/", "-q", "-o", "addopts=", "-k", expression],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if r.returncode != 0:
+        print("mutation_check: 锚点测试基线未全绿，拒绝执行变异（先修复测试再跑）。", file=sys.stderr)
+        tail = (r.stdout or "")[-2000:] + (r.stderr or "")[-2000:]
+        print(tail, file=sys.stderr)
+        sys.exit(2)
+
+
 def main() -> int:
+    lock = _acquire_lock(ROOT / ".mutation_check.lock")
+    try:
+        _assert_clean_worktree()
+        _assert_anchor_tests_green()
+        return _run_mutants()
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _run_mutants() -> int:
     survivors: list[str] = []
     for name, rel, old, new, k in MUTANTS:
         target = ROOT / rel

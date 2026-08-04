@@ -62,8 +62,8 @@ def test_r6_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
 
         async def build_effect(kwargs, result):
             tool_set = kwargs["req"].func_tool
-            # 普通插件工具 + 宿主级危险工具（cron）
-            for name in ("send_image", "create_future_task"):
+            # 普通插件工具 + 宿主级危险工具（cron，4.23.3 实测名 future_task）
+            for name in ("send_image", "future_task"):
                 tool_set.add_tool(SimpleNamespace(name=name))
             return FakeBuildResult(
                 agent_runner=DirectSendingRunner(),
