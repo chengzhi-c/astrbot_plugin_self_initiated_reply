@@ -716,6 +716,8 @@ def test_image_parser_rejects_private_network_targets() -> None:
     assert not asyncio.run(image.ImageParser._is_safe_url("http://127.0.0.1/private.png"))
     assert not asyncio.run(image.ImageParser._is_safe_url("http://[::1]/private.png"))
     assert not asyncio.run(image.ImageParser._is_safe_url("file:///etc/passwd"))
+    # 非 http/https scheme（即使主机是公网 IP）必须拒绝
+    assert not asyncio.run(image.ImageParser._is_safe_url("ftp://8.8.8.8/x.png"))
 
 
 def test_image_parser_rejects_non_standard_ports() -> None:
