@@ -7,11 +7,15 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+# astrbot 包 import 会在 cwd 生成运行时 data/ 目录：切到临时目录防污染工作区
+os.chdir(tempfile.mkdtemp(prefix="astrbot-compat-"))
 
 # 与 runtime_adapter.from_host() 的实际引用保持一致；增删引用时必须同步此处
 CHECKS = [
