@@ -801,7 +801,7 @@ def test_version_consistency_across_metadata() -> None:
         text = (root / readme_name).read_text(encoding="utf-8")
         assert f"-{version}-" in text, f"{readme_name} badge 版本与 PLUGIN_VERSION 不一致"  # noqa: E501
     # 宿主下限声明保持一致
-    assert '">=4.26.1,<5"' in metadata
+    assert '">=4.23.3,<5"' in metadata
 
 
 # ============================================================================

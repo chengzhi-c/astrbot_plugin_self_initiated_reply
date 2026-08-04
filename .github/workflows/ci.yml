@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        astrbot: ["4.26.1", "latest"]
+        astrbot: ["4.23.3", "latest"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

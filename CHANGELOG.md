@@ -15,7 +15,8 @@
 - `SessionGate.restore` 运行集恢复锚定测试（restore 删 running 表变异实测红→绿）。
 - `_cancel_delay_task(force=True)` 运行中检查任务取消分支锚定测试（force 分支失效变异实测红→绿，mutation 巡检发现该缺口）。
 - 变异检测制度化（`scripts/mutation_check.py`）：首批 11 个历史实测变异点全击杀，锚定串漂移即报错，恢复逐字节校验；挂 CI nightly。
-- 宿主兼容冒烟（`scripts/compat_check.py`）+ 多版本 AstrBot 兼容矩阵 CI（4.26.1 硬门禁，latest 预警）。
+- 宿主兼容冒烟（`scripts/compat_check.py`）+ 多版本 AstrBot 兼容矩阵 CI（4.23.3 硬门禁，latest 预警）。
+- 宿主下限声明 `>=4.26.1` → `>=4.23.3`：逐版实测（compat_check 符号+签名校验），4.23.3/4.23.6/4.24.0/4.25.0 通过，4.23.2 及更早因 `run_agent` 缺 `buffer_intermediate_messages` 参数失败。
 - 覆盖率门槛 72 → 76（实测 81.62%，按实测-5% 校准）。
 
 ## [0.8.2] - 2026-08-04
