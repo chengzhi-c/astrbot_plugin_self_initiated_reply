@@ -705,14 +705,14 @@ class SelfInitiatedReplyPlugin(Star):
                 ):
                     return
                 silence_left = self._remaining_silence_sec(state)
-            while umo in self._running_sessions:
+            while self._gate.is_running(umo):
                 logger.debug(
                     "[%s] wait for previous check to finish session=%s trigger=%s",
                     PLUGIN_ID,
                     umo,
                     trigger,
                 )
-                await asyncio.sleep(0.1)
+                await self._gate.release_event(umo).wait()
                 if (
                     self._stopping
                     or not self.runtime_enabled
@@ -955,7 +955,7 @@ class SelfInitiatedReplyPlugin(Star):
             logger.debug("[%s] skip session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
             return gate
 
-        self._running_sessions.add(umo)
+        self._gate.mark_running(umo)
         try:
             decision = await self._decide_session_reply(
                 umo,
@@ -1001,7 +1001,7 @@ class SelfInitiatedReplyPlugin(Star):
                 trigger=trigger,
             )
         finally:
-            self._running_sessions.discard(umo)
+            self._gate.unmark_running(umo)
 
     def _session_check_guard(
         self, umo: str, *, force: bool, expected_generation: int | None

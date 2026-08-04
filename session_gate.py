@@ -21,6 +21,7 @@ class SessionGate:
         self._session_generation: dict[str, int] = {}
         self._running_sessions: set[str] = set()
         self._session_locks: dict[str, asyncio.Lock] = {}
+        self._session_release: dict[str, asyncio.Event] = {}
 
     def advance(self, umo: str) -> int:
         generation = next(self._generation_counter)
@@ -35,15 +36,27 @@ class SessionGate:
 
     def mark_running(self, umo: str) -> None:
         self._running_sessions.add(umo)
+        # 新运行周期开始：清掉上一周期的 release 状态，等待者重新挂起
+        self._session_release.pop(umo, None)
 
     def unmark_running(self, umo: str) -> None:
         self._running_sessions.discard(umo)
+        release = self._session_release.get(umo)
+        if release is not None:
+            release.set()
 
     def is_running(self, umo: str) -> bool:
         return umo in self._running_sessions
+
+    def release_event(self, umo: str) -> asyncio.Event:
+        """等待该会话当前运行结束的惰性事件（等完后再查 is_running）。"""
+        return self._session_release.setdefault(umo, asyncio.Event())
 
     def prune(self, umo: str) -> None:
         """会话移出白名单后回收全部映射与运行标记。"""
         self._session_generation.pop(umo, None)
         self._session_locks.pop(umo, None)
         self._running_sessions.discard(umo)
+        release = self._session_release.pop(umo, None)
+        if release is not None:
+            release.set()
