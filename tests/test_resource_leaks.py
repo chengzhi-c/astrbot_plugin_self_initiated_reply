@@ -30,9 +30,7 @@ def test_multi_session_cancel_converges_all_tables(tmp_path: Path) -> None:
         umos = [f"leak{i}:group:g" for i in range(5)]
         for umo in umos:
             plugin._last_events[umo] = _make_event()
-            plugin._schedule_delayed_check(
-                umo, delay_sec=1, trigger="message_delay", force=False
-            )
+            plugin._schedule_delayed_check(umo, delay_sec=1, trigger="message_delay", force=False)
         await asyncio.sleep(0.05)
         assert len(plugin._delay_tasks) == 5
 
@@ -56,9 +54,7 @@ def test_completed_checks_leave_no_running_check_residue(tmp_path: Path) -> None
         umos = [f"leak{i}:group:g" for i in range(5)]
         for umo in umos:
             plugin._last_events[umo] = _make_event()
-            plugin._schedule_delayed_check(
-                umo, delay_sec=0, trigger="message_delay", force=False
-            )
+            plugin._schedule_delayed_check(umo, delay_sec=0, trigger="message_delay", force=False)
         for _ in range(50):
             if not plugin._delay_tasks:
                 break
