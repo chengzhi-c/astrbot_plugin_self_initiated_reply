@@ -114,6 +114,43 @@ def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario, generation_timeout_sec=60)
 
 
+def test_delayed_check_waits_for_running_session_release(tmp_path: Path) -> None:
+    """延迟检查须等待前一个 check 结束（事件驱动，非轮询）。"""
+
+    async def scenario(plugin, main):
+        entered_wait = asyncio.Event()
+        original_release = plugin._gate.release_event
+
+        def patched_release(umo):
+            ev = original_release(umo)
+            entered_wait.set()  # 确定性锚点：B 已挂起在等待上
+            return ev
+
+        plugin._gate.release_event = patched_release
+        plugin._gate.mark_running(UMO)  # 前一个 check 占住运行集
+        try:
+            task = asyncio.create_task(
+                plugin._delayed_check(
+                    UMO,
+                    delay_sec=0,
+                    trigger="patrol",
+                    force=True,
+                    generation=plugin._advance_session_generation(UMO),
+                )
+            )
+            await asyncio.wait_for(entered_wait.wait(), timeout=2)
+            assert not task.done(), "运行集被占用时延迟检查不应完成"
+            plugin._gate.unmark_running(UMO)  # 前一个 check 结束
+            # 用 asyncio.wait（而非 wait_for）：task 吞掉取消时 wait_for 会
+            # 正常返回（Python 3.12+ 行为），导致变异不被捕获。
+            done, _pending = await asyncio.wait({task}, timeout=2)
+            assert task in done, "释放后延迟检查应完成"
+        finally:
+            plugin._gate.release_event = original_release
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_stale_generation_rejected_at_session_entry(tmp_path: Path) -> None:
     """旧代次任务在会话入口即被放弃，不进入决策与发送。"""
 
