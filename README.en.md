@@ -62,8 +62,8 @@ A settings page inside the plugin detail page, covering: run switch and whitelis
 The UI ships with light and dark themes — light "Boon of Compassion", dark "Court of Judgment", toggled in the top-right corner, defaulting to system preference:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/%E6%85%88%E7%88%B1%E4%B9%8B%E6%83%A0.png" alt="Light theme · Boon of Compassion" width="49%">
-  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/%E5%AE%A1%E5%88%A4%E4%B9%8B%E5%8F%B8.png" alt="Dark theme · Court of Judgment" width="49%">
+  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/慈爱之惠.png" alt="Light theme · Boon of Compassion" width="49%">
+  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/审判之司.png" alt="Dark theme · Court of Judgment" width="49%">
 </p>
 
 **Judge model tuning** is the most frequently used entry point:
