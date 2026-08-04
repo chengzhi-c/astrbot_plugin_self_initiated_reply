@@ -130,7 +130,7 @@ MUTANTS = [
         "image/parser.py",
         '        if parsed.scheme not in {"http", "https"} or not parsed.hostname:',
         "        if not parsed.hostname:",
-        "rejects_private",
+        "non_http_schemes",
     ),
     (
         "ssrf-port-bypass",

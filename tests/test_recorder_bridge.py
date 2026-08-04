@@ -123,6 +123,20 @@ def test_ensure_api_false_on_exception(bridge_mod) -> None:
     assert bridge._ensure_api() is False
 
 
+def test_ensure_api_false_when_get_api_not_callable(bridge_mod) -> None:
+    """探测链：star 的 get_api 不可调用时必须判负（40 行分支）。"""
+
+    class Meta:
+        star_instance = type("Star", (), {"get_api": None})()
+
+    class Ctx:
+        def get_registered_star(self, name):
+            return Meta()
+
+    bridge = bridge_mod.MessageRecorderBridge(Ctx())
+    assert bridge._ensure_api() is False
+
+
 def test_ensure_api_caches_result(bridge_mod) -> None:
     api = _api_with(record=None)
     ctx = _context_with(api)
@@ -251,6 +265,16 @@ async def test_resolve_relative_path_exception(bridge_mod) -> None:
     assert bridge.resolve_relative_path("x.png") is None
 
 
+def test_resolve_relative_path_resolver_not_callable(bridge_mod) -> None:
+    """探测链：api 的 get_media_absolute_path 不可调用时判负（84 行分支）。"""
+
+    class StubApi:
+        get_media_absolute_path = None
+
+    bridge = bridge_mod.MessageRecorderBridge(_context_with(StubApi()))
+    assert bridge.resolve_relative_path("x.png") is None
+
+
 # ============================================================================
 # image_to_data_url
 # ============================================================================
@@ -285,9 +309,18 @@ def test_image_to_data_url_success(bridge_mod, tmp_path) -> None:
     assert data_url.split(",", 1)[1] == base64.b64encode(PNG_BYTES).decode("ascii")
 
 
-def test_image_to_data_url_os_error(bridge_mod, tmp_path) -> None:
-    # 目录路径 read_bytes 抛 IsADirectoryError（OSError 子类）
-    assert bridge_mod.MessageRecorderBridge.image_to_data_url(tmp_path) is None
+def test_image_to_data_url_os_error(bridge_mod, tmp_path, monkeypatch) -> None:
+    # read_bytes 抛 OSError（模拟不可读文件）必须真实触发 except 分支。
+    # 目录路径会被 is_file() 先行拒绝（那是拒绝路径，不是异常路径），
+    # 原测试名为 os_error 实为 is_file 分支，属假断言，已改为真实触发。
+    target = tmp_path / "locked.png"
+    target.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    def boom(self):
+        raise OSError("access denied")
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    assert bridge_mod.MessageRecorderBridge.image_to_data_url(target) is None
 
 
 # ============================================================================
@@ -304,3 +337,17 @@ async def test_maybe_await_both_forms(bridge_mod) -> None:
 
     assert await bridge_mod._maybe_await(async_fn()) == 1
     assert await bridge_mod._maybe_await(sync_fn()) == 2
+
+
+def test_get_recorder_bridge_caches_instance(bridge_mod) -> None:
+    """工厂函数：首次构造、后续缓存复用、context 仅在首次构造使用。"""
+    mod = bridge_mod
+    saved = mod._default_bridge
+    mod._default_bridge = None
+    try:
+        first = mod.get_recorder_bridge("ctx-a")
+        assert isinstance(first, mod.MessageRecorderBridge)
+        second = mod.get_recorder_bridge("ctx-b")
+        assert second is first  # 缓存复用，context 变更不影响已缓存实例
+    finally:
+        mod._default_bridge = saved  # 复原全局单例，避免污染其他测试

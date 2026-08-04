@@ -467,12 +467,13 @@ async def test_read_history_parse_error(bridge) -> None:
 async def test_read_history_filters_and_maps(bridge) -> None:
     from types import SimpleNamespace
 
+    # before limit 放最前：limit=5 时被窗口切掉（截断语义），limit=6 时完整遍历
     history = json.dumps(
         [
+            {"role": "user", "content": "before limit"},
             {"role": "system", "content": "skip me"},
             "not-a-dict",
             {"role": "user", "content": ""},
-            {"role": "user", "content": "before limit"},
             {"role": "user", "content": "hello", "sender_id": "u1"},
             {"role": "assistant", "content": [{"type": "text", "text": "hi"}], "name": "Bot"},
         ]
@@ -487,14 +488,22 @@ async def test_read_history_filters_and_maps(bridge) -> None:
             return Conversation()
 
     ctx = SimpleNamespace(conversation_manager=Manager())
-    records = await bridge(ctx).read_astrbot_history("umo1", limit=2)
-    assert len(records) == 2
+    # limit=6 全量遍历：system（无效 role）、not-a-dict、空 content 三个过滤
+    # 分支全部真实执行，before limit 也进窗口
+    records = await bridge(ctx).read_astrbot_history("umo1", limit=6)
+    assert len(records) == 3
     assert records[0].role == "user"
-    assert records[0].name == "用户"
-    assert records[0].sender_id == "u1"
-    assert records[1].role == "assistant"
-    assert records[1].name == "Bot"
-    assert records[1].at == 0.0
+    assert records[0].sender_id == ""
+    assert records[1].role == "user"
+    assert records[1].name == "用户"
+    assert records[1].sender_id == "u1"
+    assert records[2].role == "assistant"
+    assert records[2].name == "Bot"
+    assert records[2].at == 0.0
+    # limit=5 收缩窗口：before limit 被截断，无效项过滤后只剩末尾有效记录
+    records2 = await bridge(ctx).read_astrbot_history("umo1", limit=5)
+    assert len(records2) == 2
+    assert records2[0].sender_id == "u1"
 
 
 async def test_read_history_non_list_history(bridge) -> None:
