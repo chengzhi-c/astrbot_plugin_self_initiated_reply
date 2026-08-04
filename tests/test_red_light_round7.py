@@ -46,9 +46,7 @@ def test_r13_non_admin_write_command_does_not_cancel(tmp_path: Path) -> None:
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         plugin.settings.whitelist = {UMO}
-        plugin._schedule_delayed_check(
-            UMO, delay_sec=None, trigger="message_delay", force=False
-        )
+        plugin._schedule_delayed_check(UMO, delay_sec=None, trigger="message_delay", force=False)
         task = plugin._delay_tasks.get(UMO)
         assert task is not None and not task.done()
 
@@ -73,9 +71,7 @@ def test_r14_admin_write_cancels_but_read_does_not(tmp_path: Path) -> None:
 
     async def scenario(plugin, main):
         plugin.settings.whitelist = {UMO}
-        plugin._schedule_delayed_check(
-            UMO, delay_sec=None, trigger="message_delay", force=False
-        )
+        plugin._schedule_delayed_check(UMO, delay_sec=None, trigger="message_delay", force=False)
         task = plugin._delay_tasks.get(UMO)
         assert task is not None and not task.done()
 
