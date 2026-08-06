@@ -12,3 +12,6 @@ __pycache__/
 dist/
 data/
 
+README.html
+README.en.html
+
