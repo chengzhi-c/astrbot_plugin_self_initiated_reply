@@ -265,7 +265,7 @@ class SelfInitiatedReplyPlugin(Star):
             save_storage=lambda: self._save_storage(),
             ensure_state=lambda key: self._state_for(key),
             invalidate=lambda umo: self._invalidate_session(umo),
-            prune=lambda umo: self._gate.prune(umo),
+            prune=lambda umo: self._prune_session(umo),
             sessions=self.sessions,
             tracked_umos=lambda: (
                 set(self._last_events)
@@ -664,6 +664,11 @@ class SelfInitiatedReplyPlugin(Star):
         """会话失效单点入口：代次推进 + 延迟取消 + 协作资源级联清理。"""
         return self._coordinator.invalidate(umo, force_cancel=force_cancel)
 
+    def _prune_session(self, umo: str) -> None:
+        """会话回收：代次/锁/运行标记清理，并同步移除调试面板最近裁决（复审 S1）。"""
+        self._gate.prune(umo)
+        self._last_decisions.pop(umo, None)
+
     def _cancel_event_session(self, event: AstrMessageEvent) -> None:
         umo = event_umo(event)
         if umo and session_whitelisted(umo, self.settings.whitelist):
@@ -838,6 +843,15 @@ class SelfInitiatedReplyPlugin(Star):
             return "已有判断任务在运行。"
         return None
 
+    def _record_decision(self, umo: str, trigger: str, *, should_reply: bool, reason: str) -> None:
+        """调试面板最近裁决记录（仅内存，随 _prune_session 回收）。"""
+        self._last_decisions[umo] = {
+            "at": round(now_ts(), 3),
+            "trigger": trigger,
+            "should_reply": should_reply,
+            "reason": reason,
+        }
+
     async def _decide_session_reply(
         self,
         umo: str,
@@ -850,16 +864,17 @@ class SelfInitiatedReplyPlugin(Star):
         """产生一次判断：通过返回 decision dict，早退返回跳过原因。"""
         decision = await self._decision.decide(umo, state, trigger=trigger, force=force)
         if isinstance(decision, str):
+            self._record_decision(umo, trigger, should_reply=False, reason=decision)
             return decision
 
         if not self._gate.is_current(umo, expected_generation):
             return "会话已经更新，放弃旧任务。"
-        self._last_decisions[umo] = {
-            "at": round(now_ts(), 3),
-            "trigger": trigger,
-            "should_reply": bool(decision.get("should_reply")),
-            "reason": str(decision.get("reason") or ""),
-        }
+        self._record_decision(
+            umo,
+            trigger,
+            should_reply=bool(decision.get("should_reply")),
+            reason=str(decision.get("reason") or ""),
+        )
         logger.debug(
             "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
             PLUGIN_ID,
@@ -1146,7 +1161,7 @@ class SelfInitiatedReplyPlugin(Star):
                 # force 检查可能发生在非白名单会话：结束后统一回收
                 # 代次/锁/运行标记与 release 事件
                 if not session_whitelisted(umo, self.settings.whitelist):
-                    self._gate.prune(umo)
+                    self._prune_session(umo)
             return f"主动回复检查结果：{result}"
         if action == "on":
             async with self._config_lock:

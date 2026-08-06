@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol
+from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
@@ -26,27 +26,17 @@ from .models import (
     HOST_DANGEROUS_TOOL_IDS,
     MAX_AGENT_STEPS,
     MAX_DIRECT_TOOL_SENDS,
+    MIN_RECENT_TEXT_RECORDS,
     PLUGIN_ID,
     PROACTIVE_ALLOWED_TOOL_IDS,
-    MessageRecord,
+    ImageContextCallback,
     PipelineReply,
+    ReadHistoryCallback,
     SessionState,
     Settings,
 )
 from .outbound import OutboundGateway
-from .utils import clean_reply, count_text_records, dedupe_message_records, format_message_records
-
-
-class ReadHistoryCallback(Protocol):
-    """宿主历史读取回调（limit 关键字调用）。"""
-
-    def __call__(self, umo: str, *, limit: int) -> Awaitable[list[MessageRecord]]: ...
-
-
-class ImageContextCallback(Protocol):
-    """Vision 描述上下文回调（enabled/provider_id 关键字调用）。"""
-
-    def __call__(self, umo: str, *, enabled: bool, provider_id: str) -> Awaitable[str]: ...
+from .utils import build_history_text, clean_reply
 
 
 class GenerationRunner:
@@ -452,19 +442,13 @@ class GenerationRunner:
         )
 
     async def build_context_text(self, umo: str, state: SessionState) -> str:
-        records = list(state.recent)[-self.settings.recent_message_limit :]
-        if count_text_records(records) < min(5, self.settings.recent_message_limit):
-            try:
-                records = (
-                    await self._read_history(umo, limit=self.settings.recent_message_limit)
-                    + records
-                )
-            except Exception as exc:
-                logger.debug(
-                    "[%s] host history unavailable session=%s error=%s", PLUGIN_ID, umo, exc
-                )
-        records = dedupe_message_records(records)
-        context_text = format_message_records(records, limit=self.settings.recent_message_limit)
+        context_text = await build_history_text(
+            umo=umo,
+            local_records=list(state.recent)[-self.settings.recent_message_limit :],
+            read_history=self._read_history,
+            limit=self.settings.recent_message_limit,
+            min_text_records=min(MIN_RECENT_TEXT_RECORDS, self.settings.recent_message_limit),
+        )
         image_context = await self._build_image_context(
             umo,
             enabled=self.settings.vision_main_enabled,
