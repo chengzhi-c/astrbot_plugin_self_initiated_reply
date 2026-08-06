@@ -1,4 +1,4 @@
-﻿"""变异检测制度化：把三方审查历史实测过的击杀点固化为一键回归。
+"""变异检测制度化：把三方审查历史实测过的击杀点固化为一键回归。
 
 每个变异点 = (名称, 目标文件, 原始串, 变异串, 应击杀的测试 -k 表达式)。
 - 锚定串漂移（不存在）直接报错，强制人工更新变异定义——防止变异静默失效变成假绿灯。
@@ -86,7 +86,7 @@ MUTANTS = [
     ),
     (
         "cancel-force-no-running-cancel",
-        "main.py",
+        "scheduler.py",
         "        if force and running_task and not running_task.done()"
         " and running_task is not task:",
         "        if False and running_task and not running_task.done()"
@@ -102,7 +102,7 @@ MUTANTS = [
     ),
     (
         "running-check-no-pop",
-        "main.py",
+        "scheduler.py",
         (
             "                if running_task is not None and self._running_check_tasks.get(umo)"
             " is running_task:\n"
@@ -439,7 +439,9 @@ def _assert_clean_worktree() -> None:
         ["git", "diff", "--exit-code", "--", *[str(p) for p in sorted(_target_files())]],
         cwd=ROOT,
         capture_output=True,
-        text=True, encoding="utf-8", errors="replace",
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if r.returncode == 0:
         return
@@ -482,7 +484,9 @@ def _assert_anchor_tests_green() -> None:
         [PY, "-m", "pytest", "tests/", "-q", "-o", "addopts=", "-k", expression],
         cwd=ROOT,
         capture_output=True,
-        text=True, encoding="utf-8", errors="replace",
+        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=300,
     )
     if r.returncode != 0:
@@ -517,7 +521,9 @@ def _run_mutants() -> int:
                 [PY, "-m", "pytest", "tests/", "-q", "-o", "addopts=", "-k", k, "-x"],
                 cwd=ROOT,
                 capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=180,
             )
             if r.returncode == 0:

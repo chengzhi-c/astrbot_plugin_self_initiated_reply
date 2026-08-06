@@ -5,7 +5,11 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .utils import maybe_await
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 @dataclass(frozen=True)
@@ -320,8 +324,8 @@ class AstrBotRuntimeAdapter:
         self.validate()
         assert self.capabilities.call_event_hook is not None
         if req is None:
-            return await maybe_await(self.capabilities.call_event_hook(event, event_type))
-        return await maybe_await(self.capabilities.call_event_hook(event, event_type, req))
+            return await _maybe_await(self.capabilities.call_event_hook(event, event_type))
+        return await _maybe_await(self.capabilities.call_event_hook(event, event_type, req))
 
     def config_path(self) -> str | None:
         """宿主配置目录（None = 旧版回退路径）。"""
