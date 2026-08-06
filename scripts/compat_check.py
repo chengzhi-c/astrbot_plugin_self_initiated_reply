@@ -1,12 +1,16 @@
-"""真实宿主兼容性冒烟：插件绑定的私有 AstrBot API 符号存在性 + 签名校验。
+"""真实宿主兼容性检查：插件绑定的私有 AstrBot API 符号存在性 + 契约断言。
 
 在装有真实 ``astrbot`` 包的环境中运行（CI 兼容矩阵 job 用）：
-- 断言插件引用的私有模块/符号全部存在（漂移即报错）
-- 用真实宿主能力跑 AstrBotRuntimeAdapter.validate()（签名参数缺漏即报错）
+- 锁定版（默认）：契约缺口（符号缺失/签名缺参/危险工具未覆盖）即 exit 1
+- 最新版（--warn-latest）：同一组检查降级为漂移预警，只告警不阻塞
+
+存在性清单与契约断言单源：符号清单来自 runtime_adapter.host_contract()，
+参数契约来自 AstrBotRuntimeAdapter.validate()——增删符号只需改适配层一处。
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import tempfile
@@ -16,27 +20,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 # astrbot 包 import 会在 cwd 生成运行时 data/ 目录：切到临时目录防污染工作区
 os.chdir(tempfile.mkdtemp(prefix="astrbot-compat-"))
-
-# 与 main.py / runtime_adapter.from_host() 的实际引用保持一致；增删引用时必须同步此处
-CHECKS = [
-    ("astrbot.core.agent.tool", ["ToolSet"]),
-    ("astrbot.core.astr_agent_run_util", ["run_agent"]),
-    (
-        "astrbot.core.astr_main_agent",
-        ["MainAgentBuildConfig", "_get_session_conv", "build_main_agent"],
-    ),
-    ("astrbot.core.message.message_event_result", ["MessageEventResult", "ResultContentType"]),
-    ("astrbot.core.pipeline.context", ["call_event_hook"]),
-    ("astrbot.core.provider.entities", ["ProviderRequest"]),
-    ("astrbot.core.star.star_handler", ["EventType"]),
-]
-
-# main.py 实际使用的 EventType 枚举成员：漂移（改名/移除）即报错
-EVENT_TYPE_MEMBERS = [
-    "OnLLMRequestEvent",
-    "OnDecoratingResultEvent",
-    "OnAfterMessageSentEvent",
-]
 
 # 宿主危险内置工具模块：这些模块内所有 FunctionTool 子类的 name 必须全部被
 # models.HOST_DANGEROUS_TOOL_IDS 覆盖——宿主新增/改名危险工具时缺失即报错，
@@ -70,41 +53,61 @@ def _enumerate_tool_names() -> dict[str, set[str]]:
     return found
 
 
-def _assert_denylist_covers_host() -> None:
-    """宿主危险工具全集必须 ⊆ HOST_DANGEROUS_TOOL_IDS，缺口即报错。"""
+def _denylist_gaps() -> dict[str, list[str]]:
+    """宿主危险工具全集与 HOST_DANGEROUS_TOOL_IDS 的缺口（空 = 全覆盖）。"""
     from models import HOST_DANGEROUS_TOOL_IDS
 
-    uncovered = {
+    return {
         mod: sorted(names - HOST_DANGEROUS_TOOL_IDS)
         for mod, names in _enumerate_tool_names().items()
         if names - HOST_DANGEROUS_TOOL_IDS
     }
-    if uncovered:
-        for mod, missing in uncovered.items():
-            print(f"denylist 未覆盖 {mod}: {', '.join(missing)}", file=sys.stderr)
-        raise SystemExit(1)
 
 
-def main() -> int:
+def run_contract_checks(*, warn: bool) -> int:
+    """符号存在性 + 契约断言 + denylist 覆盖；返回进程退出码。"""
     import importlib
 
     import runtime_adapter
 
-    for mod_name, attrs in CHECKS:
+    failures: list[str] = []
+    for mod_name, attrs in runtime_adapter.AstrBotRuntimeAdapter.host_contract():
         mod = importlib.import_module(mod_name)
         for attr in attrs:
-            assert hasattr(mod, attr), f"{mod_name}.{attr} 缺失——宿主私有 API 漂移"
+            if not hasattr(mod, attr):
+                failures.append(f"{mod_name}.{attr} 缺失——宿主私有 API 漂移")
 
+    event_type_members = runtime_adapter.EVENT_TYPE_MEMBERS
     star_handler = importlib.import_module("astrbot.core.star.star_handler")
-    for member in EVENT_TYPE_MEMBERS:
-        missing = not hasattr(star_handler.EventType, member)
-        assert not missing, f"EventType.{member} 缺失——宿主私有 API 漂移"
+    for member in event_type_members:
+        if not hasattr(star_handler.EventType, member):
+            failures.append(f"EventType.{member} 缺失——宿主私有 API 漂移")
 
     adapter = runtime_adapter.AstrBotRuntimeAdapter.from_host()
-    adapter.validate()
-    _assert_denylist_covers_host()
-    print("host compat OK")
-    return 0
+    problems = adapter.validate(soft=True)
+    gaps = _denylist_gaps()
+    for module_name, missing in gaps.items():
+        failures.append(f"denylist 未覆盖 {module_name}: {', '.join(missing)}")
+
+    all_problems = failures + problems
+    if not all_problems:
+        print("host compat OK")
+        return 0
+    for problem in all_problems:
+        level = "warn" if warn else "error"
+        print(f"[{level}] {problem}", file=sys.stderr)
+    return 0 if warn else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--warn-latest",
+        action="store_true",
+        help="最新版漂移预警：契约缺口只告警不阻塞（锁定版硬门禁为默认）",
+    )
+    args = parser.parse_args()
+    return run_contract_checks(warn=args.warn_latest)
 
 
 if __name__ == "__main__":

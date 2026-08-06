@@ -48,6 +48,10 @@ class SessionGate:
         self._session_generation[umo] = generation
         return generation
 
+    def current(self, umo: str) -> int:
+        """当前会话代次（任务开始时的基线，用于防 ABA 的代次绑定）。"""
+        return self._session_generation.get(umo, 0)
+
     def is_current(self, umo: str, generation: int | None) -> bool:
         return generation is None or self._session_generation.get(umo, 0) == generation
 

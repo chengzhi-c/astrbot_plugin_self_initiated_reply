@@ -51,6 +51,9 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Test
         run: pytest --cov-report=xml
+      - name: Module coverage gates
+        # 生产口径（omit tests/）下关键模块的独立门槛，防止整体门槛掩盖局部盲区
+        run: python scripts/coverage_gates.py
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
