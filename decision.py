@@ -82,9 +82,10 @@ class DecisionMaker:
             state.daily_count >= self.settings.max_daily_replies_per_session
         ):
             return "今日主动回复次数已达上限。"
-        silence = self._clock() - state.last_active_at if state.last_active_at else 0
-        if silence < self.settings.min_silence_sec:
-            return f"静默时间不足：{int(silence)}s / {self.settings.min_silence_sec}s。"
+        silence_left = state.remaining_silence_sec(self.settings.min_silence_sec, self._clock())
+        if silence_left > 0 or not state.last_active_at:
+            elapsed = int(self.settings.min_silence_sec - silence_left) if silence_left else 0
+            return f"静默时间不足：{elapsed}s / {self.settings.min_silence_sec}s。"
         cooldown_left = self.settings.cooldown_sec - (self._clock() - state.last_proactive_at)
         if cooldown_left >= 1:
             return f"冷却中：还剩 {duration(cooldown_left)}。"
@@ -270,9 +271,7 @@ class DecisionMaker:
             "session": sanitize_prompt_variable(umo, max_length=200),
             "trigger": sanitize_prompt_variable(trigger, max_length=50),
             "bot_aliases": sanitize_prompt_variable(aliases, max_length=200),
-            "last_message_age_sec": str(
-                int(self._clock() - state.last_active_at) if state.last_active_at else 0
-            ),
+            "last_message_age_sec": str(int(state.age_sec(self._clock()))),
             "last_reply_age_sec": str(
                 int(self._clock() - state.last_proactive_at) if state.last_proactive_at else -1
             ),

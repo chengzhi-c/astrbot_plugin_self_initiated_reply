@@ -110,10 +110,7 @@ class SessionScheduler:
         return max(int(self.settings.message_delay_sec), min_silence)
 
     def remaining_silence_sec(self, state: SessionState) -> float:
-        if not state.last_active_at:
-            return 0.0
-        silence_left = self.settings.min_silence_sec - (now_ts() - state.last_active_at)
-        return max(0.0, silence_left)
+        return state.remaining_silence_sec(self.settings.min_silence_sec, now_ts())
 
     def schedule_delayed_check(
         self,

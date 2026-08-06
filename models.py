@@ -344,6 +344,16 @@ class SessionState:
         self.last_proactive_text = text
         self.recent.append(MessageRecord(role="assistant", name="Bot", text=text, at=at))
 
+    def remaining_silence_sec(self, min_silence_sec: float, now: float) -> float:
+        """距上次活跃的剩余静默时间（从未活跃按 0 计，调用方自行决定特例）。"""
+        if not self.last_active_at:
+            return 0.0
+        return max(0.0, min_silence_sec - (now - self.last_active_at))
+
+    def age_sec(self, now: float) -> float:
+        """距上次活跃的经过秒数（从未活跃按 0 计）。"""
+        return now - self.last_active_at if self.last_active_at else 0.0
+
 
 @dataclass
 class Settings:
