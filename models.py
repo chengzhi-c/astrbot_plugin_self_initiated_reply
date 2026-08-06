@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Any, Protocol
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.8.6"
+PLUGIN_VERSION = "0.8.7"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
