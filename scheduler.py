@@ -355,9 +355,9 @@ class SessionScheduler:
             else:
                 self._whitelist_runtime_umos.pop(key, None)
 
-        self._warn_leaks_if_needed(now)
+        self._warn_leaks_if_needed()
 
-    def _warn_leaks_if_needed(self, now: float) -> None:
+    def _warn_leaks_if_needed(self) -> None:
         """任务表/代次表规模超阈值告警（运维状态，低频）；回落前不重复。"""
         task_count = (
             len(self._delay_tasks) + len(self._running_check_tasks) + len(self._background_tasks)
