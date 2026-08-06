@@ -4,9 +4,10 @@ import math
 import re
 import time
 from collections import deque
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
 PLUGIN_VERSION = "0.8.6"
@@ -36,6 +37,9 @@ STATE_SAVE_DEBOUNCE_SEC = 2.0
 # 高于正常规模；代次表条目数 ≤ 白名单上限（1000），1500 即泄漏。
 LEAK_WARN_TASK_THRESHOLD = 100
 LEAK_WARN_SESSION_THRESHOLD = 1500
+# 生成上下文文本记录预算下限（与 decision_history_min_messages 默认值一致）：
+# 本地文本记录不足此数时才回宿主补历史。
+MIN_RECENT_TEXT_RECORDS = 5
 
 # 插件运行常量
 MAX_AGENT_STEPS = 15  # Agent 最大步数：为主 Agent 生成预留足够步数
@@ -264,6 +268,18 @@ class MessageRecord:
     text: str
     sender_id: str = ""
     at: float = field(default_factory=now_ts)
+
+
+class ReadHistoryCallback(Protocol):
+    """宿主历史读取回调（limit 关键字调用）。"""
+
+    def __call__(self, umo: str, *, limit: int) -> Awaitable[list[MessageRecord]]: ...
+
+
+class ImageContextCallback(Protocol):
+    """Vision 描述上下文回调（enabled/provider_id 关键字调用）。"""
+
+    def __call__(self, umo: str, *, enabled: bool, provider_id: str) -> Awaitable[str]: ...
 
 
 @dataclass(frozen=True)

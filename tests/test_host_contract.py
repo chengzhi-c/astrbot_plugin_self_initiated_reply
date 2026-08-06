@@ -65,6 +65,38 @@ def test_private_host_symbols_confined() -> None:
     assert not violations, f"宿主私有层 import 泄漏到：{', '.join(violations)}"
 
 
+def test_callback_protocols_single_source() -> None:
+    """复审 S2：回调 Protocol 只允许在共享模块 models 定义一份（防镜像）。"""
+    import re
+
+    def protocol_definitions(rel: str) -> list[str]:
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        return re.findall(r"^class (ReadHistoryCallback|ImageContextCallback)\b", text, re.M)
+
+    for rel in ("decision.py", "generation.py"):
+        assert not protocol_definitions(rel), f"{rel} 仍自行定义回调 Protocol"
+    assert sorted(protocol_definitions("models.py")) == [
+        "ImageContextCallback",
+        "ReadHistoryCallback",
+    ]
+
+
+def test_history_budget_single_shape() -> None:
+    """复审 S2：历史补全形状收敛到 utils.build_history_text，无镜像与硬编码。"""
+    src_utils = (ROOT / "utils.py").read_text(encoding="utf-8")
+    src_generation = (ROOT / "generation.py").read_text(encoding="utf-8")
+    src_decision = (ROOT / "decision.py").read_text(encoding="utf-8")
+    assert "async def build_history_text" in src_utils
+    assert "build_history_text(" in src_generation and "build_history_text(" in src_decision
+    assert "min(5," not in src_generation
+
+
+def test_build_config_type_dead_property_removed() -> None:
+    """复审 S3：无调用的死 property（build_config_type）应移除。"""
+    adapter = _runtime_adapter()
+    assert not hasattr(adapter.AstrBotRuntimeAdapter, "build_config_type")
+
+
 def _runtime_adapter():
     import sys
     import types

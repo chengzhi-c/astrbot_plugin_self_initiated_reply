@@ -269,10 +269,6 @@ class AstrBotRuntimeAdapter:
         return self.capabilities.tool_set
 
     @property
-    def build_config_type(self) -> type[Any] | None:
-        return self.capabilities.build_config
-
-    @property
     def build_main_agent(self) -> Callable[..., Any]:
         self.validate()
         assert self.capabilities.build_main_agent is not None

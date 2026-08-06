@@ -13,7 +13,7 @@ import asyncio
 import re
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol
+from typing import Any
 
 from astrbot.api import logger
 
@@ -22,7 +22,8 @@ from .models import (
     DEFAULT_DECISION_PROMPT_TEMPLATE,
     PLUGIN_ID,
     REPLY_REQUEST_WINDOW_SEC,
-    MessageRecord,
+    ImageContextCallback,
+    ReadHistoryCallback,
     SessionState,
     Settings,
     duration,
@@ -30,9 +31,7 @@ from .models import (
     sanitize_prompt_variable,
 )
 from .utils import (
-    count_text_records,
-    dedupe_message_records,
-    format_message_records,
+    build_history_text,
     latest_user_text,
     looks_like_reply_request,
     parse_decision_json,
@@ -40,18 +39,6 @@ from .utils import (
 
 DECISION_SYSTEM_PROMPT = "你是群聊主动回复时机判断器。只输出严格 JSON，不要输出解释。"
 DECISION_MAX_TOKENS = 120
-
-
-class ImageContextCallback(Protocol):
-    """Vision 描述上下文回调（enabled/provider_id 关键字调用）。"""
-
-    def __call__(self, umo: str, *, enabled: bool, provider_id: str) -> Awaitable[str]: ...
-
-
-class ReadHistoryCallback(Protocol):
-    """宿主历史读取回调（limit 关键字调用）。"""
-
-    def __call__(self, umo: str, *, limit: int) -> Awaitable[list[MessageRecord]]: ...
 
 
 def _localtime_minutes() -> int:
@@ -311,14 +298,10 @@ class DecisionMaker:
         return rendered.strip()
 
     async def build_recent_messages(self, umo: str, state: SessionState, *, limit: int) -> str:
-        local_records = list(state.recent)[-limit:]
-        records: list[MessageRecord] = []
-        if count_text_records(local_records) < self.settings.decision_history_min_messages:
-            try:
-                records.extend(await self._read_history(umo, limit=limit))
-            except Exception as exc:
-                logger.debug(
-                    "[%s] host history unavailable session=%s error=%s", PLUGIN_ID, umo, exc
-                )
-        records.extend(local_records)
-        return format_message_records(dedupe_message_records(records), limit=limit)
+        return await build_history_text(
+            umo=umo,
+            local_records=list(state.recent)[-limit:],
+            read_history=self._read_history,
+            limit=limit,
+            min_text_records=self.settings.decision_history_min_messages,
+        )

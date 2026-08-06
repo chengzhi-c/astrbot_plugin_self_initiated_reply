@@ -46,6 +46,51 @@ def _make_event(umo: str = UMO, **kwargs):
 # ============================================================================
 
 
+def test_prune_clears_last_decisions(tmp_path: Path) -> None:
+    """复审 S1：会话回收必须同步清理调试面板的最近裁决，防同形态泄漏。"""
+
+    async def scenario(plugin, main):
+        umo = UMO
+        plugin._last_decisions[umo] = {
+            "at": 1.0,
+            "trigger": "message",
+            "should_reply": True,
+            "reason": "x",
+        }
+        plugin.settings.whitelist.add(umo)
+        removed = await plugin._remove_whitelist_session(umo)
+        assert removed is True
+        assert umo not in plugin._last_decisions
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_skipped_decision_recorded_in_last_decisions(tmp_path: Path) -> None:
+    """复审 P2：跳过决策（静默不足等早退原因）也进入调试面板。"""
+
+    class _FakeDecision:
+        async def decide(self, umo, state, *, trigger, force):
+            return "静默时间不足：1s / 60s。"
+
+    async def scenario(plugin, main):
+        umo = UMO
+        state = plugin._state_for(umo)
+        plugin._decision = _FakeDecision()
+        result = await plugin._decide_session_reply(
+            umo,
+            state,
+            trigger="message",
+            force=False,
+            expected_generation=None,
+        )
+        assert result == "静默时间不足：1s / 60s。"
+        recorded = plugin._last_decisions[umo]
+        assert recorded["should_reply"] is False
+        assert "静默时间不足" in recorded["reason"]
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_install_boundary_only_touches_event_plugins_name(tmp_path: Path) -> None:
     """共享 platform_meta 不得被原地修改；只允许收紧事件自己的插件范围。"""
 

@@ -5,10 +5,11 @@ import json
 import re
 from typing import Any
 
+from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import At
 
-from .models import MessageRecord
+from .models import PLUGIN_ID, MessageRecord, ReadHistoryCallback
 
 # 预编译正则表达式以提升性能
 _AT_MENTION_PATTERN = re.compile(r"^(?:\[[^\]]*[Aa][Tt][^\]]*\]\s*)+")
@@ -49,6 +50,28 @@ async def maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+async def build_history_text(
+    *,
+    umo: str,
+    local_records: list[MessageRecord],
+    read_history: ReadHistoryCallback,
+    limit: int,
+    min_text_records: int,
+) -> str:
+    """本地文本记录不足阈值时回宿主补历史，去重后按 limit 格式化。
+
+    决策（decision.py）与生成（generation.py）共用同一形状（复审 S2），
+    阈值与 limit 由调用方按各自配置决定。
+    """
+    records = local_records
+    if count_text_records(records) < min_text_records:
+        try:
+            records = (await read_history(umo, limit=limit)) + records
+        except Exception as exc:
+            logger.debug("[%s] host history unavailable session=%s error=%s", PLUGIN_ID, umo, exc)
+    return format_message_records(dedupe_message_records(records), limit=limit)
 
 
 def parse_json(text: str) -> Any:
