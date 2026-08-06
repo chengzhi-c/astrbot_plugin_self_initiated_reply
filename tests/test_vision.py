@@ -295,13 +295,14 @@ def test_on_message_keeps_image_eligibility_out_of_generic_ignore_gate() -> None
 def test_on_message_snapshots_host_files_before_background_freeze() -> None:
     """宿主临时文件必须先快照，不能只依赖 handler 返回后的后台任务。"""
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    scheduler_source = (ROOT / "scheduler.py").read_text(encoding="utf-8")
     start = source.index("    async def on_message(")
     end = source.index("\n    def _is_command_entry(", start)
     handler = source[start:end]
 
     assert "await parser.snapshot_local_sources(images, max_concurrent=2)" in handler
-    assert "async def _image_cleanup_loop" in source
-    assert "max_age_sec=image_age" in source
+    assert "async def _image_cleanup_loop" in scheduler_source
+    assert "max_age_sec=image_age" in scheduler_source
 
 
 def test_image_parser_uses_direct_vision_call_and_caches_caption() -> None:

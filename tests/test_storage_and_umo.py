@@ -72,11 +72,14 @@ def test_tool_call_marker_is_not_sent_as_a_reply() -> None:
 
 
 def test_final_send_path_rechecks_generation_after_decorating_hook() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    method_start = source.index("    async def _send_reply(")
+    source = (ROOT / "delivery.py").read_text(encoding="utf-8")
+    method_start = source.index("    async def send_reply(")
     method_end = source.find("\n    def ", method_start)
     method = source[method_start : method_end if method_end != -1 else None]
-    hook_marker = "await call_event_hook(last_event, EventType.OnDecoratingResultEvent)"
+    hook_marker = (
+        "await self._call_hook(\n                    last_event,"
+        " self._runtime().event_type.OnDecoratingResultEvent\n                )"
+    )
     send_marker = "send_result = await outbound.send(result)"
 
     assert "expected_generation: int | None = None" in method.splitlines()[1]
@@ -85,7 +88,7 @@ def test_final_send_path_rechecks_generation_after_decorating_hook() -> None:
     assert "_gate.is_current(umo, expected_generation)" in method[hook_offset:send_offset]
     assert (
         "expected_generation=expected_generation"
-        in source[source.index("sent = await self._send_reply") :]
+        in source[source.index("sent = await self._send_reply(umo, reply, expected_generation)") :]
     )
 
 

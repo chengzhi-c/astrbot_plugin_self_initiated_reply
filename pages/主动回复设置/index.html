@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
   <title>主动回复配置</title>
+  <link rel="icon" type="image/png" href="./brand-mirror.png">
   <link rel="stylesheet" href="./style.css">
   <script>
     // 在首帧前应用主题，避免深色下闪白
@@ -20,8 +21,36 @@
   <script src="/api/plugin/page/bridge-sdk.js"></script>
 </head>
 <body>
+
+  <!-- 统一线性图标库：内联 symbol 复用，1.5px 描边，16/20 两档 -->
+  <svg class="icon-sprite" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden">
+    <symbol id="i-scope" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="i-brain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.5a3 3 0 0 0-3 3v.5a3 3 0 0 0-1 5.5A3 3 0 0 0 8 19a2.5 2.5 0 0 0 4-2V6.5A2.5 2.5 0 0 0 9 4.5z"/><path d="M15 4.5a3 3 0 0 1 3 3v.5a3 3 0 0 1 1 5.5A3 3 0 0 1 16 19a2.5 2.5 0 0 1-4-2V6.5A2.5 2.5 0 0 1 15 4.5z"/></symbol>
+    <symbol id="i-tools" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a3.5 3.5 0 0 0-4.6 4.2L4 16.6 7.4 20l5.9-6a3.5 3.5 0 0 0 4.2-4.6l-2.1 2.1-2-2 2.3-2z"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="9.5" r="1.8"/><path d="M5 18l4.5-4.5 3 3L16 13l3 3"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7M8 20v-6h8v6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 21 19H3z"/><path d="M12 10v4M12 17h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5 10 17l9-10"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v8"/><path d="M7.5 7a7 7 0 1 0 9 0"/></symbol>
+  </svg>
+
   <!-- 氛围层：纯渐变晕光，不画具象物体。功能区保持素净 -->
   <div class="ambience" aria-hidden="true"></div>
+
+  <!-- 首屏加载遮罩：配置返回前给出即时反馈，避免空白闪动 -->
+  <div class="boot" id="boot" role="status" aria-live="polite">
+    <span class="boot-spinner" aria-hidden="true"></span>
+    <span class="boot-text">正在加载配置…</span>
+  </div>
+
+  <!-- 顶部滚动进度条，随阅读进度填充 -->
+  <div class="scroll-progress" id="scrollProgress" aria-hidden="true"></div>
+
+  <!-- 键盘用户跳转锚点 -->
+  <a class="skip-link" href="#sec-scope">跳到配置主体</a>
 
   <div class="shell">
     <header class="topbar">
@@ -30,8 +59,7 @@
           <img src="./brand-mirror.png" alt="业镜" />
         </span>
         <div class="brand-text">
-          <p class="eyebrow">业镜 · 主动回复</p>
-          <h1>主动回复设置</h1>
+          <h1>业镜 · 主动回复</h1>
         </div>
       </div>
       <div class="top-actions">
@@ -49,281 +77,382 @@
           </svg>
           <span class="theme-label"></span>
         </button>
-        <button class="btn secondary" id="refreshBtn" type="button">刷新</button>
-        <button class="btn primary" id="saveTopBtn" type="button">保存</button>
+        <button class="btn secondary" id="refreshBtn" type="button" aria-label="刷新"><svg class="inline-icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>
+        <button class="btn primary" id="saveTopBtn" type="button">
+          <span class="spinner" aria-hidden="true"></span>
+          <span class="btn-label">保存</span>
+        </button>
       </div>
     </header>
 
-    <form id="configForm" class="form">
+    <div class="layout">
+      <!-- 分区导航：桌面为左侧 sticky 栏，移动端转为顶部横向滚动条 -->
+      <nav class="sidenav" id="sidenav" aria-label="配置分区导航">
+        <p class="sidenav-title">配置分区</p>
+        <span class="sidenav-fade sidenav-fade-start" aria-hidden="true"></span>
+        <span class="sidenav-fade sidenav-fade-end" aria-hidden="true"></span>
+        <ul class="sidenav-list">
+          <li>
+            <a class="sidenav-link" href="#selfStat" data-target="selfStat">
+              <span class="sidenav-idx">01</span><span class="sidenav-text">总开关</span>
+            </a>
+          </li>
+          <li class="sidenav-group" aria-hidden="true">基础</li>
+          <li>
+            <a class="sidenav-link" href="#sec-scope" data-target="sec-scope">
+              <span class="sidenav-idx">02</span><span class="sidenav-text">生效范围</span>
+            </a>
+          </li>
+          <li>
+            <a class="sidenav-link" href="#sec-triggers" data-target="sec-triggers">
+              <span class="sidenav-idx">03</span><span class="sidenav-text">触发条件</span>
+            </a>
+          </li>
+          <li class="sidenav-group" aria-hidden="true">判断</li>
+          <li>
+            <a class="sidenav-link" href="#sec-decision" data-target="sec-decision">
+              <span class="sidenav-idx">04</span><span class="sidenav-text">判断方式</span>
+            </a>
+          </li>
+          <li class="sidenav-group" aria-hidden="true">高级</li>
+          <li>
+            <a class="sidenav-link" href="#sec-runtime" data-target="sec-runtime">
+              <span class="sidenav-idx">05</span><span class="sidenav-text">运行边界</span>
+            </a>
+          </li>
+          <li>
+            <a class="sidenav-link" href="#sec-vision" data-target="sec-vision">
+              <span class="sidenav-idx">06</span><span class="sidenav-text">图片识别</span>
+            </a>
+          </li>
+        </ul>
+        <div class="sidenav-foot">
+          <span class="sidenav-dot" id="navSaveDot" aria-hidden="true"></span>
+          <span class="sidenav-savestate" id="navSaveState">已同步</span>
+        </div>
+      </nav>
 
-      <!-- 第一层：开不开。总电闸，独占顶部 -->
-      <section class="master" id="selfStat">
-        <label class="master-switch">
-          <input type="checkbox" id="enabledInput">
-          <span class="master-switch-body">
-            <i class="master-track" aria-hidden="true"></i>
-            <span class="master-copy">
-              <b>主动回复</b>
-              <em id="selfStatus">加载中</em>
+      <form id="configForm" class="form" novalidate>
+
+        <!-- 第一层：开不开。总电闸，独占顶部 -->
+        <section class="master" id="selfStat">
+          <label class="master-switch">
+            <input type="checkbox" id="enabledInput">
+            <span class="master-switch-body">
+              <i class="master-track" aria-hidden="true"></i>
+              <span class="master-copy">
+                <b><svg class="inline-icon" aria-hidden="true"><use href="#i-power"/></svg>主动回复</b>
+                <em id="selfStatus">加载中</em>
+              </span>
             </span>
-          </span>
-        </label>
-        <div class="master-readouts">
-          <div class="readout" id="decisionModelStat">
-            <span class="readout-label"><i class="stat-dot" aria-hidden="true"></i>判断模型</span>
-            <strong id="decisionModelStatus">-</strong>
+          </label>
+          <div class="master-readouts">
+            <div class="readout" id="decisionModelStat">
+              <span class="readout-label"><i class="stat-dot" aria-hidden="true"></i>判断模型</span>
+              <strong id="decisionModelStatus" aria-live="polite">-</strong>
+            </div>
+            <div class="readout is-info" id="whitelistStat">
+              <span class="readout-label"><i class="stat-dot" aria-hidden="true"></i>生效会话</span>
+              <strong id="whitelistCount" aria-live="polite">-</strong>
+            </div>
           </div>
-          <div class="readout is-info" id="whitelistStat">
-            <span class="readout-label"><i class="stat-dot" aria-hidden="true"></i>生效会话</span>
-            <strong id="whitelistCount">-</strong>
-          </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- 第二层：在哪开。从折叠里放出来 -->
-      <section class="panel">
-        <div class="panel-head">
-          <h2>生效范围</h2>
-          <span class="muted">只在这些会话里主动开口</span>
-        </div>
-        <label class="field">
-          <span class="field-label">白名单会话 UMO / QQ 群号<em>每行一个</em></span>
-          <textarea id="whitelistInput" rows="5" spellcheck="false"
-            placeholder="留空则任何会话都不会主动回复&#10;群聊可填完整 UMO，也可直接填 QQ 群号"></textarea>
-        </label>
-        <p class="muted">日常建议用 <code>/selfreply add</code> 和 <code>/selfreply remove</code> 管理当前会话，这里适合批量编辑。</p>
-      </section>
-
-      <!-- 第三层：什么时候开口。按「量的是什么」分组，显式标注起算点 -->
-      <section class="panel">
-        <div class="panel-head">
-          <h2>触发条件</h2>
-          <span class="muted">四个阈值互不影响，各自独立生效</span>
-        </div>
-
-        <div class="origin-groups">
-          <fieldset class="origin">
-            <legend class="origin-head">
-              <span class="origin-title">自最近一条消息起算</span>
-              <code>last_message_age_sec</code>
-            </legend>
-            <div class="field-grid">
-              <label class="field">
-                <span class="field-label">消息后延迟<em>秒</em></span>
-                <input type="number" id="messageDelayInput" min="5" max="86400">
-              </label>
-              <label class="field">
-                <span class="field-label">最小静默<em>秒</em></span>
-                <input type="number" id="minSilenceInput" min="0" max="86400">
-              </label>
-            </div>
-          </fieldset>
-
-          <fieldset class="origin">
-            <legend class="origin-head">
-              <span class="origin-title">自上次主动回复起算</span>
-              <code>last_reply_age_sec</code>
-            </legend>
-            <div class="field-grid">
-              <label class="field">
-                <span class="field-label">冷却<em>秒</em></span>
-                <input type="number" id="cooldownInput" min="0" max="86400">
-              </label>
-            </div>
-          </fieldset>
-
-          <fieldset class="origin origin-count">
-            <legend class="origin-head">
-              <span class="origin-title">上下文场景数</span>
-            </legend>
-            <div class="field-grid">
-              <label class="field">
-                <span class="field-label">最少上下文消息数<em>条</em></span>
-                <input type="number" id="minContextInput" min="0" max="30">
-              </label>
-            </div>
-          </fieldset>
-        </div>
-      </section>
-
-      <!-- 第四层：运行边界。主动回复能调用什么能力 -->
-      <section class="panel">
-        <div class="panel-head">
-          <h2>运行边界</h2>
-          <span class="muted">主动回复默认不碰插件工具</span>
-        </div>
-        <label class="toggle-row">
-          <input type="checkbox" id="proactiveInheritToolsInput">
-          <span>允许继承插件工具（与正常 @Bot 回复一致）</span>
-        </label>
-        <p class="muted">默认关闭：主动回复只允许内置低副作用能力，第三方插件工具、Shell/Python、文件读写、浏览器、定时任务、技能管理和跨会话发送一律不可用。开启后，群聊里的普通消息可能间接触发插件能力（如发图、记忆、搜索），仅在你信任群聊环境并确认插件工具副作用可控时开启。</p>
-      </section>
-
-      <!-- 第五层：怎么判断。判断模型 Provider 必须是文档中第一个 .provider-field -->
-      <section class="panel">
-        <div class="panel-head">
-          <h2>判断方式</h2>
-          <span class="muted">决定「此刻该不该开口」</span>
-        </div>
-
-        <label class="toggle-row">
-          <input type="checkbox" id="decisionModelInput">
-          <span>启用提示词判断模型</span>
-        </label>
-
-        <div class="field-grid model-grid">
-          <div class="provider-field">
-            <span class="field-label">判断模型 Provider</span>
-            <div class="provider-control">
-              <select id="judgeProviderSelect">
-                <option value="">使用当前会话默认模型</option>
-              </select>
-              <button class="btn-link" id="providerManualBtn" type="button">手动输入</button>
-            </div>
-            <input class="provider-manual-input" type="text" id="judgeProviderInput" placeholder="手动填写 Provider ID">
-            <span class="muted provider-hint" id="providerHint">留空表示使用当前会话默认模型</span>
+        <!-- 第二层：在哪开。从折叠里放出来 -->
+        <section class="panel" id="sec-scope">
+          <div class="panel-head">
+            <h2><svg class="panel-icon" aria-hidden="true"><use href="#i-scope"/></svg>生效范围</h2>
+            <span class="muted">只在这些会话里主动开口</span>
           </div>
           <label class="field">
-            <span class="field-label">判断温度</span>
-            <input type="number" id="decisionTempInput" min="0" max="2" step="0.05">
+            <span class="field-label">白名单会话 UMO / QQ 群号<em>每行一个</em></span>
+            <textarea id="whitelistInput" rows="5" spellcheck="false"
+              placeholder="留空则任何会话都不会主动回复&#10;群聊可填完整 UMO，也可直接填 QQ 群号"></textarea>
+            <p class="field-hint">每行一个 UMO 或 QQ 群号，可填完整 UMO 或纯群号</p>
           </label>
-          <label class="field">
-            <span class="field-label">判断超时<em>秒</em></span>
-            <input type="number" id="decisionTimeoutInput" min="1" max="300" step="1">
-          </label>
-        </div>
+          <p class="muted">日常建议用 <code>/selfreply add</code> 和 <code>/selfreply remove</code> 管理当前会话，这里适合批量编辑。</p>
+        </section>
 
-        <div class="prompt-workspace">
-          <label class="prompt-editor">
-            <span class="field-label">判断提示词</span>
-            <textarea id="decisionPromptInput" rows="12" spellcheck="false" placeholder="留空则恢复默认提示词"></textarea>
-          </label>
-          <section class="prompt-preview-panel" aria-labelledby="promptPreviewTitle">
-            <div class="prompt-preview-head">
-              <h4 id="promptPreviewTitle">提示词预览</h4>
-              <span class="muted">示例变量</span>
-            </div>
-            <pre class="prompt-preview" id="promptPreview" aria-live="polite"></pre>
-          </section>
-        </div>
-
-        <div class="actions compact-actions">
-          <button class="btn-link" id="resetPromptBtn" type="button">恢复默认提示词</button>
-        </div>
-
-        <details class="prompt-help">
-          <summary>提示词变量帮助</summary>
-          <div class="details-body">
-            <p class="muted">预览窗口使用下方变量的示例值；真实运行时，插件会按当前会话、触发方式和最近消息替换。</p>
-            <dl class="variable-list">
-              <div>
-                <dt>{session}</dt>
-                <dd>当前会话 UMO，用于区分平台、群聊或私聊。</dd>
-              </div>
-              <div>
-                <dt>{trigger}</dt>
-                <dd>触发类型，例如消息延迟、后台巡检或手动检查。</dd>
-              </div>
-              <div>
-                <dt>{bot_aliases}</dt>
-                <dd>Bot 名称和别名列表，帮助判断用户是否在叫 Bot。</dd>
-              </div>
-              <div>
-                <dt>{latest_message}</dt>
-                <dd>最近一条可观察的用户消息文本。</dd>
-              </div>
-              <div>
-                <dt>{recent_messages}</dt>
-                <dd>最近上下文消息，通常是判断是否适合接话的主要依据。</dd>
-              </div>
-              <div>
-                <dt>{last_message_age_sec}</dt>
-                <dd>距离最近一条消息过去的秒数。</dd>
-              </div>
-              <div>
-                <dt>{last_reply_age_sec}</dt>
-                <dd>距离本插件上次主动回复过去的秒数。</dd>
-              </div>
-            </dl>
+        <!-- 第三层：什么时候开口。按「量的是什么」分组，显式标注起算点 -->
+        <section class="panel" id="sec-triggers">
+          <div class="panel-head">
+            <h2><svg class="panel-icon" aria-hidden="true"><use href="#i-clock"/></svg>触发条件</h2>
+            <span class="muted">四个阈值互不影响，各自独立生效</span>
           </div>
-        </details>
-      </section>
 
-      <!-- 第六层：看不看图。可选增强，默认收起 -->
-      <details class="panel panel-collapsible">
-        <summary>
-          <span class="summary-title">图片识别</span>
-          <span class="muted">可选增强，默认关闭</span>
-        </summary>
-        <div class="details-body">
+          <div class="origin-groups">
+            <fieldset class="origin">
+              <legend class="origin-head">
+                <span class="origin-title">自最近一条消息起算</span>
+                <code>last_message_age_sec</code>
+              </legend>
+              <div class="field-grid">
+                <label class="field">
+                  <span class="field-label">消息后延迟<em>秒</em></span>
+                  <input type="number" id="messageDelayInput" min="5" max="86400">
+                  <p class="field-hint">消息后等待多久才开口，建议 30–120 秒</p>
+                </label>
+                <label class="field">
+                  <span class="field-label">最小静默<em>秒</em></span>
+                  <input type="number" id="minSilenceInput" min="0" max="86400">
+                  <p class="field-hint">连续静默多久才允许触发</p>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="origin">
+              <legend class="origin-head">
+                <span class="origin-title">自上次主动回复起算</span>
+                <code>last_reply_age_sec</code>
+              </legend>
+              <div class="field-grid">
+                <label class="field">
+                  <span class="field-label">冷却<em>秒</em></span>
+                  <input type="number" id="cooldownInput" min="0" max="86400">
+                  <p class="field-hint">两次主动回复之间的最小间隔</p>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="origin origin-count">
+              <legend class="origin-head">
+                <span class="origin-title">上下文场景数</span>
+              </legend>
+              <div class="field-grid">
+                <label class="field">
+                  <span class="field-label">最少上下文消息数<em>条</em></span>
+                  <input type="number" id="minContextInput" min="0" max="30">
+                  <p class="field-hint">上下文至少几条消息才判断接话</p>
+                </label>
+              </div>
+            </fieldset>
+          </div>
+        </section>
+
+        <!-- 第五层：怎么判断。判断模型 Provider 必须是文档中第一个 .provider-field -->
+        <section class="panel" id="sec-decision">
+          <div class="panel-head">
+            <h2><svg class="panel-icon" aria-hidden="true"><use href="#i-brain"/></svg>判断方式</h2>
+            <span class="muted">决定「此刻该不该开口」</span>
+          </div>
+
           <label class="toggle-row">
-            <input type="checkbox" id="visionJudgeEnabledInput">
-            <span>判断模型识图（判断是否接话时看图）</span>
-          </label>
-          <label class="toggle-row">
-            <input type="checkbox" id="visionMainEnabledInput">
-            <span>主模型识图（生成回复正文时看图）</span>
-          </label>
-          <label class="toggle-row">
-            <input type="checkbox" id="visionSkipStickersInput">
-            <span>跳过表情包识图（按 QQ 图片标记过滤）</span>
+            <input type="checkbox" id="decisionModelInput">
+            <span>启用提示词判断模型</span>
           </label>
 
-          <div class="field-grid">
-            <div class="field provider-cell">
-              <span class="field-label">识图模型 Provider</span>
-              <div class="provider-field vision-provider-field">
-                <select id="visionProviderSelect">
-                  <option value="">使用当前会话模型</option>
+          <div class="field-grid model-grid">
+            <div class="provider-field">
+              <label class="field-label" for="judgeProviderSelect">判断模型 Provider</label>
+              <div class="provider-control">
+                <select id="judgeProviderSelect">
+                  <option value="">使用当前会话默认模型</option>
                 </select>
-                <input type="text" id="visionProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
-                <button type="button" class="btn-link" id="visionProviderManualBtn">手动输入</button>
+                <button class="btn-link" id="providerManualBtn" type="button">手动输入</button>
               </div>
+              <input class="provider-manual-input" type="text" id="judgeProviderInput" placeholder="手动填写 Provider ID">
+              <span class="muted provider-hint" id="providerHint">留空表示使用当前会话默认模型</span>
             </div>
-            <div class="field provider-cell">
-              <span class="field-label">判断阶段识图 Provider</span>
-              <div class="provider-field vision-provider-field">
-                <select id="visionJudgeProviderSelect">
-                  <option value="">与识图模型一致</option>
-                </select>
-                <input type="text" id="visionJudgeProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
-                <button type="button" class="btn-link" id="visionJudgeProviderManualBtn">手动输入</button>
+            <label class="field">
+              <span class="field-label">判断温度</span>
+                  <input type="number" id="decisionTempInput" min="0" max="2" step="0.05">
+                  <p class="field-hint">越高越发散，默认 0.2</p>
+                </label>
+            <label class="field">
+              <span class="field-label">判断超时<em>秒</em></span>
+                  <input type="number" id="decisionTimeoutInput" min="1" max="300" step="1">
+                  <p class="field-hint">判断模型等待上限，超时按默认放行</p>
+                </label>
+          </div>
+
+          <div class="prompt-workspace">
+            <label class="prompt-editor">
+              <span class="field-label">判断提示词</span>
+              <textarea id="decisionPromptInput" rows="12" spellcheck="false" placeholder="留空则恢复默认提示词"></textarea>
+            </label>
+            <section class="prompt-preview-panel" aria-labelledby="promptPreviewTitle">
+              <div class="prompt-preview-head">
+                <h4 id="promptPreviewTitle">提示词预览</h4>
+                <span class="muted">示例变量</span>
               </div>
-            </div>
-            <div class="field-row">
-              <label class="field">
-                <span class="field-label">单次最多识别图片数<em>张</em></span>
-                <input type="number" id="visionMaxImagesInput" min="1" max="5">
-              </label>
-              <label class="field">
-                <span class="field-label">图片有效时间<em>秒</em></span>
-                <input type="number" id="visionImageAgeInput" min="60" max="86400">
-              </label>
-              <label class="field">
-                <span class="field-label">识图超时<em>秒</em></span>
-                <input type="number" id="visionTimeoutInput" min="1" max="120" step="1">
-              </label>
-            </div>
+              <pre class="prompt-preview" id="promptPreview" aria-live="polite"></pre>
+            </section>
           </div>
 
           <div class="actions compact-actions">
-            <button class="btn secondary" id="cleanupImageCacheBtn" type="button">立即清理过期图片</button>
-            <span class="muted" id="cleanupImageCacheState" aria-live="polite">自动清理运行中</span>
+            <button class="btn danger" id="resetPromptBtn" type="button">恢复默认提示词</button>
+            <span class="reset-confirm" id="resetConfirm" hidden>
+              <span class="reset-confirm-text">确定恢复默认提示词？此操作会清空当前已填写的提示词。</span>
+              <button class="btn danger" id="resetConfirmYes" type="button">确认</button>
+              <button class="btn" id="resetConfirmNo" type="button">取消</button>
+            </span>
           </div>
 
-          <p class="muted">两个识图开关独立。判断阶段触发频率高，只开主模型识图更省 token。开启「跳过表情包识图」后，QQ OneBot 标记为表情包的图片（通常为 subType=1）不会调用 Vision。图片描述仅作为不可信聊天上下文参与判断与生成，不会写入会话历史。缓存按钮只清理已超过有效时间且未被当前任务使用的图片。</p>
-        </div>
-      </details>
+          <details class="prompt-help">
+            <summary>提示词变量帮助</summary>
+            <div class="details-body">
+              <p class="muted">预览窗口使用下方变量的示例值；真实运行时，插件会按当前会话、触发方式和最近消息替换。</p>
+              <dl class="variable-list">
+                <div>
+                  <dt>{session}</dt>
+                  <dd>当前会话 UMO，用于区分平台、群聊或私聊。</dd>
+                </div>
+                <div>
+                  <dt>{trigger}</dt>
+                  <dd>触发类型，例如消息延迟、后台巡检或手动检查。</dd>
+                </div>
+                <div>
+                  <dt>{bot_aliases}</dt>
+                  <dd>Bot 名称和别名列表，帮助判断用户是否在叫 Bot。</dd>
+                </div>
+                <div>
+                  <dt>{latest_message}</dt>
+                  <dd>最近一条可观察的用户消息文本。</dd>
+                </div>
+                <div>
+                  <dt>{recent_messages}</dt>
+                  <dd>最近上下文消息，通常是判断是否适合接话的主要依据。</dd>
+                </div>
+                <div>
+                  <dt>{last_message_age_sec}</dt>
+                  <dd>距离最近一条消息过去的秒数。</dd>
+                </div>
+                <div>
+                  <dt>{last_reply_age_sec}</dt>
+                  <dd>距离本插件上次主动回复过去的秒数。</dd>
+                </div>
+              </dl>
+            </div>
+          </details>
+        </section>
 
-      <div class="actions form-actions">
-        <button class="btn primary" type="submit">保存配置</button>
-        <span class="save-state" id="configSaveState"></span>
-        <span class="muted form-actions-hint">改动后需要保存才会生效</span>
-      </div>
-    </form>
+        <!-- 第四层：运行边界。主动回复能调用什么能力（高级组，默认折叠） -->
+        <details class="panel panel-collapsible" id="sec-runtime">
+          <summary>
+            <span class="summary-title"><svg class="panel-icon" aria-hidden="true"><use href="#i-tools"/></svg>运行边界</span>
+            <span class="muted">主动回复默认不碰插件工具</span>
+          </summary>
+          <div class="details-body">
+            <label class="toggle-row">
+              <input type="checkbox" id="proactiveInheritToolsInput">
+              <span>允许继承插件工具（与正常 @Bot 回复一致）</span>
+            </label>
+            <p class="muted">默认关闭：主动回复只允许内置低副作用能力，第三方插件工具、Shell/Python、文件读写、浏览器、定时任务、技能管理和跨会话发送一律不可用。开启后，群聊里的普通消息可能间接触发插件能力（如发图、记忆、搜索），仅在你信任群聊环境并确认插件工具副作用可控时开启。</p>
+          </div>
+        </details>
+
+        <!-- 第六层：看不看图。可选增强，默认收起 -->
+        <details class="panel panel-collapsible" id="sec-vision">
+          <summary>
+            <span class="summary-title"><svg class="panel-icon" aria-hidden="true"><use href="#i-image"/></svg>图片识别</span>
+            <span class="muted">可选增强，默认关闭</span>
+          </summary>
+          <div class="details-body">
+            <label class="toggle-row">
+              <input type="checkbox" id="visionJudgeEnabledInput">
+              <span>判断模型识图（判断是否接话时看图）</span>
+            </label>
+            <label class="toggle-row">
+              <input type="checkbox" id="visionMainEnabledInput">
+              <span>主模型识图（生成回复正文时看图）</span>
+            </label>
+            <label class="toggle-row">
+              <input type="checkbox" id="visionSkipStickersInput">
+              <span>跳过表情包识图（按 QQ 图片标记过滤）</span>
+            </label>
+
+            <div class="field-grid">
+              <div class="field provider-cell">
+                <label class="field-label" for="visionProviderSelect">识图模型 Provider</label>
+                <div class="provider-field vision-provider-field">
+                  <select id="visionProviderSelect">
+                    <option value="">使用当前会话模型</option>
+                  </select>
+                  <input type="text" id="visionProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
+                  <button type="button" class="btn-link" id="visionProviderManualBtn">手动输入</button>
+                </div>
+              </div>
+              <div class="field provider-cell">
+                <label class="field-label" for="visionJudgeProviderSelect">判断阶段识图 Provider</label>
+                <div class="provider-field vision-provider-field">
+                  <select id="visionJudgeProviderSelect">
+                    <option value="">与识图模型一致</option>
+                  </select>
+                  <input type="text" id="visionJudgeProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
+                  <button type="button" class="btn-link" id="visionJudgeProviderManualBtn">手动输入</button>
+                </div>
+              </div>
+              <div class="field-row">
+                <label class="field">
+                  <span class="field-label">单次最多识别图片数<em>张</em></span>
+                  <input type="number" id="visionMaxImagesInput" min="1" max="5">
+                  <p class="field-hint">单次最多读取几张图</p>
+                </label>
+                <label class="field">
+                  <span class="field-label">图片有效时间<em>秒</em></span>
+                  <input type="number" id="visionImageAgeInput" min="60" max="86400">
+                  <p class="field-hint">超过此时长未活动的图片不再识别</p>
+                </label>
+                <label class="field">
+                  <span class="field-label">识图超时<em>秒</em></span>
+                  <input type="number" id="visionTimeoutInput" min="1" max="120" step="1">
+                  <p class="field-hint">单次识图等待上限</p>
+                </label>
+              </div>
+            </div>
+
+            <div class="actions compact-actions">
+              <button class="btn secondary" id="cleanupImageCacheBtn" type="button">立即清理过期图片</button>
+              <span class="muted" id="cleanupImageCacheState" aria-live="polite">自动清理运行中</span>
+            </div>
+
+            <p class="muted">两个识图开关独立。判断阶段触发频率高，只开主模型识图更省 token。开启「跳过表情包识图」后，QQ OneBot 标记为表情包的图片（通常为 subType=1）不会调用 Vision。图片描述仅作为不可信聊天上下文参与判断与生成，不会写入会话历史。缓存按钮只清理已超过有效时间且未被当前任务使用的图片。</p>
+          </div>
+        </details>
+
+        <div class="actions form-actions">
+          <button class="btn primary" type="submit">
+            <span class="spinner" aria-hidden="true"></span>
+            <span class="btn-label">保存配置</span>
+          </button>
+          <span class="save-state" id="configSaveState"></span>
+          <span class="muted form-actions-hint">改动后需要保存才会生效</span>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 移动端固定保存条：始终可达的保存入口 + 实时保存态 -->
+  <div class="mobile-savebar" id="mobileSaveBar" role="region" aria-label="移动端保存栏">
+    <span class="save-state mobile-save-state" id="mobileSaveState">已同步</span>
+    <button class="btn primary" id="saveMobileBtn" type="button">
+      <span class="spinner" aria-hidden="true"></span>
+      <span class="btn-label">保存配置</span>
+    </button>
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- 移动端底部 Tab 导航（≤720px 显示，替代顶部横向滚动） -->
+  <nav class="mobile-tabbar" id="mobileTabbar" aria-label="移动端分区导航">
+    <button class="mtab" type="button" data-target="selfStat">
+      <svg class="mtab-icon" aria-hidden="true"><use href="#i-power"/></svg>
+      <span>总开关</span>
+    </button>
+    <button class="mtab" type="button" data-target="sec-scope">
+      <svg class="mtab-icon" aria-hidden="true"><use href="#i-scope"/></svg>
+      <span>基础</span>
+    </button>
+    <button class="mtab" type="button" data-target="sec-decision">
+      <svg class="mtab-icon" aria-hidden="true"><use href="#i-brain"/></svg>
+      <span>判断</span>
+    </button>
+    <button class="mtab" type="button" data-target="sec-runtime">
+      <svg class="mtab-icon" aria-hidden="true"><use href="#i-tools"/></svg>
+      <span>高级</span>
+    </button>
+  </nav>
+
   <script type="module" src="./app.js"></script>
 </body>
 </html>

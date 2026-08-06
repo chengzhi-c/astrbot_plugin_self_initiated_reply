@@ -41,13 +41,25 @@ def _parser_source() -> str:
     return (Path(vision.ROOT) / "image" / "parser.py").read_text(encoding="utf-8")
 
 
+def _scheduler_source() -> str:
+    import tests.test_vision as vision
+
+    return (Path(vision.ROOT) / "scheduler.py").read_text(encoding="utf-8")
+
+
+def _delivery_source() -> str:
+    import tests.test_vision as vision
+
+    return (Path(vision.ROOT) / "delivery.py").read_text(encoding="utf-8")
+
+
 # ============================================================================
-# main.py：7 处降级点
+# main.py：7 处降级点（静默等待日志随 02 拆分迁入 scheduler.py）
 # ============================================================================
 
 
 def test_main_logs_wait_silence_is_debug() -> None:
-    source = _main_source()
+    source = _scheduler_source()
     assert _log_call_level(source, "[%s] wait for minimum silence session=") == ["logger.debug"]
 
 
@@ -62,19 +74,19 @@ def test_main_logs_decision_is_debug() -> None:
 
 
 def test_main_logs_skip_before_send_is_debug() -> None:
-    source = _main_source()
+    source = _delivery_source()
     assert _log_call_level(source, "[%s] skip before send session=") == ["logger.debug"]
 
 
 def test_main_logs_reply_sent_both_branches_are_debug() -> None:
     """log_reply_content 的 if/else 双分支都必须降级（两处调用点）。"""
-    source = _main_source()
+    source = _delivery_source()
     levels = _log_call_level(source, "[%s] proactive reply sent session=")
     assert levels == ["logger.debug", "logger.debug"]
 
 
 def test_main_logs_event_send_completed_is_debug() -> None:
-    source = _main_source()
+    source = _delivery_source()
     assert _log_call_level(source, "[%s] event send completed session=") == ["logger.debug"]
 
 

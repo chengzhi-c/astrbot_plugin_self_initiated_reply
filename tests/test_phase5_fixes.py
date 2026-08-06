@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-from .host_stubs import with_plugin
+from .host_stubs import MAIN_PACKAGE_NAME, with_plugin
 from .test_main_runtime import _make_event
 
 
@@ -59,7 +59,8 @@ def test_whitelist_runtime_umos_reclaimed_when_inactive(tmp_path: Path) -> None:
     """清理循环末尾必须回收长期无活动的运行时 UMO 映射，避免只增不减。"""
 
     async def scenario(plugin, main):
-        stale_at = main.now_ts() - main.EVENT_CLEANUP_INTERVAL_SEC * 2
+        models_mod = sys.modules[f"{MAIN_PACKAGE_NAME}.models"]
+        stale_at = main.now_ts() - models_mod.EVENT_CLEANUP_INTERVAL_SEC * 2
         plugin._whitelist_runtime_umos["group:1"] = {"group:1:user:a", "group:1:user:b"}
         plugin._last_events["group:1:user:a"] = _make_event()
         plugin._last_event_at["group:1:user:a"] = stale_at

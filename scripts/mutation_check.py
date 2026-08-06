@@ -1,4 +1,4 @@
-"""变异检测制度化：把三方审查历史实测过的击杀点固化为一键回归。
+﻿"""变异检测制度化：把三方审查历史实测过的击杀点固化为一键回归。
 
 每个变异点 = (名称, 目标文件, 原始串, 变异串, 应击杀的测试 -k 表达式)。
 - 锚定串漂移（不存在）直接报错，强制人工更新变异定义——防止变异静默失效变成假绿灯。
@@ -189,6 +189,222 @@ MUTANTS = [
         "                if False:",
         "version_mismatch",
     ),
+    # ---- 批次4（ticket 10 扩面：19 → 32）：代次复核 / 观察窗口推进 /
+    # 直发预算 / fail-closed 工具策略 / UNKNOWN 消耗语义 / 白名单回滚 /
+    # 会话级联失效 ----
+    (
+        "delivery-stale-before-hooks",
+        "delivery.py",
+        (
+            "        if not self._gate.is_current(umo, expected_generation):\n"
+            '            logger.info("[%s] suppress stale reply before hooks session=%s",'
+            " PLUGIN_ID, umo)"
+        ),
+        (
+            "        if False:\n"
+            '            logger.info("[%s] suppress stale reply before hooks session=%s",'
+            " PLUGIN_ID, umo)"
+        ),
+        "test_send_reply_stale_before_hooks_skips_hooks",
+    ),
+    (
+        "unconfirmed-no-advance",
+        "delivery.py",
+        (
+            "            if self._gate.is_current(umo, expected_generation):\n"
+            "                state.last_proactive_observed_at = ("
+        ),
+        ("            if False:\n                state.last_proactive_observed_at = ("),
+        "test_record_unconfirmed_sets_state_fields",
+    ),
+    (
+        "delivered-no-advance",
+        "delivery.py",
+        (
+            "        if self._gate.is_current(umo, expected_generation):\n"
+            "            state.last_proactive_observed_at = ("
+        ),
+        ("        if False:\n            state.last_proactive_observed_at = ("),
+        "test_deliver_delivered_advances_observation_and_history",
+    ),
+    (
+        "tool-direct-budget-bypass",
+        "outbound.py",
+        "            if self._direct_send_count >= self._max_direct_sends:",
+        "            if False:",
+        "test_tool_direct_send_budget_is_consumed_before_adapter_call",
+    ),
+    (
+        "tool-direct-count-lost",
+        "generation.py",
+        (
+            "            direct_send_count = outbound.direct_send_count\n"
+            "            direct_send_texts[:] = outbound.direct_texts"
+        ),
+        (
+            "            direct_send_count = 0\n"
+            "            direct_send_texts[:] = outbound.direct_texts"
+        ),
+        "test_generate_tracks_direct_sends_within_budget",
+    ),
+    (
+        "keep-policy-filter-skipped",
+        "generation.py",
+        (
+            "        if self._runtime().filter_final_tools(req, keep=PROACTIVE_ALLOWED_TOOL_IDS):\n"
+            "            return True"
+        ),
+        "        return True",
+        "test_enforce_policy_keep_mode_filters",
+    ),
+    (
+        "drop-denylist-skipped",
+        "generation.py",
+        (
+            "            if self._runtime().filter_final_tools(req,"
+            " drop=HOST_DANGEROUS_TOOL_IDS):\n"
+            "                return True"
+        ),
+        "            return True",
+        "test_enforce_policy_drop_mode_removes_dangerous",
+    ),
+    (
+        "unknown-no-record",
+        "delivery.py",
+        "                if sent.status is SendStatus.UNKNOWN:",
+        "                if False:",
+        "test_deliver_unknown_consumes_state_without_retry",
+    ),
+    (
+        "unconfirmed-writes-history",
+        "delivery.py",
+        "        state.record_proactive_attempt(confirmed=confirmed, text=text, at=at)",
+        "        state.record_proactive_attempt(confirmed=True, text=text, at=at)",
+        "test_record_unconfirmed_sets_state_fields",
+    ),
+    (
+        "whitelist-rollback-skipped",
+        "whitelist.py",
+        "            self.replace(old_whitelist)",
+        "            pass",
+        "test_add_rolls_back_in_memory_on_persist_failure",
+    ),
+    (
+        "coordinator-cancel-skipped",
+        "session_coordinator.py",
+        "        self._cancel_delay(umo, force_cancel)",
+        "        pass",
+        "test_invalidate_cascades_all_resources",
+    ),
+    (
+        "coordinator-clear-keeps-images",
+        "session_coordinator.py",
+        ("        self._event_at.pop(umo, None)\n        self._images.pop(umo, None)"),
+        ("        self._event_at.pop(umo, None)\n        pass"),
+        "test_invalidate_cascades_all_resources",
+    ),
+    (
+        "coordinator-clear-keeps-phases",
+        "session_coordinator.py",
+        ("        self._images.pop(umo, None)\n        self._phases.pop(umo, None)"),
+        ("        self._images.pop(umo, None)\n        pass"),
+        "test_invalidate_resets_explicit_phase",
+    ),
+    # ---- 批次5（ticket 11 事件化：静默等待去轮询）----
+    (
+        "silence-notify-dropped",
+        "scheduler.py",
+        (
+            "        event = self._silence_events.pop(umo, None)\n"
+            "        if event is not None:\n"
+            "            event.set()"
+        ),
+        (
+            "        event = self._silence_events.pop(umo, None)\n"
+            "        if event is not None:\n"
+            "            pass"
+        ),
+        "test_silence_interrupted_aborts_when_session_invalidated",
+    ),
+    (
+        "silence-wake-no-generation-recheck",
+        "scheduler.py",
+        (
+            "                if not self._should_run() or not self._gate.is_current(umo,"
+            " generation):\n"
+            "                    return\n"
+            "                silence_left = self.remaining_silence_sec(state)"
+        ),
+        (
+            "                if False:\n"
+            "                    return\n"
+            "                silence_left = self.remaining_silence_sec(state)"
+        ),
+        "test_silence_interrupted_aborts_when_session_invalidated",
+    ),
+    (
+        "silence-wake-no-silence-recheck",
+        "scheduler.py",
+        (
+            "                if not self._should_run() or not self._gate.is_current(umo,"
+            " generation):\n"
+            "                    return\n"
+            "                silence_left = self.remaining_silence_sec(state)"
+        ),
+        (
+            "                if not self._should_run() or not self._gate.is_current(umo,"
+            " generation):\n"
+            "                    return\n"
+            "                silence_left = silence_left"
+        ),
+        "test_silence_interrupted_restarts_full_silence_cycle",
+    ),
+    # ---- 批次6（ticket 12 落盘合并：脏标记 + 合并写）----
+    (
+        "saver-flush-keeps-pending",
+        "state_saver.py",
+        (
+            "        if not self._pending:\n"
+            "            return True\n"
+            "        self._pending = False\n"
+            "        try:\n"
+            "            await self._do_save()"
+        ),
+        (
+            "        if not self._pending:\n"
+            "            return True\n"
+            "        try:\n"
+            "            await self._do_save()"
+        ),
+        "test_flush_pending_zeroes_and_saves",
+    ),
+    (
+        "saver-failure-no-retry",
+        "state_saver.py",
+        (
+            "            self._pending = True\n"
+            '            logger.warning("[%s] debounced state save failed: %s", PLUGIN_ID, exc)\n'
+            "            self._ensure_retry()\n"
+            "            return False"
+        ),
+        (
+            "            self._pending = True\n"
+            '            logger.warning("[%s] debounced state save failed: %s", PLUGIN_ID, exc)\n'
+            "            return False"
+        ),
+        "test_flush_failure_keeps_dirty_and_retries",
+    ),
+    (
+        "saver-mark-no-schedule",
+        "state_saver.py",
+        (
+            "        self._pending = True\n"
+            "        if self._task is None or self._task.done():\n"
+            "            self._task = asyncio.create_task(self._flush_later())"
+        ),
+        "        self._pending = True",
+        "test_auto_flush_after_debounce_window",
+    ),
 ]
 
 
@@ -223,7 +439,7 @@ def _assert_clean_worktree() -> None:
         ["git", "diff", "--exit-code", "--", *[str(p) for p in sorted(_target_files())]],
         cwd=ROOT,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     if r.returncode == 0:
         return
@@ -232,7 +448,12 @@ def _assert_clean_worktree() -> None:
     suspects = []
     for name, rel, old, new, _ in MUTANTS:
         head = subprocess.run(
-            ["git", "show", f"HEAD:{rel}"], cwd=ROOT, capture_output=True, text=True
+            ["git", "show", f"HEAD:{rel}"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         ).stdout
         if new in head:
             continue  # 变异串在 HEAD 中存在则无特征，跳过识别
@@ -261,7 +482,7 @@ def _assert_anchor_tests_green() -> None:
         [PY, "-m", "pytest", "tests/", "-q", "-o", "addopts=", "-k", expression],
         cwd=ROOT,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         timeout=300,
     )
     if r.returncode != 0:
@@ -296,7 +517,7 @@ def _run_mutants() -> int:
                 [PY, "-m", "pytest", "tests/", "-q", "-o", "addopts=", "-k", k, "-x"],
                 cwd=ROOT,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=180,
             )
             if r.returncode == 0:

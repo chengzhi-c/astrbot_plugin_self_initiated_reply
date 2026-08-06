@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from .utils import maybe_await
+
 
 @dataclass(frozen=True)
 class AgentRuntimeCapabilities:
@@ -16,10 +18,47 @@ class AgentRuntimeCapabilities:
     build_main_agent: Callable[..., Any] | None
     get_session_conv: Callable[..., Any] | None
     run_agent: Callable[..., Any] | None
+    # 事件结果与钩子链（delivery/generation 经适配层窄方法访问）
+    event_result_cls: type[Any] | None = None
+    result_content_type: Any | None = None
+    event_type: Any | None = None
+    call_event_hook: Callable[..., Any] | None = None
+    provider_request_cls: type[Any] | None = None
+    # 路径函数：旧版 AstrBot 允许缺失（None = 走回退路径）
+    config_path_fn: Callable[[], Any] | None = None
+    plugin_data_path_fn: Callable[[], Any] | None = None
+
+
+# 事件钩子实际使用的 EventType 成员：漂移（改名/移除）即契约红
+EVENT_TYPE_MEMBERS = (
+    "OnLLMRequestEvent",
+    "OnDecoratingResultEvent",
+    "OnAfterMessageSentEvent",
+)
+
+# 事件结果契约：实例必须可用且具备这两个链式方法（缺失参数即红）
+_EVENT_RESULT_METHODS = ("message", "set_result_content_type")
+
+# ProviderRequest 实例在 generation 中实际赋值的字段：缺失即红
+_PROVIDER_REQUEST_FIELDS = frozenset(
+    {
+        "prompt",
+        "image_urls",
+        "audio_urls",
+        "func_tool",
+        "session_id",
+        "conversation",
+        "contexts",
+    }
+)
 
 
 class AstrBotRuntimeAdapter:
-    """Keep private AstrBot Agent imports and compatibility checks in one place."""
+    """Keep private AstrBot Agent imports and compatibility checks in one place.
+
+    Ticket 13: 宿主私有符号（astrbot.core.*）全量收敛于此——探测、调用与
+    契约断言都只经本类发生；delivery/generation/main 不得再直接 import。
+    """
 
     _BUILD_REQUIRED = frozenset({"event", "plugin_context", "config", "req", "apply_reset"})
     _RUN_REQUIRED = frozenset(
@@ -36,6 +75,25 @@ class AstrBotRuntimeAdapter:
 
     def __init__(self, capabilities: AgentRuntimeCapabilities):
         self.capabilities = capabilities
+
+    @classmethod
+    def host_contract(cls) -> list[tuple[str, list[str]]]:
+        """compat_check 存在性检查的单一来源清单（增删符号必须同步此处）。"""
+        return [
+            ("astrbot.core.agent.tool", ["ToolSet"]),
+            ("astrbot.core.astr_agent_run_util", ["run_agent"]),
+            (
+                "astrbot.core.astr_main_agent",
+                ["MainAgentBuildConfig", "_get_session_conv", "build_main_agent"],
+            ),
+            (
+                "astrbot.core.message.message_event_result",
+                ["MessageEventResult", "ResultContentType"],
+            ),
+            ("astrbot.core.pipeline.context", ["call_event_hook"]),
+            ("astrbot.core.provider.entities", ["ProviderRequest"]),
+            ("astrbot.core.star.star_handler", ["EventType"]),
+        ]
 
     @classmethod
     def from_host(cls) -> AstrBotRuntimeAdapter:
@@ -58,6 +116,34 @@ class AstrBotRuntimeAdapter:
                     run_agent=None,
                 )
             )
+
+        def _probe(factory: Callable[[], Any]) -> Any:
+            try:
+                return factory()
+            except (ImportError, AttributeError):  # pragma: no cover - host dependent
+                return None
+
+        event_result_cls = _probe(
+            lambda: (lambda m: (m.MessageEventResult, m.ResultContentType))(
+                __import__("astrbot.core.message.message_event_result", fromlist=["*"])
+            )
+        )
+        result_content_type = event_result_cls[1] if event_result_cls else None
+        event_result_cls = event_result_cls[0] if event_result_cls else None
+        event_type = _probe(
+            lambda: __import__("astrbot.core.star.star_handler", fromlist=["*"]).EventType
+        )
+        call_event_hook = _probe(
+            lambda: __import__("astrbot.core.pipeline.context", fromlist=["*"]).call_event_hook
+        )
+        provider_request_cls = _probe(
+            lambda: __import__("astrbot.core.provider.entities", fromlist=["*"]).ProviderRequest
+        )
+        path_mod = _probe(lambda: __import__("astrbot.core.utils.astrbot_path", fromlist=["*"]))
+        config_path_fn = getattr(path_mod, "get_astrbot_config_path", None) if path_mod else None
+        plugin_data_path_fn = (
+            getattr(path_mod, "get_astrbot_plugin_data_path", None) if path_mod else None
+        )
         return cls(
             AgentRuntimeCapabilities(
                 import_error=None,
@@ -66,30 +152,100 @@ class AstrBotRuntimeAdapter:
                 build_main_agent=build_main_agent,
                 get_session_conv=_get_session_conv,
                 run_agent=run_agent,
+                event_result_cls=event_result_cls,
+                result_content_type=result_content_type,
+                event_type=event_type,
+                call_event_hook=call_event_hook,
+                provider_request_cls=provider_request_cls,
+                config_path_fn=config_path_fn,
+                plugin_data_path_fn=plugin_data_path_fn,
             )
         )
 
-    def validate(self) -> None:
+    def validate(self, *, soft: bool = False) -> list[str]:
+        """契约断言：缺失参数即红。硬模式首错 raise；软模式收集告警不阻塞。
+
+        覆盖全部私有入口：构建 / 运行 / 会话装载 / 事件结果 / 事件类型 /
+        钩子链 / ProviderRequest / 路径函数。
+        """
+        problems: list[str] = []
         caps = self.capabilities
         if caps.import_error is not None:
-            raise RuntimeError(
+            problems.append(
                 "当前 AstrBot 缺少主动回复所需的主 Agent API；"
                 "请使用已验证的 AstrBot 版本，或先完成运行时适配。"
-            ) from caps.import_error
-        if caps.tool_set is None:
-            raise RuntimeError("当前 AstrBot 缺少主 Agent ToolSet，无法建立主动回复工具边界")
-        self._validate_callable("build_main_agent", caps.build_main_agent, self._BUILD_REQUIRED)
-        self._validate_callable("run_agent", caps.run_agent, self._RUN_REQUIRED)
-        self._validate_callable("_get_session_conv", caps.get_session_conv, frozenset())
+            )
+        elif caps.tool_set is None:
+            problems.append("当前 AstrBot 缺少主 Agent ToolSet，无法建立主动回复工具边界")
+        else:
+            self._validate_callable(
+                problems, "build_main_agent", caps.build_main_agent, self._BUILD_REQUIRED
+            )
+            self._validate_callable(problems, "run_agent", caps.run_agent, self._RUN_REQUIRED)
+            self._validate_callable(
+                problems, "_get_session_conv", caps.get_session_conv, frozenset()
+            )
+        self._validate_callable(problems, "call_event_hook", caps.call_event_hook, frozenset())
+        if caps.event_result_cls is None:
+            problems.append("当前 AstrBot 缺少事件结果类（MessageEventResult）")
+        else:
+            try:
+                instance = caps.event_result_cls()
+            except Exception as exc:
+                problems.append(f"当前 AstrBot 的 MessageEventResult 不可实例化：{exc}")
+            else:
+                missing_methods = sorted(
+                    name
+                    for name in _EVENT_RESULT_METHODS
+                    if not callable(getattr(instance, name, None))
+                )
+                if missing_methods:
+                    problems.append(
+                        "当前 AstrBot 的 MessageEventResult 缺少方法：" + ", ".join(missing_methods)
+                    )
+        if caps.result_content_type is None or not hasattr(caps.result_content_type, "LLM_RESULT"):
+            problems.append("当前 AstrBot 缺少 ResultContentType.LLM_RESULT")
+        if caps.event_type is None:
+            problems.append("当前 AstrBot 缺少 EventType")
+        else:
+            missing_members = [
+                name for name in EVENT_TYPE_MEMBERS if not hasattr(caps.event_type, name)
+            ]
+            if missing_members:
+                problems.append("当前 AstrBot 的 EventType 缺少成员：" + ", ".join(missing_members))
+        if caps.provider_request_cls is None:
+            problems.append("当前 AstrBot 缺少 ProviderRequest")
+        else:
+            try:
+                instance = caps.provider_request_cls()
+            except Exception as exc:
+                problems.append(f"当前 AstrBot 的 ProviderRequest 不可实例化：{exc}")
+            else:
+                missing_fields = sorted(_PROVIDER_REQUEST_FIELDS - set(dir(instance)))
+                if missing_fields:
+                    problems.append(
+                        "当前 AstrBot 的 ProviderRequest 缺少字段：" + ", ".join(missing_fields)
+                    )
+        for name, fn in (
+            ("get_astrbot_config_path", caps.config_path_fn),
+            ("get_astrbot_plugin_data_path", caps.plugin_data_path_fn),
+        ):
+            if fn is not None and not callable(fn):
+                problems.append(f"当前 AstrBot 的 {name} 不可调用")
+        if problems and not soft:
+            raise RuntimeError(problems[0])
+        return problems
 
     @staticmethod
     def _validate_callable(
+        problems: list[str],
         name: str,
         func: Callable[..., Any] | None,
         required_params: frozenset[str],
     ) -> None:
         if not callable(func):
-            raise RuntimeError(f"当前 AstrBot 主 Agent API 不可用：{name}")
+            problems.append(f"当前 AstrBot 主 Agent API 不可用：{name}")
+            return
         if not required_params:
             return
         try:
@@ -100,7 +256,7 @@ class AstrBotRuntimeAdapter:
             return
         missing = sorted(required_params - set(params))
         if missing:
-            raise RuntimeError(f"当前 AstrBot 的 {name} 签名不兼容，缺少参数：{', '.join(missing)}")
+            problems.append(f"当前 AstrBot 的 {name} 签名不兼容，缺少参数：{', '.join(missing)}")
 
     @property
     def tool_set(self) -> type[Any]:
@@ -132,6 +288,60 @@ class AstrBotRuntimeAdapter:
 
     def new_tool_set(self) -> Any:
         return self.tool_set()
+
+    @property
+    def event_type(self) -> Any:
+        """宿主 EventType 枚举（成员访问经此唯一出口）。"""
+        self.validate()
+        assert self.capabilities.event_type is not None
+        return self.capabilities.event_type
+
+    @property
+    def result_llm_type(self) -> Any:
+        """宿主 ResultContentType.LLM_RESULT 值。"""
+        self.validate()
+        assert self.capabilities.result_content_type is not None
+        return self.capabilities.result_content_type.LLM_RESULT
+
+    def new_event_result(self) -> Any:
+        """宿主 MessageEventResult 实例（构造经此唯一出口）。"""
+        self.validate()
+        assert self.capabilities.event_result_cls is not None
+        return self.capabilities.event_result_cls()
+
+    def new_provider_request(self) -> Any:
+        """宿主 ProviderRequest 实例。"""
+        self.validate()
+        assert self.capabilities.provider_request_cls is not None
+        return self.capabilities.provider_request_cls()
+
+    async def call_event_hook(self, event: Any, event_type: Any, req: Any = None) -> Any:
+        """宿主事件钩子链调用（event/event_type 位置参数）。"""
+        self.validate()
+        assert self.capabilities.call_event_hook is not None
+        if req is None:
+            return await maybe_await(self.capabilities.call_event_hook(event, event_type))
+        return await maybe_await(self.capabilities.call_event_hook(event, event_type, req))
+
+    def config_path(self) -> str | None:
+        """宿主配置目录（None = 旧版回退路径）。"""
+        fn = self.capabilities.config_path_fn
+        if not callable(fn):
+            return None
+        try:
+            return str(fn())
+        except Exception:
+            return None
+
+    def plugin_data_path(self) -> str | None:
+        """宿主插件数据目录（None = 旧版回退路径）。"""
+        fn = self.capabilities.plugin_data_path_fn
+        if not callable(fn):
+            return None
+        try:
+            return str(fn())
+        except Exception:
+            return None
 
     def final_tool_ids(self, req: Any) -> list[str] | None:
         """Enumerate the tool ids that would actually reach the provider.

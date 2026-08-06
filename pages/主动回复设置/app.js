@@ -5,6 +5,11 @@ let els = null;
 function getEls() {
   if (els) return els;
   els = {
+    topbar: document.querySelector(".topbar"),
+    scrollProgress: document.getElementById("scrollProgress"),
+    sidenav: document.getElementById("sidenav"),
+    navSaveDot: document.getElementById("navSaveDot"),
+    navSaveState: document.getElementById("navSaveState"),
     refreshBtn: document.getElementById("refreshBtn"),
     saveTopBtn: document.getElementById("saveTopBtn"),
     themeToggle: document.getElementById("themeToggle"),
@@ -32,6 +37,9 @@ function getEls() {
     decisionPromptInput: document.getElementById("decisionPromptInput"),
     promptPreview: document.getElementById("promptPreview"),
     resetPromptBtn: document.getElementById("resetPromptBtn"),
+    resetConfirm: document.getElementById("resetConfirm"),
+    resetConfirmYes: document.getElementById("resetConfirmYes"),
+    resetConfirmNo: document.getElementById("resetConfirmNo"),
     minContextInput: document.getElementById("minContextInput"),
     messageDelayInput: document.getElementById("messageDelayInput"),
     minSilenceInput: document.getElementById("minSilenceInput"),
@@ -48,6 +56,12 @@ function getEls() {
     whitelistInput: document.getElementById("whitelistInput"),
     configSaveState: document.getElementById("configSaveState"),
     toast: document.getElementById("toast"),
+    boot: document.getElementById("boot"),
+    mobileSaveBar: document.getElementById("mobileSaveBar"),
+    mobileSaveState: document.getElementById("mobileSaveState"),
+    saveMobileBtn: document.getElementById("saveMobileBtn"),
+    mobileTabbar: document.getElementById("mobileTabbar"),
+    sidenavList: document.querySelector(".sidenav-list"),
   };
   return els;
 }
@@ -146,6 +160,39 @@ function setSaveState(message, state) {
   els.configSaveState.textContent = message;
   els.configSaveState.classList.remove("is-pending", "is-ok", "is-error");
   if (state) els.configSaveState.classList.add(`is-${state}`);
+  // 同步导航底部保存状态
+  if (els.navSaveState && !isDirty) {
+    if (state === "ok") els.navSaveState.textContent = "已保存";
+    else if (state === "error") els.navSaveState.textContent = "保存失败";
+    else if (state === "pending") els.navSaveState.textContent = "保存中";
+  }
+  // 同步移动端固定保存条的状态
+  if (els.mobileSaveState) {
+    els.mobileSaveState.textContent = message || (state ? "" : "已同步");
+    els.mobileSaveState.classList.remove("is-pending", "is-ok", "is-error");
+    if (state) els.mobileSaveState.classList.add(`is-${state}`);
+  }
+  // 保存成功微反馈：三处保存按钮勾选回弹 + 导航状态点脉冲
+  if (state === "ok") {
+    const savedButtons = [
+      els.saveTopBtn,
+      els.saveMobileBtn,
+      els.configForm ? els.configForm.querySelector('button[type="submit"]') : null,
+    ];
+    savedButtons.forEach((btn) => {
+      if (!btn) return;
+      btn.classList.remove("is-saved");
+      void btn.offsetWidth; // 重置动画
+      btn.classList.add("is-saved");
+      window.setTimeout(() => btn.classList.remove("is-saved"), 1100);
+    });
+    if (els.navSaveDot) {
+      els.navSaveDot.classList.remove("is-pulse");
+      void els.navSaveDot.offsetWidth;
+      els.navSaveDot.classList.add("is-pulse");
+      window.setTimeout(() => els.navSaveDot.classList.remove("is-pulse"), 700);
+    }
+  }
 }
 
 let isDirty = false;
@@ -155,6 +202,9 @@ function setDirty(dirty = true) {
   if (els.saveTopBtn) els.saveTopBtn.classList.toggle("is-dirty", isDirty);
   const bottomSave = els.configForm ? els.configForm.querySelector('.form-actions button[type="submit"]') : null;
   if (bottomSave) bottomSave.classList.toggle("is-dirty", isDirty);
+  if (els.navSaveDot) els.navSaveDot.classList.toggle("is-dirty", isDirty);
+  if (els.mobileSaveBar) els.mobileSaveBar.classList.toggle("is-dirty", isDirty);
+  if (els.navSaveState) els.navSaveState.textContent = isDirty ? "有未保存改动" : "已同步";
   if (dirty && els.configSaveState && !els.configSaveState.textContent.includes("保存中")) {
     setSaveState("有未保存改动", "pending");
   } else if (!dirty && els.configSaveState && els.configSaveState.textContent === "有未保存改动") {
@@ -475,6 +525,224 @@ async function loadConfig() {
   setDirty(false);
 }
 
+// --------------------------------------------------------------------------
+// 字段内联校验
+//   收集所有带 min/max 的数字输入，超出范围时就地标红 + 友好提示，
+//   并在保存前阻止非法提交，自动聚焦第一个问题字段。
+// --------------------------------------------------------------------------
+
+const numberFields = [];
+
+function setupValidation() {
+  if (!els.configForm) return;
+  const inputs = els.configForm.querySelectorAll('input[type="number"]');
+  inputs.forEach((input) => {
+    if (!input.hasAttribute("min") && !input.hasAttribute("max")) return;
+    const min = input.hasAttribute("min") ? Number(input.getAttribute("min")) : null;
+    const max = input.hasAttribute("max") ? Number(input.getAttribute("max")) : null;
+    const error = document.createElement("span");
+    error.className = "field-error";
+    error.setAttribute("role", "alert");
+    input.insertAdjacentElement("afterend", error);
+    const entry = { input, error, min, max };
+    numberFields.push(entry);
+    const handler = () => validateField(entry);
+    input.addEventListener("input", handler);
+    input.addEventListener("blur", handler);
+  });
+}
+
+function validateField(entry) {
+  const { input, error, min, max } = entry;
+  const raw = input.value.trim();
+  let msg = "";
+  if (raw !== "") {
+    const val = Number(raw);
+    if (!Number.isFinite(val)) {
+      msg = "请输入有效的数字";
+    } else if (min !== null && val < min) {
+      msg = `不能小于 ${min}`;
+    } else if (max !== null && val > max) {
+      msg = `不能大于 ${max}`;
+    }
+  }
+  if (msg) {
+    input.setAttribute("aria-invalid", "true");
+    error.textContent = msg;
+    error.classList.add("show");
+    return false;
+  }
+  input.removeAttribute("aria-invalid");
+  error.classList.remove("show");
+  error.textContent = "";
+  return true;
+}
+
+function validateAll() {
+  let firstInvalid = null;
+  let ok = true;
+  numberFields.forEach((entry) => {
+    const valid = validateField(entry);
+    if (!valid) {
+      ok = false;
+      if (!firstInvalid) firstInvalid = entry.input;
+    }
+  });
+  if (firstInvalid) {
+    const details = firstInvalid.closest("details");
+    if (details && !details.open) details.open = true;
+    firstInvalid.scrollIntoView({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    firstInvalid.focus({ preventScroll: true });
+  }
+  return ok;
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+// --------------------------------------------------------------------------
+// 导航 · 滚动高亮（scroll-spy）+ 平滑跳转
+// --------------------------------------------------------------------------
+
+function setupNav() {
+  const links = Array.from(document.querySelectorAll(".sidenav-link"));
+  if (!links.length) return;
+  const byTarget = new Map(links.map((link) => [link.dataset.target, link]));
+
+  links.forEach((link) => {
+    link.addEventListener("click", (e) => {
+      const target = document.getElementById(link.dataset.target);
+      if (!target) return;
+      e.preventDefault();
+      const details = target.closest("details");
+      if (details && !details.open) details.open = true;
+      target.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" });
+      try { history.replaceState(null, "", "#" + link.dataset.target); } catch (_) { /* 忽略 */ }
+      setCurrentNav(link);
+    });
+  });
+
+  if ("IntersectionObserver" in window) {
+    const sections = links.map((l) => document.getElementById(l.dataset.target)).filter(Boolean);
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          const link = byTarget.get(entry.target.id);
+          if (link) setCurrentNav(link);
+        }
+      });
+    }, { rootMargin: "-28% 0px -62% 0px", threshold: 0 });
+    sections.forEach((s) => observer.observe(s));
+  }
+
+  setCurrentNav(links[0]);
+}
+
+function setCurrentNav(active) {
+  document.querySelectorAll(".sidenav-link").forEach((link) => {
+    const on = link === active;
+    link.classList.toggle("is-current", on);
+    if (on) link.setAttribute("aria-current", "true");
+    else link.removeAttribute("aria-current");
+  });
+  updateNavFades();
+  // 移动端横向导航：把当前项滚入可视区，避免被裁切在屏幕外（仅当侧栏可见时）
+  if (active && els.sidenavList && isSidenavVisible()) {
+    const linkRect = active.getBoundingClientRect();
+    const listRect = els.sidenavList.getBoundingClientRect();
+    if (linkRect.left < listRect.left + 2 || linkRect.right > listRect.right - 2) {
+      active.scrollIntoView({
+        behavior: prefersReducedMotion() ? "auto" : "smooth",
+        block: "nearest",
+        inline: "center",
+      });
+    }
+  }
+  // 同步移动端底部 Tab 当前态
+  syncMobileTabs(active);
+}
+
+// 分区 → 底部 Tab 分组映射（高级组含运行边界与图片识别）
+const TAB_GROUPS = {
+  selfStat: "selfStat",
+  "sec-scope": "sec-scope",
+  "sec-triggers": "sec-scope",
+  "sec-decision": "sec-decision",
+  "sec-runtime": "sec-runtime",
+  "sec-vision": "sec-runtime",
+};
+
+function isSidenavVisible() {
+  if (!els.sidenav) return false;
+  return getComputedStyle(els.sidenav).display !== "none";
+}
+
+function syncMobileTabs(active) {
+  if (!els.mobileTabbar || !active) return;
+  const group = TAB_GROUPS[active.dataset.target] || active.dataset.target;
+  els.mobileTabbar.querySelectorAll(".mtab").forEach((tab) => {
+    tab.classList.toggle("is-current", tab.dataset.target === group);
+  });
+}
+
+// 按横向滚动位置切换左右渐隐提示
+function updateNavFades() {
+  if (!els.sidenavList) return;
+  const list = els.sidenavList;
+  const startFade = document.querySelector(".sidenav-fade-start");
+  const endFade = document.querySelector(".sidenav-fade-end");
+  if (startFade) startFade.classList.toggle("is-hidden", list.scrollLeft <= 4);
+  if (endFade) {
+    const atEnd = list.scrollLeft + list.clientWidth >= list.scrollWidth - 4;
+    endFade.classList.toggle("is-hidden", atEnd);
+  }
+}
+
+// --------------------------------------------------------------------------
+// 滚动进度条 + 顶栏附着态
+// --------------------------------------------------------------------------
+
+function updateScrollProgress() {
+  if (!els.scrollProgress) return;
+  const doc = document.documentElement;
+  const scrollTop = doc.scrollTop || document.body.scrollTop || window.scrollY || 0;
+  const height = doc.scrollHeight - doc.clientHeight;
+  const pct = height > 0 ? Math.min(100, Math.max(0, (scrollTop / height) * 100)) : 0;
+  els.scrollProgress.style.setProperty("--progress", pct + "%");
+}
+
+function updateTopbarStuck() {
+  if (!els.topbar) return;
+  const y = window.scrollY || document.documentElement.scrollTop || 0;
+  els.topbar.classList.toggle("is-stuck", y > 8);
+}
+
+let scrollTicking = false;
+function onScroll() {
+  if (scrollTicking) return;
+  scrollTicking = true;
+  requestAnimationFrame(() => {
+    updateScrollProgress();
+    updateTopbarStuck();
+    scrollTicking = false;
+  });
+}
+
+// 保存按钮 loading 态（顶部与底部两处同步）
+function setSaving(loading) {
+  const buttons = [
+    els.saveTopBtn,
+    els.saveMobileBtn,
+    els.configForm ? els.configForm.querySelector('button[type="submit"]') : null,
+  ];
+  buttons.forEach((btn) => {
+    if (!btn) return;
+    btn.classList.toggle("is-loading", loading);
+    btn.disabled = loading;
+  });
+}
+
 async function saveConfig(event) {
   event.preventDefault();
   if (savingConfig) {
@@ -485,7 +753,13 @@ async function saveConfig(event) {
     showToast("配置尚未成功加载，请先刷新页面");
     return;
   }
+  // 保存前先校验数值字段，避免把越界值写回后端
+  if (!validateAll()) {
+    showToast("部分数值超出允许范围，请检查标红字段");
+    return;
+  }
   savingConfig = true;
+  setSaving(true);
   els.configForm.inert = true; // 保存期间禁编辑，防止 reload 冲掉新输入
   setSaveState("保存中", "pending");
   try {
@@ -534,6 +808,7 @@ async function saveConfig(event) {
   } finally {
     savingConfig = false;
     els.configForm.inert = false;
+    setSaving(false);
   }
 }
 
@@ -598,12 +873,27 @@ if (els.judgeProviderSelect) {
     els.judgeProviderInput.value = "";
   });
 }
-els.resetPromptBtn.addEventListener("click", () => {
-  els.decisionPromptInput.value = els.decisionPromptInput.dataset.defaultPrompt || "";
-  renderPromptPreview();
-  setDirty(true);
-  showToast("已恢复默认提示词，点击保存后生效");
-});
+function showResetConfirm() {
+  if (els.resetConfirm) els.resetConfirm.hidden = false;
+  if (els.resetPromptBtn) els.resetPromptBtn.hidden = true;
+}
+function hideResetConfirm() {
+  if (els.resetConfirm) els.resetConfirm.hidden = true;
+  if (els.resetPromptBtn) els.resetPromptBtn.hidden = false;
+}
+els.resetPromptBtn.addEventListener("click", showResetConfirm);
+if (els.resetConfirmYes) {
+  els.resetConfirmYes.addEventListener("click", () => {
+    els.decisionPromptInput.value = els.decisionPromptInput.dataset.defaultPrompt || "";
+    renderPromptPreview();
+    setDirty(true);
+    showToast("已恢复默认提示词，点击保存后生效");
+    hideResetConfirm();
+  });
+}
+if (els.resetConfirmNo) {
+  els.resetConfirmNo.addEventListener("click", hideResetConfirm);
+}
 els.decisionPromptInput.addEventListener("input", renderPromptPreview);
 // 本地开关即时反馈：未保存前文案标记「（未保存）」，保存后由 loadConfig 以服务端态覆盖
 els.enabledInput.addEventListener("change", () => {
@@ -643,7 +933,42 @@ if (els.saveTopBtn) {
   });
 }
 
+// 导航 / 校验 / 滚动反馈初始化（不依赖后端，先就绪）
+setupNav();
+setupValidation();
+window.addEventListener("scroll", onScroll, { passive: true });
+updateScrollProgress();
+updateTopbarStuck();
+
 attachDirtyListeners();
+
+// 移动端横向导航渐隐提示：随滚动 / 窗口尺寸更新
+if (els.sidenavList) {
+  els.sidenavList.addEventListener("scroll", updateNavFades, { passive: true });
+  window.addEventListener("resize", updateNavFades, { passive: true });
+}
+
+// 移动端固定保存条：复用同一套保存流程
+if (els.saveMobileBtn) {
+  els.saveMobileBtn.addEventListener("click", () => {
+    els.configForm.requestSubmit();
+  });
+}
+
+// 移动端底部 Tab 导航：点击平滑滚动到对应分区，并开合所属折叠组
+if (els.mobileTabbar) {
+  els.mobileTabbar.querySelectorAll(".mtab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const target = document.getElementById(tab.dataset.target);
+      if (!target) return;
+      const details = target.closest("details");
+      if (details && !details.open) details.open = true;
+      target.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" });
+      const link = document.querySelector('.sidenav-link[data-target="' + tab.dataset.target + '"]');
+      if (link) setCurrentNav(link);
+    });
+  });
+}
 
 window.addEventListener("beforeunload", (e) => {
   if (isDirty) {
@@ -652,6 +977,18 @@ window.addEventListener("beforeunload", (e) => {
   }
 });
 
-loadAll().catch((err) => showToast(err.message || "加载失败"));
+function hideBoot() {
+  if (els.boot) els.boot.classList.add("is-hidden");
+  document.body.classList.add("is-ready");
+  // 触发总开关 Hero 入场（双保险：body.is-ready 也会兜底显示）
+  if (els.selfStat) els.selfStat.classList.add("is-entered");
+}
+
+loadAll()
+  .then(hideBoot)
+  .catch((err) => {
+    hideBoot();
+    showToast(err.message || "加载失败");
+  });
 // 主题权威源在后端（iframe 下 localStorage 不可用），加载完成后异步恢复
 restoreTheme();

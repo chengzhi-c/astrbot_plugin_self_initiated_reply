@@ -10,3 +10,5 @@ __pycache__/
 .coverage
 .mutation_check.lock
 dist/
+data/
+

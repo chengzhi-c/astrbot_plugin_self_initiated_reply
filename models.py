@@ -26,6 +26,10 @@ MAX_VISION_IMAGE_AGE_SEC = 86400  # 图片上下文最长保留时间
 MAX_VISION_TIMEOUT_SEC = 120  # 单张图片解析超时上限
 MAX_CACHED_IMAGE_EVENTS = 20  # 每会话临时保留的含图事件数
 MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024  # 图片冻结缓存总容量上限
+# 状态落盘合并窗口：脏标记后静默该秒数才落盘一次（ticket 12）。
+# 高频路径（每次主动回复记录）从逐次写盘改为合并写；终止/重载由
+# terminate 的 flush 兜底，窗口值不影响最终一致性，只影响故障窗口时长。
+STATE_SAVE_DEBOUNCE_SEC = 2.0
 
 # 插件运行常量
 MAX_AGENT_STEPS = 15  # Agent 最大步数：为主 Agent 生成预留足够步数

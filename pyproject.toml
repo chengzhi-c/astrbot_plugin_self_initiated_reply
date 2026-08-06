@@ -55,6 +55,8 @@ omit = ["tests/*"]
 # fail_under=65（当时含 tests 口径实测 77.4%），6c3b97f 修正口径后沿用；
 # adapters 37%→97%、recorder_bridge 38%→95% 补盲后实测 75.43%，按 -5% 上调至 70；
 # 复审后当前实测 75.79%，缓冲充足。
+# 模块级门槛（main.py / image/parser.py）见 scripts/coverage_gates.py，
+# 由 CI test 作业在 pytest 之后强制；阈值 = 实测-5% 缓冲，禁止下调。
 fail_under = 70
 
 [tool.mypy]
@@ -72,6 +74,7 @@ files = [
   "utils.py",
   "unified_manager.py",
   "runtime_adapter.py",
+  "scheduler.py",
   "webapi.py",
   "session_gate.py",
   "image",

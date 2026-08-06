@@ -362,25 +362,36 @@ def test_api_get_config_returns_payload_on_failure() -> None:
 
 def test_session_generation_map_is_pruned_on_whitelist_removal() -> None:
     """移出白名单时应清理会话代次记录，避免长期运行内存缓慢增长。"""
-    source = _main_source()
-    start = source.index("    def _replace_whitelist(")
-    end = source.index("\n    async def _add_whitelist_session(", start)
-    method = source[start:end]
+    whitelist_source = (ROOT / "whitelist.py").read_text(encoding="utf-8")
+    start = whitelist_source.index("    def replace(")
+    end = whitelist_source.index("\n    async def commit_change(", start)
+    method = whitelist_source[start:end]
 
-    assert "_gate.prune" in method, (
-        "_replace_whitelist 未通过 gate.prune 清理代次/锁/运行集；"
+    assert "self._prune(umo)" in method, (
+        "replace 未通过 gate.prune 清理代次/锁/运行集；"
         "该字典按 UMO 累积且从不回收，长期运行会持续增长"
     )
 
 
 def test_terminate_clears_image_event_cache() -> None:
-    """terminate 应清理含图事件缓存，避免插件重载时残留事件对象。"""
+    """terminate 应清理含图事件缓存，避免插件重载时残留事件对象。
+
+    实现随 07 迁入 SessionCoordinator：terminate 走 reset_all 级联清空
+    （事件/时间/图片/阶段标记），断言锚定单点入口。
+    """
     source = _main_source()
+    coordinator_source = (ROOT / "session_coordinator.py").read_text(encoding="utf-8")
     method = source[source.index("    async def terminate(") :]
 
-    assert "_recent_image_events" in method, (
-        "terminate 未清理 _recent_image_events，每会话最多 20 个事件对象残留"
+    assert "self._coordinator.reset_all()" in method, (
+        "terminate 未经 reset_all 清空会话协作资源（含图片缓存）"
     )
+    reset = coordinator_source[
+        coordinator_source.index("    def reset_all(") : coordinator_source.index(
+            "\n    # ---------", coordinator_source.index("    def reset_all(")
+        )
+    ]
+    assert "_images.clear()" in reset, "reset_all 未清空图片索引"
 
 
 def test_terminate_waits_for_cancelled_background_tasks() -> None:
@@ -456,45 +467,57 @@ def test_successful_image_cache_logs_are_debug_only() -> None:
 
 def test_config_mutations_share_one_lock_and_settings_normalizer() -> None:
     """白名单和 Web 配置更新不能交错覆盖，配置必须经统一入口规范化。"""
-    source = _main_source()
     webapi_source = (ROOT / "webapi.py").read_text(encoding="utf-8")
+    whitelist_source = (ROOT / "whitelist.py").read_text(encoding="utf-8")
     api_start = webapi_source.index("async def _api_post_config(")
     api_end = webapi_source.index("\nasync def _api_status(", api_start)
     api = webapi_source[api_start:api_end]
 
     assert "async with plugin._config_lock" in api
     assert "_api_post_config_locked" in api
-    assert "_add_whitelist_session_locked" in source
-    assert "_remove_whitelist_session_locked" in source
+    assert "async def add(" in whitelist_source
+    assert "async def remove(" in whitelist_source
     assert "Settings.from_config(candidate)" in api
 
 
 def test_proactive_agent_starts_with_restricted_tool_scope() -> None:
-    """主动 Agent 默认不得继承全局插件、跨会话消息和高危工具。"""
-    source = _main_source()
-    start = source.index("    async def _generate_reply_via_pipeline(")
-    end = source.index("\n    def _enforce_final_tool_policy(", start)
-    method = source[start:end]
+    """主动 Agent 默认不得继承全局插件、跨会话消息和高危工具。
 
-    assert "req.func_tool = _AGENT_RUNTIME.new_tool_set()" in method
-    assert "_install_agent_tool_boundary(last_event, inherit_tools)" in method
-    assert "_enforce_final_tool_policy(req, inherit_tools)" in method
-    boundary_start = source.index("    def _install_agent_tool_boundary(")
-    boundary_end = source.index("\n    @staticmethod\n    def _resolve_paths", boundary_start)
-    boundary = source[boundary_start:boundary_end]
+    实现随 04 拆分迁入 generation.py：锚定新文件，断言内容不变（捕获力保持）。
+    """
+    generation_source = (ROOT / "generation.py").read_text(encoding="utf-8")
+    main_source = _main_source()
+    start = generation_source.index("    async def generate(")
+    end = generation_source.index("\n    def enforce_final_tool_policy(", start)
+    method = generation_source[start:end]
+
+    assert "req.func_tool = self._runtime().new_tool_set()" in method
+    assert "self.install_agent_tool_boundary(last_event, inherit_tools)" in method
+    assert "self._enforce_policy(req, inherit_tools)" in method
+    assert "self._call_hook(" in method
+    boundary_start = generation_source.index("    def install_agent_tool_boundary(")
+    boundary_end = generation_source.index(
+        "\n    @staticmethod\n    def restore_agent_tool_boundary", boundary_start
+    )
+    boundary = generation_source[boundary_start:boundary_end]
     assert "event.plugins_name = []" in boundary
     # 共享 platform_meta 是适配器单例，禁止原地修改；边界必须靠最终工具集策略。
     assert "support_proactive_message" not in boundary
-    policy_start = source.index("    def _enforce_final_tool_policy(")
-    policy_end = source.index("\n    def _main_agent_build_config(", policy_start)
-    policy = source[policy_start:policy_end]
+    policy_start = generation_source.index("    def enforce_final_tool_policy(")
+    policy_end = generation_source.index("\n    def install_agent_tool_boundary(", policy_start)
+    policy = generation_source[policy_start:policy_end]
     assert "filter_final_tools(req, keep=PROACTIVE_ALLOWED_TOOL_IDS)" in policy
-    assert "_restore_agent_tool_boundary" in method
+    assert "self.restore_agent_tool_boundary" in method
+    # 主插件仍经委托壳暴露原方法名（测试与外部调用面保持）
+    assert "    async def _generate_reply_via_pipeline(" in main_source
+    assert "    def _enforce_final_tool_policy(" in main_source
+    assert "    def _install_agent_tool_boundary(" in main_source
 
 
 def test_new_message_does_not_cancel_running_decorating_hook() -> None:
     """新消息应使旧回复失效，但不能取消正在执行的装饰钩子。"""
     source = _main_source()
+    scheduler_source = (ROOT / "scheduler.py").read_text(encoding="utf-8")
     cancel_start = source.index("    def _cancel_delay_task(")
     cancel_end = source.index("\n    def _clear_cached_event(", cancel_start)
     cancel_method = source[cancel_start:cancel_end]
@@ -505,7 +528,9 @@ def test_new_message_does_not_cancel_running_decorating_hook() -> None:
     bulk_end = source.index("\n    async def _stop_patrol_task(", bulk_start)
     bulk_method = source[bulk_start:bulk_end]
 
-    assert "self._gate.is_running(umo)" in cancel_method
+    # 实现迁入 SessionScheduler（ticket 02）：插件壳只委托，守卫在调度器内
+    assert "self._scheduler.cancel_delay(umo, force=force)" in cancel_method
+    assert "self._gate.is_running(umo)" in scheduler_source
     assert "force" in cancel_method
     assert "force_cancel" in invalidate_method
     assert "force_cancel=True" in bulk_method
