@@ -38,7 +38,7 @@
 
 ## 📖 Overview
 
-> **Yejing (业镜, "Mirror of Karma")** lets AstrBot take part in conversations on its own — proactively replying in whitelisted sessions instead of only responding when called by name.
+> **Yejing (业镜, "Karma Mirror")** — named after Enma's "Karma Mirror" card in *Onmyoji: Shadows of the Yin (阴阳师：百闻牌)* — lets AstrBot take part in conversations on its own, proactively replying in whitelisted sessions instead of only responding when called by name.
 
 The core idea in four points:
 
