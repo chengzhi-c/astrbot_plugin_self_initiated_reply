@@ -75,9 +75,21 @@ if (document.readyState === 'loading') {
 
 let bridgeReady = null;
 let providerOptions = [];
-let providerManualMode = false;
 let savingConfig = false;
 let configLoaded = false;
+
+// 数值字段默认值单表：加载回退与保存回退共用，防止两处漂移（复审 R2）
+const DEFAULT_CONFIG = {
+  decision_temperature: 0.2,
+  decision_timeout_sec: 20,
+  min_context_messages: 5,
+  message_delay_sec: 60,
+  min_silence_sec: 45,
+  cooldown_sec: 900,
+  vision_max_images: 2,
+  vision_image_age_sec: 300,
+  vision_timeout_sec: 20,
+};
 
 const PROMPT_PREVIEW_VALUES = {
   session: "aiocqhttp:GroupMessage:123456789",
@@ -316,31 +328,18 @@ function renderPromptPreview() {
   els.promptPreview.innerHTML = renderPromptTemplateHtml(template, PROMPT_PREVIEW_VALUES);
 }
 
-function setProviderManualMode(enabled) {
-  providerManualMode = Boolean(enabled);
-  if (els.providerField) {
-    els.providerField.classList.toggle("manual", providerManualMode);
-  }
-  if (els.providerManualBtn) {
-    els.providerManualBtn.textContent = providerManualMode ? "使用列表" : "手动输入";
-  }
-  if (els.providerHint) {
-    els.providerHint.textContent = providerManualMode
-      ? "手动输入为空时使用当前会话默认模型"
-      : "留空表示使用当前会话默认模型";
-  }
-}
-
 /**
  * 构造一个「下拉选择 + 手动输入」的 Provider 控件。
  *
- * 主识图与判断阶段识图的控件结构完全一致，用同一工厂避免重复实现。
- * 控件自己持有 manual 状态，对外只暴露 value / render / sync。
+ * 判断模型与两个识图 Provider 的控件结构完全一致，用同一工厂避免重复实现。
+ * 控件自己持有 manual 状态，对外只暴露 value / render / sync / setManual；
+ * onModeChange 回调用于联动周边 UI（如判断模型的提示文案与容器样式）。
  *
  * @param {{select: HTMLSelectElement|null, input: HTMLInputElement|null,
  *          button: HTMLButtonElement|null, placeholder: string}} refs
+ * @param {(manual: boolean) => void} [onModeChange]
  */
-function createProviderControl(refs) {
+function createProviderControl(refs, onModeChange) {
   let manual = false;
 
   function setManual(enabled) {
@@ -348,6 +347,7 @@ function createProviderControl(refs) {
     if (refs.button) refs.button.textContent = manual ? "使用列表" : "手动输入";
     if (refs.select) refs.select.style.display = manual ? "none" : "block";
     if (refs.input) refs.input.style.display = manual ? "block" : "none";
+    if (onModeChange) onModeChange(manual);
   }
 
   function value() {
@@ -420,40 +420,23 @@ const visionJudgeProviderControl = createProviderControl({
   placeholder: "与识图模型一致",
 });
 
-function currentProviderId() {
-  if (providerManualMode) return els.judgeProviderInput.value.trim();
-  return els.judgeProviderSelect ? els.judgeProviderSelect.value.trim() : els.judgeProviderInput.value.trim();
-}
-
-function renderProviderSelect() {
-  if (!els.judgeProviderSelect) return;
-  const current = els.judgeProviderSelect.value;
-  els.judgeProviderSelect.innerHTML = "";
-  const defaultOption = document.createElement("option");
-  defaultOption.value = "";
-  defaultOption.textContent = "使用当前会话默认模型";
-  els.judgeProviderSelect.appendChild(defaultOption);
-  providerOptions.forEach((provider) => {
-    const option = document.createElement("option");
-    option.value = provider.id;
-    option.textContent = provider.label || provider.id;
-    els.judgeProviderSelect.appendChild(option);
-  });
-  els.judgeProviderSelect.value = current;
-}
-
-function syncProviderControl(providerId) {
-  const value = String(providerId || "").trim();
-  const known = value === "" || providerOptions.some((provider) => provider.id === value);
-  if (known && els.judgeProviderSelect) {
-    els.judgeProviderSelect.value = value;
-    els.judgeProviderInput.value = "";
-    setProviderManualMode(false);
-    return;
+// 判断模型 Provider：与识图控件同工厂（复审 R1），onModeChange 联动周边提示
+const judgeProviderControl = createProviderControl(
+  {
+    select: els.judgeProviderSelect,
+    input: els.judgeProviderInput,
+    button: els.providerManualBtn,
+    placeholder: "使用当前会话默认模型",
+  },
+  (manual) => {
+    if (els.providerField) els.providerField.classList.toggle("manual", manual);
+    if (els.providerHint) {
+      els.providerHint.textContent = manual
+        ? "手动输入为空时使用当前会话默认模型"
+        : "留空表示使用当前会话默认模型";
+    }
   }
-  els.judgeProviderInput.value = value;
-  setProviderManualMode(true);
-}
+);
 
 async function loadProviders() {
   try {
@@ -464,15 +447,15 @@ async function loadProviders() {
     providerOptions = Array.isArray(result.providers)
       ? result.providers.filter((item) => item && item.id)
       : [];
-    renderProviderSelect();
+    judgeProviderControl.render();
     visionProviderControl.render();
     visionJudgeProviderControl.render();
   } catch (error) {
     providerOptions = [];
-    renderProviderSelect();
+    judgeProviderControl.render();
     visionProviderControl.render();
     visionJudgeProviderControl.render();
-    setProviderManualMode(true);
+    judgeProviderControl.setManual(true);
     showToast("无法加载 Provider 列表，可手动填写");
   }
 }
@@ -486,23 +469,28 @@ async function loadConfig() {
   }
   els.enabledInput.checked = Boolean(config.enabled);
   els.decisionModelInput.checked = config.decision_model_enabled !== false;
-  syncProviderControl(config.judge_provider_id || "");
-  els.decisionTempInput.value = config.decision_temperature ?? 0.2;
-  els.decisionTimeoutInput.value = config.decision_timeout_sec ?? 20;
+  judgeProviderControl.sync(config.judge_provider_id || "");
+  els.decisionTempInput.value =
+    config.decision_temperature ?? DEFAULT_CONFIG.decision_temperature;
+  els.decisionTimeoutInput.value =
+    config.decision_timeout_sec ?? DEFAULT_CONFIG.decision_timeout_sec;
   els.decisionPromptInput.value = config.decision_prompt_template || config.decision_prompt_default || "";
   els.decisionPromptInput.dataset.defaultPrompt = config.decision_prompt_default || config.decision_prompt_template || "";
-  els.minContextInput.value = config.min_context_messages ?? config.proactive_threshold ?? 5;
-  els.messageDelayInput.value = config.message_delay_sec ?? config.idle_trigger_seconds ?? 60;
-  els.minSilenceInput.value = config.min_silence_sec ?? 45;
-  els.cooldownInput.value = config.cooldown_sec ?? config.cooldown_seconds ?? 900;
+  els.minContextInput.value =
+    config.min_context_messages ?? config.proactive_threshold ?? DEFAULT_CONFIG.min_context_messages;
+  els.messageDelayInput.value =
+    config.message_delay_sec ?? config.idle_trigger_seconds ?? DEFAULT_CONFIG.message_delay_sec;
+  els.minSilenceInput.value = config.min_silence_sec ?? DEFAULT_CONFIG.min_silence_sec;
+  els.cooldownInput.value =
+    config.cooldown_sec ?? config.cooldown_seconds ?? DEFAULT_CONFIG.cooldown_sec;
   els.visionJudgeEnabledInput.checked = Boolean(config.vision_judge_enabled);
   els.visionMainEnabledInput.checked = Boolean(config.vision_main_enabled);
   els.visionSkipStickersInput.checked = Boolean(config.vision_skip_stickers);
   visionProviderControl.sync(config.vision_provider_id || "");
   visionJudgeProviderControl.sync(config.vision_judge_provider_id || "");
-  els.visionMaxImagesInput.value = config.vision_max_images ?? 2;
-  els.visionImageAgeInput.value = config.vision_image_age_sec ?? 300;
-  els.visionTimeoutInput.value = config.vision_timeout_sec ?? 20;
+  els.visionMaxImagesInput.value = config.vision_max_images ?? DEFAULT_CONFIG.vision_max_images;
+  els.visionImageAgeInput.value = config.vision_image_age_sec ?? DEFAULT_CONFIG.vision_image_age_sec;
+  els.visionTimeoutInput.value = config.vision_timeout_sec ?? DEFAULT_CONFIG.vision_timeout_sec;
   els.proactiveInheritToolsInput.checked = Boolean(config.proactive_inherit_tools);
   const whitelist = Array.isArray(config.whitelist) ? config.whitelist : [];
   els.whitelistInput.value = whitelist.join("\n");
@@ -770,22 +758,22 @@ async function saveConfig(event) {
     const result = await apiPost("config", {
       enabled: els.enabledInput.checked,
       decision_model_enabled: els.decisionModelInput.checked,
-      judge_provider_id: currentProviderId(),
-      decision_temperature: num(els.decisionTempInput.value, 0.2),
-      decision_timeout_sec: num(els.decisionTimeoutInput.value, 20),
+      judge_provider_id: judgeProviderControl.value(),
+      decision_temperature: num(els.decisionTempInput.value, DEFAULT_CONFIG.decision_temperature),
+      decision_timeout_sec: num(els.decisionTimeoutInput.value, DEFAULT_CONFIG.decision_timeout_sec),
       decision_prompt_template: els.decisionPromptInput.value.trim(),
-      min_context_messages: num(els.minContextInput.value, 5),
-      message_delay_sec: num(els.messageDelayInput.value, 60),
-      min_silence_sec: num(els.minSilenceInput.value, 45),
-      cooldown_sec: num(els.cooldownInput.value, 900),
+      min_context_messages: num(els.minContextInput.value, DEFAULT_CONFIG.min_context_messages),
+      message_delay_sec: num(els.messageDelayInput.value, DEFAULT_CONFIG.message_delay_sec),
+      min_silence_sec: num(els.minSilenceInput.value, DEFAULT_CONFIG.min_silence_sec),
+      cooldown_sec: num(els.cooldownInput.value, DEFAULT_CONFIG.cooldown_sec),
       vision_judge_enabled: els.visionJudgeEnabledInput.checked,
       vision_main_enabled: els.visionMainEnabledInput.checked,
       vision_skip_stickers: els.visionSkipStickersInput.checked,
       vision_provider_id: visionProviderControl.value(),
       vision_judge_provider_id: visionJudgeProviderControl.value(),
-      vision_max_images: num(els.visionMaxImagesInput.value, 2),
-      vision_image_age_sec: num(els.visionImageAgeInput.value, 300),
-      vision_timeout_sec: num(els.visionTimeoutInput.value, 20),
+      vision_max_images: num(els.visionMaxImagesInput.value, DEFAULT_CONFIG.vision_max_images),
+      vision_image_age_sec: num(els.visionImageAgeInput.value, DEFAULT_CONFIG.vision_image_age_sec),
+      vision_timeout_sec: num(els.visionTimeoutInput.value, DEFAULT_CONFIG.vision_timeout_sec),
       proactive_inherit_tools: els.proactiveInheritToolsInput.checked,
       whitelist,
     });
@@ -855,23 +843,6 @@ els.refreshBtn.addEventListener("click", () => {
 });
 if (els.cleanupImageCacheBtn) {
   els.cleanupImageCacheBtn.addEventListener("click", () => cleanupImageCache());
-}
-if (els.providerManualBtn) {
-  els.providerManualBtn.addEventListener("click", () => {
-    if (providerManualMode) {
-      const manualValue = els.judgeProviderInput.value.trim();
-      syncProviderControl(manualValue);
-      if (providerManualMode) showToast("当前 Provider 不在列表中，继续保留手动输入");
-      return;
-    }
-    els.judgeProviderInput.value = els.judgeProviderSelect.value || "";
-    setProviderManualMode(true);
-  });
-}
-if (els.judgeProviderSelect) {
-  els.judgeProviderSelect.addEventListener("change", () => {
-    els.judgeProviderInput.value = "";
-  });
 }
 function showResetConfirm() {
   if (els.resetConfirm) els.resetConfirm.hidden = false;
