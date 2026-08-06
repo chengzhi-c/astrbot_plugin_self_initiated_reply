@@ -19,6 +19,8 @@ from astrbot.api import logger
 from .image.parser import ImageParser
 from .models import (
     EVENT_CLEANUP_INTERVAL_SEC,
+    LEAK_WARN_SESSION_THRESHOLD,
+    LEAK_WARN_TASK_THRESHOLD,
     MAX_CACHED_EVENTS,
     PATROL_BACKOFF_DELAY_SEC,
     PLUGIN_ID,
@@ -57,6 +59,7 @@ class SessionScheduler:
         whitelist_runtime_umos: dict[str, set[str]],
         delay_tasks: dict[str, asyncio.Task[Any]],
         running_check_tasks: dict[str, asyncio.Task[Any]],
+        background_tasks: set[asyncio.Task[Any]],
     ) -> None:
         self.settings = settings
         self._gate = gate
@@ -72,7 +75,9 @@ class SessionScheduler:
         self._whitelist_runtime_umos = whitelist_runtime_umos
         self._delay_tasks = delay_tasks
         self._running_check_tasks = running_check_tasks
+        self._background_tasks = background_tasks
         self._silence_events: dict[str, asyncio.Event] = {}
+        self._leak_warned: set[str] = set()
         self._patrol_task: asyncio.Task[Any] | None = None
         self._image_cleanup_task: asyncio.Task[Any] | None = None
         self._image_cleanup_lock = asyncio.Lock()
@@ -349,6 +354,39 @@ class SessionScheduler:
                 self._whitelist_runtime_umos[key] = kept
             else:
                 self._whitelist_runtime_umos.pop(key, None)
+
+        self._warn_leaks_if_needed(now)
+
+    def _warn_leaks_if_needed(self, now: float) -> None:
+        """任务表/代次表规模超阈值告警（运维状态，低频）；回落前不重复。"""
+        task_count = (
+            len(self._delay_tasks) + len(self._running_check_tasks) + len(self._background_tasks)
+        )
+        if task_count >= LEAK_WARN_TASK_THRESHOLD:
+            if "task" not in self._leak_warned:
+                self._leak_warned.add("task")
+                logger.warning(
+                    "[%s] background task count above threshold tasks=%d delay=%d"
+                    " running_check=%d background=%d (leak suspected)",
+                    PLUGIN_ID,
+                    task_count,
+                    len(self._delay_tasks),
+                    len(self._running_check_tasks),
+                    len(self._background_tasks),
+                )
+        else:
+            self._leak_warned.discard("task")
+        session_count = len(self._gate.generation_view)
+        if session_count >= LEAK_WARN_SESSION_THRESHOLD:
+            if "session" not in self._leak_warned:
+                self._leak_warned.add("session")
+                logger.warning(
+                    "[%s] session generation table above threshold sessions=%d (leak suspected)",
+                    PLUGIN_ID,
+                    session_count,
+                )
+        else:
+            self._leak_warned.discard("session")
 
     def ensure_image_cleanup(self) -> None:
         if not self._should_run():

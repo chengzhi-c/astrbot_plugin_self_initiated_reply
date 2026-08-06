@@ -43,6 +43,7 @@ def _make_scheduler(tmp_path: Path, config: dict | None = None):
     whitelist_runtime_umos: dict[str, set[str]] = {}
     delay_tasks: dict[str, asyncio.Task] = {}
     running_check_tasks: dict[str, asyncio.Task] = {}
+    background_tasks: set[asyncio.Task] = set()
 
     def clear_cached_event(umo: str) -> None:
         last_events.pop(umo, None)
@@ -68,6 +69,7 @@ def _make_scheduler(tmp_path: Path, config: dict | None = None):
         whitelist_runtime_umos=whitelist_runtime_umos,
         delay_tasks=delay_tasks,
         running_check_tasks=running_check_tasks,
+        background_tasks=background_tasks,
     )
     return scheduler_mod, models, scheduler, state_map, checks
 

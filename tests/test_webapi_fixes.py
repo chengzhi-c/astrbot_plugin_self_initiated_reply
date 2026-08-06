@@ -229,6 +229,20 @@ def test_api_status(tmp_path) -> None:
         assert status["runtime_enabled"] is plugin.runtime_enabled
         assert status["whitelist_count"] == len(plugin.settings.whitelist)
         assert status["decision_model_enabled"] is plugin.settings.decision_model_enabled
+        # 调试面板导出（ticket 14）：代次/运行中/任务数/缓存规模/最近裁决
+        assert "gate" in status and "generation" in status["gate"]
+        assert set(status["tasks"]) == {"delay", "running_check", "background"}
+        assert set(status["caches"]) == {"events", "image_events", "sessions"}
+        assert isinstance(status["last_decisions"], dict)
+        plugin._last_decisions["s1"] = {
+            "at": 1.0,
+            "trigger": "patrol",
+            "should_reply": False,
+            "reason": "冷却中",
+        }
+        status = await webapi._api_status(plugin)
+        assert status["last_decisions"]["s1"]["reason"] == "冷却中"
+        assert plugin._delay_tasks is not None and plugin._background_tasks is not None
 
     with_plugin(tmp_path, scenario)
 

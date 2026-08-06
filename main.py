@@ -151,6 +151,9 @@ class SelfInitiatedReplyPlugin(Star):
         self._admin_file_mtime: float | None = None
         self._admin_ids: set[str] = set()
         self._refresh_admin_ids()
+        # 调试面板最近裁决（ticket 14）：每会话最近一条裁决的触发/原因，
+        # 供 /status 导出；仅存内存，不落盘。
+        self._last_decisions: dict[str, dict[str, Any]] = {}
         # 调度职责（延迟检查/巡检/清理）迁入 SessionScheduler（ticket 02）。
         # 状态容器经引用共享：测试对 _delay_tasks 等属性断言保持有效；
         # 回调经 lambda 运行时查找，测试替换实例方法后仍指向最新实现。
@@ -174,6 +177,7 @@ class SelfInitiatedReplyPlugin(Star):
             whitelist_runtime_umos=self._whitelist_runtime_umos,
             delay_tasks=self._delay_tasks,
             running_check_tasks=self._running_check_tasks,
+            background_tasks=self._background_tasks,
         )
         self._scheduler.last_cleanup_at = now_ts()  # 事件清理时间戳
 
@@ -850,6 +854,12 @@ class SelfInitiatedReplyPlugin(Star):
 
         if not self._gate.is_current(umo, expected_generation):
             return "会话已经更新，放弃旧任务。"
+        self._last_decisions[umo] = {
+            "at": round(now_ts(), 3),
+            "trigger": trigger,
+            "should_reply": bool(decision.get("should_reply")),
+            "reason": str(decision.get("reason") or ""),
+        }
         logger.debug(
             "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
             PLUGIN_ID,
