@@ -31,6 +31,12 @@ MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024  # 图片冻结缓存总容量上限
 # terminate 的 flush 兜底，窗口值不影响最终一致性，只影响故障窗口时长。
 STATE_SAVE_DEBOUNCE_SEC = 2.0
 
+# 泄漏告警阈值（ticket 14）：后台任务表/会话代次表规模超阈值时在周期
+# 清理中告警（运维状态）。任务表每会话至多 1-2 个常驻条目，100 已显著
+# 高于正常规模；代次表条目数 ≤ 白名单上限（1000），1500 即泄漏。
+LEAK_WARN_TASK_THRESHOLD = 100
+LEAK_WARN_SESSION_THRESHOLD = 1500
+
 # 插件运行常量
 MAX_AGENT_STEPS = 15  # Agent 最大步数：为主 Agent 生成预留足够步数
 MAX_DIRECT_TOOL_SENDS = 2  # 每次主动回复最多允许工具直接发出的消息数

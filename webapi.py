@@ -631,7 +631,11 @@ def _log_audited_changes(
 
 
 async def _api_status(plugin):
-    """返回插件集成状态。"""
+    """返回插件集成状态与会话级运行状态（调试面板导出，ticket 14）。
+
+    覆盖：代次快照、运行中集合、任务数（延迟/运行中检查/后台）、缓存规模
+    （事件/图片事件/会话）、每会话最近裁决原因。
+    """
     return {
         "ok": True,
         "loaded": True,
@@ -639,6 +643,21 @@ async def _api_status(plugin):
         "whitelist_count": len(plugin.settings.whitelist),
         "pipeline_mode": True,
         "decision_model_enabled": plugin.settings.decision_model_enabled,
+        "gate": {
+            "generation": dict(getattr(plugin._gate, "generation_view", {})),
+            "running": sorted(getattr(plugin._gate, "running_sessions_view", frozenset())),
+        },
+        "tasks": {
+            "delay": len(plugin._delay_tasks),
+            "running_check": len(plugin._running_check_tasks),
+            "background": len(plugin._background_tasks),
+        },
+        "caches": {
+            "events": len(plugin._last_events),
+            "image_events": len(plugin._recent_image_events),
+            "sessions": len(plugin.sessions),
+        },
+        "last_decisions": dict(plugin._last_decisions),
     }
 
 
