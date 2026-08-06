@@ -1,0 +1,111 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>E:\项目\项目备份\astrbot_plugin_self_initiated_reply-main\README.html</title><style>
+  :root { --fg:#1f2328; --muted:#57606a; --line:#d0d7de; --bg:#ffffff; --code:#f6f8fa; --accent:#4a5580; --quote:#fff8e6; --quote-bd:#e3b341; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif; line-height:1.7; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 24px 20px 64px; }
+  h1,h2,h3 { line-height:1.3; scroll-margin-top:16px; }
+  h2 { margin-top: 40px; padding-bottom: 8px; border-bottom: 1px solid var(--line); color: var(--accent); }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { background: var(--code); padding: .15em .4em; border-radius: 6px; font-size: .9em; font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  pre { background: var(--code); padding: 16px; border-radius: 10px; overflow:auto; }
+  pre code { background:none; padding:0; }
+  blockquote { margin: 16px 0; padding: 10px 16px; background: var(--quote); border-left: 4px solid var(--quote-bd); border-radius: 6px; color: #6b5b1e; }
+  blockquote p { margin: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: .95em; }
+  th, td { border: 1px solid var(--line); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--code); font-weight: 600; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  ul, ol { padding-left: 24px; }
+  li { margin: 4px 0; }
+  hr { border: none; border-top: 1px solid var(--line); margin: 32px 0; }
+  details { border: 1px solid var(--line); border-radius: 10px; padding: 4px 16px; margin: 16px 0; background: #fafbfc; }
+  summary { cursor: pointer; font-weight: 600; padding: 8px 0; color: var(--accent); }
+  img { max-width: 100%; }
+  .toc { background: var(--code); border: 1px solid var(--line); border-radius: 10px; padding: 12px 24px; }
+  .toc ul { margin: 8px 0; }
+</style></head><body><div class="wrap"><p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/banner-dark.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/banner-light.jpg">
+    <img alt="业镜 · 主动回复" src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/banner-light.jpg" width="100%">
+  </picture>
+</p>
+<h1 align="center">业镜 · 主动回复</h1>
+<p align="center">
+  让 AstrBot 在白名单会话里学会"自然接话"的插件。<br>
+  <img alt="版本" src="https://img.shields.io/badge/版本-0.8.6-4a5580">
+  <img alt="AstrBot 插件" src="https://img.shields.io/badge/AstrBot-插件-7b86ab">
+</p>
+<p align="center">
+  <strong><a href="#目录">目录</a></strong> · <a href="README.en.md">English</a>
+</p>
+<hr>
+<h2 id="目录">目录</h2>
+<ul><li><a href="#简介">简介</a></li><li><a href="#工作方式">工作方式</a></li><li><a href="#工具边界">工具边界</a></li><li><a href="#图片识别可选">图片识别（可选）</a></li><li><a href="#设置页面">设置页面</a></li><li><a href="#关于白名单">关于白名单</a></li><li><a href="#指令">指令</a></li><li><a href="#建议配置">建议配置</a></li><li><a href="#故障排查">故障排查</a></li><li><a href="#安全提示">安全提示</a></li><li><a href="#小结">小结</a></li></ul>
+<hr>
+<h2 id="简介">📖 简介</h2>
+<blockquote><strong>业镜（业镜，取&quot;业镜高悬、映照因缘&quot;之意）</strong> 让 AstrBot 不再只被动应答，而是能在白名单会话里&quot;主动接话&quot;。</blockquote>
+<p>核心思路，四点说明：</p>
+<ul><li>收到消息后，插件会等对话静默下来，再用<strong>判断模型</strong>决定要不要接一句。</li><li>主动回复仍由 AstrBot 主 Agent 管线生成，但<strong>默认收紧工具边界</strong>（可手动放开）。</li><li>直接 <code>@Bot</code>、唤醒词与指令仍走正常回复链，两条路径互不干扰。</li><li>所有配置与运行状态跟随 AstrBot 数据根目录；跨平台群聊按完整 <strong>UMO</strong>（统一消息对象）保存，裸群号继续兼容。</li></ul>
+<blockquote>💡 <strong>快速上手：</strong> 先打开<a href="#设置页面">设置页面</a>，再套用<a href="#建议配置">建议配置</a>，即可跑通第一个主动回复。</blockquote>
+<hr>
+<h2 id="工作方式">🚀 工作方式</h2>
+<p>插件以&quot;三步流水线&quot;运作：</p>
+<ol><li><strong>收集</strong> —— 监听白名单会话的普通消息；明确要接话、发图、找图的内容优先放行，其余进入判断模型。</li><li><strong>判断</strong> —— 判断模型只回答一个问题——&quot;接不接&quot;，并输出严格 JSON：</li></ol>
+<pre><code>   {&quot;should_reply&quot;: true, &quot;reason&quot;: &quot;一句简短理由&quot;}</code></pre>
+<ol><li><strong>回复</strong> —— 正文由 AstrBot 主 Agent / tool loop 生成，走完整工具链但边界受限。</li></ol>
+<hr>
+<h2 id="工具边界">🔒 工具边界</h2>
+<p>主动回复与 <code>@Bot</code> 正常回复是两条<strong>独立路径</strong>。</p>
+<p>默认情况下，主动路径会关闭：</p>
+<ul><li>第三方插件工具，</li><li>Shell / Python 执行，</li><li>文件读写，</li><li>浏览器，</li><li>cron，</li><li>技能管理，</li><li>记忆写入，</li><li>以及跨会话发送。</li></ul>
+<p>当可用工具集无法验证时，插件会<strong>直接拒绝运行（fail closed）</strong>。设置页提供「允许继承插件工具」选项来放开边界——但宿主级危险能力（cron、浏览器 / 电脑使用、文件提取）在任何情况下都保持关闭。</p>
+<hr>
+<h2 id="图片识别可选">🖼️ 图片识别（可选）</h2>
+<p>默认关闭。开启后，判断或生成阶段会带上最近几张图的文字描述。</p>
+<ul><li><strong>两个开关相互独立。</strong> <strong>判断模型识图</strong>在判断是否接话时看图；<strong>主模型识图</strong>在生成正文时看图。判断阶段触发频繁，只开主模型识图更省 token。两者可分别指定 Provider；同一 Provider 下相同图片只描述一次，结果按 Provider 存入运行期内存缓存（约 50 张上限，插件重载 / 重启或超限逐出后重新描述），避免不同 Provider 串用描述。</li><li><strong>可跳过表情包识图。</strong> QQ OneBot <code>subType=1</code> 的表情包直接排除，不调 Vision。</li><li><strong>快照安全可控。</strong> 图片快照进插件自己的 <code>image_cache</code>，远程图后台冻结，不依赖会过期的 QQ CDN 链接；按魔数校验真实格式，防 SSRF 与伪造路径。</li><li><strong>仅作不可信上下文。</strong> 描述只作为不可信上下文参与判断，不写入历史与状态，不能触发工具；缓存按有效期与容量上限自动清理，设置页提供「立即清理」按钮。</li></ul>
+<hr>
+<h2 id="设置页面">⚙️ 设置页面</h2>
+<p>插件详情页内的设置页，覆盖：</p>
+<ul><li>运行开关与白名单概况；</li><li>上下文 / 延迟 / 静默 / 冷却参数；</li><li>判断模型（Provider、温度、超时、提示词编辑与实时预览）；</li><li>白名单 UMO 批量编辑；</li><li>图片缓存清理。</li></ul>
+<p>界面自带浅深双主题 —— 浅色「慈爱之惠」，深色「审判之司」，右上角切换，默认跟随系统：</p>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/慈爱之惠.png" alt="浅色主题 · 慈爱之惠" width="49%">
+  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/审判之司.png" alt="深色主题 · 审判之司" width="49%">
+</p>
+<p><strong>判断模型调参</strong>是最常用入口：</p>
+<table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody><tr><td>启用判断模型</td><td>关闭后普通消息不再主动接话，明确请求仍可放行</td></tr><tr><td>判断模型 Provider</td><td>默认当前会话模型，可下拉选择或手动填写</td></tr><tr><td>判断温度</td><td>建议 <code>0.0 – 0.3</code>，越低越稳</td></tr><tr><td>判断超时秒数</td><td>建议 <code>20</code> 秒</td></tr><tr><td>判断提示词</td><td>支持 <code>{session}</code> <code>{trigger}</code> <code>{bot_aliases}</code> <code>{latest_message}</code> <code>{recent_messages}</code> <code>{last_message_age_sec}</code> <code>{last_reply_age_sec}</code> 变量，右侧实时预览；留空保存恢复默认</td></tr></tbody></table>
+<p>改完点「保存」，页面会回读服务端配置。重载插件或重启 AstrBot 后仍想看到最新页面资源，请硬刷新浏览器。</p>
+<hr>
+<h2 id="关于白名单">🎯 关于白名单</h2>
+<p>白名单有<strong>两层</strong>：</p>
+<ol><li>AstrBot <strong>全局白名单</strong>先拦截；</li><li>过了之后，才轮到<strong>插件白名单</strong>决定&quot;是否主动回复&quot;。</li></ol>
+<p><code>/selfreply add</code> 加入的是整个群会话。页面「高级：白名单会话 ID」支持批量编辑，可填完整 UMO，也可直接填裸群号。</p>
+<hr>
+<details id="指令">
+<summary>📋 指令（7 条，点击展开）</summary>
+<p>只注册英文命令入口，避免日常聊天误触：</p>
+<table><thead><tr><th>指令</th><th>说明</th></tr></thead><tbody><tr><td><code>/selfreply</code></td><td>查看帮助</td></tr><tr><td><code>/selfreply status</code></td><td>运行状态、判断模型、白名单</td></tr><tr><td><code>/selfreply add</code> / <code>remove</code></td><td>将当前会话加入 / 移出白名单</td></tr><tr><td><code>/selfreply list</code></td><td>查看白名单</td></tr><tr><td><code>/selfreply check [content]</code></td><td>手动测试一次主动回复</td></tr><tr><td><code>/selfreply on</code> / <code>off</code></td><td>临时启用 / 暂停</td></tr><tr><td><code>/selfreply debug</code></td><td>当前会话、发送者、触发识别信息</td></tr></tbody></table>
+<p>也支持 <code>@Bot selfreply add</code> 这类写法。</p>
+<blockquote>⚠️ 注意：<code>/selfreply on</code> / <code>off</code> 是<strong>临时运行态</strong>——官方 Dashboard 保存插件配置会触发热重载并重置临时状态，插件自带设置页保存则不会。</blockquote>
+</details>
+<details id="建议配置">
+<summary>✅ 建议配置（点击展开）</summary>
+<table><thead><tr><th>参数</th><th>建议</th></tr></thead><tbody><tr><td>判断温度</td><td><code>0.0 – 0.3</code></td></tr><tr><td>判断超时</td><td><code>10 – 30</code> 秒</td></tr><tr><td>最少上下文消息数</td><td><code>3 – 8</code>（默认 <code>5</code>）</td></tr><tr><td>消息后延迟</td><td><code>60 – 180</code> 秒（测试时可调低）</td></tr><tr><td>最小静默秒数</td><td><code>120 – 300</code> 秒</td></tr><tr><td>冷却秒数</td><td><code>300 – 900</code> 秒</td></tr><tr><td>每日每会话最大回复次数</td><td><code>5 – 12</code>（<code>0</code> = 不限）</td></tr><tr><td>主动回复最长字符数</td><td><code>100 – 300</code>（<code>0</code> = 不限）</td></tr><tr><td>图片识别</td><td>默认关闭；表情包多的群可开「跳过表情包识图」</td></tr></tbody></table>
+<ul><li>「忽略发送者 ID」可屏蔽特定用户（含管理员），指令路径不受影响。</li><li>「日志记录主动回复内容」默认关闭以保护隐私；排查时可在设置页开启。</li></ul>
+</details>
+<details id="故障排查">
+<summary>🛠️ 故障排查（没有主动回复时，点击展开）</summary>
+<p>按顺序查：</p>
+<ol><li>会话已加入主动回复白名单？</li><li>AstrBot 全局白名单没有拦截？</li><li>看 <code>/selfreply status</code>。</li><li>日志里的 <code>should_reply</code> 和 <code>reason</code>。</li><li>判断模型不放行？调「判断提示词」与「判断温度」。</li></ol>
+<p>改完插件代码、页面或 metadata 后，重启 AstrBot 或重载插件生效。</p>
+</details>
+<hr>
+<h2 id="安全提示">🔐 安全提示</h2>
+<blockquote>⚠️ <strong>安全警告：</strong> 插件自带设置页与 Web API（如 <code>/api/plugin/selfreply/config</code>）<strong>不提供独立鉴权</strong>，访问控制完全依赖宿主 AstrBot Dashboard 的登录与权限体系。</blockquote>
+<ul><li>请勿将 AstrBot 的 Web 端口暴露到不受信任的网络。</li><li><code>proactive_inherit_tools</code>、白名单等安全敏感配置的变更会记录在插件 <strong>INFO</strong> 日志中，便于事后追溯。</li></ul>
+<hr>
+<h2 id="小结">📌 小结</h2>
+<p>业镜让 AstrBot 既能主动搭话又不越界：轻量的判断模型决定&quot;何时开口&quot;，主 Agent 决定&quot;说些什么&quot;，严格的工具边界确保每次主动行为默认安全。从<a href="#设置页面">设置页面</a>与<a href="#建议配置">建议配置</a>起步，再用<a href="#指令">指令</a>与<a href="#故障排查">故障排查</a>微调与诊断。别忘了把 Dashboard 置于可信访问之后——详见<a href="#安全提示">安全提示</a>。</p></div></body></html>
