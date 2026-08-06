@@ -2,6 +2,14 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式。
 
+## [0.8.7] - 2026-08-06
+
+### 工程
+
+- **优化套件收口**（ticket 01-14）：scheduler / decision / generation / delivery / whitelist / events 六模块拆分；SessionGate / SessionState 会话状态显式化；变异矩阵扩至 38 点全击杀；事件驱动静默等待替代轮询；主动回复记录落盘合并写；宿主私有符号单源收敛（runtime_adapter 契约断言 + compat_check 锁定模式）；可观测性（INFO 白名单守卫、任务/会话泄漏告警、/status 调试面板导出）。行为契约基线不变。
+- **镜像重复清零**（交付复审）：回调 Protocol、历史补全、超时/取消优雅停止、事件结果回收、静默剩余时间、Provider 控件、数值默认值等七处双形状收敛为单源；`_last_decisions` 随会话回收、跳过决策原因入调试面板；host 符号表数据驱动单源。
+- **前端修复**：判断模型 Provider 与两个识图 Provider 统一入 `createProviderControl` 工厂，删除手写同形实现。
+
 ## [0.8.6] - 2026-08-04
 
 ### 修复
