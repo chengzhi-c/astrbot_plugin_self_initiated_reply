@@ -42,6 +42,30 @@ from .utils import build_history_text, clean_reply
 class GenerationRunner:
     """一次主动回复生成的编排：工具边界、策略强制与超时/孤儿收敛。"""
 
+    async def _graceful_stop(
+        self, run_task: asyncio.Task[Any], agent_runner: Any, *, cancel_first: bool
+    ) -> None:
+        """request_stop 后宽限等待，超时或被再次取消才兜底取消。
+
+        取消与超时分支共用同一形状（复审 S4），仅取消时机不同：
+        ``cancel_first=True``（调用方已取消）立即注入取消再等收敛窗口；
+        ``cancel_first=False``（超时）先给宿主 run_agent 优雅清理窗口。
+        宽限耗尽仍未收敛都注入兜底取消，避免 run_agent 吞掉取消后留下
+        孤儿任务。
+        """
+        request_stop = getattr(agent_runner, "request_stop", None)
+        if callable(request_stop):
+            try:
+                request_stop()
+            except Exception:
+                pass
+        if cancel_first:
+            run_task.cancel()
+        try:
+            await asyncio.wait_for(run_task, timeout=self._grace_stop_sec())
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            run_task.cancel()
+
     def __init__(
         self,
         *,
@@ -261,31 +285,10 @@ class GenerationRunner:
                 # 调用方取消（force cancel / terminate）时，shield 保住的
                 # run_task 不会自动停止：必须显式收敛，否则成为孤儿任务
                 # 继续在后台运行，其工具直发还会绕过预算与代次闸门。
-                request_stop = getattr(build_result.agent_runner, "request_stop", None)
-                if callable(request_stop):
-                    try:
-                        request_stop()
-                    except Exception:
-                        pass
-                run_task.cancel()
-                try:
-                    await asyncio.wait_for(run_task, timeout=self._grace_stop_sec())
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    # 收敛失败（run_agent 吞掉取消仍继续跑）：再注入一次
-                    # 取消，与下方超时分支的兜底行为保持一致，避免留下孤儿任务。
-                    run_task.cancel()
+                await self._graceful_stop(run_task, build_result.agent_runner, cancel_first=True)
                 raise
             except asyncio.TimeoutError:
-                request_stop = getattr(build_result.agent_runner, "request_stop", None)
-                if callable(request_stop):
-                    try:
-                        request_stop()
-                    except Exception:
-                        pass
-                try:
-                    await asyncio.wait_for(run_task, timeout=self._grace_stop_sec())
-                except asyncio.TimeoutError:
-                    run_task.cancel()
+                await self._graceful_stop(run_task, build_result.agent_runner, cancel_first=False)
                 raise
             response = build_result.agent_runner.get_final_llm_resp()
             reply_text = str(getattr(response, "completion_text", "") or "").strip()

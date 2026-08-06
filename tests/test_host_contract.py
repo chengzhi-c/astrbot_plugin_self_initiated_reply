@@ -97,6 +97,74 @@ def test_build_config_type_dead_property_removed() -> None:
     assert not hasattr(adapter.AstrBotRuntimeAdapter, "build_config_type")
 
 
+def test_host_symbol_table_single_source() -> None:
+    """复审 S4：compat 符号表单源——表定义之后的代码不得散落宿主模块字面量。"""
+    import ast
+
+    src = (ROOT / "runtime_adapter.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    def target_id(node: ast.AST) -> str:
+        if isinstance(node, ast.AnnAssign):
+            return getattr(node.target, "id", "")
+        if isinstance(node, ast.Assign):
+            return "".join(getattr(t, "id", "") for t in node.targets)
+        return ""
+
+    assign = next(node for node in tree.body if target_id(node) == "_HOST_CONTRACT")
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)):
+            if node.lineno > assign.end_lineno:
+                docstrings = {
+                    id(body[0].value)
+                    for body in (node.body,)
+                    if body
+                    and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)
+                }
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Constant) and id(child) in docstrings:
+                        continue
+                    if (
+                        isinstance(child, ast.Constant)
+                        and isinstance(child.value, str)
+                        and "astrbot.core" in child.value
+                    ):
+                        violations.append(child.value[:60])
+    assert not violations, (
+        "from_host/validate 必须由 _HOST_CONTRACT 驱动，禁止散落宿主模块字面量："
+        + "; ".join(violations)
+    )
+
+
+def test_delivery_clear_result_single_shape() -> None:
+    """复审 S4：事件结果回收统一经 _clear_result，出口处不得内联 try/except。"""
+    src = (ROOT / "delivery.py").read_text(encoding="utf-8")
+    assert "def _clear_result" in src
+    assert src.count("last_event.clear_result()") == 1  # 仅定义体内一处
+
+
+def test_generation_graceful_stop_single_shape() -> None:
+    """复审 S4：超时/取消两分支收敛为 _graceful_stop，request_stop 只出现一处。"""
+    src = (ROOT / "generation.py").read_text(encoding="utf-8")
+    assert "def _graceful_stop" in src
+    assert src.count('"request_stop"') == 1
+
+
+def test_silence_remaining_on_state() -> None:
+    """复审 S4：静默/活跃时间归属 SessionState，decision/scheduler 不得内联计算形状。"""
+    src_models = (ROOT / "models.py").read_text(encoding="utf-8")
+    src_decision = (ROOT / "decision.py").read_text(encoding="utf-8")
+    src_scheduler = (ROOT / "scheduler.py").read_text(encoding="utf-8")
+    assert "def remaining_silence_sec" in src_models
+    assert "def age_sec" in src_models
+    assert "remaining_silence_sec(" in src_decision
+    assert "max(0.0, silence_left)" not in src_scheduler
+    assert "_clock() - state.last_active_at" not in src_decision
+
+
 def _runtime_adapter():
     import sys
     import types

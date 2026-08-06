@@ -86,6 +86,14 @@ class DeliveryRunner:
         self._save_storage = save_storage
         self._runtime = runtime
 
+    @staticmethod
+    def _clear_result(last_event: Any) -> None:
+        """事件结果回收：各出口统一形状（防泄漏，宿主异常不阻断投递）。"""
+        try:
+            last_event.clear_result()
+        except Exception:
+            pass
+
     async def deliver_reply(
         self,
         umo: str,
@@ -210,10 +218,7 @@ class DeliveryRunner:
                     last_event, self._runtime().event_type.OnDecoratingResultEvent
                 )
                 if not self._gate.is_current(umo, expected_generation):
-                    try:
-                        last_event.clear_result()
-                    except Exception:
-                        pass
+                    self._clear_result(last_event)
                     logger.info(
                         "[%s] suppress stale reply after decorating hook session=%s",
                         PLUGIN_ID,
@@ -222,18 +227,12 @@ class DeliveryRunner:
                     return SendOutcome(SendStatus.SUPPRESSED, "generation changed after decorating")
                 result = last_event.get_result()
                 if result is None or not result.chain:
-                    try:
-                        last_event.clear_result()
-                    except Exception:
-                        pass
+                    self._clear_result(last_event)
                     return SendOutcome(
                         SendStatus.FAILED_BEFORE_SUBMIT, "decorating hook produced no result"
                     )
                 if not self._gate.is_current(umo, expected_generation):
-                    try:
-                        last_event.clear_result()
-                    except Exception:
-                        pass
+                    self._clear_result(last_event)
                     logger.info(
                         "[%s] suppress stale reply before event send session=%s", PLUGIN_ID, umo
                     )
@@ -249,10 +248,7 @@ class DeliveryRunner:
                 send_result = await outbound.send(result)
                 send_started = send_result.submitted
                 if not send_result.submitted:
-                    try:
-                        last_event.clear_result()
-                    except Exception:
-                        pass
+                    self._clear_result(last_event)
                     return send_result.outcome
                 logger.debug(
                     "[%s] event send completed session=%s chars=%d;"
@@ -275,16 +271,10 @@ class DeliveryRunner:
                             umo,
                             exc,
                         )
-                try:
-                    last_event.clear_result()
-                except Exception:
-                    pass
+                self._clear_result(last_event)
                 return send_result.outcome
             except asyncio.CancelledError:
-                try:
-                    last_event.clear_result()
-                except Exception:
-                    pass
+                self._clear_result(last_event)
                 raise
             except Exception as exc:
                 logger.warning(
@@ -294,10 +284,7 @@ class DeliveryRunner:
                     exc,
                     exc_info=True,
                 )
-                try:
-                    last_event.clear_result()
-                except Exception:
-                    pass
+                self._clear_result(last_event)
                 if send_started:
                     return SendOutcome(SendStatus.UNKNOWN, str(exc))
                 return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, str(exc))

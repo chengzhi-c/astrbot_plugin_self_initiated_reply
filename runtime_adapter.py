@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import inspect
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -57,6 +58,46 @@ _PROVIDER_REQUEST_FIELDS = frozenset(
 )
 
 
+class _HostEntry(NamedTuple):
+    """一个宿主私有模块的符号契约条目（from_host 探测与 compat 清单单源）。"""
+
+    module: str
+    symbols: tuple[str, ...]
+    core: bool  # 主 Agent API 必需项：缺失即整包 import_error
+
+
+# 宿主私有符号单一来源表（复审 S4）：增删符号只需改此处。
+# core 组是主 Agent API 必需项（任一缺失 → 整包不可用）；probe 组
+# 单符号缺失 → 对应能力为 None（旧版宿主降级路径）。
+_HOST_CONTRACT: tuple[_HostEntry, ...] = (
+    _HostEntry("astrbot.core.agent.tool", ("ToolSet",), core=True),
+    _HostEntry("astrbot.core.astr_agent_run_util", ("run_agent",), core=True),
+    _HostEntry(
+        "astrbot.core.astr_main_agent",
+        ("MainAgentBuildConfig", "_get_session_conv", "build_main_agent"),
+        core=True,
+    ),
+    _HostEntry(
+        "astrbot.core.message.message_event_result",
+        ("MessageEventResult", "ResultContentType"),
+        core=False,
+    ),
+    _HostEntry("astrbot.core.pipeline.context", ("call_event_hook",), core=False),
+    _HostEntry("astrbot.core.provider.entities", ("ProviderRequest",), core=False),
+    _HostEntry("astrbot.core.star.star_handler", ("EventType",), core=False),
+    _HostEntry(
+        "astrbot.core.utils.astrbot_path",
+        ("get_astrbot_config_path", "get_astrbot_plugin_data_path"),
+        core=False,
+    ),
+)
+
+
+def _import_symbols(entry: _HostEntry) -> dict[str, Any]:
+    module = importlib.import_module(entry.module)
+    return {name: getattr(module, name) for name in entry.symbols}
+
+
 class AstrBotRuntimeAdapter:
     """Keep private AstrBot Agent imports and compatibility checks in one place.
 
@@ -82,33 +123,16 @@ class AstrBotRuntimeAdapter:
 
     @classmethod
     def host_contract(cls) -> list[tuple[str, list[str]]]:
-        """compat_check 存在性检查的单一来源清单（增删符号必须同步此处）。"""
-        return [
-            ("astrbot.core.agent.tool", ["ToolSet"]),
-            ("astrbot.core.astr_agent_run_util", ["run_agent"]),
-            (
-                "astrbot.core.astr_main_agent",
-                ["MainAgentBuildConfig", "_get_session_conv", "build_main_agent"],
-            ),
-            (
-                "astrbot.core.message.message_event_result",
-                ["MessageEventResult", "ResultContentType"],
-            ),
-            ("astrbot.core.pipeline.context", ["call_event_hook"]),
-            ("astrbot.core.provider.entities", ["ProviderRequest"]),
-            ("astrbot.core.star.star_handler", ["EventType"]),
-        ]
+        """compat_check 存在性检查的单一来源清单（增删符号只需改 _HOST_CONTRACT）。"""
+        return [(entry.module, list(entry.symbols)) for entry in _HOST_CONTRACT]
 
     @classmethod
     def from_host(cls) -> AstrBotRuntimeAdapter:
         try:
-            from astrbot.core.agent.tool import ToolSet
-            from astrbot.core.astr_agent_run_util import run_agent
-            from astrbot.core.astr_main_agent import (
-                MainAgentBuildConfig,
-                _get_session_conv,
-                build_main_agent,
-            )
+            core_symbols: dict[str, Any] = {}
+            for entry in _HOST_CONTRACT:
+                if entry.core:
+                    core_symbols.update(_import_symbols(entry))
         except (ImportError, AttributeError) as exc:  # pragma: no cover - host dependent
             return cls(
                 AgentRuntimeCapabilities(
@@ -121,48 +145,28 @@ class AstrBotRuntimeAdapter:
                 )
             )
 
-        def _probe(factory: Callable[[], Any]) -> Any:
-            try:
-                return factory()
-            except (ImportError, AttributeError):  # pragma: no cover - host dependent
-                return None
-
-        event_result_cls = _probe(
-            lambda: (lambda m: (m.MessageEventResult, m.ResultContentType))(
-                __import__("astrbot.core.message.message_event_result", fromlist=["*"])
-            )
-        )
-        result_content_type = event_result_cls[1] if event_result_cls else None
-        event_result_cls = event_result_cls[0] if event_result_cls else None
-        event_type = _probe(
-            lambda: __import__("astrbot.core.star.star_handler", fromlist=["*"]).EventType
-        )
-        call_event_hook = _probe(
-            lambda: __import__("astrbot.core.pipeline.context", fromlist=["*"]).call_event_hook
-        )
-        provider_request_cls = _probe(
-            lambda: __import__("astrbot.core.provider.entities", fromlist=["*"]).ProviderRequest
-        )
-        path_mod = _probe(lambda: __import__("astrbot.core.utils.astrbot_path", fromlist=["*"]))
-        config_path_fn = getattr(path_mod, "get_astrbot_config_path", None) if path_mod else None
-        plugin_data_path_fn = (
-            getattr(path_mod, "get_astrbot_plugin_data_path", None) if path_mod else None
-        )
+        probed: dict[str, Any] = {}
+        for entry in _HOST_CONTRACT:
+            if not entry.core:
+                try:
+                    probed.update(_import_symbols(entry))
+                except (ImportError, AttributeError):  # pragma: no cover - host dependent
+                    continue
         return cls(
             AgentRuntimeCapabilities(
                 import_error=None,
-                tool_set=ToolSet,
-                build_config=MainAgentBuildConfig,
-                build_main_agent=build_main_agent,
-                get_session_conv=_get_session_conv,
-                run_agent=run_agent,
-                event_result_cls=event_result_cls,
-                result_content_type=result_content_type,
-                event_type=event_type,
-                call_event_hook=call_event_hook,
-                provider_request_cls=provider_request_cls,
-                config_path_fn=config_path_fn,
-                plugin_data_path_fn=plugin_data_path_fn,
+                tool_set=core_symbols["ToolSet"],
+                build_config=core_symbols["MainAgentBuildConfig"],
+                build_main_agent=core_symbols["build_main_agent"],
+                get_session_conv=core_symbols["_get_session_conv"],
+                run_agent=core_symbols["run_agent"],
+                event_result_cls=probed.get("MessageEventResult"),
+                result_content_type=probed.get("ResultContentType"),
+                event_type=probed.get("EventType"),
+                call_event_hook=probed.get("call_event_hook"),
+                provider_request_cls=probed.get("ProviderRequest"),
+                config_path_fn=probed.get("get_astrbot_config_path"),
+                plugin_data_path_fn=probed.get("get_astrbot_plugin_data_path"),
             )
         )
 
