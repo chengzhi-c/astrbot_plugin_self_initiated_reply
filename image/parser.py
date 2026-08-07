@@ -317,9 +317,11 @@ class ImageParser:
 
         removed = 0
         for path in cache_root.rglob("*"):
-            if not path.is_file() or path.is_symlink():
-                continue
             try:
+                # is_file() 内部可能触发 stat（旧版 pathlib 经 Path.stat），
+                # 与后续 stat/unlink 同窗保护：任何文件系统错误都跳过该文件。
+                if not path.is_file() or path.is_symlink():
+                    continue
                 resolved = path.resolve()
                 resolved.relative_to(resolved_root)
                 if resolved in protected or path.stat().st_mtime >= cutoff:
@@ -337,9 +339,9 @@ class ImageParser:
             entries: list[tuple[float, Path, int, Path]] = []
             total_bytes = 0
             for path in cache_root.rglob("*"):
-                if not path.is_file() or path.is_symlink():
-                    continue
                 try:
+                    if not path.is_file() or path.is_symlink():
+                        continue
                     resolved = path.resolve()
                     resolved.relative_to(resolved_root)
                     size = path.stat().st_size
