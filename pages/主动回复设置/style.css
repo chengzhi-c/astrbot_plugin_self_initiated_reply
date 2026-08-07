@@ -64,7 +64,7 @@
 
   /* 装饰色：浅色是雪影的蓝紫，深色是者老木的琥珀。只描边、只点缀 */
   /* P2-9: 原 #6e7a9e 在 --surface 上仅 4.14:1，低于 11px 粗体文本的 AA 4.5:1
-     门槛（.sidenav-idx 序号、.sidenav-group 分组标题均为该尺寸）。压深至
+     门槛（.sidenav-group 分组标题、.sidenav-icon 导航图标）。压深至
      5.14:1，色相保持不变；图标用途（.panel-icon）门槛更低，压深只更安全。 */
   --ornament:      #5f6b8e;
   --ornament-soft: rgba(110, 122, 158, .15);
@@ -107,7 +107,7 @@
   --radius-sm: 10px;
   --radius-xs: 8px;
   --radius-btn: 12px;
-  --control-h: 40px;
+  --control-h: 44px;
   --tap: 44px;
   --shell-pad: 26px;
   --ease: cubic-bezier(.2, .7, .3, 1);
@@ -116,10 +116,10 @@
   /* 字号：7 档整数阶梯，替换原 10 档小数（B1：小数在 125%/150% 缩放下半像素抖动） */
   --fs-100: 11px;   /* 徽标数字、序号 */
   --fs-200: 12px;   /* 辅助说明、hint、code */
-  --fs-300: 13px;   /* 表单值、次级按钮 */
-  --fs-400: 14px;   /* 正文基准 */
-  --fs-500: 16px;   /* 面板标题 H2 */
-  --fs-600: 20px;   /* 区块标题 */
+  --fs-300: 13px;   /* 表单值、次级按钮、侧栏总标题 */
+  --fs-400: 14px;   /* 表单控件、按钮、开关说明 */
+  --fs-500: 16px;   /* 长文编辑区、侧栏导航项（与 --fs-600 标题成 1.25 比） */
+  --fs-600: 20px;   /* 区块标题：面板 H2、折叠标题、总开关标题 */
   --fs-700: 24px;   /* 页面标题 H1 */
   /* 字重：仅 400 / 500 / 700 三档（B2：YaHei/PingFang 无 SemiBold，600/650 均渲染为 700）
      实际使用直接写 font-weight: 500 / 700，无需变量 */
@@ -308,7 +308,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -317,14 +317,14 @@ body {
 h1, h2, h3, h4, p { margin: 0; }
 
 h1 {
-  font-size: 23px;
+  font-size: var(--fs-700);
   font-weight: 700;
   line-height: 1.25;
   letter-spacing: -.015em;
 }
 
 h2 {
-  font-size: var(--fs-500);
+  font-size: var(--fs-600);
   font-weight: 700;
   letter-spacing: -.01em;
 }
@@ -481,7 +481,7 @@ code {
 .top-actions {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
@@ -525,10 +525,12 @@ details.panel {
   box-shadow: var(--shadow-drop);
 }
 
+/* 侧栏字阶与右侧内容同步：导航项对区块标题取 20/16 = 1.25（与令牌阶梯自身步比一致），
+   本标题作为侧栏眉标退一档，序号仍取 --fs-100 的徽标档。 */
 .sidenav-title {
   margin: 0 2px 2px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-300);
   font-weight: 700;
   letter-spacing: .12em;
 }
@@ -560,7 +562,7 @@ details.panel {
   padding: var(--sp-4) var(--sp-5);
   border-radius: var(--radius-xs);
   color: var(--text-soft);
-  font-size: var(--fs-400);
+  font-size: var(--fs-500);
   font-weight: 500;
   text-decoration: none;
   transition: background .16s var(--ease), color .16s var(--ease), box-shadow .16s var(--ease);
@@ -576,15 +578,17 @@ details.panel {
   box-shadow: var(--focus-ring);
 }
 
-.sidenav-idx {
+/* 侧栏导航图标：与右侧区块标题图标对应，尺寸跟随导航文字（1em = 16px）。
+   导航项 hover 时图标随文字同步变色，建立左右对应的视觉锚点。 */
+.sidenav-icon {
   flex: none;
-  width: 22px;
-  text-align: center;
+  width: 1em;
+  height: 1em;
   color: var(--ornament);
-  font-family: "JetBrains Mono", Consolas, ui-monospace, monospace;
-  font-size: 11px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+}
+
+.sidenav-link:hover .sidenav-icon {
+  color: var(--text);
 }
 
 .sidenav-text { min-width: 0; }
@@ -595,7 +599,7 @@ details.panel {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.sidenav-link.is-current .sidenav-idx { color: var(--accent-text); }
+.sidenav-link.is-current .sidenav-icon { color: var(--accent-text); }
 
 .sidenav-foot {
   display: flex;
@@ -675,6 +679,50 @@ details.panel {
 
 :root[data-theme="light"] .theme-label::after { content: "慈爱之惠"; }
 :root[data-theme="dark"] .theme-label::after { content: "审判之司"; }
+
+/* --------------------------------------------------------------------------
+   亮度 / 粗体 辅助切换
+   -------------------------------------------------------------------------- */
+
+/* 亮度压暗。
+   filter 只作用于自身子树，且会让元素成为 fixed 后代的包含块。
+   .shell 之外还有若干平级固定层（氛围层、滚动进度、toast、移动端保存条
+   与 Tab 栏），单靠 .shell 一条规则覆盖不到——移动端底部两条会保持全亮
+   而正文已压暗。又不能把 filter 上提到 body：那会让这些 fixed 元素改以
+   body 为包含块，破坏视口固定语义。故逐个平级施加同一档亮度，档位收敛
+   为单一令牌，避免多处重复字面量。 */
+/* 亮度压暗：filter 只作用于自身子树，且会让元素成为 fixed 后代的包含块，
+   故逐个平级施加同一档亮度。filter 变化成本极高（整树重绘），禁止 transition
+   以避免切换卡顿，让压暗瞬切。 */
+html.dimmed { --dim-level: 0.82; }
+
+html.dimmed .shell,
+html.dimmed .ambience,
+html.dimmed .scroll-progress,
+html.dimmed .toast,
+html.dimmed .mobile-savebar,
+html.dimmed .mobile-tabbar,
+html.dimmed .boot {
+  filter: brightness(var(--dim-level));
+  transition: opacity 0.18s var(--ease), transform 0.18s var(--ease), background 0.16s var(--ease);
+}
+
+/* 粗体：主体文字统一加粗，标题不再额外处理 */
+html.bold-text body,
+html.bold-text .form,
+html.bold-text .card {
+  font-weight: 600;
+}
+
+/* 按钮激活态：accent-soft 底色 + accent-text 图标色，与 hover 语言一致，不遮盖图标。
+   瞬切状态，不要过渡动画（覆盖 .btn 基类的 transition）。 */
+#dimBtn.active,
+#boldBtn.active {
+  border-color: var(--accent);
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent-soft) 60%, var(--surface));
+  transition: none;
+}
 
 /* --------------------------------------------------------------------------
    表单骨架
@@ -802,8 +850,9 @@ body.is-ready .master,
   min-width: 0;
 }
 
+/* 与 h2 / .summary-title 同档：六个区块标题单一来源 */
 .master-copy b {
-  font-size: 15px;
+  font-size: var(--fs-600);
   font-weight: 700;
   letter-spacing: -.01em;
 }
@@ -936,22 +985,24 @@ body.is-ready .master,
   gap: var(--sp-4);
 }
 
-/* 标题前的线性图标（统一图标库），替代旧竖条装饰 */
+/* 标题前的线性图标（统一图标库），替代旧竖条装饰。
+   尺寸跟随所在标题字号（em）：本类的 5 个实例全部嵌在 h2 / .summary-title 内部，
+   父字号即 --fs-600，故 1em 与字身同高，令牌变动时自动同步。 */
 .panel-icon {
   flex: none;
   align-self: center;
-  width: 18px;
-  height: 18px;
+  width: 1em;
+  height: 1em;
   color: var(--ornament);
-  vertical-align: middle;
 }
 
-/* 总开关标题内的电源图标 */
+/* 总开关标题内的电源图标：尺寸与间距跟随标题字号（em），--fs-600 变动时自动同步。
+   其余 6 处用法（三个图标按钮 20px、三个保存按钮 18px）均有显式 px 覆写，不受影响。 */
 .inline-icon {
-  width: 16px;
-  height: 16px;
-  margin-right: 5px;
-  vertical-align: -3px;
+  width: 1em;
+  height: 1em;
+  margin-right: .3em;
+  vertical-align: -.15em;
   color: var(--accent);
 }
 
@@ -987,8 +1038,13 @@ body.is-ready .master,
 .panel-collapsible[open] > summary { border-bottom: var(--border-w) solid var(--border); }
 .panel-collapsible > summary:hover { background: var(--surface-2); }
 
+/* 与 .panel-head h2 同构：图标与文字的间距走同一令牌，
+   否则 block 语境下 gap 不适用，图标会贴上字身。 */
 .summary-title {
-  font-size: var(--fs-500);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  font-size: var(--fs-600);
   font-weight: 700;
   letter-spacing: -.01em;
 }
@@ -1338,11 +1394,20 @@ textarea {
   height: var(--prompt-workspace-height);
 }
 
+/* 判断提示词是中文散文（夹少量 {变量} 占位），不是代码。
+   通用 textarea 规则给的等宽栈无中文字形，中文会逐字回退到系统黑体，
+   拉丁留在 mono，一行里两种字面交替，字重与竖直度量都不齐，读起来发抖。
+   这里退回继承的正文字体栈（Segoe UI + 雅黑，同厂配对、度量匹配），
+   字号进到中文阅读档，行距按中文散文放宽。
+   白名单 textarea 装 UMO 与群号，等宽能辨 0/O、1/l，保留 mono 不动。 */
 .prompt-editor textarea {
   height: auto;
   min-height: 0;
   overflow: auto;
   resize: none;
+  font-family: inherit;
+  font-size: var(--fs-500);
+  line-height: 1.75;
 }
 
 .prompt-preview-panel {
@@ -1580,12 +1645,17 @@ textarea {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* 保存成功微反馈：按钮勾选回弹 + 短暂 ✓ 入场 */
+/* 保存成功微反馈：SVG 勾选图标（mask 技术，继承 currentColor）替代文本 ✓ */
 .btn.is-saved { animation: save-pop .45s var(--ease); }
 .btn.is-saved::after {
-  content: "✓";
-  margin-left: 2px;
-  font-weight: 700;
+  content: "";
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z'/%3E%3C/svg%3E") center/contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z'/%3E%3C/svg%3E") center/contain no-repeat;
   animation: save-check .45s var(--ease);
 }
 @keyframes save-pop {
@@ -1901,23 +1971,64 @@ textarea {
   .prompt-editor textarea { min-height: 260px; }
 }
 
+/* 顶栏辅助按钮：亮度/粗体/刷新，统一正方形图标尺寸 */
+.top-actions #dimBtn,
+.top-actions #boldBtn {
+  box-shadow: var(--shadow-drop);
+  width: var(--control-h);
+  min-width: var(--control-h);
+  height: var(--control-h);
+  min-height: var(--control-h);
+  padding: 0;
+}
+
+/* 图标居中：消除默认 margin-right 干扰；统一三个图标按钮尺寸与颜色 */
+.top-actions #dimBtn .inline-icon,
+.top-actions #boldBtn .inline-icon,
+.top-actions #refreshBtn .inline-icon {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  color: var(--text);
+}
+
+/* 保存按钮：图标+文字组合。
+   字距回到 CJK 合理区间（0.17em 把方块字撕成独立标牌，且尾部字距使墨迹光学偏心
+   LS/2；实测 0.17em 时偏左 1.27px）；粗体降 600 避免小字号填满字腔。
+   padding/gap 收窄换取图标空间：实测 pad16+icon18+gap6 = 121.6px，
+   比加图标前的 129.4px 更窄，宽度与图标两个轴同时改善。 */
+.top-actions #saveTopBtn,
+.form-actions .btn.primary,
+.mobile-savebar .btn.primary {
+  padding: 0 var(--sp-6);
+  gap: var(--sp-3);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* 保存按钮内图标：去基类 margin-right（按钮已有 gap，两者叠加会多占 5px 并破坏居中），
+   显式指定颜色为按钮文字色（继承会拿到 --accent，在渐变背景上对比度不足）。 */
+.top-actions #saveTopBtn .inline-icon,
+.form-actions .btn.primary .inline-icon,
+.mobile-savebar .btn.primary .inline-icon {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  color: currentColor;
+}
+
 /* 刷新按钮：与主题切换同语言的空心图标按钮——中性默认、hover 转强调、纯图标 */
 .top-actions #refreshBtn {
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  min-height: 32px;
+  width: var(--control-h);
+  min-width: var(--control-h);
+  height: var(--control-h);
+  min-height: var(--control-h);
   padding: 0;
   gap: 0;
-  border-radius: 11px;
+  border-radius: var(--radius-btn);
   color: var(--text-soft);
 }
-.top-actions #refreshBtn .inline-icon {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  color: var(--text-soft);
-}
+/* refreshBtn inline-icon 样式已合并到上方三按钮统一规则 */
 .top-actions #refreshBtn:hover {
   border-color: var(--accent);
   color: var(--accent-text);
@@ -1938,7 +2049,8 @@ textarea {
 .top-actions #refreshBtn.is-armed .inline-icon { color: var(--warn); }
 
 @media (max-width: 720px) {
-  :root { --shell-pad: 16px; --topbar-h: 62px; --control-h: 44px; }
+  /* 窄屏控件高度锚定触控档位：桌面 --control-h 若日后调低，此处仍不破 44px 下限 */
+  :root { --shell-pad: 16px; --topbar-h: 62px; --control-h: var(--tap); }
 
   .topbar {
     align-items: center;
@@ -1957,6 +2069,8 @@ textarea {
   .brand-mark img { width: 100%; height: 100%; }
 
   /* 刷新按钮：窄屏放大为 44px 方形触控目标，保持空心图标样式 */
+  .top-actions #dimBtn,
+  .top-actions #boldBtn,
   .top-actions #refreshBtn {
     flex: none;
     width: var(--tap);

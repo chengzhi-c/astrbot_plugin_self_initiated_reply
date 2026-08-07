@@ -43,6 +43,8 @@
     <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5 10 17l9-10"/></symbol>
     <symbol id="i-power" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v8"/><path d="M7.5 7a7 7 0 1 0 9 0"/></symbol>
+    <symbol id="i-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12a8.5 8.5 0 0 1 17 0z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-bold" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 5v15"/><path d="M6 5h7a3.5 3.5 0 0 1 0 7H6"/><path d="M6 12h7.5a4 4 0 0 1 0 8H6"/></symbol>
   </svg>
 
   <!-- 氛围层：纯渐变晕光，不画具象物体。功能区保持素净 -->
@@ -85,10 +87,13 @@
           </svg>
           <span class="theme-label"></span>
         </button>
+        <button class="btn secondary" id="dimBtn" type="button" title="压暗亮度" aria-label="压暗亮度"><svg class="inline-icon" aria-hidden="true"><use href="#i-dim"/></svg></button>
+        <button class="btn secondary" id="boldBtn" type="button" title="粗体字" aria-label="粗体字"><svg class="inline-icon" aria-hidden="true"><use href="#i-bold"/></svg></button>
         <button class="btn secondary" id="refreshBtn" type="button" aria-label="刷新"><svg class="inline-icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>
         <button class="btn primary" id="saveTopBtn" type="button">
           <span class="spinner" aria-hidden="true"></span>
-          <span class="btn-label">保存</span>
+          <svg class="inline-icon" aria-hidden="true"><use href="#i-save"/></svg>
+          <span class="btn-label">保存配置</span>
         </button>
       </div>
     </header>
@@ -102,35 +107,35 @@
         <ul class="sidenav-list">
           <li>
             <a class="sidenav-link" href="#selfStat" data-target="selfStat">
-              <span class="sidenav-idx">01</span><span class="sidenav-text">总开关</span>
+              <svg class="sidenav-icon" aria-hidden="true"><use href="#i-power"/></svg><span class="sidenav-text">总开关</span>
             </a>
           </li>
           <li class="sidenav-group" aria-hidden="true">基础</li>
           <li>
             <a class="sidenav-link" href="#sec-scope" data-target="sec-scope">
-              <span class="sidenav-idx">02</span><span class="sidenav-text">生效范围</span>
+              <svg class="sidenav-icon" aria-hidden="true"><use href="#i-scope"/></svg><span class="sidenav-text">生效范围</span>
             </a>
           </li>
           <li>
             <a class="sidenav-link" href="#sec-triggers" data-target="sec-triggers">
-              <span class="sidenav-idx">03</span><span class="sidenav-text">触发条件</span>
+              <svg class="sidenav-icon" aria-hidden="true"><use href="#i-clock"/></svg><span class="sidenav-text">触发条件</span>
             </a>
           </li>
           <li class="sidenav-group" aria-hidden="true">判断</li>
           <li>
             <a class="sidenav-link" href="#sec-decision" data-target="sec-decision">
-              <span class="sidenav-idx">04</span><span class="sidenav-text">判断方式</span>
+              <svg class="sidenav-icon" aria-hidden="true"><use href="#i-brain"/></svg><span class="sidenav-text">判断方式</span>
             </a>
           </li>
           <li class="sidenav-group" aria-hidden="true">高级</li>
           <li>
             <a class="sidenav-link" href="#sec-runtime" data-target="sec-runtime">
-              <span class="sidenav-idx">05</span><span class="sidenav-text">运行边界</span>
+              <svg class="sidenav-icon" aria-hidden="true"><use href="#i-tools"/></svg><span class="sidenav-text">运行边界</span>
             </a>
           </li>
           <li>
             <a class="sidenav-link" href="#sec-vision" data-target="sec-vision">
-              <span class="sidenav-idx">06</span><span class="sidenav-text">图片识别</span>
+              <svg class="sidenav-icon" aria-hidden="true"><use href="#i-image"/></svg><span class="sidenav-text">图片识别</span>
             </a>
           </li>
         </ul>
@@ -418,6 +423,7 @@
         <div class="actions form-actions">
           <button class="btn primary" type="submit">
             <span class="spinner" aria-hidden="true"></span>
+            <svg class="inline-icon" aria-hidden="true"><use href="#i-save"/></svg>
             <span class="btn-label">保存配置</span>
           </button>
           <span class="save-state" id="configSaveState" aria-live="polite"></span>
@@ -432,6 +438,7 @@
     <span class="save-state mobile-save-state" id="mobileSaveState" aria-live="polite">已同步</span>
     <button class="btn primary" id="saveMobileBtn" type="button">
       <span class="spinner" aria-hidden="true"></span>
+      <svg class="inline-icon" aria-hidden="true"><use href="#i-save"/></svg>
       <span class="btn-label">保存配置</span>
     </button>
   </div>
