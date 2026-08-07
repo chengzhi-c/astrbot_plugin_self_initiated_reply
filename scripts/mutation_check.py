@@ -223,10 +223,7 @@ MUTANTS = [
         # 变异语义不变：已送达回复不推进观察窗口 → 锚定测试应变红。
         "delivered-no-advance",
         "delivery.py",
-        (
-            "        else:\n"
-            "            state.last_proactive_observed_at = ("
-        ),
+        ("        else:\n            state.last_proactive_observed_at = ("),
         (
             "        elif True:\n"
             "            pass\n"
