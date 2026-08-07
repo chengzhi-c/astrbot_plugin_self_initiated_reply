@@ -218,13 +218,21 @@ MUTANTS = [
         "test_record_unconfirmed_sets_state_fields",
     ),
     (
+        # 0.9.0 锚点同步：record_proactive_state 在 0.8.8 重整为 if/elif/else
+        # 三分支，delivered 分支由 else 承载（原 is_current 守卫锚已漂移）；
+        # 变异语义不变：已送达回复不推进观察窗口 → 锚定测试应变红。
         "delivered-no-advance",
         "delivery.py",
         (
-            "        if self._gate.is_current(umo, expected_generation):\n"
+            "        else:\n"
             "            state.last_proactive_observed_at = ("
         ),
-        ("        if False:\n            state.last_proactive_observed_at = ("),
+        (
+            "        elif True:\n"
+            "            pass\n"
+            "        else:\n"
+            "            state.last_proactive_observed_at = ("
+        ),
         "test_deliver_delivered_advances_observation_and_history",
     ),
     (
