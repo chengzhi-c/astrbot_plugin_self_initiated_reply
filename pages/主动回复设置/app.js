@@ -1016,6 +1016,35 @@ if (els.themeToggle) {
   els.themeToggle.addEventListener("click", cycleTheme);
 }
 
+// 亮度压暗 / 粗体切换
+const DIM_KEY  = "selfreply-dim";
+const BOLD_KEY = "selfreply-bold";
+
+function applyDim(on) {
+  document.documentElement.classList.toggle("dimmed", on);
+  const btn = document.getElementById("dimBtn");
+  if (btn) btn.classList.toggle("active", on);
+  try { localStorage.setItem(DIM_KEY, on ? "1" : "0"); } catch (e) { /* ignore */ }
+}
+
+function applyBold(on) {
+  document.documentElement.classList.toggle("bold-text", on);
+  const btn = document.getElementById("boldBtn");
+  if (btn) btn.classList.toggle("active", on);
+  try { localStorage.setItem(BOLD_KEY, on ? "1" : "0"); } catch (e) { /* ignore */ }
+}
+
+const dimBtn  = document.getElementById("dimBtn");
+const boldBtn = document.getElementById("boldBtn");
+if (dimBtn)  dimBtn.addEventListener("click",  () => applyDim(!document.documentElement.classList.contains("dimmed")));
+if (boldBtn) boldBtn.addEventListener("click", () => applyBold(!document.documentElement.classList.contains("bold-text")));
+
+// 恢复亮度/粗体偏好
+try {
+  if (localStorage.getItem(DIM_KEY)  === "1") applyDim(true);
+  if (localStorage.getItem(BOLD_KEY) === "1") applyBold(true);
+} catch (e) { /* ignore */ }
+
 // 页面加载时恢复保存的主题
 try {
   const saved = localStorage.getItem(THEME_KEY);
