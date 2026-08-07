@@ -42,8 +42,13 @@
 - **门槛上调（禁止下调规约）**：fail_under 70→89；coverage_gates 按实测-5% 重标定
   （scheduler 66→93、delivery 60→89、generation 79→80，新增 storage 90，
   移除已并入的 events）。
-- mutation_check 因工作区含本轮未提交改动拒跑，以定点变异抽查替代（巡检不活跃判断
-  翻转即红、delayed_check 缺陷首测即红），留痕于本轮交付记录。
+- **P2 宿主兼容层入门禁**：runtime_adapter.py 降级宿主分支补盲 86%→100%
+  （validate 告警分支/路径回退/工具过滤 fail-closed 边界），coverage_gates
+  新增 runtime_adapter.py 95 门槛（宿主升级风险最高的模块，CI 已有独立门禁作业）。
+- mutation_check 完整矩阵补跑：38/38 全击杀（含 delivered-no-advance 锚点同步
+  0.8.8 三分支重整；首次运行残留识别机制成功检出 outbound.py 变异残留）；
+  hatch build + check_wheel 实跑通过（42 文件/1859 KB，无开发物泄漏，版本一致；
+  Windows 下需 PYTHONUTF8=1 绕过 hatch 子进程 GBK stdout 解码崩溃）。
 
 ## [0.8.8] - 2026-08-07
 

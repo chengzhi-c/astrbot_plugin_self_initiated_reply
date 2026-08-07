@@ -17,10 +17,12 @@ from pathlib import Path
 import coverage
 
 # 文件路径（相对仓库根）→ 最低覆盖率百分比。
-# 实测基线（2026-08-07，Py 3.14.5，569 tests，0.9.0 D1 补盲后）：main.py 96%、
+# 实测基线（2026-08-07，Py 3.14.5，578 tests，0.9.0 D1/P2 补盲后）：main.py 96%、
 # image/parser.py 100%、scheduler.py 98%、decision.py 97%、generation.py 85%、
-# delivery.py 94%、whitelist.py 100%、session_coordinator.py 96%、storage.py 95%。
+# delivery.py 94%、whitelist.py 100%、session_coordinator.py 96%、storage.py 95%、
+# runtime_adapter.py 100%。
 # events.py 已并入 utils.py（0.9.0 B4），对应门槛同步移除。
+# runtime_adapter.py 为宿主兼容层（宿主升级最易出问题），P2 补盲后入门禁。
 # 阈值随补盲推进上调，禁止下调（调低即回归）；跨 Python 版本留缓冲，
 # 故部分阈值低于公式值（实测 − 5%）属有意为之。
 THRESHOLDS = {
@@ -42,6 +44,9 @@ THRESHOLDS = {
     "session_coordinator.py": 91,
     # 0.9.0 D1 容错分支补盲后 72% → 95%，实测 − 5%
     "storage.py": 90,
+    # 0.9.0 P2 降级宿主分支补盲后 86% → 100%，实测 − 5%；
+    # 宿主兼容层升级风险最高，门禁守护防回归
+    "runtime_adapter.py": 95,
 }
 
 ROOT = Path(__file__).resolve().parents[1]
