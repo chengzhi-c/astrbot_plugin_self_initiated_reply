@@ -12,11 +12,10 @@ import ast
 import asyncio
 import importlib
 import logging
-import sys
-import types
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from .host_stubs import ROOT, install_astrbot_stubs, load_package
+
 PACKAGE_NAME = "selfreply_observability_test_package"
 
 # INFO 白名单（异常与运维状态语义）：新增 INFO 必须先在语义上站得住并
@@ -49,7 +48,6 @@ _CHECKED_MODULES = [
     "adapters.py",
     "decision.py",
     "delivery.py",
-    "events.py",
     "generation.py",
     "main.py",
     "outbound.py",
@@ -100,14 +98,9 @@ def test_info_whitelist_has_no_zombie_entries() -> None:
 
 
 def _load_modules():
-    from .test_vision import _install_astrbot_stubs
-
-    _install_astrbot_stubs()
-    package = types.ModuleType(PACKAGE_NAME)
-    package.__path__ = [str(ROOT)]
-    sys.modules[PACKAGE_NAME] = package
-    scheduler = importlib.import_module(f"{PACKAGE_NAME}.scheduler")
-    models = importlib.import_module(f"{PACKAGE_NAME}.models")
+    install_astrbot_stubs()
+    scheduler = load_package(PACKAGE_NAME, "scheduler")
+    models = load_package(PACKAGE_NAME, "models")
     return scheduler, models
 
 

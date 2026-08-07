@@ -159,7 +159,7 @@ async def test_delayed_check_waits_for_running_release_event(tmp_path: Path) -> 
     scheduler._gate.mark_running(umo)
     try:
         task = asyncio.create_task(
-            scheduler._delayed_check(
+            scheduler.delayed_check(
                 umo,
                 delay_sec=0,
                 trigger="patrol",
@@ -189,7 +189,7 @@ async def test_delayed_check_registers_and_cleans_running_table(tmp_path: Path) 
 
     scheduler._check_session = blocking_check
     task = asyncio.create_task(
-        scheduler._delayed_check(
+        scheduler.delayed_check(
             umo,
             delay_sec=0,
             trigger="message_delay",

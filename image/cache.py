@@ -60,26 +60,3 @@ class ImageCache:
         # 超出容量时移除最旧的（最前面的）
         while len(self._cache) > self._max_size:
             self._cache.popitem(last=False)
-
-    def clear(self) -> None:
-        """清空缓存"""
-        self._cache.clear()
-
-    def size(self) -> int:
-        """获取当前缓存大小
-
-        Returns:
-            当前缓存的项数
-        """
-        return len(self._cache)
-
-    def contains(self, key: str) -> bool:
-        """检查缓存是否包含某个键
-
-        Args:
-            key: 缓存键
-
-        Returns:
-            是否存在
-        """
-        return key in self._cache

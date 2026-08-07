@@ -47,6 +47,9 @@ GENERAL_REPLY_REQUEST_PATTERNS = tuple(
 
 
 async def maybe_await(value: Any) -> Any:
+    # 用 inspect.isawaitable 而非 hasattr(value, "__await__")：后者会漏
+    # CO_ITERABLE_COROUTINE 生成器（@types.coroutine），0.8.8 已统一语义
+    # 并删除 recorder_bridge 的 hasattr 私有副本，勿退化。
     if inspect.isawaitable(value):
         return await value
     return value
@@ -218,6 +221,10 @@ def whitelist_storage_key(umo: str, whitelist: set[str]) -> str:
 
     Bare group IDs remain accepted as a legacy wildcard whitelist entry, but
     they must not collapse state from two different platforms into one record.
+
+    ``whitelist`` 参数当前为契约占位（调用点语义显式），为将来 wildcard
+    展开保留签名形状；实现暂为恒等。
+    日落决策点（0.9.0 B5）：0.10 前若 wildcard 不立项，则连参数一并移除。
     """
     return str(umo or "").strip()
 
@@ -243,11 +250,23 @@ def event_sender_name(event: AstrMessageEvent) -> str:
         return "用户"
 
 
-def session_label(event: AstrMessageEvent) -> str:
-    group_id = event_group_id(event)
-    if group_id:
-        return f"群聊 {group_id}"
-    return f"私聊 {event_sender_name(event)}"
+def response_text(response: Any) -> str:
+    """从宿主响应对象提取纯文本：completion_text 优先，result_chain.get_plain_text 兜底。
+
+    0.8.8 三处镜像（decision/generation/parser）统一至此；get_plain_text 异常
+    兜底为空串（原 decision 版异常会传播，统一后更稳，原因文案由调用方判定）。
+    """
+    text = str(getattr(response, "completion_text", "") or "").strip()
+    if text:
+        return text
+    chain = getattr(response, "result_chain", None)
+    getter = getattr(chain, "get_plain_text", None)
+    if not callable(getter):
+        return ""
+    try:
+        return str(getter() or "").strip()
+    except Exception:
+        return ""
 
 
 def is_self_message(event: AstrMessageEvent) -> bool:
@@ -386,6 +405,32 @@ def latest_user_text(records: list[MessageRecord]) -> str:
         if item.role == "user" and item.text.strip():
             return item.text.strip()
     return ""
+
+
+def should_ignore_event(
+    event: Any,
+    text: str,
+    *,
+    vision_has_images: bool,
+    ignored_sender_ids: set[str],
+) -> bool:
+    """判定一条消息是否应被忽略（不进主动回复观察）。（0.9.0 B4 自 events.py 并入）
+
+    - 机器人自己的消息忽略
+    - 以 ``/`` 开头的命令消息忽略
+    - 纯图片消息没有文本，但在识图开启时仍需观察，否则图片无法进入缓存
+    - 忽略名单中的发送者忽略
+    - 直接点名（@Bot）的请求消息忽略（由回复请求窗口另行处理）
+    """
+    if is_self_message(event):
+        return True
+    if text.startswith("/"):
+        return True
+    if not text and not vision_has_images:
+        return True
+    if event_sender_id(event) in ignored_sender_ids:
+        return True
+    return is_explicit_direct_call(event, text)
 
 
 def clean_reply(text: str, *, allow_multiline: bool, max_chars: int) -> str:

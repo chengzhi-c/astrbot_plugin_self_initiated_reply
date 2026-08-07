@@ -1,21 +1,14 @@
 from __future__ import annotations
 
-import importlib
-import sys
-import types
-from pathlib import Path
-
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+from .host_stubs import load_package
+
 PACKAGE_NAME = "selfreply_runtime_test_package"
 
 
 def _load_adapter():
-    package = types.ModuleType(PACKAGE_NAME)
-    package.__path__ = [str(ROOT)]
-    sys.modules[PACKAGE_NAME] = package
-    return importlib.import_module(f"{PACKAGE_NAME}.runtime_adapter")
+    return load_package(PACKAGE_NAME, "runtime_adapter")
 
 
 def _base_caps(runtime, **overrides):

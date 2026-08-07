@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from astrbot.api import logger
 
 from ..models import MAX_IMAGE_CACHE_BYTES
+from ..utils import response_text
 from .cache import ImageCache
 from .models import ImageInfo
 from .recorder_bridge import MAX_IMAGE_BYTES, MessageRecorderBridge
@@ -29,6 +30,13 @@ except ImportError:  # pragma: no cover - AstrBot normally bundles httpx
 
 
 VISION_PROMPT_VERSION = "v1"
+
+# 顶层常量：prompt 模板变更必须同步 bump VISION_PROMPT_VERSION（缓存键语义，
+# 守卫见 tests/test_vision_parser_gaps.py 的模板指纹锚定）。
+VISION_PROMPT_TEXT = "简要描述这张图片，重点说明文字和关键物体，不超过80字。"
+VISION_SYSTEM_PROMPT_TEXT = (
+    "你是主动回复插件的图片理解器。只描述图片中可观察到的内容，不要猜测身份、隐私或图片之外的信息。"
+)
 
 
 _UNABLE_PATTERNS = re.compile(
@@ -143,6 +151,19 @@ class ImageParser:
             logger.warning("[selfreply] image capture failed: %s", exc)
             return False
 
+    @staticmethod
+    async def _run_concurrent(
+        images: list[ImageInfo], fn: Any, *, max_concurrent: int
+    ) -> list[Any]:
+        """并发执行 fn(image) 并保持输入顺序（三个批方法共用模板）。"""
+        semaphore = asyncio.Semaphore(max(1, int(max_concurrent)))
+
+        async def run_one(image: ImageInfo) -> Any:
+            async with semaphore:
+                return await fn(image)
+
+        return list(await asyncio.gather(*(run_one(image) for image in images)))
+
     async def snapshot_local_sources(
         self, images: list[ImageInfo], *, max_concurrent: int = 2
     ) -> list[bool]:
@@ -153,13 +174,9 @@ class ImageParser:
         extractor as host-trusted enter this fast local snapshot path; arbitrary
         ImageInfo paths remain subject to the normal cache-root restriction.
         """
-        semaphore = asyncio.Semaphore(max(1, int(max_concurrent)))
-
-        async def snapshot_one(image: ImageInfo) -> bool:
-            async with semaphore:
-                return await self._snapshot_local_source(image)
-
-        return list(await asyncio.gather(*(snapshot_one(image) for image in images)))
+        return await self._run_concurrent(
+            images, self._snapshot_local_source, max_concurrent=max_concurrent
+        )
 
     async def _snapshot_local_source(self, image_info: ImageInfo) -> bool:
         if image_info.prepared_source:
@@ -199,13 +216,7 @@ class ImageParser:
         self, images: list[ImageInfo], *, max_concurrent: int = 2
     ) -> list[bool]:
         """Freeze image sources concurrently while preserving input order."""
-        semaphore = asyncio.Semaphore(max(1, int(max_concurrent)))
-
-        async def prepare_one(image: ImageInfo) -> bool:
-            async with semaphore:
-                return await self.prepare(image)
-
-        return list(await asyncio.gather(*(prepare_one(image) for image in images)))
+        return await self._run_concurrent(images, self.prepare, max_concurrent=max_concurrent)
 
     async def parse(self, image_info: ImageInfo, *, umo: str = "") -> str | None:
         """Parse one image and return a compact description, or ``None`` on failure."""
@@ -240,18 +251,15 @@ class ImageParser:
                     response = await asyncio.wait_for(
                         self._bridge.llm_generate_direct(
                             provider_id=provider_id,
-                            prompt="简要描述这张图片，重点说明文字和关键物体，不超过80字。",
-                            system_prompt=(
-                                "你是主动回复插件的图片理解器。只描述图片中可观察到的内容，"
-                                "不要猜测身份、隐私或图片之外的信息。"
-                            ),
+                            prompt=VISION_PROMPT_TEXT,
+                            system_prompt=VISION_SYSTEM_PROMPT_TEXT,
                             temperature=0.2,
                             max_tokens=120,
                             image_urls=[image_url],
                         ),
                         timeout=self._timeout_sec,
                     )
-                    description = self._response_text(response)
+                    description = response_text(response)
                     if not description or self._is_unable_to_describe(description):
                         logger.info("[selfreply] no usable description from provider")
                     else:
@@ -368,13 +376,11 @@ class ImageParser:
         max_concurrent: int = 2,
     ) -> list[str | None]:
         """Parse images concurrently while preserving input order."""
-        semaphore = asyncio.Semaphore(max(1, int(max_concurrent)))
-
-        async def parse_one(image: ImageInfo) -> str | None:
-            async with semaphore:
-                return await self.parse(image, umo=umo)
-
-        return list(await asyncio.gather(*(parse_one(image) for image in images)))
+        return await self._run_concurrent(
+            images,
+            lambda image: self.parse(image, umo=umo),
+            max_concurrent=max_concurrent,
+        )
 
     async def _resolve_image_url(self, image_info: ImageInfo) -> str | None:
         if image_info.prepared_source:
@@ -537,20 +543,6 @@ class ImageParser:
             # 仅允许标准 Web 端口，收缩公网主机任意端口可达的 SSRF 面
             return False
         return await asyncio.to_thread(_host_all_global, parsed.hostname)
-
-    @staticmethod
-    def _response_text(response: Any) -> str:
-        text = str(getattr(response, "completion_text", "") or "").strip()
-        if text:
-            return text
-        chain = getattr(response, "result_chain", None)
-        getter = getattr(chain, "get_plain_text", None)
-        if callable(getter):
-            try:
-                return str(getter() or "").strip()
-            except Exception:
-                return ""
-        return ""
 
     @staticmethod
     def _is_unable_to_describe(content: str) -> bool:

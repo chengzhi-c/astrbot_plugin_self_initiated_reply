@@ -20,7 +20,6 @@ import pytest
 
 from .host_stubs import (
     FakeToolSet,
-    hook_calls,
     reset_hook_calls,
     with_plugin,
 )
@@ -429,111 +428,6 @@ def test_generation_rejects_stale_expected_token(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# UNKNOWN 发送语义
-# ============================================================================
-
-
-def test_unknown_send_consumes_quota_without_history(tmp_path: Path) -> None:
-    """UNKNOWN 消耗冷却与日配额、推进观察窗口（视为已尝试），但不写确认历史。"""
-
-    async def scenario(plugin, main):
-        state = plugin._state_for(UMO)
-        state.last_active_at = 100.0
-        state.last_proactive_observed_at = 50.0
-
-        ok = await plugin._record_proactive_state(
-            UMO, state, "", 0, observed_active_at=100.0, confirmed=False
-        )
-        assert ok is True
-        assert state.daily_count == 1
-        assert state.last_proactive_at > 0
-        assert state.last_proactive_observed_at == 100.0  # 视为已尝试，推进观察窗口
-        assert state.last_proactive_text == ""  # 不写确认文本
-        assert all(record.role != "assistant" for record in state.recent)
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_unknown_send_stale_generation_does_not_advance_observation(tmp_path: Path) -> None:
-    """旧代次任务的 UNKNOWN 结果不得推进观察窗口（避免覆盖新会话语义）。"""
-
-    async def scenario(plugin, main):
-        state = plugin._state_for(UMO)
-        state.last_proactive_observed_at = 50.0
-
-        ok = await plugin._record_proactive_state(
-            UMO, state, "", 0, expected_generation=999999, confirmed=False
-        )
-        assert ok is True
-        assert state.last_proactive_observed_at == 50.0
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_confirmed_send_writes_history_and_observation(tmp_path: Path) -> None:
-    async def scenario(plugin, main):
-        state = plugin._state_for(UMO)
-        ok = await plugin._record_proactive_state(UMO, state, "你好", 0, observed_active_at=123.0)
-        assert ok is True
-        assert state.daily_count == 1
-        assert state.last_proactive_text == "你好"
-        assert state.last_proactive_observed_at == 123.0
-        assert state.recent[-1].role == "assistant"
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_send_reply_unknown_skips_after_send_hook(tmp_path: Path) -> None:
-    """UNKNOWN（send 抛异常，真实适配器失败形态）不得触发 after-send hook。"""
-
-    async def scenario(plugin, main):
-        event = _make_event()
-        plugin._last_events[UMO] = event
-        plugin._last_event_at[UMO] = 1.0
-
-        async def failing_send(_message):
-            raise RuntimeError("adapter disconnected")
-
-        event.send = failing_send
-        reset_hook_calls()
-        outcome = await plugin._send_reply(
-            UMO, "测试回复", expected_generation=plugin._gate.advance(UMO)
-        )
-
-        assert outcome.status.value == "unknown"
-        after_send = [
-            event_type
-            for _event, event_type in hook_calls()
-            if event_type.name == "OnAfterMessageSentEvent"
-        ]
-        assert after_send == []
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_send_reply_delivered_triggers_after_send_hook(tmp_path: Path) -> None:
-    async def scenario(plugin, main):
-        event = _make_event()
-        plugin._last_events[UMO] = event
-        plugin._last_event_at[UMO] = 1.0
-
-        reset_hook_calls()
-        outcome = await plugin._send_reply(
-            UMO, "测试回复", expected_generation=plugin._gate.advance(UMO)
-        )
-
-        assert outcome.status.value == "delivered"
-        after_send = [
-            event_type
-            for _event, event_type in hook_calls()
-            if event_type.name == "OnAfterMessageSentEvent"
-        ]
-        assert len(after_send) == 1
-
-    with_plugin(tmp_path, scenario)
-
-
-# ============================================================================
 # 配置态 / 运行态分离
 # ============================================================================
 
@@ -713,90 +607,6 @@ def _fresh_state(plugin) -> Any:
     return state
 
 
-def test_local_gate_force_bypasses_all_checks(tmp_path: Path) -> None:
-    """force=True 直接放行（/selfreply check 手动路径）。"""
-
-    async def scenario(plugin, main):
-        plugin.settings.quiet_hours = ["00:00-23:59"]  # 全天免打扰也不挡 force
-        state = _fresh_state(plugin)
-        assert plugin._local_gate(state, force=True) == ""
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_local_gate_quiet_hours_block(tmp_path: Path) -> None:
-    """免打扰时段内非 force 一律拒绝。"""
-
-    async def scenario(plugin, main):
-        plugin.settings.quiet_hours = ["00:00-23:59"]  # 覆盖全天
-        state = _fresh_state(plugin)
-        assert plugin._local_gate(state, force=False) == "免打扰时段。"
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_local_gate_daily_quota_block(tmp_path: Path) -> None:
-    """日配额耗尽拒绝，且与 daily_key 无关（refresh_day 已保证当日计数）。"""
-
-    async def scenario(plugin, main):
-        plugin.settings.quiet_hours = []
-        plugin.settings.max_daily_replies_per_session = 5
-        state = _fresh_state(plugin)
-        state.daily_count = 5
-        assert plugin._local_gate(state, force=False) == "今日主动回复次数已达上限。"
-
-        state.daily_count = 4
-        assert plugin._local_gate(state, force=False) != "今日主动回复次数已达上限。"
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_local_gate_silence_and_cooldown_blocks(tmp_path: Path) -> None:
-    """静默不足与冷却中分别拒绝。"""
-
-    async def scenario(plugin, main):
-        import time as _time
-
-        plugin.settings.quiet_hours = []
-        plugin.settings.min_silence_sec = 300
-        plugin.settings.cooldown_sec = 600
-        state = _fresh_state(plugin)
-
-        # 静默不足：最后消息在 60 秒前
-        state.last_active_at = _time.time() - 60
-        assert "静默时间不足" in plugin._local_gate(state, force=False)
-
-        # 冷却中：上次主动回复在 100 秒前
-        state.last_active_at = _time.time() - 3600
-        state.last_proactive_at = _time.time() - 100
-        assert "冷却中" in plugin._local_gate(state, force=False)
-
-        # 全部满足：放行
-        state.last_proactive_at = _time.time() - 3600
-        assert plugin._local_gate(state, force=False) == ""
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_local_gate_already_observed_blocks_repeat(tmp_path: Path) -> None:
-    """该消息之后已主动回复过（观察窗口已推进）则拒绝，防 patrol 重复回复。"""
-
-    async def scenario(plugin, main):
-        plugin.settings.quiet_hours = []
-        state = _fresh_state(plugin)
-        state.last_active_at = _time_now() - 3600
-        state.last_proactive_observed_at = state.last_active_at + 1  # 已观察过
-        assert plugin._local_gate(state, force=False) == "这条消息之后已经主动回复过。"
-
-    with_plugin(tmp_path, scenario)
-
-
-def _time_now() -> float:
-    import time
-
-    return time.time()
-
-
 def test_ask_decision_model_provider_failure_returns_clear_reason(tmp_path: Path) -> None:
     """判断模型 Provider 解析失败时返回明确 reason，不得抛异常或误导。"""
 
@@ -808,7 +618,7 @@ def test_ask_decision_model_provider_failure_returns_clear_reason(tmp_path: Path
         plugin.settings.decision_model_enabled = True
         plugin.bridge = BrokenBridge()
         state = _fresh_state(plugin)
-        result = await plugin._ask_decision_model(UMO, state, trigger="message_delay")
+        result = await plugin._decision.ask_decision_model(UMO, state, trigger="message_delay")
         assert result["should_reply"] is False
         assert result["reason"] == "判断模型解析失败"
 
@@ -854,8 +664,41 @@ def test_whitelist_remove_recycles_legacy_group_key(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+def test_force_check_prunes_session_state(tmp_path: Path) -> None:
+    """非白名单会话手动 check 后 sessions 条目必须回收（0.8.8 单点化）。
+
+    此前 _prune_session 只清代次/锁/运行标记与 _last_decisions，sessions 里
+    的 SessionState（含 recent 历史）会随手动 check 的会话数累积。
+    """
+
+    async def scenario(plugin, main):
+        original_check = plugin._check_session
+
+        async def fake_check(*args, **kwargs):
+            return "完成"
+
+        plugin._check_session = fake_check
+        try:
+            other = "fake:group:999"
+            plugin._state_for(other)  # 模拟 check 流程已建会话状态
+            assert other in plugin.sessions
+            event = _make_event(umo=other)
+            await plugin._command_text(event, "check")
+            assert other not in plugin.sessions
+            assert plugin.sessions.get(other) is None
+        finally:
+            plugin._check_session = original_check
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_version_consistency_across_metadata() -> None:
-    """models / metadata.yaml / README 的版本必须一致。"""
+    """models / metadata.yaml / pyproject.toml / 双语 README 五源版本必须一致。
+
+    0.8.8 起 pyproject.toml 纳入守卫：0.8.7 发布时 pyproject 漏在守卫之外，
+    导致 wheel 文件名与 dist-info 版本停留在 0.8.3（实测实锤），面板显示
+    0.8.7 而 pip 记录 0.8.3。
+    """
     root = Path(__file__).resolve().parents[1]
     models = (root / "models.py").read_text(encoding="utf-8")
     metadata = (root / "metadata.yaml").read_text(encoding="utf-8")
@@ -864,8 +707,18 @@ def test_version_consistency_across_metadata() -> None:
     assert match is not None
     version = match.group(1)
     assert f"version: {version}" in metadata
+    # pyproject 版本（3.10 无 tomllib，用 tomli 兼容；dev 依赖已声明）
+    try:
+        import tomllib
+    except ImportError:  # pragma: no cover - py3.10 兼容分支
+        import tomli as tomllib  # type: ignore[no-redef]
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["project"]["version"] == version, (
+        f"pyproject.toml version={pyproject['project']['version']} 与 PLUGIN_VERSION={version} 不一致，"  # noqa: E501
+        "wheel 文件名与 dist-info 会停留在旧版本"
+    )
     # README 版本号由 shields 徽章承载（0.7.22 起，原「当前版本」行随 README 重写移除）；
-    # 中英双语 badge 都校验（中文版「版本-0.8.2」，英文版「version-0.8.2」，
+    # 中英双语 badge 都校验（中文版「版本-x.y.z」，英文版「version-x.y.z」，
     # 统一用 -{version}- 子串兼容）
     for readme_name in ("README.md", "README.en.md"):
         text = (root / readme_name).read_text(encoding="utf-8")

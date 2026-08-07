@@ -30,13 +30,14 @@ from .models import (
     PLUGIN_ID,
     PROACTIVE_ALLOWED_TOOL_IDS,
     ImageContextCallback,
+    LocalGateCallback,
     PipelineReply,
     ReadHistoryCallback,
     SessionState,
     Settings,
 )
 from .outbound import OutboundGateway
-from .utils import build_history_text, clean_reply
+from .utils import build_history_text, clean_reply, response_text
 
 
 class GenerationRunner:
@@ -73,7 +74,7 @@ class GenerationRunner:
         context: Any,
         runtime: Callable[[], Any],
         gate: Any,
-        local_gate: Callable[[SessionState, bool], str],
+        local_gate: LocalGateCallback,
         enforce_policy: Callable[[Any, bool], bool],
         call_hook: Callable[[Any, Any, Any], Awaitable[bool]],
         grace_stop_sec: Callable[[], float],
@@ -156,7 +157,7 @@ class GenerationRunner:
             max_direct_sends=MAX_DIRECT_TOOL_SENDS,
             allow_direct=lambda: (
                 self._gate.is_current(umo, expected_generation)
-                and not self._local_gate(state, force)
+                and not self._local_gate(state, force=force)
             ),
         )
 
@@ -291,12 +292,7 @@ class GenerationRunner:
                 await self._graceful_stop(run_task, build_result.agent_runner, cancel_first=False)
                 raise
             response = build_result.agent_runner.get_final_llm_resp()
-            reply_text = str(getattr(response, "completion_text", "") or "").strip()
-            if not reply_text and getattr(response, "result_chain", None):
-                try:
-                    reply_text = response.result_chain.get_plain_text().strip()
-                except Exception:
-                    reply_text = ""
+            reply_text = response_text(response)
             if reply_text:
                 reply_text = clean_reply(
                     reply_text,

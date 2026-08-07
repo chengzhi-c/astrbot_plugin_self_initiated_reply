@@ -45,8 +45,10 @@
   --text:      light-dark(#22222e, #f4ece0);
   --text-soft: light-dark(#3a3a4a, #ddcdb8);
   --muted:     light-dark(#5c5c70, #b09a80);
-  /* --faint 承载单位后缀与 placeholder 等有效信息，须满足 AA 4.5:1，不能当装饰色压淡 */
-  --faint:     light-dark(#767d90, #9c876a);
+  /* --faint 承载单位后缀与 placeholder 等有效信息，须满足 AA 4.5:1，不能当装饰色压淡。
+     实测 #767d90 在 --bg(#eceef3) 上仅 3.54:1、在 --surface-3(#eef1f6) 上 3.63:1，
+     均不达标；#63697c 在各表面 ≥4.71:1 通过（复审 P0-2） */
+  --faint:     light-dark(#63697c, #9c876a);
 
   /* 功能强调色：浅色取慈爱之惠的冷灰紫（压深以满足对比度），
      深色取审判之司的烛火琥珀 */
@@ -137,6 +139,67 @@
 
   /* 顶栏 + 侧栏导航的 sticky 偏移，按断点覆写 */
   --topbar-h: 100px;
+}
+
+/* ==========================================================================
+   旧浏览器兜底 · light-dark() / color-mix() 不可用时退化为完整浅色主题
+   --------------------------------------------------------------------------
+   light-dark() 需要 Chrome 123+ / Firefox 120+ / Safari 17.5+（全球 ~86%）；
+   不支持的浏览器中 :root 里所有 light-dark(...) 变量声明整体失效，页面会
+   退化为无样式。此处用硬编码浅色值重建全部 light-dark 变量；color-mix()
+   同代缺失，顶栏/移动保存条/Tab 栏等关键背景一并覆盖为纯色，避免透明底
+   文字悬空。旧浏览器固定浅色主题，可读性优先（复审 P0-1）。
+   ========================================================================== */
+
+@supports not (color: light-dark(#000, #fff)) {
+  :root {
+    --bg:            #eceef3;
+    --surface:       #fbfcfe;
+    --surface-2:     #f3f5f9;
+    --surface-3:     #eef1f6;
+    --surface-hover: #e7eaf1;
+    --surface-elevated: #ffffff;
+    --border:        rgba(48, 48, 64, .18);
+    --border-strong: rgba(48, 48, 64, .36);
+    --text:      #22222e;
+    --text-soft: #3a3a4a;
+    --muted:     #5c5c70;
+    --faint:     #63697c;
+    --mirror-well: #303040;
+    --info:        #3f6fb0;
+    --info-soft:   rgba(63, 111, 176, .14);
+    --ok:          #4a6b2a;
+    --ok-soft:     rgba(74, 107, 42, .13);
+    --warn:        #8a6a12;
+    --warn-soft:   rgba(138, 106, 18, .13);
+    --danger:      #9e3316;
+    --danger-soft: rgba(158, 51, 22, .11);
+    --switch-track: #d8dae3;
+    --switch-knob:  #fbfcfe;
+    --dot-halo:     rgba(48, 48, 64, .10);
+    --scroll-thumb: rgba(48, 48, 64, .22);
+    --toast-bg:   rgba(34, 34, 46, .96);
+    --toast-text: #fbfcfe;
+    --shadow-sm:  0 1px 2px rgba(34, 34, 46, .07);
+    --shadow-btn: inset 0 1px 0 rgba(255, 255, 255, .55), 0 1px 2px rgba(34, 34, 46, .07);
+  }
+
+  /* color-mix() 不可用时背景会退化为全透明，文字悬空，必须给纯色兜底 */
+  .topbar,
+  .mobile-savebar,
+  .mobile-tabbar {
+    background: var(--bg);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .btn.primary { background: var(--accent); }
+  .btn.secondary:hover { background: var(--surface-2); }
+
+  /* 内联 light-dark() 文字色：深色底上需浅色文字才可读 */
+  .skip-link,
+  .field-error::before,
+  .btn.primary,
+  .btn.danger:hover { color: #ffffff; }
 }
 
 /* ==========================================================================
@@ -348,7 +411,8 @@ code {
 .shell {
   position: relative;
   z-index: 1;
-  width: min(1180px, 100%);
+  /* 加宽容器：原 1180 上限让主内容列在大屏下只剩 ~870px，主框显窄且视觉偏右 */
+  width: min(1400px, 100%);
   margin: 0 auto;
   padding: 0 var(--shell-pad) 56px;
 }
@@ -432,8 +496,10 @@ code {
 
 .layout {
   display: grid;
-  grid-template-columns: 224px minmax(0, 1fr);
-  gap: var(--sp-9);
+  /* 收窄侧栏（224→196）并减小栏距（32→20），把宽度让给主内容列，
+     缓解「左侧被分区导航占据、主框偏右又偏窄」的失衡感 */
+  grid-template-columns: 196px minmax(0, 1fr);
+  gap: var(--sp-7);
   align-items: start;
   margin-top: var(--sp-8);
 }
@@ -500,7 +566,7 @@ details.panel {
   border-radius: var(--radius-xs);
   color: var(--text-soft);
   font-size: var(--fs-400);
-  font-weight: 550;
+  font-weight: 500;
   text-decoration: none;
   transition: background .16s var(--ease), color .16s var(--ease), box-shadow .16s var(--ease);
 }
@@ -1098,7 +1164,7 @@ textarea {
   align-items: center;
   color: var(--danger);
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 500;
   line-height: 1.5;
 }
 
@@ -1260,6 +1326,18 @@ textarea {
   --prompt-workspace-height: 440px;
 }
 
+/* 恢复默认提示词操作区：桌面端落在右列第二行（预览面板正下方）。
+   必须同时锁定行与列：只锁列时它会在自动放置算法中先于编辑器/预览入座，
+   抢占 r1c2 把预览挤到第二行（CSS Grid auto-placement 顺序：先行列锁定项，再锁列项，最后全自动项）。
+   特异性须压过 .compact-actions 的 margin-top（书写顺序在它之前，靠叠类取胜） */
+.prompt-workspace > .prompt-actions {
+  grid-column: 2;
+  grid-row: 2;
+  margin-top: 0;
+  /* 提示文字与 40px 按钮垂直居中对齐；flex-start 会让 13px 小字顶贴按钮上沿，视觉歪斜 */
+  align-items: center;
+}
+
 .prompt-editor {
   grid-template-rows: auto minmax(0, 1fr);
   height: var(--prompt-workspace-height);
@@ -1291,7 +1369,7 @@ textarea {
   margin-bottom: 10px;
 }
 
-.prompt-preview-head h4 {
+.prompt-preview-head h3 {
   font-size: var(--fs-300);
   font-weight: 700;
 }
@@ -1466,8 +1544,9 @@ textarea {
 .btn:active { transform: translateY(1px); }
 
 .btn:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  /* 用 outline 而非双层 box-shadow 环：outline-offset 的间隙透明，深色按钮外不会再出现白缝 */
+  outline: 3px solid var(--focus-color);
+  outline-offset: 2px;
 }
 
 .btn.primary {
@@ -1524,17 +1603,13 @@ textarea {
   .btn.is-saved, .sidenav-dot.is-pulse { animation: none; }
 }
 
+/* dirty 提示由 ::after 圆点 + 底部 hint 文案承担；不再叠加焦点环
+   （焦点环的 2px 白色 offset 环在亮色下像按钮外一圈缝隙，且焦点环语义不该表达 dirty） */
 .btn.primary.is-dirty {
   position: relative;
-  box-shadow: var(--shadow-btn), var(--focus-ring);
 }
 
-/* dirty + hover 时特异性须压过 .btn.primary:not(:disabled):hover (0,4,0)，ring 与光晕并存 */
-.btn.primary.is-dirty:not(:disabled):hover {
-  box-shadow: var(--shadow-btn),
-    0 8px 18px -8px color-mix(in srgb, var(--accent) 55%, transparent),
-    var(--focus-ring);
-}
+/* dirty 的 hover 样式与 .btn.primary:not(:disabled):hover 一致，无需覆写 */
 
 .btn.primary.is-dirty::after {
   content: "";
@@ -1565,16 +1640,13 @@ textarea {
   background: var(--danger);
   color: light-dark(#fff, #120d09);
 }
-.btn.danger:focus-visible { box-shadow: var(--focus-ring); }
-
-/* 重置提示词二次确认条 */
-.reset-confirm {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+.btn.danger:focus-visible {
+  outline: 3px solid var(--focus-color);
+  outline-offset: 2px;
 }
-.reset-confirm-text {
+
+/* 恢复默认提示词旁的常驻提示 */
+.reset-hint {
   color: var(--muted);
   font-size: var(--fs-300);
   line-height: 1.5;
@@ -1623,6 +1695,8 @@ textarea {
 
 .save-state.is-ok { color: var(--ok); }
 .save-state.is-error { color: var(--danger); }
+/* 与 .mobile-save-state.is-pending 对齐：待保存/保存中用强调色 */
+.save-state.is-pending { color: var(--accent-text); }
 
 /* --------------------------------------------------------------------------
    Toast
@@ -1813,6 +1887,9 @@ textarea {
   .prompt-workspace,
   .model-grid { grid-template-columns: 1fr; }
 
+  /* 单列时行列锁全部解除，回归 DOM 流：编辑器 → 预览 → 操作区 */
+  .prompt-workspace > .prompt-actions { grid-column: auto; grid-row: auto; }
+
   .prompt-editor,
   .prompt-preview-panel {
     height: auto;
@@ -1822,7 +1899,6 @@ textarea {
   .prompt-editor textarea { min-height: 260px; }
 }
 
-/* 刷新按钮：纯图标风格，移除所有外框/底色，强调色；hover/active 也不出现圆角框 */
 /* 刷新按钮：与主题切换同语言的空心图标按钮——中性默认、hover 转强调、纯图标 */
 .top-actions #refreshBtn {
   width: 32px;
@@ -1846,6 +1922,18 @@ textarea {
   background: var(--surface-hover);
 }
 .top-actions #refreshBtn:hover .inline-icon { color: var(--accent-text); }
+
+/* 刷新中：图标旋转给出即时反馈（复用 spin 关键帧） */
+.top-actions #refreshBtn.is-loading .inline-icon { animation: spin .8s linear infinite; }
+.top-actions #refreshBtn:disabled { cursor: progress; opacity: .6; }
+
+/* 待确认态（有未保存改动时的第一次点击）：警示色描边，提示「再点一次才真刷新」 */
+.top-actions #refreshBtn.is-armed {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+.top-actions #refreshBtn.is-armed .inline-icon { color: var(--warn); }
 
 @media (max-width: 720px) {
   :root { --shell-pad: 16px; --topbar-h: 62px; --control-h: 44px; }
@@ -1905,6 +1993,7 @@ textarea {
   .form { padding-bottom: 152px; }
 
   .mobile-savebar {
+    position: fixed;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -1920,9 +2009,7 @@ textarea {
     box-shadow: 0 -8px 24px -12px rgba(0, 0, 0, .35);
   }
 
-  .mobile-savebar.is-dirty .btn.primary {
-    box-shadow: var(--shadow-btn), var(--focus-ring);
-  }
+  /* 移动端 dirty 提示由保存条出现本身 + 按钮 ::after 圆点承担，不再叠加焦点环白缝 */
 
   .mobile-savebar .mobile-save-state {
     flex: 1 1 auto;
@@ -2019,3 +2106,36 @@ textarea {
     scroll-behavior: auto !important;
   }
 }
+
+/* --------------------------------------------------------------------------
+   保存期间表单反馈 · inert 不可编辑需可感知（复审 P2-10）
+   配合 app.js 中 configForm.classList 切换 .is-saving
+   -------------------------------------------------------------------------- */
+
+.form.is-saving {
+  opacity: .72;
+  pointer-events: none;
+}
+
+/* --------------------------------------------------------------------------
+   低端设备 backdrop-filter 降级（复审 P2-11）
+   4 处常驻模糊层在低端 Android 滚动时可能掉帧；prefers-reduced-motion
+   用户通常也接受性能优先，统一关闭模糊并提高背景不透明度。
+   注：@supports not (color: light-dark()) 兜底块已覆盖不支持 color-mix 的
+   旧浏览器，此处覆盖「支持新颜色函数但需降级」的性能场景。
+   -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .topbar,
+  .toast,
+  .mobile-savebar,
+  .mobile-tabbar {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .topbar,
+  .mobile-savebar,
+  .mobile-tabbar { background: var(--bg); }
+  .toast { background: var(--toast-bg); }
+}
+

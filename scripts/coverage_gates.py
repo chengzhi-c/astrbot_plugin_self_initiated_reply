@@ -17,28 +17,31 @@ from pathlib import Path
 import coverage
 
 # 文件路径（相对仓库根）→ 最低覆盖率百分比。
-# 实测基线（2026-08-06，Py 3.14.5，492 tests）：main.py 96%、image/parser.py 100%、
-# scheduler.py 72%、decision.py 97%、generation.py 84%、delivery.py 65%、
-# whitelist.py 100%、events.py 100%、session_coordinator.py 96%。
-# 阈值随补盲推进上调，禁止下调（调低即回归）。
+# 实测基线（2026-08-07，Py 3.14.5，569 tests，0.9.0 D1 补盲后）：main.py 96%、
+# image/parser.py 100%、scheduler.py 98%、decision.py 97%、generation.py 85%、
+# delivery.py 94%、whitelist.py 100%、session_coordinator.py 96%、storage.py 95%。
+# events.py 已并入 utils.py（0.9.0 B4），对应门槛同步移除。
+# 阈值随补盲推进上调，禁止下调（调低即回归）；跨 Python 版本留缓冲，
+# 故部分阈值低于公式值（实测 − 5%）属有意为之。
 THRESHOLDS = {
     # 08 补盲后 69% → 96%，门槛按 ticket 目标定 80（留缓冲）
     "main.py": 80,
     # 09 补盲后 63.4% → 100%，门槛按 ticket 目标定 80（跨 Python 版本留缓冲）
     "image/parser.py": 80,
-    # 02 拆分后新模块，实测 71% − 5% 缓冲
-    "scheduler.py": 66,
+    # 0.9.0 D1 巡检/清理循环补盲后 76% → 98%，实测 − 5%
+    "scheduler.py": 93,
     # 03 拆分后新模块，实测 97% − 5% 缓冲
     "decision.py": 92,
-    # 04 拆分后新模块，实测 84% − 5% 缓冲
-    "generation.py": 79,
-    # 05 拆分后新模块，实测 65% − 5% 缓冲
-    "delivery.py": 60,
+    # 04 拆分后新模块，实测 85% − 5% 缓冲
+    "generation.py": 80,
+    # 0.9.0 D1 发送异常分支补盲后 74% → 94%，实测 − 5%
+    "delivery.py": 89,
     # 06 拆分后新模块，实测 100% − 5% 缓冲
     "whitelist.py": 95,
-    "events.py": 95,
     # 07 拆分后新模块，实测 96% − 5% 缓冲
     "session_coordinator.py": 91,
+    # 0.9.0 D1 容错分支补盲后 72% → 95%，实测 − 5%
+    "storage.py": 90,
 }
 
 ROOT = Path(__file__).resolve().parents[1]

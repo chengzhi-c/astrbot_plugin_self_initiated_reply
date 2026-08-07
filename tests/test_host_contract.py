@@ -8,15 +8,12 @@
 
 from __future__ import annotations
 
-import importlib
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from .host_stubs import ROOT
 from .test_vision import PACKAGE_NAME
-
-ROOT = Path(__file__).resolve().parents[1]
 
 # 宿主私有层 import 语句：全仓库只允许出现在收敛点（适配层、宿主桩、兼容检查）
 _PRIVATE_IMPORT_RE = r"(^|\n)\s*(from|import)\s+astrbot\.core"
@@ -32,7 +29,6 @@ _CHECKED_MODULES = [
     "commands.py",
     "decision.py",
     "delivery.py",
-    "events.py",
     "generation.py",
     "main.py",
     "outbound.py",
@@ -41,7 +37,6 @@ _CHECKED_MODULES = [
     "session_gate.py",
     "state_saver.py",
     "storage.py",
-    "unified_manager.py",
     "utils.py",
     "webapi.py",
     "whitelist.py",
@@ -166,17 +161,10 @@ def test_silence_remaining_on_state() -> None:
 
 
 def _runtime_adapter():
-    import sys
-    import types
-
-    from .host_stubs import install_astrbot_stubs
+    from .host_stubs import install_astrbot_stubs, load_package
 
     install_astrbot_stubs()  # runtime_adapter 无模块级宿主 import，装桩保证包加载路径一致
-    if PACKAGE_NAME not in sys.modules:
-        package = types.ModuleType(PACKAGE_NAME)
-        package.__path__ = [str(ROOT)]
-        sys.modules[PACKAGE_NAME] = package
-    return importlib.import_module(f"{PACKAGE_NAME}.runtime_adapter")
+    return load_package(PACKAGE_NAME, "runtime_adapter")
 
 
 def _full_capabilities(adapter, **overrides):
@@ -303,6 +291,34 @@ def test_narrow_symbol_accessors() -> None:
     assert req.session_id == ""
     assert runtime.config_path() == "/tmp/config"
     assert runtime.plugin_data_path() == "/tmp/data"
+
+
+async def test_call_event_hook_awaits_async_callback() -> None:
+    """call_event_hook 两分支（req 缺省/显式）对异步回调都走 maybe_await 正常 await。
+
+    0.8.8 单源化后 utils.maybe_await 是唯一实现，本测试锁住适配层调用点
+    （此前该分支零覆盖：若导入/传参错误，测试不红）。
+    """
+    adapter = _runtime_adapter()
+    calls: list[str] = []
+
+    async def async_hook(event, event_type, req=None):
+        calls.append(str(req))
+        return "async-result"
+
+    runtime = adapter.AstrBotRuntimeAdapter(_full_capabilities(adapter, call_event_hook=async_hook))
+    assert await runtime.call_event_hook("evt", "OnLLMRequestEvent") == "async-result"
+    assert await runtime.call_event_hook("evt", "OnLLMRequestEvent", req="req") == "async-result"
+    assert calls == ["None", "req"]
+
+
+async def test_call_event_hook_passes_through_sync_callback() -> None:
+    """同步回调（非可等待值）原样返回，不误 await。"""
+    adapter = _runtime_adapter()
+    runtime = adapter.AstrBotRuntimeAdapter(
+        _full_capabilities(adapter, call_event_hook=lambda e, t, req=None: "sync")
+    )
+    assert await runtime.call_event_hook("evt", "t") == "sync"
 
 
 def test_host_contract_checks_listed() -> None:

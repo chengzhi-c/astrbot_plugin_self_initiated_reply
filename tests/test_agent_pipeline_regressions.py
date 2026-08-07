@@ -1,11 +1,12 @@
-"""红灯测试（阶段 0）：审查报告 P0/P1/P2 缺陷修复验证
+"""Agent 管线回归测试：主动回复生成与发送路径的历史缺陷固化验证
 
-每个测试断言"期望的正确行为"，修复前应当失败（红灯），修复后转绿：
-- 0.1 P0 run_task 孤儿泄漏：force cancel 后 run_task 被收敛、request_stop 被调
-- 0.2 P1 context 兜底发送：返回 None（成功）记 DELIVERED 且写入 assistant 历史
-- 0.3 P1 只读命令：status/list/help/debug 不得失效会话（延迟任务与缓存保留）
-- 0.4 P2 配置回滚：回滚后恢复 patrol/cleanup 任务拓扑
-- 0.5 P2 _call_compat：函数体内部 TypeError 不得触发 minimal 重试（防双执行）
+每个测试断言"期望的正确行为"，修复前应当失败（红灯），修复后转绿
+（历史红灯测试阶段 0 去阶段化更名，2026-08-07）：
+- run_task 孤儿泄漏：force cancel 后 run_task 被收敛、request_stop 被调
+- context 兜底发送：返回 None（成功）记 DELIVERED 且写入 assistant 历史
+- 只读命令：status/list/help/debug 不得失效会话（延迟任务与缓存保留）
+- 配置回滚：回滚后恢复 patrol/cleanup 任务拓扑
+- _call_compat：函数体内部 TypeError 不得触发 minimal 重试（防双执行）
 """
 
 from __future__ import annotations
@@ -170,7 +171,7 @@ def test_delayed_check_waits_for_running_session_release(tmp_path: Path) -> None
         plugin._gate.mark_running(UMO)  # 前一个 check 占住运行集
         try:
             task = asyncio.create_task(
-                plugin._delayed_check(
+                plugin._scheduler.delayed_check(
                     UMO,
                     delay_sec=0,
                     trigger="patrol",
@@ -207,7 +208,7 @@ def test_prune_wakes_waiting_delayed_check(tmp_path: Path) -> None:
         plugin._gate.mark_running(UMO)  # 模拟正在运行的 check 占住运行集
         try:
             task = asyncio.create_task(
-                plugin._delayed_check(
+                plugin._scheduler.delayed_check(
                     UMO,
                     delay_sec=0,
                     trigger="patrol",

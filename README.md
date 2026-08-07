@@ -10,7 +10,7 @@
 
 <p align="center">
   让 AstrBot 在白名单会话里学会"自然接话"的插件。<br>
-  <img alt="版本" src="https://img.shields.io/badge/版本-0.8.7-4a5580">
+  <img alt="版本" src="https://img.shields.io/badge/版本-0.9.0-4a5580">
   <img alt="AstrBot 插件" src="https://img.shields.io/badge/AstrBot-插件-7b86ab">
 </p>
 
@@ -20,7 +20,9 @@
 
 ---
 
-## 目录
+<a name="目录"></a>
+<details markdown="block">
+<summary>📑 目录（点击展开）</summary>
 
 - [简介](#简介)
 - [工作方式](#工作方式)
@@ -34,7 +36,11 @@
 - [安全提示](#安全提示)
 - [小结](#小结)
 
+</details>
+
 ---
+
+<a name="简介"></a>
 
 ## 📖 简介
 
@@ -51,6 +57,8 @@
 
 ---
 
+<a name="工作方式"></a>
+
 ## 🚀 工作方式
 
 插件以"三步流水线"运作：
@@ -63,6 +71,8 @@
 3. **回复** —— 正文由 AstrBot 主 Agent / tool loop 生成，走完整工具链但边界受限。
 
 ---
+
+<a name="工具边界"></a>
 
 ## 🔒 工具边界
 
@@ -83,6 +93,8 @@
 
 ---
 
+<a name="图片识别可选"></a>
+
 ## 🖼️ 图片识别（可选）
 
 默认关闭。开启后，判断或生成阶段会带上最近几张图的文字描述。
@@ -93,6 +105,8 @@
 - **仅作不可信上下文。** 描述只作为不可信上下文参与判断，不写入历史与状态，不能触发工具；缓存按有效期与容量上限自动清理，设置页提供「立即清理」按钮。
 
 ---
+
+<a name="设置页面"></a>
 
 ## ⚙️ 设置页面
 
@@ -125,6 +139,8 @@
 
 ---
 
+<a name="关于白名单"></a>
+
 ## 🎯 关于白名单
 
 白名单有**两层**：
@@ -135,6 +151,8 @@
 `/selfreply add` 加入的是整个群会话。页面「高级：白名单会话 ID」支持批量编辑，可填完整 UMO，也可直接填裸群号。
 
 ---
+
+<a name="指令"></a>
 
 <details markdown="block">
 <summary>📋 指令（7 条，点击展开）</summary>
@@ -157,6 +175,8 @@
 
 </details>
 
+<a name="建议配置"></a>
+
 <details markdown="block">
 <summary>✅ 建议配置（点击展开）</summary>
 
@@ -177,6 +197,8 @@
 
 </details>
 
+<a name="故障排查"></a>
+
 <details markdown="block">
 <summary>🛠️ 故障排查（没有主动回复时，点击展开）</summary>
 
@@ -194,6 +216,8 @@
 
 ---
 
+<a name="安全提示"></a>
+
 ## 🔐 安全提示
 
 > ⚠️ **安全警告：** 插件自带设置页与 Web API（如 `/api/plugin/selfreply/config`）**不提供独立鉴权**，访问控制完全依赖宿主 AstrBot Dashboard 的登录与权限体系。
@@ -202,6 +226,8 @@
 - `proactive_inherit_tools`、白名单等安全敏感配置的变更会记录在插件 **INFO** 日志中，便于事后追溯。
 
 ---
+
+<a name="小结"></a>
 
 ## 📌 小结
 

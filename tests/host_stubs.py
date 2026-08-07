@@ -153,14 +153,18 @@ def install_astrbot_stubs() -> None:
         sys.modules["astrbot.core.message"].message_event_result = msg_evt_result
 
 
+def load_package(package_name: str, module: str) -> types.ModuleType:
+    """以独立动态包名加载插件模块（sys.modules 隔离，防测试间污染）。"""
+    if package_name not in sys.modules:
+        package = types.ModuleType(package_name)
+        package.__path__ = [str(ROOT)]
+        sys.modules[package_name] = package
+    return importlib.import_module(f"{package_name}.{module}")
+
+
 def load_main() -> types.ModuleType:
     install_astrbot_stubs()
-    package = sys.modules.get(MAIN_PACKAGE_NAME)
-    if package is None:
-        package = types.ModuleType(MAIN_PACKAGE_NAME)
-        package.__path__ = [str(ROOT)]
-        sys.modules[MAIN_PACKAGE_NAME] = package
-    return importlib.import_module(f"{MAIN_PACKAGE_NAME}.main")
+    return load_package(MAIN_PACKAGE_NAME, "main")
 
 
 def reset_hook_calls() -> None:
@@ -395,22 +399,17 @@ class _FakeResetCoro:
     def __await__(self) -> Any:
         return _noop_async().__await__()
 
+    def close(self) -> None:
+        """匹配生产 reset_coro 契约（generation.py 在 try/finally 中同步 close）。"""
+        pass
+
 
 async def _noop_async() -> None:
     return None
 
-    def close(self) -> None:
-        pass
-
 
 class _FakeLLMResponse:
     completion_text = ""
-
-
-def _empty_coro():
-    if False:
-        yield
-    return None
 
 
 async def _fake_run_agent(

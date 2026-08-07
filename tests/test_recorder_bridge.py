@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import base64
 import importlib
-import sys
+import inspect
 import types
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+from .host_stubs import ROOT, load_package
+
 PACKAGE_NAME = "selfreply_recorder_test_package"
 
 # 1x1 透明 PNG
@@ -26,10 +27,7 @@ PNG_BYTES = base64.b64decode(
 
 
 def _load_bridge():
-    package = types.ModuleType(PACKAGE_NAME)
-    package.__path__ = [str(ROOT)]
-    sys.modules[PACKAGE_NAME] = package
-    return importlib.import_module(f"{PACKAGE_NAME}.image.recorder_bridge")
+    return load_package(PACKAGE_NAME, "image.recorder_bridge")
 
 
 @pytest.fixture(scope="module")
@@ -329,19 +327,42 @@ def test_image_to_data_url_os_error(bridge_mod, tmp_path, monkeypatch) -> None:
 
 
 # ============================================================================
-# _maybe_await
+# maybe_await（0.8.8 起统一到 utils.maybe_await，删除 recorder_bridge 私有副本）
 # ============================================================================
 
 
 async def test_maybe_await_both_forms(bridge_mod) -> None:
+    """async 与 sync 两种形式都能处理（unified 语义，非 hasattr 判定）。"""
+    utils_mod = importlib.import_module(f"{PACKAGE_NAME}.utils")
+
     async def async_fn():
         return 1
 
     def sync_fn():
         return 2
 
-    assert await bridge_mod._maybe_await(async_fn()) == 1
-    assert await bridge_mod._maybe_await(sync_fn()) == 2
+    assert await utils_mod.maybe_await(async_fn()) == 1
+    assert await utils_mod.maybe_await(sync_fn()) == 2
+
+
+async def test_maybe_await_handles_generator_based_coroutines(bridge_mod) -> None:
+    """generator-based coroutine（@types.coroutine）必须被 await。
+
+    0.8.8 前 recorder_bridge 的私有 _maybe_await 用 hasattr(value, "__await__")
+    判定，对 CO_ITERABLE_COROUTINE 生成器（inspect.isawaitable=True 但无
+    __await__ 属性）会漏 await，直接返回生成器对象。统一到 utils.maybe_await
+    后此场景必须正确。
+    """
+    utils_mod = importlib.import_module(f"{PACKAGE_NAME}.utils")
+
+    @types.coroutine
+    def gen_coro():
+        return 42
+        yield  # pragma: no cover - 使函数成为生成器
+
+    assert inspect.isawaitable(gen_coro())
+    assert not hasattr(gen_coro(), "__await__")
+    assert await utils_mod.maybe_await(gen_coro()) == 42
 
 
 def test_get_recorder_bridge_caches_instance(bridge_mod) -> None:

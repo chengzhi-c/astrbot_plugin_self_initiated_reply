@@ -245,17 +245,6 @@ def write_sessions_payload(path: Path, payload: dict[str, Any]) -> bool:
     return _write_json_atomic(path, payload)
 
 
-def save_sessions(
-    path: Path, sessions: dict[str, SessionState], whitelist: set[str], recent_limit: int
-) -> bool:
-    try:
-        payload = build_sessions_payload(sessions, whitelist, recent_limit)
-    except Exception as exc:
-        logger.error("[%s] unexpected error preparing state: %s", PLUGIN_ID, exc, exc_info=True)
-        return False
-    return write_sessions_payload(path, payload)
-
-
 def migrate_config_file(path: Path, config_obj: Any, settings: Settings) -> bool:
     data = settings.to_config_dict()
     if not _write_json_atomic(path, data):

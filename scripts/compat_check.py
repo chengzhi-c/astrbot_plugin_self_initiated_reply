@@ -21,6 +21,19 @@ sys.path.insert(0, str(ROOT))
 # astrbot 包 import 会在 cwd 生成运行时 data/ 目录：切到临时目录防污染工作区
 os.chdir(tempfile.mkdtemp(prefix="astrbot-compat-"))
 
+# 包导入兼容：优先用已安装的包（CI 的 pip install -e 后运行）；本地直接跑
+# 脚本而未安装时，以包名把仓库根注册进 sys.modules（与 tests 加载模式同源）。
+# Windows 中文路径下 editable 安装的 .pth 会被 pip 以错误编码写入导致 import
+# 失败（CI ubuntu UTF-8 无此问题），此回退保证本地也能验证。
+try:
+    import astrbot_plugin_self_initiated_reply  # noqa: F401
+except ModuleNotFoundError:
+    import types
+
+    _pkg = types.ModuleType("astrbot_plugin_self_initiated_reply")
+    _pkg.__path__ = [str(ROOT)]
+    sys.modules["astrbot_plugin_self_initiated_reply"] = _pkg
+
 # 宿主危险内置工具模块：这些模块内所有 FunctionTool 子类的 name 必须全部被
 # models.HOST_DANGEROUS_TOOL_IDS 覆盖——宿主新增/改名危险工具时缺失即报错，
 # 防止 denylist（"最终防线"）静默失效。与 models.py 的清单同步维护。
@@ -55,7 +68,7 @@ def _enumerate_tool_names() -> dict[str, set[str]]:
 
 def _denylist_gaps() -> dict[str, list[str]]:
     """宿主危险工具全集与 HOST_DANGEROUS_TOOL_IDS 的缺口（空 = 全覆盖）。"""
-    from models import HOST_DANGEROUS_TOOL_IDS
+    from astrbot_plugin_self_initiated_reply.models import HOST_DANGEROUS_TOOL_IDS
 
     return {
         mod: sorted(names - HOST_DANGEROUS_TOOL_IDS)
@@ -68,7 +81,9 @@ def run_contract_checks(*, warn: bool) -> int:
     """符号存在性 + 契约断言 + denylist 覆盖；返回进程退出码。"""
     import importlib
 
-    import runtime_adapter
+    # 包化导入（与 CI 的 pip install -e 后运行一致）：插件内部模块使用相对导入，
+    # 顶层 import 会断（0.8.8 B1 起 runtime_adapter 引入 .utils 相对导入后实测发现）。
+    from astrbot_plugin_self_initiated_reply import runtime_adapter
 
     failures: list[str] = []
     for mod_name, attrs in runtime_adapter.AstrBotRuntimeAdapter.host_contract():

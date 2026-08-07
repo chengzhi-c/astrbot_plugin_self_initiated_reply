@@ -1,52 +1,19 @@
 from __future__ import annotations
 
-import importlib
 import json
-import logging
-import sys
-import types
 from collections import deque
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from .host_stubs import ROOT, install_astrbot_stubs, load_package
+
 PACKAGE_NAME = "selfreply_test_package"
 
 
-def _install_astrbot_stubs() -> None:
-    if "astrbot" in sys.modules:
-        return
-    astrbot = types.ModuleType("astrbot")
-    api = types.ModuleType("astrbot.api")
-    event = types.ModuleType("astrbot.api.event")
-    message_components = types.ModuleType("astrbot.api.message_components")
-
-    class AstrMessageEvent:
-        pass
-
-    class At:
-        pass
-
-    api.logger = logging.getLogger("selfreply-test")
-    event.AstrMessageEvent = AstrMessageEvent
-    message_components.At = At
-    sys.modules.update(
-        {
-            "astrbot": astrbot,
-            "astrbot.api": api,
-            "astrbot.api.event": event,
-            "astrbot.api.message_components": message_components,
-        }
-    )
-
-
 def _load_modules():
-    _install_astrbot_stubs()
-    package = types.ModuleType(PACKAGE_NAME)
-    package.__path__ = [str(ROOT)]
-    sys.modules[PACKAGE_NAME] = package
-    models = importlib.import_module(f"{PACKAGE_NAME}.models")
-    utils = importlib.import_module(f"{PACKAGE_NAME}.utils")
-    storage = importlib.import_module(f"{PACKAGE_NAME}.storage")
+    install_astrbot_stubs()
+    models = load_package(PACKAGE_NAME, "models")
+    utils = load_package(PACKAGE_NAME, "utils")
+    storage = load_package(PACKAGE_NAME, "storage")
     return models, utils, storage
 
 
@@ -107,7 +74,10 @@ def test_bare_group_whitelist_keeps_platform_state_isolated(tmp_path: Path) -> N
     state.daily_count = 2
     sessions = {qq: state, telegram: storage.SessionState(recent=deque(maxlen=5))}
     path = tmp_path / "state.json"
-    assert storage.save_sessions(path, sessions, whitelist, 5)
+    # 0.9.0 B2：save_sessions 包装器已删，改用生产同形的两步写
+    assert storage.write_sessions_payload(
+        path, storage.build_sessions_payload(sessions, whitelist, 5)
+    )
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert set(payload["sessions"]) == {qq, telegram}
 
