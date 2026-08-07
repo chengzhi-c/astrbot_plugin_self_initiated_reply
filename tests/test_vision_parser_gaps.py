@@ -28,6 +28,35 @@ def _parser_module():
     return sys.modules[f"{PACKAGE_NAME}.image.parser"]
 
 
+# ============================================================================
+# VISION_PROMPT_VERSION 变更门禁（0.8.8）
+# ============================================================================
+
+
+# 锚定对：(VISION_PROMPT_VERSION, 模板指纹)。prompt 模板改动必须同时 bump
+# 版本号并更新本锚定；只改其一测试即红。指纹取自已提为模块常量的
+# VISION_PROMPT_TEXT / VISION_SYSTEM_PROMPT_TEXT（真实模板单源），
+# 防止缓存键（digest+version）复用旧描述。
+# 更新流程：改模板常量 → 调 version → 用下方 hash 计算方式刷新指纹。
+_VISION_PROMPT_ANCHOR = (
+    "v1",
+    "f96b9cedd3d09684e556d707fc112b69d5a38a8a102780a9cc66e17d3a3d0dde",
+)
+
+
+def test_vision_prompt_version_tracks_template() -> None:
+    """prompt 模板与 VISION_PROMPT_VERSION 必须双改同步（缓存键语义守卫）。"""
+    _load_modules()
+    parser_mod = _parser_module()
+    fingerprint = hashlib.sha256(
+        (parser_mod.VISION_PROMPT_TEXT + parser_mod.VISION_SYSTEM_PROMPT_TEXT).encode("utf-8")
+    ).hexdigest()
+    assert (parser_mod.VISION_PROMPT_VERSION, fingerprint) == _VISION_PROMPT_ANCHOR, (
+        "prompt 模板或 VISION_PROMPT_VERSION 已变更但未同步：模板改动必须"
+        "bump VISION_PROMPT_VERSION（缓存键语义）并更新 _VISION_PROMPT_ANCHOR"
+    )
+
+
 def _make_parser(image, tmp_path: Path, **kwargs):
     return image.ImageParser(object(), source_cache_dir=tmp_path / "image_cache", **kwargs)
 

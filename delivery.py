@@ -18,18 +18,31 @@ UNKNOWN 语义（不自动重试、不触发 after-send 钩子、仍消耗冷却
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable
 from typing import Any, Protocol
 
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
 
-from .models import PLUGIN_ID, SendOutcome, SendStatus, SessionState, Settings, now_ts
+from .models import (
+    PLUGIN_ID,
+    LocalGateCallback,
+    SendOutcome,
+    SendStatus,
+    SessionState,
+    Settings,
+    now_ts,
+)
 from .outbound import OutboundGateway
 
 
 class SaveStorageCallback(Protocol):
-    """宿主状态持久化回调。"""
+    """宿主状态持久化回调。
+
+    生产注入为合并写（异步闭包直连 DebouncedStateSaver.mark_dirty：
+    置脏 + 延迟 flush，窗口内多次记录合并为一次落盘）；异常兜底仅防御
+    宿主回调自身抛错，不承诺同步落盘。
+    """
 
     def __call__(self) -> Awaitable[None]: ...
 
@@ -68,7 +81,7 @@ class DeliveryRunner:
         *,
         settings: Settings,
         gate: Any,
-        local_gate: Callable[[SessionState, bool], str],
+        local_gate: LocalGateCallback,
         last_events: dict[str, Any],
         call_hook: CallHookCallback,
         context_send: ContextSendCallback,
@@ -111,7 +124,7 @@ class DeliveryRunner:
             "" if self._gate.is_current(umo, expected_generation) else "会话已经更新，放弃旧任务。"
         )
         if not gate:
-            gate = self._local_gate(state, force)
+            gate = self._local_gate(state, force=force)
         if gate:
             logger.debug(
                 "[%s] skip before send session=%s trigger=%s reason=%s",
@@ -358,22 +371,18 @@ class DeliveryRunner:
                 PLUGIN_ID,
                 umo,
             )
-            try:
-                await self._save_storage()
-                return True
-            except Exception as exc:
-                logger.warning("[%s] proactive state save failed: %s", PLUGIN_ID, exc)
-                return False
-        if self._gate.is_current(umo, expected_generation):
-            state.last_proactive_observed_at = (
-                state.last_active_at if observed_active_at is None else observed_active_at
-            )
-        else:
+        elif not self._gate.is_current(umo, expected_generation):
             logger.info(
                 "[%s] record delivered stale generation without advancing observation session=%s",
                 PLUGIN_ID,
                 umo,
             )
+        else:
+            state.last_proactive_observed_at = (
+                state.last_active_at if observed_active_at is None else observed_active_at
+            )
+        # 合并写语义：此处只置脏（见 SaveStorageCallback），落盘由延迟
+        # flush 完成；try/except 兜宿主回调异常，失败仅影响持久化。
         try:
             await self._save_storage()
             return True

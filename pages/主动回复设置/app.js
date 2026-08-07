@@ -21,7 +21,7 @@ function getEls() {
     configForm: document.getElementById("configForm"),
     enabledInput: document.getElementById("enabledInput"),
     decisionModelInput: document.getElementById("decisionModelInput"),
-    providerField: document.querySelector(".provider-field"),
+    providerField: document.getElementById("judgeProviderField"),
     judgeProviderSelect: document.getElementById("judgeProviderSelect"),
     judgeProviderInput: document.getElementById("judgeProviderInput"),
     providerManualBtn: document.getElementById("providerManualBtn"),
@@ -37,9 +37,6 @@ function getEls() {
     decisionPromptInput: document.getElementById("decisionPromptInput"),
     promptPreview: document.getElementById("promptPreview"),
     resetPromptBtn: document.getElementById("resetPromptBtn"),
-    resetConfirm: document.getElementById("resetConfirm"),
-    resetConfirmYes: document.getElementById("resetConfirmYes"),
-    resetConfirmNo: document.getElementById("resetConfirmNo"),
     minContextInput: document.getElementById("minContextInput"),
     messageDelayInput: document.getElementById("messageDelayInput"),
     minSilenceInput: document.getElementById("minSilenceInput"),
@@ -108,6 +105,8 @@ const PROMPT_PREVIEW_VALUES = {
 
 const THEME_KEY = "selfreply-theme";
 const THEME_CYCLE = ["auto", "light", "dark"];
+// 三态循环对读屏用户需可感知：按钮 aria-label 同步当前状态（复审：主题切换无状态语义）
+const THEME_LABELS = { auto: "跟随系统", light: "浅色 · 慈爱之惠", dark: "深色 · 审判之司" };
 
 function currentTheme() {
   const value = document.documentElement.getAttribute("data-theme");
@@ -121,6 +120,9 @@ function applyTheme(theme) {
     document.documentElement.setAttribute("data-theme", theme);
   }
   cacheThemeLocally(theme);
+  if (els && els.themeToggle) {
+    els.themeToggle.setAttribute("aria-label", `切换主题，当前：${THEME_LABELS[theme] || THEME_LABELS.auto}`);
+  }
 }
 
 // AstrBot 插件页面以 iframe 嵌入 Dashboard，localStorage 不可用（访问即抛异常），
@@ -240,6 +242,15 @@ function showToast(message) {
   els.toast.classList.add("show");
   window.clearTimeout(showToast.timer);
   showToast.timer = window.setTimeout(() => els.toast.classList.remove("show"), 2200);
+}
+
+// 输入防抖：预览区每次按键全量重渲染，低频设备会卡（复审 P2-8）
+function debounce(fn, delay) {
+  let timer = null;
+  return (...args) => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => fn(...args), delay);
+  };
 }
 
 async function getBridge() {
@@ -635,15 +646,20 @@ function setCurrentNav(active) {
     else link.removeAttribute("aria-current");
   });
   updateNavFades();
-  // 移动端横向导航：把当前项滚入可视区，避免被裁切在屏幕外（仅当侧栏可见时）
-  if (active && els.sidenavList && isSidenavVisible()) {
+  // 仅 ≤1024px 横向导航条需要把当前项滚入可视区。
+  // 两个坑都在这里踩过（实测复现）：
+  //   1. 不能用 scrollIntoView——它会取消同一文档里正在进行的主平滑滚动，
+  //      导致点击分区后页面原地不动（桌面端 2px 容差会被边框宽度误触发）；
+  //   2. 不能只看「侧栏可见」——桌面端侧栏恒可见，必须用断点判定横向模式。
+  // 直接滚动列表容器的 scrollLeft，不触碰页面滚动。
+  if (active && els.sidenavList && window.matchMedia("(max-width: 1024px)").matches) {
     const linkRect = active.getBoundingClientRect();
     const listRect = els.sidenavList.getBoundingClientRect();
     if (linkRect.left < listRect.left + 2 || linkRect.right > listRect.right - 2) {
-      active.scrollIntoView({
+      const delta = linkRect.left - listRect.left - (listRect.width - linkRect.width) / 2;
+      els.sidenavList.scrollTo({
+        left: els.sidenavList.scrollLeft + delta,
         behavior: prefersReducedMotion() ? "auto" : "smooth",
-        block: "nearest",
-        inline: "center",
       });
     }
   }
@@ -660,11 +676,6 @@ const TAB_GROUPS = {
   "sec-runtime": "sec-runtime",
   "sec-vision": "sec-runtime",
 };
-
-function isSidenavVisible() {
-  if (!els.sidenav) return false;
-  return getComputedStyle(els.sidenav).display !== "none";
-}
 
 function syncMobileTabs(active) {
   if (!els.mobileTabbar || !active) return;
@@ -749,6 +760,7 @@ async function saveConfig(event) {
   savingConfig = true;
   setSaving(true);
   els.configForm.inert = true; // 保存期间禁编辑，防止 reload 冲掉新输入
+  els.configForm.classList.add("is-saving"); // 视觉反馈：inert 不可编辑需可感知（复审 P2-10）
   setSaveState("保存中", "pending");
   try {
     const whitelist = els.whitelistInput.value
@@ -795,6 +807,7 @@ async function saveConfig(event) {
     }
   } finally {
     savingConfig = false;
+    els.configForm.classList.remove("is-saving");
     els.configForm.inert = false;
     setSaving(false);
   }
@@ -837,50 +850,90 @@ async function loadAll() {
   await Promise.all([loadConfig(), loadOverview()]);
 }
 
-els.refreshBtn.addEventListener("click", () => {
-  if (isDirty && !window.confirm("有未保存改动，刷新将丢弃，确定刷新？")) return;
-  loadAll().catch((err) => showToast(err.message || "刷新失败"));
-});
+// 刷新：iframe 沙箱里 window.confirm 可能不弹窗直接返回 false（点击看似无反应），
+// 改用「双击确认」模式：有未保存改动时第一次点击进入 3 秒待确认态，再点才真刷新。
+let refreshing = false;
+let refreshArmed = false;
+let refreshArmTimer = null;
+
+async function doRefresh() {
+  if (refreshing) return;
+  refreshing = true;
+  els.refreshBtn.disabled = true;
+  els.refreshBtn.classList.add("is-loading");
+  try {
+    await loadAll();
+    showToast("已刷新为最新配置");
+  } catch (err) {
+    showToast(err.message || "刷新失败");
+  } finally {
+    refreshing = false;
+    els.refreshBtn.disabled = false;
+    els.refreshBtn.classList.remove("is-loading");
+  }
+}
+
+if (els.refreshBtn) {
+  els.refreshBtn.addEventListener("click", () => {
+    if (refreshing) return;
+    if (isDirty && !refreshArmed) {
+      refreshArmed = true;
+      els.refreshBtn.classList.add("is-armed");
+      showToast("有未保存改动，3 秒内再点一次刷新将丢弃改动");
+      window.clearTimeout(refreshArmTimer);
+      refreshArmTimer = window.setTimeout(() => {
+        refreshArmed = false;
+        els.refreshBtn.classList.remove("is-armed");
+      }, 3000);
+      return;
+    }
+    refreshArmed = false;
+    window.clearTimeout(refreshArmTimer);
+    els.refreshBtn.classList.remove("is-armed");
+    doRefresh();
+  });
+}
 if (els.cleanupImageCacheBtn) {
   els.cleanupImageCacheBtn.addEventListener("click", () => cleanupImageCache());
 }
-function showResetConfirm() {
-  if (els.resetConfirm) els.resetConfirm.hidden = false;
-  if (els.resetPromptBtn) els.resetPromptBtn.hidden = true;
-}
-function hideResetConfirm() {
-  if (els.resetConfirm) els.resetConfirm.hidden = true;
-  if (els.resetPromptBtn) els.resetPromptBtn.hidden = false;
-}
-els.resetPromptBtn.addEventListener("click", showResetConfirm);
-if (els.resetConfirmYes) {
-  els.resetConfirmYes.addEventListener("click", () => {
+// 恢复默认提示词：点击即生效（写入默认提示词并标记待保存），不再弹二次确认条
+if (els.resetPromptBtn) {
+  els.resetPromptBtn.addEventListener("click", () => {
+    // 配置未成功加载时没有默认提示词来源，此时清空会丢用户输入，直接拦截
+    if (!configLoaded) {
+      showToast("配置尚未成功加载，请先刷新页面");
+      return;
+    }
     els.decisionPromptInput.value = els.decisionPromptInput.dataset.defaultPrompt || "";
     renderPromptPreview();
     setDirty(true);
     showToast("已恢复默认提示词，点击保存后生效");
-    hideResetConfirm();
   });
 }
-if (els.resetConfirmNo) {
-  els.resetConfirmNo.addEventListener("click", hideResetConfirm);
+if (els.decisionPromptInput) {
+  els.decisionPromptInput.addEventListener("input", debounce(renderPromptPreview, 80));
 }
-els.decisionPromptInput.addEventListener("input", renderPromptPreview);
 // 本地开关即时反馈：未保存前文案标记「（未保存）」，保存后由 loadConfig 以服务端态覆盖
-els.enabledInput.addEventListener("change", () => {
-  els.selfStatus.textContent = els.enabledInput.checked ? "启用（未保存）" : "关闭（未保存）";
-  setDirty(true);
-});
-els.decisionModelInput.addEventListener("change", () => {
-  const on = els.decisionModelInput.checked;
-  els.decisionModelStatus.textContent = fmtBool(on);
-  setStatState(els.decisionModelStat, on ? "is-on" : "is-off");
-  setDirty(true);
-});
-els.configForm.addEventListener("submit", (event) => saveConfig(event).catch((err) => {
-  setSaveState("保存失败", "error");
-  showToast(err.message || "保存失败");
-}));
+if (els.enabledInput) {
+  els.enabledInput.addEventListener("change", () => {
+    els.selfStatus.textContent = els.enabledInput.checked ? "启用（未保存）" : "关闭（未保存）";
+    setDirty(true);
+  });
+}
+if (els.decisionModelInput) {
+  els.decisionModelInput.addEventListener("change", () => {
+    const on = els.decisionModelInput.checked;
+    els.decisionModelStatus.textContent = fmtBool(on);
+    setStatState(els.decisionModelStat, on ? "is-on" : "is-off");
+    setDirty(true);
+  });
+}
+if (els.configForm) {
+  els.configForm.addEventListener("submit", (event) => saveConfig(event).catch((err) => {
+    setSaveState("保存失败", "error");
+    showToast(err.message || "保存失败");
+  }));
+}
 
 // 主题切换：跟随系统 → 浅色 → 深色
 if (els.themeToggle) {

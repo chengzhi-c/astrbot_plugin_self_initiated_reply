@@ -133,7 +133,7 @@ class SessionScheduler:
             return
         self.cancel_delay(umo)
         task = self._spawn(
-            self._delayed_check(
+            self.delayed_check(
                 umo,
                 delay_sec=delay_sec,
                 trigger=trigger,
@@ -181,7 +181,7 @@ class SessionScheduler:
         if event is not None:
             event.set()
 
-    async def _delayed_check(
+    async def delayed_check(
         self,
         umo: str,
         *,
@@ -191,6 +191,10 @@ class SessionScheduler:
         generation: int | None = None,
     ) -> None:
         try:
+            # 早退路径（延迟后插件停用/代次失效）不会到达静默等待段，
+            # 但 finally 会回收静默事件：必须先绑定，否则 UnboundLocalError
+            # （0.9.0 D1 补盲测试实测捕获的潜伏缺陷）。
+            silence_event: asyncio.Event | None = None
             delay = self.settings.message_delay_sec if delay_sec is None else max(0, delay_sec)
             if delay > 0:
                 await asyncio.sleep(delay)
@@ -198,7 +202,6 @@ class SessionScheduler:
                 return
             state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
             silence_left = self.remaining_silence_sec(state)
-            silence_event: asyncio.Event | None = None
             while not force and silence_left > 0:
                 logger.debug(
                     "[%s] wait for minimum silence session=%s trigger=%s remaining=%.2fs",

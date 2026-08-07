@@ -1,21 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
-import sys
-import types
-from pathlib import Path
 from types import SimpleNamespace
 
-ROOT = Path(__file__).resolve().parents[1]
+from .host_stubs import load_package
+
 PACKAGE_NAME = "selfreply_outbound_test_package"
 
 
 def _load_gateway():
-    package = types.ModuleType(PACKAGE_NAME)
-    package.__path__ = [str(ROOT)]
-    sys.modules[PACKAGE_NAME] = package
-    return importlib.import_module(f"{PACKAGE_NAME}.outbound")
+    return load_package(PACKAGE_NAME, "outbound")
 
 
 def test_tool_direct_send_budget_is_consumed_before_adapter_call() -> None:

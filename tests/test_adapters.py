@@ -8,24 +8,18 @@ read_astrbot_history 的宿主接口差异分支。
 
 from __future__ import annotations
 
-import importlib
 import json
-import sys
-import types
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+from .host_stubs import load_package
+
 PACKAGE_NAME = "selfreply_adapters_test_package"
 
 
 def _load_adapters():
-    package = types.ModuleType(PACKAGE_NAME)
-    package.__path__ = [str(ROOT)]
-    sys.modules[PACKAGE_NAME] = package
-    return importlib.import_module(f"{PACKAGE_NAME}.adapters")
+    return load_package(PACKAGE_NAME, "adapters")
 
 
 @pytest.fixture(scope="module")

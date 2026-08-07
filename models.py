@@ -9,8 +9,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol
 
+from astrbot.api import logger
+
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.8.7"
+PLUGIN_VERSION = "0.9.0"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -282,6 +284,12 @@ class ImageContextCallback(Protocol):
     def __call__(self, umo: str, *, enabled: bool, provider_id: str) -> Awaitable[str]: ...
 
 
+class LocalGateCallback(Protocol):
+    """局部闸门回调（state 位置 + force 关键字调用，返回跳过原因或空串）。"""
+
+    def __call__(self, state: SessionState, *, force: bool) -> str: ...
+
+
 @dataclass(frozen=True)
 class PipelineReply:
     """Result of one main-Agent run, including tool-side direct sends."""
@@ -420,10 +428,19 @@ class Settings:
         prompt = str(self.decision_prompt_template or "").strip()
         return bool(prompt and prompt != DEFAULT_DECISION_PROMPT_TEMPLATE.strip())
 
+    def apply(self, other: Settings) -> None:
+        """原地写入另一实例的全部字段，保持对象身份不变。
+
+        五个运行组件（decision/generation/delivery/scheduler/whitelist）
+        构造时各存 self.settings 引用；配置热更新/回滚若整体替换
+        plugin.settings，组件会读到过期配置（0.9.0 轴 A 修复的分裂缺陷）。
+        本方法让全部持有者经既有引用即时可见新值。Settings 是普通
+        dataclass（无 __slots__/frozen），__dict__.update 即全字段同步。
+        """
+        self.__dict__.update(other.__dict__)
+
     @classmethod
     def from_config(cls, config: Any) -> Settings:
-        from astrbot.api import logger
-
         # 提示词长度限制
         prompt_template = str(
             config.get("decision_prompt_template", "") or DEFAULT_DECISION_PROMPT_TEMPLATE

@@ -9,6 +9,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ..models import PLUGIN_ID
+from ..utils import maybe_await
 from .safety import sniff_image_mime
 
 RECORDER_PLUGIN_NAME = "astrbot_plugin_message_recorder"
@@ -49,7 +50,7 @@ class MessageRecorderBridge:
         if not message_id or not self._ensure_api():
             return None
         try:
-            record = await _maybe_await(self._api.get_by_platform_message_id(message_id))
+            record = await maybe_await(self._api.get_by_platform_message_id(message_id))
             if not record:
                 return None
             chain = record.get_message_chain_list()
@@ -115,12 +116,6 @@ class MessageRecorderBridge:
             return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
         except (OSError, ValueError):
             return None
-
-
-async def _maybe_await(value: Any) -> Any:
-    if hasattr(value, "__await__"):
-        return await value
-    return value
 
 
 _default_bridge: MessageRecorderBridge | None = None

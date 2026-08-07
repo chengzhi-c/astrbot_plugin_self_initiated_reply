@@ -55,18 +55,23 @@ class DebouncedStateSaver:
 
     async def flush(self) -> bool:
         """强制落盘；取消未到期的延迟 flush。失败保持脏状态并自动重试。"""
-        if self._task is not None and not self._task.done():
+        current = asyncio.current_task()
+        if self._task is not None and not self._task.done() and self._task is not current:
             self._task.cancel()
-            if asyncio.current_task() is not self._task:
-                try:
-                    await self._task
-                except asyncio.CancelledError:
-                    pass
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
         if not self._pending:
             return True
         self._pending = False
         try:
             await self._do_save()
+        except asyncio.CancelledError:
+            # 定时路径（_flush_later 自调用）的取消会在此投递：恢复脏标记，
+            # 由下一次调度/terminate 兜底，避免静默丢失（0.8.8 复审修复）。
+            self._pending = True
+            raise
         except Exception as exc:
             self._pending = True
             logger.warning("[%s] debounced state save failed: %s", PLUGIN_ID, exc)

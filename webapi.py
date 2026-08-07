@@ -28,7 +28,21 @@ from .models import (
 
 # 配置 schema 全键（_conf_schema.json）+ 历史兼容别名。此名单之外的键
 # 一律 fail loud 拒绝，防止前端/未来代码提交新字段时被静默吞掉。
-CONFIG_SCHEMA_KEYS = frozenset(
+# 正式键集合 = CONFIG_SCHEMA_KEYS - _SCHEMA_ALIAS_KEYS，一致性守卫见
+# tests/test_config_schema.py（schema 缺失键恰为别名，漂移即红）。
+_SCHEMA_ALIAS_KEYS = frozenset(
+    {
+        # 兼容别名（旧前端 / 历史使用）：随前端升级后于 0.9.x 移除
+        "cooldown_seconds",
+        "idle_trigger_seconds",
+        "min_context_messages",
+        "proactive_threshold",
+        "vision_enabled",
+        "whitelist",
+    }
+)
+
+_SCHEMA_FORMAL_KEYS = frozenset(
     {
         "enabled",
         "decision_model_enabled",
@@ -64,15 +78,10 @@ CONFIG_SCHEMA_KEYS = frozenset(
         "vision_max_images",
         "vision_image_age_sec",
         "vision_timeout_sec",
-        # 兼容别名（旧前端 / 历史使用）：
-        "cooldown_seconds",
-        "idle_trigger_seconds",
-        "min_context_messages",
-        "proactive_threshold",
-        "vision_enabled",
-        "whitelist",
     }
 )
+
+CONFIG_SCHEMA_KEYS = _SCHEMA_FORMAL_KEYS | _SCHEMA_ALIAS_KEYS
 
 # 枚举型字符串键 → 合法取值集合（schema options 的运行时镜像）
 _REPLY_LENGTH_MODES = {"short", "balanced", "expressive"}
@@ -518,7 +527,9 @@ def _snapshot_plugin_state(plugin) -> dict[str, Any]:
 
 async def _restore_plugin_state(plugin, snapshot: dict[str, Any]) -> None:
     """恢复配置应用前快照，重建被取消的延迟检查并恢复任务拓扑。"""
-    plugin.settings = snapshot["settings"]
+    # 原地恢复（保持 Settings 对象身份）：组件构造时各存 self.settings
+    # 引用，整体替换会让它们读到过期配置（0.9.0 轴 A）。
+    plugin.settings.apply(snapshot["settings"])
     plugin.runtime_enabled = snapshot["runtime_enabled"]
     plugin._last_events = snapshot["last_events"]
     plugin._last_event_at = snapshot["last_event_at"]
@@ -579,7 +590,9 @@ async def _apply_config_updates(plugin, updates: dict[str, Any]) -> dict[str, An
                 "vision_timeout_sec",
             )
         )
-        plugin.settings = new_settings
+        # 原地应用（保持 Settings 对象身份）：五个组件构造时各存
+        # self.settings 引用，整体替换会造成热更新后组件读旧值（0.9.0 轴 A）。
+        plugin.settings.apply(new_settings)
         if "whitelist" in updates:
             plugin._replace_whitelist(new_settings.whitelist)
         if vision_changed:
@@ -721,3 +734,38 @@ def bind_api_handlers(plugin) -> None:
 # 公开入口：main.py 初始化时加载主题偏好。
 load_ui_theme = _load_ui_theme
 save_ui_theme = _save_ui_theme
+
+
+class UnifiedManagerApi:
+    """Simplified dashboard API - only self-reply config.（0.9.0 B3 自 unified_manager.py 并入）"""
+
+    def __init__(self, owner: Any) -> None:
+        self.owner = owner
+
+    def register(self, context: Any, route: str) -> None:
+        register = context.register_web_api
+        register(f"{route}/unified/overview", self.overview, ["GET"], "统一管理页概览")
+
+    async def overview(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "self_reply": self._self_reply_summary(),
+        }
+
+    def _self_reply_summary(self) -> dict[str, Any]:
+        settings = self.owner.settings
+        return {
+            "available": True,
+            "enabled": bool(self.owner.runtime_enabled),
+            "decision_model_enabled": settings.decision_model_enabled,
+            "whitelist_count": len(settings.whitelist),
+            "message_delay_sec": settings.message_delay_sec,
+            "min_silence_sec": settings.min_silence_sec,
+            "cooldown_sec": settings.cooldown_sec,
+            # Backward-compatible aliases for older callers.
+            "cooldown_seconds": settings.cooldown_sec,
+            "idle_trigger_seconds": settings.message_delay_sec,
+            "patrol_inactive_after_sec": settings.patrol_inactive_after_sec,
+            "min_context_messages": settings.decision_history_min_messages,
+            "decision_history_min_messages": settings.decision_history_min_messages,
+        }

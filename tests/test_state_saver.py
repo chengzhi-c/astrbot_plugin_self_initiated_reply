@@ -103,3 +103,35 @@ async def test_cancel_then_flush_still_saves(tmp_path: Path) -> None:
     ok = await saver.flush()
     assert ok is True
     assert calls == ["save"]
+
+
+async def test_auto_flush_lock_contention_does_not_lose_dirty_state(
+    tmp_path: Path,
+) -> None:
+    """定时自动落盘与并发写竞争时，脏状态不得被静默吞掉。
+
+    修复前（0.8.8 第三轮复审发现）：_flush_later 到点后 await flush()，
+    此时 self._task 即当前任务，flush() 无条件 cancel() 自己；
+    CancelledError 在 do_save 的锁等待点投递（BaseException，不被
+    except Exception 捕获），而 _pending 已置 False → 无重试、无日志，
+    该会话状态静默丢失。本测试为红灯复现：修复前应红。
+    """
+    mod = _saver_module()
+    lock = asyncio.Lock()
+    saved: list[str] = []
+
+    async def slow_save() -> bool:
+        async with lock:  # 等待点即取消投递点（模拟 _save_lock 被并发占用）
+            saved.append("save")
+            await asyncio.sleep(0.01)
+        return True
+
+    saver = mod.DebouncedStateSaver(do_save=slow_save, debounce_sec=0.01)
+    async with lock:
+        saver.mark_dirty()
+        # 锁持有期间窗口到点：do_save 阻塞在锁等待点。修复前 flush() 已
+        # cancel 自身，CancelledError 在锁等待点投递杀死任务（保存从未发生）；
+        # 修复后任务存活、一直等到锁释放。
+        await asyncio.sleep(0.2)
+    await asyncio.sleep(0.1)  # 锁释放：修复后的等待任务完成保存
+    assert saved == ["save"], "定时自动落盘必须完成（修复前任务被自取消杀死，保存从未发生）"

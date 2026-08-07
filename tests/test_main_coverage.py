@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -438,21 +439,21 @@ def test_check_suppresses_duplicate_direct_text(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# 委托壳与只读视图
+# 协作壳与只读视图（逻辑在子模块，主类保留转发）
 # ============================================================================
 
 
 def test_delegate_shells_work(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         state = plugin._state_for(UMO)
-        assert isinstance(plugin._last_event_cleanup, float)
+        assert isinstance(plugin._scheduler.last_cleanup_at, float)
         assert plugin._patrol_task is None  # patrol 触发默认关闭，不启动任务
         assert isinstance(await plugin._run_image_cleanup(), int)
-        assert isinstance(plugin._remaining_silence_sec(state), float)
-        plugin._main_agent_build_config()
-        assert isinstance(plugin._recent_reply_request_reason(state), str)
+        assert isinstance(plugin._scheduler.remaining_silence_sec(state), float)
+        plugin._generation.main_agent_build_config("")
+        assert isinstance(plugin._decision.recent_reply_request_reason(state), str)
         assert plugin._recent_images_for(UMO) == []
-        prompt = await plugin._build_decision_prompt(UMO, state, "patrol")
+        prompt = await plugin._decision.build_decision_prompt(UMO, state, "patrol")
         assert isinstance(prompt, str)
 
     with_plugin(tmp_path, scenario)
@@ -603,6 +604,10 @@ def test_refresh_admin_ids_cache_and_bad_file(tmp_path: Path) -> None:
         cached = plugin._refresh_admin_ids()
         assert cached is plugin._admin_ids  # mtime 相同 → 缓存命中
         cmd_file.write_text('{"admins_id": ["c"]}', encoding="utf-8")
+        # NTFS mtime 粒度下连续两次写入可能落入同一时间片：强制推进 mtime，
+        # 否则热读缓存误判为未变更（全量测试负载下偶发抖动）。
+        stat = cmd_file.stat()
+        os.utime(cmd_file, (stat.st_atime, stat.st_mtime + 1))
         assert plugin._refresh_admin_ids() == {"c"}
         cmd_file.write_text("{broken json", encoding="utf-8")
         assert plugin._refresh_admin_ids() == {"c"}  # 坏文件不炸，保留上次集合

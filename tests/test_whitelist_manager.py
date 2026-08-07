@@ -61,7 +61,13 @@ class FakeCtx:
             save_storage=self.persistence.save,
             ensure_state=lambda key: self.ensured.append(key) or self.sessions.setdefault(key, {}),
             invalidate=lambda umo: self.invalidated.append(umo) or 0,
-            prune=lambda umo: self.pruned.append(umo),
+            # 0.8.8 起会话回收契约收敛到 prune 回调（与生产 main._prune_session
+            # 语义一致：代次/裁决 + sessions 条目）；WhitelistManager 不再自行 pop。
+            prune=lambda umo: (
+                self.pruned.append(umo)
+                or self.sessions.pop(umo, None)
+                or self.sessions.pop(_group_key(umo), None)
+            ),
             sessions=self.sessions,
             tracked_umos=lambda: set(self.tracked),
             runtime_umos=self.runtime_umos,

@@ -4,8 +4,9 @@
 判定依据：**任何改动不得破坏下列行为**。红线测试与变异点围绕这些条目设计；
 条目变更必须显式修订本文档并附理由。
 
-基线（2026-08-06 冻结）：版本 0.8.6，349 tests 全绿，整体覆盖率 79.80%
-（生产口径，排除 tests/），main.py 60%、image/parser.py 100%（模块门槛见
+基线（2026-08-07 冻结）：版本 0.8.8，543 tests 全绿，整体覆盖率 91.35%
+（生产口径，排除 tests/），main.py 96%、image/parser.py 100%、delivery.py 74%、
+scheduler.py 76%、storage.py 72%（模块门槛见
 `scripts/coverage_gates.py`，阈值 = 实测 − 5% 缓冲，禁止下调）。
 
 ## 1. 代次（Generation）与观察窗口

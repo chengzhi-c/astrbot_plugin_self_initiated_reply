@@ -1,51 +1,20 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
-import logging
 import os
-import sys
-import types
 from pathlib import Path
 from types import SimpleNamespace
 
-ROOT = Path(__file__).resolve().parents[1]
+from .host_stubs import ROOT, install_astrbot_stubs, load_package
+
 PACKAGE_NAME = "selfreply_vision_test_package"
 
 
-def _install_astrbot_stubs() -> None:
-    astrbot = sys.modules.setdefault("astrbot", types.ModuleType("astrbot"))
-    api = sys.modules.setdefault("astrbot.api", types.ModuleType("astrbot.api"))
-    event = sys.modules.setdefault("astrbot.api.event", types.ModuleType("astrbot.api.event"))
-    star = sys.modules.setdefault("astrbot.api.star", types.ModuleType("astrbot.api.star"))
-    components = sys.modules.setdefault(
-        "astrbot.api.message_components", types.ModuleType("astrbot.api.message_components")
-    )
-
-    class AstrMessageEvent:
-        pass
-
-    class Context:
-        pass
-
-    class At:
-        pass
-
-    api.logger = logging.getLogger("selfreply-vision-test")
-    event.AstrMessageEvent = AstrMessageEvent
-    star.Context = Context
-    components.At = At
-    astrbot.api = api
-
-
 def _load_modules():
-    _install_astrbot_stubs()
-    package = types.ModuleType(PACKAGE_NAME)
-    package.__path__ = [str(ROOT)]
-    sys.modules[PACKAGE_NAME] = package
-    adapters = importlib.import_module(f"{PACKAGE_NAME}.adapters")
-    image = importlib.import_module(f"{PACKAGE_NAME}.image")
-    models = importlib.import_module(f"{PACKAGE_NAME}.models")
+    install_astrbot_stubs()
+    adapters = load_package(PACKAGE_NAME, "adapters")
+    image = load_package(PACKAGE_NAME, "image")
+    models = load_package(PACKAGE_NAME, "models")
     return adapters, image, models
 
 

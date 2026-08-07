@@ -35,6 +35,7 @@ from .utils import (
     latest_user_text,
     looks_like_reply_request,
     parse_decision_json,
+    response_text,
 )
 
 DECISION_SYSTEM_PROMPT = "你是群聊主动回复时机判断器。只输出严格 JSON，不要输出解释。"
@@ -227,12 +228,7 @@ class DecisionMaker:
                 "elapsed_sec": self._clock() - started,
             }
 
-        raw = str(getattr(response, "completion_text", "") or "").strip()
-        if not raw:
-            result_chain = getattr(response, "result_chain", None)
-            get_plain_text = getattr(result_chain, "get_plain_text", None)
-            if callable(get_plain_text):
-                raw = str(get_plain_text() or "").strip()
+        raw = response_text(response)
 
         # 严格 JSON 解析器，带类型校验
         parsed = parse_decision_json(raw)
