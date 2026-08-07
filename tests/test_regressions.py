@@ -239,13 +239,9 @@ def test_successful_image_cache_logs_are_debug_only() -> None:
         '                "[%s] captured %s/%s images into local vision cache for umo=%s",'
         not in source
     )
+    assert 'logger.debug(\n                "[%s] host image snapshot created: %s",' in parser_source
     assert (
-        'logger.debug(\n                "[selfreply] host image snapshot created: %s",'
-        in parser_source
-    )
-    assert (
-        'logger.info(\n                "[selfreply] host image snapshot created: %s",'
-        not in parser_source
+        'logger.info(\n                "[%s] host image snapshot created: %s",' not in parser_source
     )
 
 

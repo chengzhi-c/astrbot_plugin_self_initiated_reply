@@ -134,10 +134,9 @@ class DeliveryRunner:
                 gate,
             )
             if direct_send_count:
-                await self.record_proactive_state(
+                await self._record_direct_sends(
                     umo,
                     state,
-                    "",
                     direct_send_count,
                     expected_generation=expected_generation,
                     observed_active_at=observed_active_at,
@@ -153,10 +152,9 @@ class DeliveryRunner:
                     # （视为已尝试），防止巡检或新消息立刻对同一事件重复处理。
                     # 注意：即使工具已直发也必须记录——否则观察窗口不推进，
                     # 同一事件会被再次处理并可能再次直发。
-                    await self.record_proactive_state(
+                    await self._record_direct_sends(
                         umo,
                         state,
-                        "",
                         direct_send_count,
                         expected_generation=expected_generation,
                         observed_active_at=observed_active_at,
@@ -164,10 +162,9 @@ class DeliveryRunner:
                     )
                     return "主动发送状态未知，未自动重试。"
                 if direct_send_count:
-                    await self.record_proactive_state(
+                    await self._record_direct_sends(
                         umo,
                         state,
-                        "",
                         direct_send_count,
                         expected_generation=expected_generation,
                         observed_active_at=observed_active_at,
@@ -336,6 +333,27 @@ class DeliveryRunner:
         except Exception as exc:
             logger.warning("[%s] send reply failed session=%s error=%s", PLUGIN_ID, umo, exc)
             return SendOutcome(SendStatus.UNKNOWN, str(exc))
+
+    async def _record_direct_sends(
+        self,
+        umo: str,
+        state: SessionState,
+        direct_send_count: int,
+        *,
+        expected_generation: int | None,
+        observed_active_at: float | None,
+        confirmed: bool = True,
+    ) -> bool:
+        """工具直发的状态记录（无文本回复路径共用；0.9.0 低垂果实合并重复调用）。"""
+        return await self.record_proactive_state(
+            umo,
+            state,
+            "",
+            direct_send_count,
+            expected_generation=expected_generation,
+            observed_active_at=observed_active_at,
+            confirmed=confirmed,
+        )
 
     async def record_proactive_state(
         self,

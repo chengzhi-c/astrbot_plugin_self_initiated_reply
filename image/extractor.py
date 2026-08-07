@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from astrbot.api import logger
 
+from ..models import PLUGIN_ID
 from .models import ImageInfo
 
 if TYPE_CHECKING:
@@ -289,7 +290,7 @@ class ImageExtractor:
                     )
                 )
         except Exception as exc:
-            logger.debug("[selfreply] image extraction failed: %s", exc)
+            logger.debug("[%s] image extraction failed: %s", PLUGIN_ID, exc)
         return images
 
     @staticmethod

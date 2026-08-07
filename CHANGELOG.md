@@ -31,6 +31,12 @@
   推迟 0.10 独立立项。
 - **B5 降级保留**：`whitelist_storage_key` 占位参数不动，docstring 补日落决策点
   （0.10 前 wildcard 不立项则连参数移除）。
+- **低垂果实批次（交付前复审追加）**：image/parser.py + extractor.py 全部 19 处
+  日志前缀硬编码 `[selfreply]` 收敛为 `PLUGIN_ID`（test_regressions 日志级别锚点
+  同步语义等价更新）；delivery.py 三处重复的工具直发记录调用提取为
+  `_record_direct_sends`，并补 confirmed 语义守卫测试（变异抽查：破坏默认值即红）；
+  `.scratch/` 移出 git 追踪并补 .gitignore；`whitelist_storage_key` 日落检查未到期
+  （当前 0.9.0 < 0.10），参数保留。
 
 ### 质量护栏（轴 D）
 
