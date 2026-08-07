@@ -63,7 +63,10 @@ def test_wheel_required_files_covered_by_pyproject() -> None:
     漂移后果：check_wheel 在 CI 红但本地构建永远绿（要求了打包层根本
     不会包含的文件），守卫失效。断言 artifacts 前缀 ∪ packages 目录。
     """
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python < 3.11
+        import tomli as tomllib  # type: ignore[no-redef]
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     tool = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]

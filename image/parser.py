@@ -361,10 +361,12 @@ class ImageParser:
                 except OSError:
                     continue
 
-        for directory in sorted(
-            (item for item in cache_root.rglob("*") if item.is_dir()),
-            reverse=True,
-        ):
+        try:
+            directories = [item for item in cache_root.rglob("*") if item.is_dir()]
+        except (OSError, ValueError):
+            # is_dir 内部可能触发 stat（旧版 pathlib 经 Path.stat），失败按空集处理
+            directories = []
+        for directory in sorted(directories, reverse=True):
             try:
                 directory.rmdir()
             except OSError:
