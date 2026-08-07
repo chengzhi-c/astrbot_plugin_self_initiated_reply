@@ -1,4 +1,4 @@
-const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
+﻿const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
 
 let els = null;
 
@@ -51,6 +51,7 @@ function getEls() {
     cleanupImageCacheBtn: document.getElementById("cleanupImageCacheBtn"),
     cleanupImageCacheState: document.getElementById("cleanupImageCacheState"),
     whitelistInput: document.getElementById("whitelistInput"),
+    whitelistError: document.getElementById("whitelistError"),
     configSaveState: document.getElementById("configSaveState"),
     toast: document.getElementById("toast"),
     boot: document.getElementById("boot"),
@@ -107,6 +108,13 @@ const THEME_KEY = "selfreply-theme";
 const THEME_CYCLE = ["auto", "light", "dark"];
 // 三态循环对读屏用户需可感知：按钮 aria-label 同步当前状态（复审：主题切换无状态语义）
 const THEME_LABELS = { auto: "跟随系统", light: "浅色 · 慈爱之惠", dark: "深色 · 审判之司" };
+
+// P2-7: 具名时间常量——同一事件只改一处，不用追漏
+const REFRESH_ARM_MS = 3000;    // 刷新按钮武装窗口（与下方 toast 文案「3 秒内」共享）
+const TOAST_MS = 2200;          // toast 自动隐藏延迟
+const SAVE_ANIM_MS = 1100;      // 保存按钮勾选动画清理
+const SAVE_DOT_MS = 700;        // 导航状态点脉冲清理
+const PREVIEW_DEBOUNCE_MS = 80; // 提示词预览防抖延迟
 
 function currentTheme() {
   const value = document.documentElement.getAttribute("data-theme");
@@ -169,22 +177,31 @@ function setStatState(element, state) {
   element.classList.add(state);
 }
 
+// P2-6: 语义保存状态标志，避免用文案字符串做判断
+// 状态映射: "" / "dirty" / "saving" / "ok" / "error"
+//   dirty   + saving 共用 CSS is-pending
+let saveStateKind = "";
+
 function setSaveState(message, state) {
+  saveStateKind = state;
   if (!els.configSaveState) return;
   els.configSaveState.textContent = message;
   els.configSaveState.classList.remove("is-pending", "is-ok", "is-error");
-  if (state) els.configSaveState.classList.add(`is-${state}`);
-  // 同步导航底部保存状态
-  if (els.navSaveState && !isDirty) {
+  // P2-6: dirty 和 saving 语义不同，但共用同一 CSS 颜色
+  const cssKind = state === "dirty" ? "pending" : state;
+  if (cssKind) els.configSaveState.classList.add(`is-${cssKind}`);
+  // 同步导航底部保存状态（P2-5）
+  if (els.navSaveState) {
     if (state === "ok") els.navSaveState.textContent = "已保存";
     else if (state === "error") els.navSaveState.textContent = "保存失败";
-    else if (state === "pending") els.navSaveState.textContent = "保存中";
+    else if (state === "saving") els.navSaveState.textContent = "保存中";
+    // dirty 由 setDirty 统一设置导航文案，这里不重复
   }
   // 同步移动端固定保存条的状态
   if (els.mobileSaveState) {
     els.mobileSaveState.textContent = message || (state ? "" : "已同步");
     els.mobileSaveState.classList.remove("is-pending", "is-ok", "is-error");
-    if (state) els.mobileSaveState.classList.add(`is-${state}`);
+    if (cssKind) els.mobileSaveState.classList.add(`is-${cssKind}`);
   }
   // 保存成功微反馈：三处保存按钮勾选回弹 + 导航状态点脉冲
   if (state === "ok") {
@@ -198,13 +215,13 @@ function setSaveState(message, state) {
       btn.classList.remove("is-saved");
       void btn.offsetWidth; // 重置动画
       btn.classList.add("is-saved");
-      window.setTimeout(() => btn.classList.remove("is-saved"), 1100);
+      window.setTimeout(() => btn.classList.remove("is-saved"), SAVE_ANIM_MS);
     });
     if (els.navSaveDot) {
       els.navSaveDot.classList.remove("is-pulse");
       void els.navSaveDot.offsetWidth;
       els.navSaveDot.classList.add("is-pulse");
-      window.setTimeout(() => els.navSaveDot.classList.remove("is-pulse"), 700);
+      window.setTimeout(() => els.navSaveDot.classList.remove("is-pulse"), SAVE_DOT_MS);
     }
   }
 }
@@ -219,9 +236,9 @@ function setDirty(dirty = true) {
   if (els.navSaveDot) els.navSaveDot.classList.toggle("is-dirty", isDirty);
   if (els.mobileSaveBar) els.mobileSaveBar.classList.toggle("is-dirty", isDirty);
   if (els.navSaveState) els.navSaveState.textContent = isDirty ? "有未保存改动" : "已同步";
-  if (dirty && els.configSaveState && !els.configSaveState.textContent.includes("保存中")) {
-    setSaveState("有未保存改动", "pending");
-  } else if (!dirty && els.configSaveState && els.configSaveState.textContent === "有未保存改动") {
+  if (dirty && saveStateKind !== "saving") {
+    setSaveState("有未保存改动", "dirty");
+  } else if (!dirty && saveStateKind === "dirty") {
     setSaveState("", "");
   }
 }
@@ -241,7 +258,7 @@ function showToast(message) {
   els.toast.textContent = message;
   els.toast.classList.add("show");
   window.clearTimeout(showToast.timer);
-  showToast.timer = window.setTimeout(() => els.toast.classList.remove("show"), 2200);
+  showToast.timer = window.setTimeout(() => els.toast.classList.remove("show"), TOAST_MS);
 }
 
 // 输入防抖：预览区每次按键全量重渲染，低频设备会卡（复审 P2-8）
@@ -262,19 +279,38 @@ async function getBridge() {
   return window.AstrBotPluginPage;
 }
 
-async function apiGet(endpoint, params = {}) {
-  const bridge = await getBridge();
-  if (bridge) return bridge.apiGet(endpoint, params);
-  const url = new URL(`/api/plug/${PLUGIN_ID}/${endpoint}`, window.location.href);
-  Object.entries(params).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
-  });
-  const response = await fetch(url, { credentials: "include" });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(result?.error || `请求失败 (${response.status})`);
+// P1-4: 统一 fetch 错误包装，提升后端不可达时的用户体验
+function wrapFetchError(error) {
+  const message = String(error?.message || error || "");
+  if (message === "Failed to fetch" || message.includes("fetch")) {
+    throw new Error("无法连接插件 API，请重载页面或重启 AstrBot 后重试");
   }
-  return result;
+  throw error;
+}
+
+// P1-5: fetch 超时保护，防止后端挂起时请求永不 settle
+const FETCH_TIMEOUT_MS = 15000;
+
+async function apiGet(endpoint, params = {}) {
+  try {
+    const bridge = await getBridge();
+    if (bridge) return bridge.apiGet(endpoint, params);
+    const url = new URL(`/api/plug/${PLUGIN_ID}/${endpoint}`, window.location.href);
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
+    });
+    const response = await fetch(url, {
+      credentials: "include",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(result?.error || `请求失败 (${response.status})`);
+    }
+    return result;
+  } catch (error) {
+    wrapFetchError(error);
+  }
 }
 
 async function apiPost(endpoint, body = {}) {
@@ -288,6 +324,7 @@ async function apiPost(endpoint, body = {}) {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -295,11 +332,7 @@ async function apiPost(endpoint, body = {}) {
     }
     return result;
   } catch (error) {
-    const message = String(error?.message || error || "");
-    if (message === "Failed to fetch" || message.includes("fetch")) {
-      throw new Error("无法连接插件 API，请重载页面或重启 AstrBot 后重试");
-    }
-    throw error;
+    wrapFetchError(error);
   }
 }
 
@@ -596,6 +629,41 @@ function validateAll() {
   return ok;
 }
 
+// P2-10: 白名单前端预校验——与后端 _string_list 规则对齐（len > 200 / 非法字符）
+const WHITELIST_ITEM_MAX_LEN = 200;             // 与后端 MAX_STRING_LIST_ITEM_LEN 保持同步
+const WHITELIST_ILLEGAL_RE = /[\x00-\x1f"'\\]/; // 与后端 re.search(r'[\x00-\x1f"\'\\]') 同步
+
+function validateWhitelist() {
+  if (!els.whitelistInput || !els.whitelistError) return true;
+  const items = els.whitelistInput.value
+    .split(/[\n,，]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  let msg = "";
+  for (const item of items) {
+    if (item.length > WHITELIST_ITEM_MAX_LEN) {
+      msg = `有条目过长（> ${WHITELIST_ITEM_MAX_LEN} 字符）：「${item.slice(0, 24)}…」`;
+      break;
+    }
+    if (WHITELIST_ILLEGAL_RE.test(item)) {
+      msg = `有条目包含非法字符（不允许引号或反斜杠）：「${item.slice(0, 24)}」`;
+      break;
+    }
+  }
+  if (msg) {
+    els.whitelistInput.setAttribute("aria-invalid", "true");
+    els.whitelistError.textContent = msg;
+    els.whitelistError.classList.add("show");
+    els.whitelistInput.scrollIntoView({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    els.whitelistInput.focus({ preventScroll: true });
+    return false;
+  }
+  els.whitelistInput.removeAttribute("aria-invalid");
+  els.whitelistError.classList.remove("show");
+  els.whitelistError.textContent = "";
+  return true;
+}
+
 function prefersReducedMotion() {
   return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
@@ -740,6 +808,8 @@ function setSaving(loading) {
     btn.classList.toggle("is-loading", loading);
     btn.disabled = loading;
   });
+  // P1-1: 保存期间禁用刷新按钮，避免并发竞态
+  if (els.refreshBtn) els.refreshBtn.disabled = loading;
 }
 
 async function saveConfig(event) {
@@ -757,11 +827,16 @@ async function saveConfig(event) {
     showToast("部分数值超出允许范围，请检查标红字段");
     return;
   }
+  // P2-10: 白名单前端预校验
+  if (!validateWhitelist()) {
+    showToast("白名单有非法条目，请检查标红区域");
+    return;
+  }
   savingConfig = true;
   setSaving(true);
   els.configForm.inert = true; // 保存期间禁编辑，防止 reload 冲掉新输入
   els.configForm.classList.add("is-saving"); // 视觉反馈：inert 不可编辑需可感知（复审 P2-10）
-  setSaveState("保存中", "pending");
+  setSaveState("保存中", "saving");
   try {
     const whitelist = els.whitelistInput.value
       .split(/[\n,，]+/)
@@ -857,7 +932,8 @@ let refreshArmed = false;
 let refreshArmTimer = null;
 
 async function doRefresh() {
-  if (refreshing) return;
+  // P1-1: 保存进行中不允许刷新（双保险）
+  if (savingConfig || refreshing) return;
   refreshing = true;
   els.refreshBtn.disabled = true;
   els.refreshBtn.classList.add("is-loading");
@@ -884,7 +960,7 @@ if (els.refreshBtn) {
       refreshArmTimer = window.setTimeout(() => {
         refreshArmed = false;
         els.refreshBtn.classList.remove("is-armed");
-      }, 3000);
+      }, REFRESH_ARM_MS);
       return;
     }
     refreshArmed = false;
@@ -911,7 +987,7 @@ if (els.resetPromptBtn) {
   });
 }
 if (els.decisionPromptInput) {
-  els.decisionPromptInput.addEventListener("input", debounce(renderPromptPreview, 80));
+  els.decisionPromptInput.addEventListener("input", debounce(renderPromptPreview, PREVIEW_DEBOUNCE_MS));
 }
 // 本地开关即时反馈：未保存前文案标记「（未保存）」，保存后由 loadConfig 以服务端态覆盖
 if (els.enabledInput) {
@@ -1008,9 +1084,20 @@ function hideBoot() {
   if (els.selfStat) els.selfStat.classList.add("is-entered");
 }
 
+// P1-5: boot 遗罩兜底定时器，防止后端挂起时页面永久卡死
+const BOOT_TIMEOUT_MS = 12000;
+const bootTimeout = window.setTimeout(() => {
+  hideBoot();
+  showToast("加载超时，请刷新页面或检查后端状态");
+}, BOOT_TIMEOUT_MS);
+
 loadAll()
-  .then(hideBoot)
+  .then(() => {
+    window.clearTimeout(bootTimeout);
+    hideBoot();
+  })
   .catch((err) => {
+    window.clearTimeout(bootTimeout);
     hideBoot();
     showToast(err.message || "加载失败");
   });

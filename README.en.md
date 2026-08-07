@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/banner-dark.jpg">
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/banner-light.jpg">
@@ -121,8 +121,8 @@ A settings page lives inside the plugin detail page, covering:
 The UI ships with light and dark themes — light **"Boon of Compassion"**, dark **"Court of Judgment"** — toggled from the top-right corner and defaulting to your system preference:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/慈爱之惠.png" alt="Light theme · Boon of Compassion" width="49%">
-  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/审判之司.png" alt="Dark theme · Court of Judgment" width="49%">
+  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/慈爱之惠.jpg" alt="Light theme · Boon of Compassion" width="49%">
+  <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/审判之司.jpg" alt="Dark theme · Court of Judgment" width="49%">
 </p>
 
 **Judge model tuning** is the most frequently used entry point:

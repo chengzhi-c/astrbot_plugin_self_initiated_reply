@@ -63,7 +63,10 @@
   --focus-ring: 0 0 0 2px var(--focus-offset-color), 0 0 0 4px var(--focus-color);
 
   /* 装饰色：浅色是雪影的蓝紫，深色是者老木的琥珀。只描边、只点缀 */
-  --ornament:      #6e7a9e;
+  /* P2-9: 原 #6e7a9e 在 --surface 上仅 4.14:1，低于 11px 粗体文本的 AA 4.5:1
+     门槛（.sidenav-idx 序号、.sidenav-group 分组标题均为该尺寸）。压深至
+     5.14:1，色相保持不变；图标用途（.panel-icon）门槛更低，压深只更安全。 */
+  --ornament:      #5f6b8e;
   --ornament-soft: rgba(110, 122, 158, .15);
 
   --mirror-well: light-dark(#303040, #0e1b1d);
@@ -90,22 +93,21 @@
   --toast-bg:   light-dark(rgba(34, 34, 46, .96), rgba(28, 19, 16, .97));
   --toast-text: light-dark(#fbfcfe, #f4ece0);
 
-  /* 单层阴影：light-dark() 的逗号是参数分隔符，多层 box-shadow 不能写在里面；
-     反过来，var(--shadow-sm) 也不能被拼进多层列表——light-dark() 占整个 layer 位时组合无效，
-     IACVT 会让整条 box-shadow 静默变成 none。多层组合用 --shadow-btn。 */
-  --shadow-sm: light-dark(0 1px 2px rgba(34, 34, 46, .07), 0 1px 2px rgba(0, 0, 0, .55));
-
   /* 按钮标准投影（顶面高光 + 落影），纯字面值可安全拼进多层列表。
      与 accent 同款缓存 bug，深色在两个分支显式覆写 */
   --shadow-btn: inset 0 1px 0 rgba(255, 255, 255, .55), 0 1px 2px rgba(34, 34, 46, .07);
+
+  /* 纯落影（无 inset 顶面高光）：深色实心填充控件专用。
+     --shadow-btn 的 inset 高光在浅色主题是 rgba(255,255,255,.55)，落在深色
+     填充上会显成一条贴顶白线，看着像填充色没铺满；这些控件的顶部层次由
+     自身渐变承担，只需落影。纯字面值，深色在两个分支显式覆写（同 --shadow-btn）。 */
+  --shadow-drop: 0 1px 2px rgba(34, 34, 46, .07);
 
   --radius: 14px;
   --radius-sm: 10px;
   --radius-xs: 8px;
   --radius-btn: 12px;
   --control-h: 40px;
-  --ctl-sm: 32px;
-  --ctl-lg: 48px;
   --tap: 44px;
   --shell-pad: 26px;
   --ease: cubic-bezier(.2, .7, .3, 1);
@@ -119,10 +121,8 @@
   --fs-500: 16px;   /* 面板标题 H2 */
   --fs-600: 20px;   /* 区块标题 */
   --fs-700: 24px;   /* 页面标题 H1 */
-  /* 字重：仅 400 / 500 / 700 三档（B2：YaHei/PingFang 无 SemiBold，600/650 均渲染为 700） */
-  --fw-regular: 400;
-  --fw-medium:  500;
-  --fw-bold:    700;
+  /* 字重：仅 400 / 500 / 700 三档（B2：YaHei/PingFang 无 SemiBold，600/650 均渲染为 700）
+     实际使用直接写 font-weight: 500 / 700，无需变量 */
   /* 间距：4px 基数，替换原 7/9/11/13/15/17/21/22/26/30 等非基数值（P1-9） */
   --sp-1:  2px;
   --sp-2:  4px;
@@ -180,8 +180,8 @@
     --scroll-thumb: rgba(48, 48, 64, .22);
     --toast-bg:   rgba(34, 34, 46, .96);
     --toast-text: #fbfcfe;
-    --shadow-sm:  0 1px 2px rgba(34, 34, 46, .07);
     --shadow-btn: inset 0 1px 0 rgba(255, 255, 255, .55), 0 1px 2px rgba(34, 34, 46, .07);
+    --shadow-drop: 0 1px 2px rgba(34, 34, 46, .07);
   }
 
   /* color-mix() 不可用时背景会退化为全透明，文字悬空，必须给纯色兜底 */
@@ -240,6 +240,7 @@
   --ornament-soft: rgba(180, 118, 46, .20);
 
   --shadow-btn:    inset 0 1px 0 rgba(244, 236, 224, .08), 0 1px 2px rgba(0, 0, 0, .55);
+  --shadow-drop:   0 1px 2px rgba(0, 0, 0, .55);
 }
 
 /* 深色下 select 下拉箭头换暖灰（浅色箭头是冷灰，色系不合） */
@@ -264,6 +265,7 @@
     --ornament-soft: rgba(180, 118, 46, .20);
 
     --shadow-btn:    inset 0 1px 0 rgba(244, 236, 224, .08), 0 1px 2px rgba(0, 0, 0, .55);
+    --shadow-drop:   0 1px 2px rgba(0, 0, 0, .55);
   }
 
   :root:not([data-theme]) select {
@@ -378,7 +380,8 @@ code {
   font-size: 13px;
   font-weight: 700;
   text-decoration: none;
-  box-shadow: var(--shadow-btn);
+  /* accent 实心底，同 .btn.primary 去 inset 顶面高光 */
+  box-shadow: var(--shadow-drop);
   transition: transform .2s var(--ease);
 }
 
@@ -463,7 +466,7 @@ code {
   background:
     radial-gradient(circle at 50% 62%, var(--spirit-soft), transparent 72%),
     var(--mirror-well);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-drop);
 }
 
 .brand-mark img {
@@ -474,14 +477,6 @@ code {
 }
 
 .brand-text { min-width: 0; }
-
-.eyebrow {
-  margin: 0 0 1px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: .12em;
-}
 
 .top-actions {
   display: inline-flex;
@@ -527,7 +522,7 @@ details.panel {
   border: var(--border-w) solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-drop);
 }
 
 .sidenav-title {
@@ -709,7 +704,7 @@ details.panel {
   border-top: var(--border-w) solid light-dark(rgba(255, 255, 255, .5), rgba(255, 255, 255, .09));
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-drop);
   /* Hero 入场：默认上浮淡入，配置就绪（body.is-ready / #selfStat.is-entered）后归位 */
   opacity: 0;
   transform: translateY(10px);
@@ -749,7 +744,7 @@ body.is-ready .master,
   background:
     linear-gradient(100deg, light-dark(rgba(74, 85, 128, .09), rgba(96, 64, 32, .60)), transparent 62%),
     var(--surface-elevated);
-  box-shadow: 0 4px 20px -4px light-dark(rgba(74, 85, 128, .12), rgba(224, 160, 64, .18)), var(--shadow-sm);
+  box-shadow: 0 4px 20px -4px light-dark(rgba(74, 85, 128, .12), rgba(224, 160, 64, .18)), var(--shadow-drop);
 }
 
 .master.is-off { background: var(--surface-2); }
@@ -841,7 +836,7 @@ body.is-ready .master,
 
 .readout:hover {
   transform: translateY(-1px);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-drop);
   border-color: var(--border-strong);
 }
 
@@ -922,7 +917,7 @@ body.is-ready .master,
   border-top: var(--border-w) solid light-dark(rgba(255, 255, 255, .5), rgba(255, 255, 255, .09));
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-drop);
 }
 
 .panel-head {
@@ -1513,7 +1508,7 @@ textarea {
   border: var(--border-w) solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-drop);
 }
 
 .form-actions-hint { margin-left: auto; }
@@ -1554,12 +1549,17 @@ textarea {
   background: linear-gradient(180deg, color-mix(in srgb, var(--accent), #fff 10%), var(--accent));
   color: light-dark(#fbfcfe, #120d09);
   letter-spacing: .02em;
+  /* 深色实心填充按钮不能用 --shadow-btn：其 inset 顶面高光在浅色主题是
+     rgba(255,255,255,.55)，被 border-box 裁到 padding 边缘后，在深色底上
+     显成一条贴顶白线，看着像填充色没铺满（深色主题该值为 .08 故无感）。
+     渐变自身已给出顶部层次，这里只要落影，用 --shadow-drop 单层令牌。 */
+  box-shadow: var(--shadow-drop);
 }
 
 .btn.primary:not(:disabled):hover {
   filter: brightness(1.06);
-  box-shadow: var(--shadow-btn),
-    0 8px 18px -8px color-mix(in srgb, var(--accent) 55%, transparent);
+  /* 单层 accent 光晕即够；--shadow-drop 是纯落影令牌，安全拼入多层列表 */
+  box-shadow: 0 8px 18px -8px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 /* 保存中：禁用态 + 旋转指示，按钮文案由 JS 切到「保存中」 */
@@ -1639,6 +1639,8 @@ textarea {
   border-color: var(--danger);
   background: var(--danger);
   color: light-dark(#fff, #120d09);
+  /* 悬浮态背景转实心 --danger，与 .btn.primary 同因去掉 inset 顶面高光 */
+  box-shadow: var(--shadow-drop);
 }
 .btn.danger:focus-visible {
   outline: 3px solid var(--focus-color);
@@ -1949,9 +1951,8 @@ textarea {
   .top-actions .btn,
   .top-actions .theme-toggle { flex: 1 1 auto; }
 
-  /* 窄屏顶栏精简：隐藏副标题，刷新按钮图标化，缩小品牌徽标 */
-  .eyebrow { display: none; }
-  .topbar .brand-text h1 { font-size: 18px; }
+  /* P2-12: <420px 顶栏品牌文字加截断，防止与按钮挤压溢出 */
+  .topbar .brand-text h1 { font-size: 18px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .brand-mark { width: 38px; height: 38px; border-radius: 50%; }
   .brand-mark img { width: 100%; height: 100%; }
 
@@ -2138,4 +2139,3 @@ textarea {
   .mobile-tabbar { background: var(--bg); }
   .toast { background: var(--toast-bg); }
 }
-
