@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 from astrbot.api import logger
 
-from ..models import MAX_IMAGE_CACHE_BYTES
+from ..models import MAX_IMAGE_CACHE_BYTES, PLUGIN_ID
 from ..utils import response_text
 from .cache import ImageCache
 from .models import ImageInfo
@@ -109,7 +109,7 @@ class ImageParser:
             try:
                 self._source_cache_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
-                logger.warning("[selfreply] image cache directory unavailable: %s", exc)
+                logger.warning("[%s] image cache directory unavailable: %s", PLUGIN_ID, exc)
         self._allowed_local_roots = (
             {self._source_cache_dir.resolve()} if self._source_cache_dir is not None else set()
         )
@@ -130,25 +130,25 @@ class ImageParser:
         try:
             image_url = await self._resolve_image_url(image_info)
             if not image_url:
-                logger.info("[selfreply] image source unavailable during event capture")
+                logger.info("[%s] image source unavailable during event capture", PLUGIN_ID)
                 return False
             if image_url.startswith("data:") and self._source_cache_dir:
                 path = self._materialize_data_url(image_url)
                 if path:
                     image_info.file_path = str(path)
                     image_info.prepared_source = str(path)
-                    logger.debug("[selfreply] image frozen to local cache: %s", path.name)
+                    logger.debug("[%s] image frozen to local cache: %s", PLUGIN_ID, path.name)
                     return True
             if image_url.startswith("data:"):
                 image_info.prepared_source = image_url
-                logger.debug("[selfreply] image frozen as in-memory data URL")
+                logger.debug("[%s] image frozen as in-memory data URL", PLUGIN_ID)
                 return True
             logger.warning(
-                "[selfreply] image source was not materialized; refusing delayed raw URL"
+                "[%s] image source was not materialized; refusing delayed raw URL", PLUGIN_ID
             )
             return False
         except Exception as exc:
-            logger.warning("[selfreply] image capture failed: %s", exc)
+            logger.warning("[%s] image capture failed: %s", PLUGIN_ID, exc)
             return False
 
     @staticmethod
@@ -204,12 +204,13 @@ class ImageParser:
             image_info.file_path = str(cached_path)
             image_info.prepared_source = str(cached_path)
             logger.debug(
-                "[selfreply] host image snapshot created: %s",
+                "[%s] host image snapshot created: %s",
+                PLUGIN_ID,
                 cached_path.name,
             )
             return True
         except (OSError, RuntimeError, ValueError) as exc:
-            logger.debug("[selfreply] host image snapshot failed: %s", exc)
+            logger.debug("[%s] host image snapshot failed: %s", PLUGIN_ID, exc)
             return False
 
     async def prepare_batch(
@@ -225,7 +226,7 @@ class ImageParser:
         try:
             provider_id = await self._bridge.resolve_provider_id(umo, self._provider_id)
             if not provider_id:
-                logger.info("[selfreply] no Vision provider available; skip image parsing")
+                logger.info("[%s] no Vision provider available; skip image parsing", PLUGIN_ID)
                 return None
             cache_key = (
                 f"vision:{VISION_PROMPT_VERSION}|provider:{provider_id}|{image_info.cache_key()}"
@@ -246,7 +247,7 @@ class ImageParser:
             try:
                 image_url = await self._resolve_image_url(image_info)
                 if not image_url:
-                    logger.info("[selfreply] no usable image source for parsing")
+                    logger.info("[%s] no usable image source for parsing", PLUGIN_ID)
                 else:
                     response = await asyncio.wait_for(
                         self._bridge.llm_generate_direct(
@@ -261,7 +262,7 @@ class ImageParser:
                     )
                     description = response_text(response)
                     if not description or self._is_unable_to_describe(description):
-                        logger.info("[selfreply] no usable description from provider")
+                        logger.info("[%s] no usable description from provider", PLUGIN_ID)
                     else:
                         description = description.strip()
                         if len(description) > 300:
@@ -275,10 +276,10 @@ class ImageParser:
                 self._inflight.pop(cache_key, None)
             return result
         except asyncio.TimeoutError:
-            logger.info("[selfreply] image parsing timed out")
+            logger.info("[%s] image parsing timed out", PLUGIN_ID)
             return None
         except Exception as exc:
-            logger.warning("[selfreply] image parsing failed: %s", exc)
+            logger.warning("[%s] image parsing failed: %s", PLUGIN_ID, exc)
             return None
 
     @staticmethod
@@ -409,7 +410,7 @@ class ImageParser:
                 data_url = await self._fetch_image_data_url(file_value)
                 if data_url:
                     return data_url
-                logger.info("[selfreply] image URL download failed: %s", file_value[:80])
+                logger.info("[%s] image URL download failed: %s", PLUGIN_ID, file_value[:80])
                 return None
             path = Path(file_value)
             trusted = bool(image_info.trusted_local_path)
@@ -426,7 +427,7 @@ class ImageParser:
             data_url = await self._fetch_image_data_url(image_info.url)
             if data_url:
                 return data_url
-            logger.info("[selfreply] image URL download failed: %s", image_info.url[:80])
+            logger.info("[%s] image URL download failed: %s", PLUGIN_ID, image_info.url[:80])
         return None
 
     def _materialize_data_url(self, data_url: str) -> Path | None:
@@ -478,7 +479,7 @@ class ImageParser:
             os.utime(target, None)
             return target
         except OSError as exc:
-            logger.debug("[selfreply] image cache write failed: %s", exc)
+            logger.debug("[%s] image cache write failed: %s", PLUGIN_ID, exc)
             return None
 
     def _file_to_data_url(self, path: Path, *, trusted: bool = False) -> str | None:
@@ -489,7 +490,9 @@ class ImageParser:
             if not trusted and not any(
                 candidate == root or root in candidate.parents for root in self._allowed_local_roots
             ):
-                logger.warning("[selfreply] rejected local image outside trusted roots: %s", path)
+                logger.warning(
+                    "[%s] rejected local image outside trusted roots: %s", PLUGIN_ID, path
+                )
                 return None
             return MessageRecorderBridge.image_to_data_url(candidate)
         except (OSError, RuntimeError, ValueError):
@@ -528,7 +531,7 @@ class ImageParser:
                         return None
                     return f"data:{content_type};base64,{base64.b64encode(content).decode('ascii')}"
         except Exception as exc:
-            logger.debug("[selfreply] image download failed: %s", exc)
+            logger.debug("[%s] image download failed: %s", PLUGIN_ID, exc)
             return None
 
     @staticmethod

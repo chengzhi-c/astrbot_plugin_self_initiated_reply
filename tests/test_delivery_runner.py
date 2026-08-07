@@ -435,6 +435,31 @@ async def test_deliver_local_gate_block_with_directs_records(tmp_path: Path) -> 
 
     assert "工具主动回复已完成；冷却中。" == result
     assert state.daily_count == 1
+    # confirmed 语义守卫（0.9.0 低垂果实复审）：非 UNKNOWN 路径的直发记录
+    # 必须写历史条目与文本；若误用 confirmed=False 则既无文本也无 assistant 条目
+    assert state.last_proactive_text == "[工具主动发送 x1]"
+    assert [item.role for item in state.recent] == ["assistant"]
+
+
+async def test_deliver_send_failure_with_directs_records_confirmed(tmp_path: Path) -> None:
+    """发送确定失败（非 UNKNOWN）且有直发：记录走 confirmed 语义并写历史。"""
+    _, models, runner, _ = _make_runner(tmp_path, sender_status="failed_before_submit")
+    state = _state(models)
+    result = await runner.deliver_reply(
+        "s1",
+        state,
+        "正文",
+        2,
+        expected_generation=1,
+        observed_active_at=100.0,
+        force=False,
+        trigger="message_delay",
+    )
+
+    assert result == "主动发送失败。"
+    assert state.daily_count == 1
+    assert state.last_proactive_text == "[工具主动发送 x2]"
+    assert [item.role for item in state.recent] == ["assistant"]
 
 
 # ============================================================================
