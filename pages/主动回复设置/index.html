@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="./style.css">
   <script>
     // 在首帧前应用主题，避免深色下闪白
+    // 注意：字符串 "selfreply-theme" 与 app.js THEME_KEY 常量同步维护，改名需两处一起改
     (function () {
       try {
         var saved = localStorage.getItem("selfreply-theme");
@@ -19,6 +20,13 @@
     })();
   </script>
   <script src="/api/plugin/page/bridge-sdk.js"></script>
+  <!-- P2-11: 脱离 JS 兆底，防止脚本未运行时页面永久隐藏 -->
+  <noscript>
+    <style>
+      .master { opacity: 1 !important; transform: none !important; }
+      .boot   { display: none !important; }
+    </style>
+  </noscript>
 </head>
 <body>
 
@@ -142,7 +150,7 @@
               <i class="master-track" aria-hidden="true"></i>
               <span class="master-copy">
                 <b><svg class="inline-icon" aria-hidden="true"><use href="#i-power"/></svg>主动回复</b>
-                <em id="selfStatus">加载中</em>
+                <em id="selfStatus" aria-live="polite">加载中</em>
               </span>
             </span>
           </label>
@@ -151,7 +159,7 @@
               <span class="readout-label"><i class="stat-dot" aria-hidden="true"></i>判断模型</span>
               <strong id="decisionModelStatus" aria-live="polite">-</strong>
             </div>
-            <div class="readout is-info" id="whitelistStat">
+            <div class="readout is-info">
               <span class="readout-label"><i class="stat-dot" aria-hidden="true"></i>生效会话</span>
               <strong id="whitelistCount" aria-live="polite">-</strong>
             </div>
@@ -168,6 +176,7 @@
             <span class="field-label">白名单会话 UMO / QQ 群号<em>每行一个</em></span>
             <textarea id="whitelistInput" rows="5" spellcheck="false"
               placeholder="留空则任何会话都不会主动回复&#10;群聊可填完整 UMO，也可直接填 QQ 群号"></textarea>
+            <span class="field-error" id="whitelistError" role="alert"></span>
             <p class="field-hint">每行一个 UMO 或 QQ 群号，可填完整 UMO 或纯群号</p>
           </label>
           <p class="muted">日常建议用 <code>/selfreply add</code> 和 <code>/selfreply remove</code> 管理当前会话，这里适合批量编辑。</p>
@@ -250,7 +259,7 @@
                 </select>
                 <button class="btn-link" id="providerManualBtn" type="button">手动输入</button>
               </div>
-              <input class="provider-manual-input" type="text" id="judgeProviderInput" placeholder="手动填写 Provider ID">
+              <input class="provider-manual-input" type="text" id="judgeProviderInput" placeholder="手动填写 Provider ID" aria-label="手动填写判断模型 Provider ID">
               <span class="muted provider-hint" id="providerHint">留空表示使用当前会话默认模型</span>
             </div>
             <label class="field">
@@ -364,7 +373,7 @@
                   <select id="visionProviderSelect">
                     <option value="">使用当前会话模型</option>
                   </select>
-                  <input type="text" id="visionProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
+                  <input type="text" id="visionProviderInput" placeholder="手动输入 Provider ID" aria-label="手动填写识图模型 Provider ID" style="display: none;">
                   <button type="button" class="btn-link" id="visionProviderManualBtn">手动输入</button>
                 </div>
               </div>
@@ -374,7 +383,7 @@
                   <select id="visionJudgeProviderSelect">
                     <option value="">与识图模型一致</option>
                   </select>
-                  <input type="text" id="visionJudgeProviderInput" placeholder="手动输入 Provider ID" style="display: none;">
+                  <input type="text" id="visionJudgeProviderInput" placeholder="手动输入 Provider ID" aria-label="手动填写判断阶段识图 Provider ID" style="display: none;">
                   <button type="button" class="btn-link" id="visionJudgeProviderManualBtn">手动输入</button>
                 </div>
               </div>
@@ -411,7 +420,7 @@
             <span class="spinner" aria-hidden="true"></span>
             <span class="btn-label">保存配置</span>
           </button>
-          <span class="save-state" id="configSaveState"></span>
+          <span class="save-state" id="configSaveState" aria-live="polite"></span>
           <span class="muted form-actions-hint">改动后需要保存才会生效</span>
         </div>
       </form>
@@ -420,7 +429,7 @@
 
   <!-- 移动端固定保存条：始终可达的保存入口 + 实时保存态 -->
   <div class="mobile-savebar" id="mobileSaveBar" role="region" aria-label="移动端保存栏">
-    <span class="save-state mobile-save-state" id="mobileSaveState">已同步</span>
+    <span class="save-state mobile-save-state" id="mobileSaveState" aria-live="polite">已同步</span>
     <button class="btn primary" id="saveMobileBtn" type="button">
       <span class="spinner" aria-hidden="true"></span>
       <span class="btn-label">保存配置</span>
