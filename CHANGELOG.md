@@ -3,6 +3,33 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式。
 小版本（0.8.1~0.8.8）迭代细节省略，详见 git 历史。
 
+## [0.9.2] - 2026-08-08
+
+三要素极致收敛（可维护/最轻量/高质量）；功能行为零回归，兼容债一次性偿还。
+
+### 行为变更
+
+- WebAPI 配置接口只接受正式键：6 个兼容别名（cooldown_seconds / idle_trigger_seconds / min_context_messages / proactive_threshold / vision_enabled / whitelist）移除；旧前端发别名会得到显式「未知配置键」错误（此前被隐式接受）。
+- GET config / unified/overview 响应只返回正式键（decision_history_min_messages / whitelist_sessions 等）。
+- check result 判断日志升为 INFO 并登记观测白名单（用户指定可见性）。
+
+### 兼容迁移
+
+- 只含别名键的存量配置文件不丢值：Settings.from_config 回退读取别名（whitelist→whitelist_sessions、cooldown_seconds→cooldown_sec、idle_trigger_seconds→message_delay_sec、min_context_messages/proactive_threshold→decision_history_min_messages），一次 load+save 后别名自然消失。
+- 随包前端页面全面切换正式键（读写两侧 + DEFAULT_CONFIG 单表同源）。
+
+### 内部结构
+
+- `whitelist_storage_key` 占位参数日落（0.9.0 B5 决策点到期，wildcard 未立项）：签名收敛为单参，9 处调用点同步。
+- 管理员列表双窗缓存：事件路径 30s 窗口内跳过 cmd_config.json 的 stat（mtime 缓存保留，最大延迟 = 窗口长）。
+- 宽捕获定向收窄：ui 主题纯 I/O 点位收窄为可枚举异常；storage 已是双层模式保持现状。
+- ImageCache 并发语义注释；utils.py 补模块职责 docstring。
+- main.py / webapi.py 拆分经实测评估否决（main.py 55/67 方法 ≤25 行无状态块可抽；webapi 拆分必产生双向引用），结论入档方案文档。
+
+### 质量门禁
+
+- 582 tests / 覆盖率 95.22%（fail_under 89）；mutation 38/38 全击杀；mypy 全源码零错；wheel 内容断言实跑通过。
+
 ## [0.9.1] - 2026-08-07
 
 仅表现层改动，后端逻辑、配置 schema 与命令契约零变更。
