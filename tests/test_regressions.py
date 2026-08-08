@@ -601,7 +601,7 @@ def test_r5_config_rollback_restores_sessions_and_locks(tmp_path: Path) -> None:
 
         plugin._save_storage = boom
         web = sys.modules["astrbot.api.web"]
-        web.request.payload = {"whitelist": []}
+        web.request.payload = {"whitelist_sessions": []}
         # API 层不抛异常：内部回滚后返回 ok:False
         result = await plugin._api_post_config()
         assert result.get("ok") is False
@@ -808,7 +808,7 @@ def test_r8_rollback_reschedules_delayed_check(tmp_path: Path) -> None:
 
         plugin._save_storage = boom
         web = sys.modules["astrbot.api.web"]
-        web.request.payload = {"whitelist": []}
+        web.request.payload = {"whitelist_sessions": []}
         result = await plugin._api_post_config()
         assert result.get("ok") is False
         # 修复前：回滚不恢复延迟任务 → UMO 不在 _delay_tasks（红灯）

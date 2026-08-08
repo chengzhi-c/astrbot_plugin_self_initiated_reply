@@ -54,7 +54,7 @@ def _bootstrap():
         ({"message_delay_sec": "5s"}, "message_delay_sec"),
         ({"min_silence_sec": "x"}, "min_silence_sec"),
         ({"patrol_inactive_after_sec": "x"}, "patrol_inactive_after_sec"),
-        ({"min_context_messages": "x"}, "decision_history_min_messages"),
+        ({"decision_history_min_messages": "x"}, "decision_history_min_messages"),
         ({"proactive_inherit_tools": 1}, "proactive_inherit_tools"),
         ({"vision_judge_enabled": "1"}, "vision_judge_enabled"),
         ({"vision_main_enabled": "1"}, "vision_main_enabled"),
@@ -63,7 +63,7 @@ def _bootstrap():
         ({"vision_image_age_sec": "x"}, "vision_image_age_sec"),
         ({"vision_timeout_sec": "x"}, "vision_timeout_sec"),
         ("not a dict", "请求体必须是 JSON 对象"),
-        ({"whitelist": "abc"}, "whitelist 必须是数组"),
+        ({"whitelist_sessions": "abc"}, "whitelist_sessions 必须是数组"),
     ],
 )
 def test_parse_config_updates_rejects_invalid(payload: Any, field: str) -> None:
@@ -75,28 +75,42 @@ def test_parse_config_updates_whitelist_rules() -> None:
     webapi = _webapi()
     # 超长拒绝
     with pytest.raises(ValueError):
-        webapi._parse_config_updates({"whitelist": ["ok", "x" * 201]})
+        webapi._parse_config_updates({"whitelist_sessions": ["ok", "x" * 201]})
     # 非法字符拒绝
     with pytest.raises(ValueError):
-        webapi._parse_config_updates({"whitelist": ['bad"quote']})
+        webapi._parse_config_updates({"whitelist_sessions": ['bad"quote']})
     with pytest.raises(ValueError):
-        webapi._parse_config_updates({"whitelist": ["bad\\slash"]})
+        webapi._parse_config_updates({"whitelist_sessions": ["bad\\slash"]})
     # 200 边界接受
-    ok = webapi._parse_config_updates({"whitelist": ["x" * 200]})
-    assert ok["whitelist"] == ["x" * 200]
+    ok = webapi._parse_config_updates({"whitelist_sessions": ["x" * 200]})
+    assert ok["whitelist_sessions"] == ["x" * 200]
     # 空条目跳过、去空白
-    updates = webapi._parse_config_updates({"whitelist": [" a ", "", "b"]})
-    assert updates["whitelist"] == ["a", "b"]
+    updates = webapi._parse_config_updates({"whitelist_sessions": [" a ", "", "b"]})
+    assert updates["whitelist_sessions"] == ["a", "b"]
 
 
-def test_parse_config_updates_accepts_aliases_and_defaults() -> None:
+def test_parse_config_updates_rejects_legacy_aliases() -> None:
+    """0.9.2 兼容别名层移除：别名键 fail loud 拒绝（旧前端得显式错误而非静默吞掉）。"""
+    webapi = _webapi()
+    for alias in (
+        "cooldown_seconds",
+        "idle_trigger_seconds",
+        "min_context_messages",
+        "proactive_threshold",
+        "vision_enabled",
+        "whitelist",
+    ):
+        with pytest.raises(ValueError, match="未知配置键"):
+            webapi._parse_config_updates({alias: 1})
+
+
+def test_parse_config_updates_formal_defaults() -> None:
     webapi = _webapi()
     updates = webapi._parse_config_updates(
         {
-            "cooldown_seconds": 30,
-            "idle_trigger_seconds": 60,
-            "proactive_threshold": 3,
-            "vision_enabled": False,
+            "cooldown_sec": 30,
+            "message_delay_sec": 60,
+            "decision_history_min_messages": 3,
             "decision_prompt_template": "   ",
             "judge_provider_id": 0,
             "vision_provider_id": 42,
@@ -106,8 +120,6 @@ def test_parse_config_updates_accepts_aliases_and_defaults() -> None:
     assert updates["cooldown_sec"] == 30
     assert updates["message_delay_sec"] == 60
     assert updates["decision_history_min_messages"] == 3
-    assert updates["vision_judge_enabled"] is False
-    assert updates["vision_main_enabled"] is False
     assert updates["decision_prompt_template"] == webapi.DEFAULT_DECISION_PROMPT_TEMPLATE
     assert updates["judge_provider_id"] == ""
     assert updates["vision_provider_id"] == "42"
@@ -436,7 +448,7 @@ def test_rollback_drops_unknown_delay_umo(tmp_path) -> None:
         plugin._save_storage = boom
         web = sys.modules["astrbot.api.web"]
         # 白名单变更使配置应用路径进入回滚
-        web.request.payload = {"whitelist": []}
+        web.request.payload = {"whitelist_sessions": []}
         result = await plugin._api_post_config()
         assert result.get("ok") is False
         # umo2 不在 sessions：回滚不为其重建延迟检查（原任务已被移除且无新任务）
@@ -462,7 +474,7 @@ def test_rollback_reschedule_failure_is_logged(tmp_path) -> None:
             RuntimeError("reschedule failed")
         )
         web = sys.modules["astrbot.api.web"]
-        web.request.payload = {"whitelist": []}
+        web.request.payload = {"whitelist_sessions": []}
         result = await plugin._api_post_config()
         assert result.get("ok") is False
 
@@ -488,14 +500,7 @@ def test_config_schema_keys_cover_schema_json(tmp_path) -> None:
     async def scenario(plugin, main):
         schema_path = ROOT / "_conf_schema.json"
         schema_keys = set(json.loads(schema_path.read_text(encoding="utf-8")))
-        aliases = {
-            "cooldown_seconds",
-            "idle_trigger_seconds",
-            "min_context_messages",
-            "proactive_threshold",
-            "vision_enabled",
-            "whitelist",
-        }
-        assert _webapi().CONFIG_SCHEMA_KEYS == schema_keys | aliases
+        # 0.9.2 起别名层已移除：白名单 == schema 键，无额外兼容键
+        assert _webapi().CONFIG_SCHEMA_KEYS == schema_keys
 
     with_plugin(tmp_path, scenario)

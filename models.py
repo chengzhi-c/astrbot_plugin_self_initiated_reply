@@ -459,7 +459,9 @@ class Settings:
             prompt_template = prompt_template[:MAX_PROMPT_LENGTH]
 
         # 白名单条目数限制
-        whitelist_raw = as_list(config.get("whitelist_sessions", []))
+        # 旧版配置文件可能只有别名键 whitelist：回退读取（迁移护栏 0.9.2 B2）；
+        # to_config_dict() 只写回正式键，一次 load+save 后别名自然消失。
+        whitelist_raw = as_list(config.get("whitelist_sessions", config.get("whitelist", [])))
         if len(whitelist_raw) > MAX_WHITELIST_SIZE:
             logger.warning(
                 "[%s] 白名单过大 (%d 条目)，已截断到前 %d 条",
@@ -485,7 +487,13 @@ class Settings:
             judge_provider_id=str(config.get("judge_provider_id", "") or "").strip(),
             decision_prompt_template=prompt_template,
             decision_history_min_messages=as_int(
-                config.get("decision_history_min_messages", 5), 5, 0, 30
+                config.get(
+                    "decision_history_min_messages",
+                    config.get("min_context_messages", config.get("proactive_threshold", 5)),
+                ),
+                5,
+                0,
+                30,
             ),
             decision_temperature=as_float(config.get("decision_temperature", 0.2), 0.2, 0.0, 2.0),
             decision_timeout_sec=as_float(config.get("decision_timeout_sec", 20), 20, 1, 300),
@@ -504,9 +512,19 @@ class Settings:
             recent_message_limit=as_int(
                 config.get("recent_message_limit", 20), 20, 3, MAX_RECENT_MESSAGE_LIMIT
             ),
-            message_delay_sec=as_int(config.get("message_delay_sec", 60), 60, 5, 86400),
+            message_delay_sec=as_int(
+                config.get("message_delay_sec", config.get("idle_trigger_seconds", 60)),
+                60,
+                5,
+                86400,
+            ),
             min_silence_sec=as_int(config.get("min_silence_sec", 45), 45, 0, 86400),
-            cooldown_sec=as_int(config.get("cooldown_sec", 900), 900, 0, 86400),
+            cooldown_sec=as_int(
+                config.get("cooldown_sec", config.get("cooldown_seconds", 900)),
+                900,
+                0,
+                86400,
+            ),
             max_daily_replies_per_session=as_int(
                 config.get("max_daily_replies_per_session", 5), 5, 0, MAX_DAILY_REPLIES_LIMIT
             ),

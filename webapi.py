@@ -26,23 +26,14 @@ from .models import (
     Settings,
 )
 
-# 配置 schema 全键（_conf_schema.json）+ 历史兼容别名。此名单之外的键
+# 配置 schema 全键（_conf_schema.json，与正式键一一对应）。此名单之外的键
 # 一律 fail loud 拒绝，防止前端/未来代码提交新字段时被静默吞掉。
-# 正式键集合 = CONFIG_SCHEMA_KEYS - _SCHEMA_ALIAS_KEYS，一致性守卫见
-# tests/test_config_schema.py（schema 缺失键恰为别名，漂移即红）。
-_SCHEMA_ALIAS_KEYS = frozenset(
-    {
-        # 兼容别名（旧前端 / 历史使用）：随前端升级后于 0.9.x 移除
-        "cooldown_seconds",
-        "idle_trigger_seconds",
-        "min_context_messages",
-        "proactive_threshold",
-        "vision_enabled",
-        "whitelist",
-    }
-)
+# 历史兼容别名（cooldown_seconds/idle_trigger_seconds/min_context_messages/
+# proactive_threshold/vision_enabled/whitelist）已于 0.9.2 移除：随包前端已
+# 切正式键，存量配置由 Settings.from_config 回退读取迁移，一致性守卫见
+# tests/test_config_schema.py。
 
-_SCHEMA_FORMAL_KEYS = frozenset(
+CONFIG_SCHEMA_KEYS = frozenset(
     {
         "enabled",
         "decision_model_enabled",
@@ -80,8 +71,6 @@ _SCHEMA_FORMAL_KEYS = frozenset(
         "vision_timeout_sec",
     }
 )
-
-CONFIG_SCHEMA_KEYS = _SCHEMA_FORMAL_KEYS | _SCHEMA_ALIAS_KEYS
 
 # 枚举型字符串键 → 合法取值集合（schema options 的运行时镜像）
 _REPLY_LENGTH_MODES = {"short", "balanced", "expressive"}
@@ -176,7 +165,6 @@ def _providers_from_manager(plugin) -> list[Any]:
 async def _api_get_config(plugin):
     """返回当前配置。"""
     try:
-        min_context_messages = plugin.settings.decision_history_min_messages
         return {
             "ok": True,
             # enabled 是持久配置；runtime_enabled 是 /on /off 临时运行态。
@@ -189,23 +177,16 @@ async def _api_get_config(plugin):
             "decision_prompt_default": DEFAULT_DECISION_PROMPT_TEMPLATE,
             "decision_temperature": plugin.settings.decision_temperature,
             "decision_timeout_sec": plugin.settings.decision_timeout_sec,
-            "min_context_messages": min_context_messages,
-            # Backward-compatible alias for older unified-manager frontend builds.
-            "proactive_threshold": min_context_messages,
+            "decision_history_min_messages": plugin.settings.decision_history_min_messages,
             "message_delay_sec": plugin.settings.message_delay_sec,
             "min_silence_sec": plugin.settings.min_silence_sec,
             "cooldown_sec": plugin.settings.cooldown_sec,
             "patrol_inactive_after_sec": plugin.settings.patrol_inactive_after_sec,
             "proactive_inherit_tools": plugin.settings.proactive_inherit_tools,
-            # Backward-compatible aliases for older custom-page builds.
-            "idle_trigger_seconds": plugin.settings.message_delay_sec,
-            "cooldown_seconds": plugin.settings.cooldown_sec,
-            "whitelist": list(plugin.settings.whitelist),
+            "whitelist_sessions": list(plugin.settings.whitelist),
             "pipeline_mode": True,
             "vision_judge_enabled": plugin.settings.vision_judge_enabled,
             "vision_main_enabled": plugin.settings.vision_main_enabled,
-            # 聚合值，保留给旧版前端
-            "vision_enabled": plugin.settings.vision_enabled,
             "vision_provider_id": plugin.settings.vision_provider_id,
             "vision_judge_provider_id": plugin.settings.vision_judge_provider_id,
             "vision_skip_stickers": plugin.settings.vision_skip_stickers,
@@ -440,25 +421,21 @@ def _parse_config_updates(data: Any) -> dict[str, Any]:
         updates["decision_timeout_sec"] = _strict_float(
             data["decision_timeout_sec"], "decision_timeout_sec"
         )
-    cooldown_value = data.get("cooldown_sec", data.get("cooldown_seconds"))
-    if cooldown_value is not None:
-        updates["cooldown_sec"] = _strict_int(cooldown_value, "cooldown_sec")
-    message_delay_value = data.get("message_delay_sec", data.get("idle_trigger_seconds"))
-    if message_delay_value is not None:
-        updates["message_delay_sec"] = _strict_int(message_delay_value, "message_delay_sec")
+    if "cooldown_sec" in data:
+        updates["cooldown_sec"] = _strict_int(data["cooldown_sec"], "cooldown_sec")
+    if "message_delay_sec" in data:
+        updates["message_delay_sec"] = _strict_int(
+            data["message_delay_sec"], "message_delay_sec"
+        )
     if "min_silence_sec" in data:
         updates["min_silence_sec"] = _strict_int(data["min_silence_sec"], "min_silence_sec")
     if "patrol_inactive_after_sec" in data:
         updates["patrol_inactive_after_sec"] = _strict_int(
             data["patrol_inactive_after_sec"], "patrol_inactive_after_sec"
         )
-    min_context_value = data.get(
-        "decision_history_min_messages",
-        data.get("min_context_messages", data.get("proactive_threshold")),
-    )
-    if min_context_value is not None:
+    if "decision_history_min_messages" in data:
         updates["decision_history_min_messages"] = _strict_int(
-            min_context_value, "decision_history_min_messages"
+            data["decision_history_min_messages"], "decision_history_min_messages"
         )
     if "proactive_inherit_tools" in data:
         updates["proactive_inherit_tools"] = _strict_bool(
@@ -472,13 +449,6 @@ def _parse_config_updates(data: Any) -> dict[str, Any]:
         updates["vision_main_enabled"] = _strict_bool(
             data["vision_main_enabled"], "vision_main_enabled"
         )
-    if "vision_enabled" in data and not (
-        "vision_judge_enabled" in data or "vision_main_enabled" in data
-    ):
-        # 旧前端只会发聚合开关，同步到两个新开关
-        legacy_vision = _strict_bool(data["vision_enabled"], "vision_enabled")
-        updates["vision_judge_enabled"] = legacy_vision
-        updates["vision_main_enabled"] = legacy_vision
     if "vision_provider_id" in data:
         updates["vision_provider_id"] = str(data["vision_provider_id"] or "").strip()
     if "vision_judge_provider_id" in data:
@@ -497,14 +467,14 @@ def _parse_config_updates(data: Any) -> dict[str, Any]:
         updates["vision_timeout_sec"] = _strict_float(
             data["vision_timeout_sec"], "vision_timeout_sec"
         )
-    if "whitelist" in data:
-        updates["whitelist"] = _string_list(data, "whitelist")
+    if "whitelist_sessions" in data:
+        updates["whitelist_sessions"] = _string_list(data, "whitelist_sessions")
     return updates
 
 
 # 安全敏感配置键：变更记 INFO 审计日志。webapi 无独立鉴权，
 # 访问控制依赖宿主 Dashboard；留痕便于事后追溯。
-_AUDITED_CONFIG_KEYS = ("enabled", "proactive_inherit_tools", "whitelist")
+_AUDITED_CONFIG_KEYS = ("enabled", "proactive_inherit_tools", "whitelist_sessions")
 
 
 def _snapshot_plugin_state(plugin) -> dict[str, Any]:
@@ -577,10 +547,7 @@ async def _apply_config_updates(plugin, updates: dict[str, Any]) -> dict[str, An
     try:
         candidate = plugin.settings.to_config_dict()
         for key, value in updates.items():
-            if key == "whitelist":
-                candidate["whitelist_sessions"] = list(value)
-            else:
-                candidate[key] = value
+            candidate[key] = value
         new_settings = Settings.from_config(candidate)
         vision_changed = any(
             getattr(plugin.settings, key) != getattr(new_settings, key)
@@ -595,7 +562,7 @@ async def _apply_config_updates(plugin, updates: dict[str, Any]) -> dict[str, An
         # 原地应用（保持 Settings 对象身份）：五个组件构造时各存
         # self.settings 引用，整体替换会造成热更新后组件读旧值（0.9.0 轴 A）。
         plugin.settings.apply(new_settings)
-        if "whitelist" in updates:
+        if "whitelist_sessions" in updates:
             plugin._replace_whitelist(new_settings.whitelist)
         if vision_changed:
             plugin._image_parsers.clear()
@@ -634,7 +601,8 @@ def _log_audited_changes(
     for key in _AUDITED_CONFIG_KEYS:
         if key not in updates:
             continue
-        attr = "whitelist_sessions" if key == "whitelist" else key
+        # whitelist_sessions 键对应的 Settings 字段名为 whitelist
+        attr = "whitelist" if key == "whitelist_sessions" else key
         old_value = getattr(snapshot["settings"], attr, None)
         new_value = getattr(new_settings, attr, None)
         old_norm = sorted(old_value) if isinstance(old_value, (set, list)) else old_value
@@ -756,6 +724,8 @@ class UnifiedManagerApi:
 
     def _self_reply_summary(self) -> dict[str, Any]:
         settings = self.owner.settings
+        # 0.9.2 起只返回正式键（cooldown_seconds/idle_trigger_seconds/
+        # min_context_messages 兼容别名已移除）；随包前端仅消费 whitelist_count。
         return {
             "available": True,
             "enabled": bool(self.owner.runtime_enabled),
@@ -764,10 +734,6 @@ class UnifiedManagerApi:
             "message_delay_sec": settings.message_delay_sec,
             "min_silence_sec": settings.min_silence_sec,
             "cooldown_sec": settings.cooldown_sec,
-            # Backward-compatible aliases for older callers.
-            "cooldown_seconds": settings.cooldown_sec,
-            "idle_trigger_seconds": settings.message_delay_sec,
             "patrol_inactive_after_sec": settings.patrol_inactive_after_sec,
-            "min_context_messages": settings.decision_history_min_messages,
             "decision_history_min_messages": settings.decision_history_min_messages,
         }

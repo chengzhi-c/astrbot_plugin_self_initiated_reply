@@ -80,7 +80,7 @@ let configLoaded = false;
 const DEFAULT_CONFIG = {
   decision_temperature: 0.2,
   decision_timeout_sec: 20,
-  min_context_messages: 5,
+  decision_history_min_messages: 5,
   message_delay_sec: 60,
   min_silence_sec: 45,
   cooldown_sec: 900,
@@ -521,12 +521,10 @@ async function loadConfig() {
   els.decisionPromptInput.value = config.decision_prompt_template || config.decision_prompt_default || "";
   els.decisionPromptInput.dataset.defaultPrompt = config.decision_prompt_default || config.decision_prompt_template || "";
   els.minContextInput.value =
-    config.min_context_messages ?? config.proactive_threshold ?? DEFAULT_CONFIG.min_context_messages;
-  els.messageDelayInput.value =
-    config.message_delay_sec ?? config.idle_trigger_seconds ?? DEFAULT_CONFIG.message_delay_sec;
+    config.decision_history_min_messages ?? DEFAULT_CONFIG.decision_history_min_messages;
+  els.messageDelayInput.value = config.message_delay_sec ?? DEFAULT_CONFIG.message_delay_sec;
   els.minSilenceInput.value = config.min_silence_sec ?? DEFAULT_CONFIG.min_silence_sec;
-  els.cooldownInput.value =
-    config.cooldown_sec ?? config.cooldown_seconds ?? DEFAULT_CONFIG.cooldown_sec;
+  els.cooldownInput.value = config.cooldown_sec ?? DEFAULT_CONFIG.cooldown_sec;
   els.visionJudgeEnabledInput.checked = Boolean(config.vision_judge_enabled);
   els.visionMainEnabledInput.checked = Boolean(config.vision_main_enabled);
   els.visionSkipStickersInput.checked = Boolean(config.vision_skip_stickers);
@@ -536,7 +534,7 @@ async function loadConfig() {
   els.visionImageAgeInput.value = config.vision_image_age_sec ?? DEFAULT_CONFIG.vision_image_age_sec;
   els.visionTimeoutInput.value = config.vision_timeout_sec ?? DEFAULT_CONFIG.vision_timeout_sec;
   els.proactiveInheritToolsInput.checked = Boolean(config.proactive_inherit_tools);
-  const whitelist = Array.isArray(config.whitelist) ? config.whitelist : [];
+  const whitelist = Array.isArray(config.whitelist_sessions) ? config.whitelist_sessions : [];
   els.whitelistInput.value = whitelist.join("\n");
   els.whitelistCount.textContent = String(whitelist.length);
   if (els.decisionModelStatus) {
@@ -849,7 +847,7 @@ async function saveConfig(event) {
       decision_temperature: num(els.decisionTempInput.value, DEFAULT_CONFIG.decision_temperature),
       decision_timeout_sec: num(els.decisionTimeoutInput.value, DEFAULT_CONFIG.decision_timeout_sec),
       decision_prompt_template: els.decisionPromptInput.value.trim(),
-      min_context_messages: num(els.minContextInput.value, DEFAULT_CONFIG.min_context_messages),
+      decision_history_min_messages: num(els.minContextInput.value, DEFAULT_CONFIG.decision_history_min_messages),
       message_delay_sec: num(els.messageDelayInput.value, DEFAULT_CONFIG.message_delay_sec),
       min_silence_sec: num(els.minSilenceInput.value, DEFAULT_CONFIG.min_silence_sec),
       cooldown_sec: num(els.cooldownInput.value, DEFAULT_CONFIG.cooldown_sec),
@@ -862,7 +860,7 @@ async function saveConfig(event) {
       vision_image_age_sec: num(els.visionImageAgeInput.value, DEFAULT_CONFIG.vision_image_age_sec),
       vision_timeout_sec: num(els.visionTimeoutInput.value, DEFAULT_CONFIG.vision_timeout_sec),
       proactive_inherit_tools: els.proactiveInheritToolsInput.checked,
-      whitelist,
+      whitelist_sessions: whitelist,
     });
     if (!result || result.ok !== true) {
       setSaveState("保存失败", "error");

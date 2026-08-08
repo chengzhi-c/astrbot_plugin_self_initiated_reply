@@ -4,8 +4,8 @@ schema 驱动 AstrBot 设置面板渲染；CONFIG_SCHEMA_KEYS 决定 webapi 接�
 配置键（名单之外一律 fail loud）。二者漂移的两种后果：
 - schema 有而 KEYS 无：面板字段提交被拒（400 未知键）；
 - KEYS 有而 schema 无：字段不在面板上，形同死配置。
-0.8.8 起硬性断言：schema 键 == 正式键（KEYS 去掉兼容别名），改任何一侧
-都必须同步另一侧，否则变红。
+0.8.8 起硬性断言：schema 键 == CONFIG_SCHEMA_KEYS；0.9.2 起兼容别名层已
+移除，二者一一对应，改任何一侧都必须同步另一侧，否则变红。
 """
 
 from __future__ import annotations
@@ -39,10 +39,10 @@ def _schema_keys() -> set[str]:
 
 
 def test_schema_keys_align_with_config_schema_keys() -> None:
-    """schema 键集合 == CONFIG_SCHEMA_KEYS - 兼容别名（别名不进面板 schema）。"""
+    """schema 键集合 == CONFIG_SCHEMA_KEYS（0.9.2 起无别名，一一对应）。"""
     schema_keys = _schema_keys()
     webapi = _webapi()
-    canonical = set(webapi._SCHEMA_FORMAL_KEYS)
+    canonical = set(webapi.CONFIG_SCHEMA_KEYS)
     assert schema_keys == canonical, (
         f"schema 与 CONFIG_SCHEMA_KEYS 漂移："
         f"schema 独有 {sorted(schema_keys - canonical)}，"
@@ -50,10 +50,17 @@ def test_schema_keys_align_with_config_schema_keys() -> None:
     )
 
 
-def test_alias_keys_stay_out_of_schema() -> None:
-    """兼容别名不得进入 _conf_schema.json（旧兼容键不渲染到新面板）。"""
-    webapi = _webapi()
-    overlap = set(webapi._SCHEMA_ALIAS_KEYS) & _schema_keys()
+def test_legacy_alias_keys_stay_out_of_schema() -> None:
+    """历史兼容别名已于 0.9.2 移除，不得重新进入 _conf_schema.json。"""
+    legacy_aliases = {
+        "cooldown_seconds",
+        "idle_trigger_seconds",
+        "min_context_messages",
+        "proactive_threshold",
+        "vision_enabled",
+        "whitelist",
+    }
+    overlap = legacy_aliases & _schema_keys()
     assert not overlap, f"兼容别名误入 schema: {sorted(overlap)}"
 
 

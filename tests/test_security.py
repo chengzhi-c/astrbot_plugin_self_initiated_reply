@@ -740,7 +740,9 @@ def test_api_post_config_rejects_oversized_whitelist_item(tmp_path: Path) -> Non
     async def scenario(plugin, main):
         models = importlib.import_module(f"{main.__package__}.models")
         web = sys.modules["astrbot.api.web"]
-        web.request.payload = {"whitelist": ["x" * (models.MAX_STRING_LIST_ITEM_LEN + 1)]}
+        web.request.payload = {
+            "whitelist_sessions": ["x" * (models.MAX_STRING_LIST_ITEM_LEN + 1)]
+        }
         result = await plugin._api_post_config()
         assert result.get("ok") is False
         assert "过长" in result.get("error", "")
@@ -748,7 +750,7 @@ def test_api_post_config_rejects_oversized_whitelist_item(tmp_path: Path) -> Non
             len(item) <= models.MAX_STRING_LIST_ITEM_LEN for item in plugin.settings.whitelist
         )
         # 合法更新仍须生效（防误杀正常白名单）
-        web.request.payload = {"whitelist": ["正常会话"]}
+        web.request.payload = {"whitelist_sessions": ["正常会话"]}
         result = await plugin._api_post_config()
         assert result.get("ok") is True
         assert "正常会话" in plugin.settings.whitelist
@@ -762,7 +764,7 @@ def test_api_post_config_rejects_illegal_whitelist_chars(tmp_path: Path) -> None
     async def scenario(plugin, main):
         web = sys.modules["astrbot.api.web"]
         for bad in ['bad"quote', "bad\\slash", "bad\x01ctrl"]:
-            web.request.payload = {"whitelist": [bad]}
+            web.request.payload = {"whitelist_sessions": [bad]}
             result = await plugin._api_post_config()
             assert result.get("ok") is False, f"应拒绝 {bad!r}"
             assert "非法字符" in result.get("error", "")

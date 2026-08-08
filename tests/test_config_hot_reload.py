@@ -120,3 +120,36 @@ def test_settings_apply_preserves_identity() -> None:
     assert settings.max_reply_chars == 9
     # 未被显式覆盖的字段与来源一致（from_config 同默认值）
     assert settings.min_silence_sec == other.min_silence_sec
+
+
+def test_from_config_migrates_legacy_alias_keys() -> None:
+    """0.9.2 B2 迁移护栏：旧配置文件只有别名键时不丢值；正式键优先。"""
+    from .host_stubs import load_package
+
+    models = load_package(PACKAGE, "models")
+    legacy = models.Settings.from_config(
+        {
+            "whitelist": ["旧白名单"],
+            "cooldown_seconds": 33,
+            "idle_trigger_seconds": 66,
+            "min_context_messages": 7,
+        }
+    )
+    assert legacy.whitelist == {"旧白名单"}
+    assert legacy.cooldown_sec == 33
+    assert legacy.message_delay_sec == 66
+    assert legacy.decision_history_min_messages == 7
+
+    # proactive_threshold 为二级回退；正式键始终优先于别名
+    threshold = models.Settings.from_config({"proactive_threshold": 9})
+    assert threshold.decision_history_min_messages == 9
+    precedence = models.Settings.from_config(
+        {"decision_history_min_messages": 4, "min_context_messages": 9}
+    )
+    assert precedence.decision_history_min_messages == 4
+
+    # 落盘只写正式键：一次 load+save 后别名自然消失
+    persisted = legacy.to_config_dict()
+    assert persisted["whitelist_sessions"] == ["旧白名单"]
+    assert "whitelist" not in persisted
+    assert "cooldown_seconds" not in persisted
