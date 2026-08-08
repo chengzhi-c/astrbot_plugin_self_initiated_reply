@@ -1,3 +1,12 @@
+"""宿主事件字段提取与消息文本纯函数库。
+
+全部函数无状态（仅依赖入参），供 main/scheduler/decision 与测试共用。
+职责三簇：
+- 事件字段提取：event_text/event_umo/event_sender_* 等，统一宿主事件访问口径；
+- 文本清洗与判定：clean_chat_text/is_at_*/looks_like_reply_request 等；
+- 白名单与历史记录：session_whitelisted/whitelist_storage_key/build_history_text 等。
+"""
+
 from __future__ import annotations
 
 import inspect
