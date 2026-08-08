@@ -600,17 +600,39 @@ def test_refresh_admin_ids_cache_and_bad_file(tmp_path: Path) -> None:
         cmd_file = plugin._data_path / "cmd_config.json"
         cmd_file.parent.mkdir(parents=True, exist_ok=True)
         cmd_file.write_text('{"admins_id": ["a", "b"]}', encoding="utf-8")
+        plugin._admin_probe_ts = 0.0  # __init__ 已消耗首探窗口，重置后强制重探
         assert plugin._refresh_admin_ids() == {"a", "b"}
         cached = plugin._refresh_admin_ids()
-        assert cached is plugin._admin_ids  # mtime 相同 → 缓存命中
+        assert cached is plugin._admin_ids  # 窗口内直接返回缓存（同一对象）
         cmd_file.write_text('{"admins_id": ["c"]}', encoding="utf-8")
         # NTFS mtime 粒度下连续两次写入可能落入同一时间片：强制推进 mtime，
         # 否则热读缓存误判为未变更（全量测试负载下偶发抖动）。
         stat = cmd_file.stat()
         os.utime(cmd_file, (stat.st_atime, stat.st_mtime + 1))
+        plugin._admin_probe_ts = 0.0  # 推进探测窗口，强制重探
         assert plugin._refresh_admin_ids() == {"c"}
         cmd_file.write_text("{broken json", encoding="utf-8")
+        plugin._admin_probe_ts = 0.0
         assert plugin._refresh_admin_ids() == {"c"}  # 坏文件不炸，保留上次集合
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_refresh_admin_ids_window_suppresses_probe(tmp_path: Path) -> None:
+    """窗口内跳过 stat：文件修改（mtime 已变）窗口内不可见；推进窗口后重探生效。"""
+
+    async def scenario(plugin, main):
+        cmd_file = plugin._data_path / "cmd_config.json"
+        cmd_file.parent.mkdir(parents=True, exist_ok=True)
+        cmd_file.write_text('{"admins_id": ["a"]}', encoding="utf-8")
+        plugin._admin_probe_ts = 0.0  # __init__ 已消耗首探窗口，重置后强制重探
+        assert plugin._refresh_admin_ids() == {"a"}
+        cmd_file.write_text('{"admins_id": ["b"]}', encoding="utf-8")
+        stat = cmd_file.stat()
+        os.utime(cmd_file, (stat.st_atime, stat.st_mtime + 1))
+        assert plugin._refresh_admin_ids() == {"a"}  # 窗口内不探测，仍旧值
+        plugin._admin_probe_ts = 0.0
+        assert plugin._refresh_admin_ids() == {"b"}  # 推进窗口后立即生效
 
     with_plugin(tmp_path, scenario)
 

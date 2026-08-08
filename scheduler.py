@@ -200,7 +200,7 @@ class SessionScheduler:
                 await asyncio.sleep(delay)
             if not self._should_run() or not self._gate.is_current(umo, generation):
                 return
-            state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
+            state = self._state_for(whitelist_storage_key(umo))
             silence_left = self.remaining_silence_sec(state)
             while not force and silence_left > 0:
                 logger.debug(
@@ -243,7 +243,7 @@ class SessionScheduler:
             finally:
                 if running_task is not None and self._running_check_tasks.get(umo) is running_task:
                     self._running_check_tasks.pop(umo, None)
-            logger.debug(
+            logger.info(
                 "[%s] check result session=%s trigger=%s result=%s", PLUGIN_ID, umo, trigger, result
             )
         except asyncio.CancelledError:
@@ -440,7 +440,7 @@ class SessionScheduler:
                             if not self._last_events.get(umo):
                                 continue
                             state = self._state_for(
-                                whitelist_storage_key(umo, self.settings.whitelist)
+                                whitelist_storage_key(umo)
                             )
                             if self.settings.patrol_inactive_after_sec and (
                                 not state.last_active_at

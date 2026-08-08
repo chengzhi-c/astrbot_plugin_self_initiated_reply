@@ -170,7 +170,7 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
         if not umo or not session_whitelisted(umo, whitelist) or not isinstance(raw, dict):
             continue
         try:
-            key = whitelist_storage_key(umo, whitelist)
+            key = whitelist_storage_key(umo)
             state = SessionState(recent=deque(maxlen=recent_limit))
             state.last_active_at = _finite_float(raw.get("last_active_at"))
             state.last_active_sender_id = str(raw.get("last_active_sender_id") or "")
@@ -218,7 +218,7 @@ def build_sessions_payload(
         umo = str(raw_umo or "").strip()
         if not umo or not session_whitelisted(umo, whitelist):
             continue
-        key = whitelist_storage_key(umo, whitelist)
+        key = whitelist_storage_key(umo)
         payload["sessions"][key] = {
             "last_active_at": state.last_active_at,
             "last_active_sender_id": state.last_active_sender_id,

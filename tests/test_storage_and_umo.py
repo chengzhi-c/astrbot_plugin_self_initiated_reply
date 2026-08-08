@@ -67,8 +67,8 @@ def test_bare_group_whitelist_keeps_platform_state_isolated(tmp_path: Path) -> N
 
     assert utils.session_whitelisted(qq, whitelist)
     assert utils.session_whitelisted(telegram, whitelist)
-    assert utils.whitelist_storage_key(qq, whitelist) == qq
-    assert utils.whitelist_storage_key(telegram, whitelist) == telegram
+    assert utils.whitelist_storage_key(qq) == qq
+    assert utils.whitelist_storage_key(telegram) == telegram
 
     state = storage.SessionState(recent=deque(maxlen=5))
     state.daily_count = 2

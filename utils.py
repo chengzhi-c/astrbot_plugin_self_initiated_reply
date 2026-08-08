@@ -216,15 +216,11 @@ def session_whitelisted(umo: str, whitelist: set[str]) -> bool:
     return bool(group_id and group_id in whitelist)
 
 
-def whitelist_storage_key(umo: str, whitelist: set[str]) -> str:
+def whitelist_storage_key(umo: str) -> str:
     """Return a platform-aware state key.
 
     Bare group IDs remain accepted as a legacy wildcard whitelist entry, but
     they must not collapse state from two different platforms into one record.
-
-    ``whitelist`` 参数当前为契约占位（调用点语义显式），为将来 wildcard
-    展开保留签名形状；实现暂为恒等。
-    日落决策点（0.9.0 B5）：0.10 前若 wildcard 不立项，则连参数一并移除。
     """
     return str(umo or "").strip()
 

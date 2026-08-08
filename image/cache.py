@@ -10,6 +10,8 @@ class ImageCache:
 
     使用 OrderedDict 实现的内存 LRU 缓存，用于避免重复解析相同图片。
 
+    并发约束：仅供单事件循环内串行使用，勿跨线程共享（无锁保护）。
+
     Attributes:
         _cache: 有序字典存储缓存项
         _max_size: 最大缓存容量

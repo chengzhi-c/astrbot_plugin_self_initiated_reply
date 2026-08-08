@@ -96,6 +96,10 @@ REPLY_REQUEST_WINDOW_SEC = 180  # 明确请求窗口：3分钟内的接话请求
 EVENT_CLEANUP_INTERVAL_SEC = 3600  # 事件清理间隔：1小时清理一次陈旧事件
 MAX_CACHED_EVENTS = 100  # 最大缓存事件数：防止内存无限增长
 PATROL_BACKOFF_DELAY_SEC = 60  # 巡检失败退避延迟：避免错误循环
+# 管理员列表重探窗口：高频事件路径在窗口内跳过对 cmd_config.json 的 stat
+#（mtime 缓存只省读文件不省系统调用）；运行期改管理员下个窗口生效，
+# 最大延迟 = 窗口长，探测失败不变更缓存、窗口后重试。
+ADMIN_REFRESH_WINDOW_SEC = 30.0
 
 DEFAULT_DECISION_PROMPT_TEMPLATE = """会话: {session}
 触发: {trigger}

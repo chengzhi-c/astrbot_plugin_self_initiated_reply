@@ -547,7 +547,6 @@ def test_umo_collision_between_platforms() -> None:
     _, utils, storage = _load_sec_modules()
     from collections import deque
 
-    whitelist = {"12345"}  # 裸群号白名单
     qq_umo = "qq:GroupMessage:12345"
     tg_umo = "telegram:GroupMessage:12345"
 
@@ -560,8 +559,8 @@ def test_umo_collision_between_platforms() -> None:
     sessions[tg_umo].daily_count = 7
 
     # 验证存储 key 保持隔离
-    qq_key = utils.whitelist_storage_key(qq_umo, whitelist)
-    tg_key = utils.whitelist_storage_key(tg_umo, whitelist)
+    qq_key = utils.whitelist_storage_key(qq_umo)
+    tg_key = utils.whitelist_storage_key(tg_umo)
 
     assert qq_key != tg_key, "不同平台的相同群号状态被合并，导致计数污染"
     assert qq_key == qq_umo and tg_key == tg_umo, "whitelist_storage_key 未保留完整 UMO"
@@ -805,14 +804,17 @@ def test_admin_ids_hot_reload_on_file_change(tmp_path: Path) -> None:
         assert plugin._refresh_admin_ids() == set()  # 初始无文件
 
         cmd.write_text('{"admins_id": ["111"]}', encoding="utf-8")
+        plugin._admin_probe_ts = 0.0  # 推进探测窗口，强制重探
         assert plugin._refresh_admin_ids() == {"111"}
 
         time.sleep(0.02)  # 保证 mtime 变化
         cmd.write_text('{"admins_id": ["222"]}', encoding="utf-8")
+        plugin._admin_probe_ts = 0.0
         assert plugin._refresh_admin_ids() == {"222"}
 
         # 文件被删除：回退到最近一次缓存，不崩溃
         cmd.unlink()
+        plugin._admin_probe_ts = 0.0
         assert plugin._refresh_admin_ids() == {"222"}
 
     with_plugin(tmp_path, scenario)

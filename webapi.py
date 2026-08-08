@@ -256,7 +256,8 @@ def _load_ui_theme(plugin) -> str:
     try:
         raw = json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8"))
         theme = str(raw.get("theme", "auto")).strip()
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+        # 文件缺失/编码损坏/JSON 损坏/顶层非对象（raw.get 缺失）一律回退
         return "auto"
     return theme if theme in {"auto", "light", "dark"} else "auto"
 
@@ -268,7 +269,8 @@ def _save_ui_theme(plugin, theme: str) -> bool:
         tmp.write_text(json.dumps({"theme": theme}), encoding="utf-8")
         tmp.replace(plugin._ui_prefs_path)
         return True
-    except Exception as exc:
+    except (OSError, UnicodeEncodeError, TypeError, ValueError) as exc:
+        # 与 _write_json_atomic 同型收窄：纯文件 I/O + JSON 序列化可枚举
         logger.warning("[%s] ui theme save failed: %s", PLUGIN_ID, exc)
         return False
 

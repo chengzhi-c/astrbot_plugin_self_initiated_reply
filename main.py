@@ -44,6 +44,7 @@ from .image import ImageExtractor, ImageInfo, ImageParser
 from .image.recorder_bridge import get_recorder_bridge
 from .models import (
     ADMIN_COMMAND_ACTIONS,
+    ADMIN_REFRESH_WINDOW_SEC,
     COMMAND_HANDLED_KEY,
     GRACEFUL_STOP_GRACE_SEC,
     PLUGIN_ID,
@@ -146,6 +147,7 @@ class SelfInitiatedReplyPlugin(Star):
         self._config_lock = asyncio.Lock()
         self._admin_file_mtime: float | None = None
         self._admin_ids: set[str] = set()
+        self._admin_probe_ts = 0.0  # 探测窗口起点：0 保证首次调用必探
         self._refresh_admin_ids()
         # 调试面板最近裁决（ticket 14）：每会话最近一条裁决的触发/原因，
         # 供 /status 导出；仅存内存，不落盘。
@@ -346,7 +348,11 @@ class SelfInitiatedReplyPlugin(Star):
         return config_path, plugin_data_path / "state.json"
 
     def _refresh_admin_ids(self) -> set[str]:
-        """按 cmd_config.json mtime 缓存热读管理员列表，运行期改管理员即生效。"""
+        """时间窗 + mtime 双缓存热读管理员列表，运行期改管理员窗口内生效。"""
+        now = now_ts()
+        if now - self._admin_probe_ts < ADMIN_REFRESH_WINDOW_SEC:
+            return self._admin_ids
+        self._admin_probe_ts = now
         path = self._data_path / "cmd_config.json"
         try:
             if path.exists():
@@ -435,7 +441,7 @@ class SelfInitiatedReplyPlugin(Star):
 
         if not session_whitelisted(umo, self.settings.whitelist):
             return
-        state_key = whitelist_storage_key(umo, self.settings.whitelist)
+        state_key = whitelist_storage_key(umo)
         self._whitelist_runtime_umos.setdefault(state_key, set()).add(umo)
         group_id = session_group_id(umo)
         if group_id:
@@ -740,7 +746,7 @@ class SelfInitiatedReplyPlugin(Star):
             baseline = self._gate.current(umo)
             if baseline:
                 expected_generation = baseline
-        state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
+        state = self._state_for(whitelist_storage_key(umo))
         observed_active_at = state.last_active_at
 
         state.refresh_day()
@@ -1036,7 +1042,7 @@ class SelfInitiatedReplyPlugin(Star):
             return help_text()
         if action == "status":
             state = (
-                self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
+                self._state_for(whitelist_storage_key(umo))
                 if umo
                 else SessionState()
             )
@@ -1063,7 +1069,7 @@ class SelfInitiatedReplyPlugin(Star):
             # 立即强制检查：取消待执行的延迟检查并清空旧缓存（写操作语义）。
             generation = self._invalidate_session(umo)
             self._coordinator.record_event(umo, event, now_ts())
-            state = self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
+            state = self._state_for(whitelist_storage_key(umo))
             text = clean_chat_text(arg or strip_command_prefix(event_text(event)))
             if text:
                 state.last_active_at = now_ts()
@@ -1150,7 +1156,7 @@ class SelfInitiatedReplyPlugin(Star):
         self._set_command_handled(event)
         umo = event_umo(event)
         state = (
-            self._state_for(whitelist_storage_key(umo, self.settings.whitelist))
+            self._state_for(whitelist_storage_key(umo))
             if umo
             else SessionState()
         )

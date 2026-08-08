@@ -38,6 +38,8 @@ _INFO_WHITELIST = {
     # 运维状态：白名单管理操作
     "[%s] whitelist add session=%s existed=%s total=%d",
     "[%s] whitelist remove session=%s existed=%s total=%d",
+    # 运维状态：判断结果（用户要求可见，每会话检查收敛点，非逐条消息高频）
+    "[%s] check result session=%s trigger=%s result=%s",
     # 运维状态：启动/终止横幅
     "[%s] v%s enabled=%s whitelist=%d message_trigger=%s patrol_trigger=%s pipeline_mode=true",
     "[%s] vision judge=%s main=%s skip_stickers=%s provider=%s judge_provider=%s",

@@ -111,7 +111,7 @@ class WhitelistManager:
         existed = session_whitelisted(umo, self.settings.whitelist)
         old_whitelist = set(self.settings.whitelist)
         self.replace(old_whitelist | {umo})
-        self._ensure_state(whitelist_storage_key(umo, self.settings.whitelist))
+        self._ensure_state(whitelist_storage_key(umo))
         await self.commit_change(old_whitelist, "add")
         logger.info(
             "[%s] whitelist add session=%s existed=%s total=%d",
