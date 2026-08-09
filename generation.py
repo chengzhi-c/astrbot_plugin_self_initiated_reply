@@ -222,46 +222,7 @@ class GenerationRunner:
             req.func_tool = self._runtime().new_tool_set()
             req.session_id = umo
             tool_boundary_state = self.install_agent_tool_boundary(last_event, inherit_tools)
-            try:
-                conversation = await self._runtime().load_session_conversation(
-                    last_event, self._context
-                )
-                req.conversation = conversation
-            except Exception as exc:
-                # 会话拿不到多为宿主侧环境问题（无 provider / 建会话失败），
-                # 降级为无上下文回复是可接受的，保持 debug。
-                logger.debug(
-                    "[%s] load conversation failed session=%s error=%s", PLUGIN_ID, umo, exc
-                )
-            else:
-                try:
-                    req.contexts = json.loads(conversation.history)
-                except (TypeError, ValueError) as exc:
-                    # 历史损坏必须显性告警（阶段 1.3）：失败时 req.contexts 静默留
-                    # 默认值，机器人带着空上下文接话——用户看到的是"失忆式"答复，
-                    # 而非功能缺失，无日志则无从定位。
-                    #
-                    # 不是常态噪音：宿主写库走 json.dumps(content or [])
-                    # （conversation_mgr.py:70），空会话也是 "[]"，能解析成功。
-                    # 因此这条为真即真的数据损坏。JSONDecodeError 是 ValueError
-                    # 子类；history 为 None/非 str 时是 TypeError，同属数据损坏。
-                    logger.warning(
-                        "[%s] conversation history corrupted, replying without context "
-                        "session=%s error=%s",
-                        PLUGIN_ID,
-                        umo,
-                        exc,
-                    )
-                except Exception as exc:
-                    # 结构异常（conversation 缺 history 属性等）不是数据损坏，
-                    # 别贴错标签误导排障；但同样不能中断回复——外层 except 会把
-                    # 本次生成整体判失败，所以这里必须吞掉并降级为无上下文。
-                    logger.warning(
-                        "[%s] conversation history unreadable session=%s error=%s",
-                        PLUGIN_ID,
-                        umo,
-                        exc,
-                    )
+            await self._load_conversation_into(req, last_event, umo)
             last_event.set_extra("provider_request", req)
             last_event.set_extra("self_initiated_reply", True)
 
@@ -308,19 +269,7 @@ class GenerationRunner:
             if build_result.reset_coro:
                 await build_result.reset_coro
 
-            async def _run() -> None:
-                async for _ in self._runtime().run(
-                    build_result.agent_runner,
-                    max_step=MAX_AGENT_STEPS,
-                    show_tool_use=False,
-                    show_tool_call_result=False,
-                    stream_to_general=False,
-                    show_reasoning=False,
-                    buffer_intermediate_messages=True,
-                ):
-                    pass
-
-            run_task = asyncio.ensure_future(_run())
+            run_task = asyncio.ensure_future(self._drain(build_result.agent_runner))
             self._background_tasks.add(run_task)
             run_task.add_done_callback(self._discard_background)
             try:
@@ -403,6 +352,66 @@ class GenerationRunner:
                 # 老宿主可能无 set_extra 或事件已只读；此处是清理链末端，
                 # 无后续动作可保护，静默即最终态。
                 pass
+
+    async def _load_conversation_into(self, req: Any, last_event: Any, umo: str) -> None:
+        """把会话历史读进 ``req``，三种失败各自降级为「无上下文回复」而非中断。
+
+        三条路径的日志级别不同，因为可行动性不同：
+
+        - 拿不到 conversation：多为宿主侧环境问题（无 provider / 建会话失败），
+          debug 级，不打扰运营者。
+        - history 解析失败（``TypeError`` / ``ValueError``）：warning 级。宿主写库走
+          ``json.dumps(content or [])``（``conversation_mgr.py:70``），空会话也是
+          ``"[]"`` 能解析成功，所以这条为真即真的数据损坏。此时 ``req.contexts``
+          静默留默认值，机器人带着空上下文接话——用户看到的是「失忆式」答复而非
+          功能缺失，无日志则无从定位。
+        - conversation 结构异常（缺 ``history`` 属性等）：warning 级但换文案，别贴
+          「损坏」标签误导排障。
+
+        本方法永不向外抛：调用方 ``generate`` 的外层 ``except`` 会把整轮生成判失败，
+        而历史读不到不该让这一轮回复消失。
+        """
+        try:
+            conversation = await self._runtime().load_session_conversation(
+                last_event, self._context
+            )
+            req.conversation = conversation
+        except Exception as exc:
+            logger.debug("[%s] load conversation failed session=%s error=%s", PLUGIN_ID, umo, exc)
+            return
+        try:
+            req.contexts = json.loads(conversation.history)
+        except (TypeError, ValueError) as exc:
+            # JSONDecodeError 是 ValueError 子类；history 为 None/非 str 时是
+            # TypeError，同属数据损坏。
+            logger.warning(
+                "[%s] conversation history corrupted, replying without context session=%s error=%s",
+                PLUGIN_ID,
+                umo,
+                exc,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] conversation history unreadable session=%s error=%s", PLUGIN_ID, umo, exc
+            )
+
+    async def _drain(self, agent_runner: Any) -> None:
+        """跑完宿主 Agent 的产出流并丢弃中间消息。
+
+        主动回复只取最终 LLM 响应（``get_final_llm_resp``），中间步骤既不展示工具
+        调用也不流式外发，所以这里只需把生成器抽干。参数全部关闭是刻意的：任何一项
+        打开都会让宿主直接向会话推送内容，绕过本插件的预算与代次闸门。
+        """
+        async for _ in self._runtime().run(
+            agent_runner,
+            max_step=MAX_AGENT_STEPS,
+            show_tool_use=False,
+            show_tool_call_result=False,
+            stream_to_general=False,
+            show_reasoning=False,
+            buffer_intermediate_messages=True,
+        ):
+            pass
 
     def enforce_final_tool_policy(self, req: Any, inherit_tools: bool) -> bool:
         """Enforce the proactive tool allowlist; abort the run when unverifiable.
