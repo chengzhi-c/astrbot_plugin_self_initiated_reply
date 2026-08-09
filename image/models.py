@@ -25,7 +25,7 @@ class ImageInfo:
         ...     format="jpg",
         ...     message_id="msg_123"
         ... )
-        >>> info.has_url
+        >>> info.has_any_source
         True
     """
 
@@ -44,31 +44,9 @@ class ImageInfo:
     prepared_source: str = ""
 
     @property
-    def has_url(self) -> bool:
-        """是否有URL
-
-        Returns:
-            是否有URL
-        """
-        return bool(self.url)
-
-    @property
-    def has_file_path(self) -> bool:
-        """是否有文件路径
-
-        Returns:
-            是否有文件路径
-        """
-        return bool(self.file_path)
-
-    @property
     def has_any_source(self) -> bool:
-        """是否有任何可用的图片源
-
-        Returns:
-            是否有URL或文件路径
-        """
-        return self.has_url or self.has_file_path
+        """是否有任何可用的图片源（URL 或本地文件路径）。"""
+        return bool(self.url) or bool(self.file_path)
 
     def cache_key(self) -> str:
         """生成缓存键

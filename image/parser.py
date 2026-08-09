@@ -39,12 +39,43 @@ VISION_SYSTEM_PROMPT_TEXT = (
 )
 
 
+# 日志中 URL 的最大呈现长度（含脱敏标记）：与脱敏前的裸截断口径保持一致，
+# 避免"为了安全"反而把日志行拉宽。
+LOG_URL_MAX_CHARS = 80
+_REDACTED_QUERY_MARK = "?<redacted>"
+
+
 _UNABLE_PATTERNS = re.compile(
     r"无法[查查看].*图|不能.*[查查看].*图|没有.*图片|未.*上传|"
     r"图片.*失败|无法.*分析|不能.*分析|无法.*识别|不能.*识别|"
     r"无法.*获取|不能.*获取|抱歉.*图|sorry.*image",
     re.IGNORECASE,
 )
+
+
+def _redact_url(value: str) -> str:
+    """去掉 query/fragment 后再截断，避免签名 token 进日志。
+
+    图床直链常把凭证放在 query（OSS/COS 的 signature、腾讯 rkey 等），
+    原实现直接打印前 LOG_URL_MAX_CHARS 字符会把凭证写进日志文件。保留
+    scheme+host+path 足以定位失败对象，凭证不落盘。非法 URL（含本地 file
+    路径、data: URL）按裸截断兜底——它们没有 netloc，也不带 query 凭证。
+
+    返回值长度恒 <= LOG_URL_MAX_CHARS：截断预算含 "?<redacted>" 标记，
+    否则超长 path 会让日志行比原实现更宽。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return text[:LOG_URL_MAX_CHARS]
+    if not parsed.scheme or not parsed.netloc:
+        return text[:LOG_URL_MAX_CHARS]
+    suffix = _REDACTED_QUERY_MARK if (parsed.query or parsed.fragment) else ""
+    clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    return clean[: LOG_URL_MAX_CHARS - len(suffix)] + suffix
 
 
 def _host_all_global(host: str) -> bool:
@@ -96,6 +127,7 @@ class ImageParser:
         cache: ImageCache | None = None,
         timeout_sec: float = 20.0,
         source_cache_dir: Path | None = None,
+        data_root: Path | None = None,
     ):
         self._bridge = bridge
         self._provider_id = str(provider_id or "").strip()
@@ -110,9 +142,29 @@ class ImageParser:
                 self._source_cache_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
                 logger.warning("[%s] image cache directory unavailable: %s", PLUGIN_ID, exc)
-        self._allowed_local_roots = (
-            {self._source_cache_dir.resolve()} if self._source_cache_dir is not None else set()
-        )
+        # 本地读取的唯一判据（0.9.3 阶段 1.1）：路径必须落在允许根下。
+        #
+        # 为什么不能沿用「提取层推断可信」：宿主 aiocqhttp 适配器走通用
+        # ComponentTypes[t](**m["data"]) 分支装配 Image，其 file 是对端可控的
+        # OneBot 原始值；而 Image 是 pydantic 组件、不是 Mapping，恰好满足
+        # 旧判据 `not isinstance(component, Mapping)`。preprocess_stage 只规范化
+        # Record、从不动 Image，所以被控协议端可令 file 为任意绝对路径并被判为
+        # host-trusted，绕过本 allowlist（危害被下游魔数嗅探收窄为「只能外传
+        # 真实图片文件」，但仍是任意文件读取）。
+        #
+        # <data> 根必须在表内：宿主合法生产者写的裸绝对路径都在它下面
+        # （wecom `<data>/temp`、webchat `<data>/webchat`），只留 image_cache
+        # 会 100% 拒掉这些真图片。image_cache 本身就在 <data> 下，但仍单列——
+        # 未注入 data_root 的调用方（含既有测试）不能因此丢掉缓存根。
+        roots: set[Path] = set()
+        for candidate in (self._source_cache_dir, Path(data_root) if data_root else None):
+            if candidate is None:
+                continue
+            try:
+                roots.add(candidate.resolve())
+            except OSError as exc:
+                logger.warning("[%s] local image root unavailable: %s", PLUGIN_ID, exc)
+        self._allowed_local_roots = roots
 
     async def prepare(self, image_info: ImageInfo) -> bool:
         """Freeze a message image before the delayed proactive check.
@@ -191,10 +243,12 @@ class ImageParser:
         if not path.is_absolute():
             return False
         try:
+            # 不再传 trusted=True（阶段 1.1）：这条路径的 file 值来自对端可控的
+            # OneBot 原始值，可信度判定统一交给 _file_to_data_url 的 allowlist。
             data_url = await asyncio.to_thread(
                 self._file_to_data_url,
                 path,
-                trusted=True,
+                trusted=False,
             )
             if not data_url:
                 return False
@@ -315,41 +369,50 @@ class ImageParser:
             except (OSError, ValueError):
                 continue
 
-        removed = 0
+        # 单遍采集：三个阶段共享同一时刻的目录视图，每文件只 stat 一次。
+        # 单文件的文件系统错误就地跳过；rglob 本身抛出（目录不可读）时上抛，
+        # 三个调用方都记 warning，不在此处静默掉整轮清理失败。
+        files: list[tuple[float, Path, int, Path]] = []
+        directories: list[Path] = []
         for path in cache_root.rglob("*"):
             try:
-                # is_file() 内部可能触发 stat（旧版 pathlib 经 Path.stat），
-                # 与后续 stat/unlink 同窗保护：任何文件系统错误都跳过该文件。
-                if not path.is_file() or path.is_symlink():
+                # symlink 先于 stat 拒绝：跟随链接会删到 image_cache 之外。
+                if path.is_symlink():
+                    continue
+                if path.is_dir():
+                    directories.append(path)
+                    continue
+                if not path.is_file():
                     continue
                 resolved = path.resolve()
                 resolved.relative_to(resolved_root)
-                if resolved in protected or path.stat().st_mtime >= cutoff:
-                    continue
-                path.unlink()
-                removed += 1
+                stat_result = path.stat()
+                files.append((stat_result.st_mtime, path, stat_result.st_size, resolved))
             except (OSError, ValueError):
                 continue
+
+        removed = 0
+        # survivors：过期回收后仍在盘上的文件，配额阶段据此计账。unlink 失败的
+        # 文件必须留在表内——它还占着空间，配额阶段不能把它当已释放。
+        survivors: list[tuple[float, Path, int, Path]] = []
+        for entry in files:
+            mtime, path, _size, resolved = entry
+            if resolved in protected or mtime >= cutoff:
+                survivors.append(entry)
+                continue
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                survivors.append(entry)
 
         try:
             quota = None if max_total_bytes is None else max(0, int(max_total_bytes))
         except (TypeError, ValueError, OverflowError):
             quota = None
         if quota is not None:
-            entries: list[tuple[float, Path, int, Path]] = []
-            total_bytes = 0
-            for path in cache_root.rglob("*"):
-                try:
-                    if not path.is_file() or path.is_symlink():
-                        continue
-                    resolved = path.resolve()
-                    resolved.relative_to(resolved_root)
-                    size = path.stat().st_size
-                    entries.append((path.stat().st_mtime, path, size, resolved))
-                    total_bytes += size
-                except (OSError, ValueError):
-                    continue
-            for _, path, size, resolved in sorted(entries, key=lambda item: item[0]):
+            total_bytes = sum(size for _, _, size, _ in survivors)
+            for _, path, size, resolved in sorted(survivors, key=lambda item: item[0]):
                 if total_bytes <= quota:
                     break
                 if resolved in protected:
@@ -361,13 +424,13 @@ class ImageParser:
                 except OSError:
                     continue
 
-        try:
-            directories = [item for item in cache_root.rglob("*") if item.is_dir()]
-        except (OSError, ValueError):
-            # is_dir 内部可能触发 stat（旧版 pathlib 经 Path.stat），失败按空集处理
-            directories = []
         for directory in sorted(directories, reverse=True):
             try:
+                # 显式空目录守卫（0.9.3 C3）：不依赖 rmdir 的 ENOTEMPTY 语义保护
+                # 活跃文件——某些沙箱/容器文件系统会让非空目录 rmdir 成功并连带
+                # 删除目录内文件。代价是一次 iterdir()。
+                if next(directory.iterdir(), None) is not None:
+                    continue
                 directory.rmdir()
             except OSError:
                 pass
@@ -388,6 +451,23 @@ class ImageParser:
         )
 
     async def _resolve_image_url(self, image_info: ImageInfo) -> str | None:
+        """把一条图片记录解析成可交给 Vision 的 data URL，按可信度降序尝试四条来源。
+
+        顺序即优先级，越靠前越可信：
+        1. ``prepared_source``（本插件已快照/下载的副本，trusted）；
+        2. 录制桥按 message_id 找到的宿主本地文件（trusted）；
+        3. ``file_path``——http(s) 走下载；**绝对本地路径一律走 allowlist**，
+           相对路径经录制桥解析成功后才升为 trusted；
+        4. ``url`` 远程下载。
+
+        ``trusted`` 只对「来源不由消息内容决定」的路径置 True（本插件缓存副本、
+        录制桥按 message_id 交回的宿主文件）。消息里带来的绝对路径一律交给
+        ``_allowed_local_roots`` 判定，不再采信提取层的可信推断——见 ``__init__``
+        里的可达性说明（防任意本地文件读取外传）。
+
+        失败时：任一路仅在成功时提前返回，失败即继续下一路；全部失败返回
+        ``None``（调用方据此跳过该图）。下载失败会记一条 URL 已脱敏的 INFO。
+        """
         if image_info.prepared_source:
             prepared = str(image_info.prepared_source).strip()
             if prepared.startswith("data:"):
@@ -403,7 +483,16 @@ class ImageParser:
                 image_info.url,
             )
             if local_path:
-                data_url = await asyncio.to_thread(self._file_to_data_url, local_path, trusted=True)
+                # 也走 allowlist（阶段 1.1 复审补漏）：这条路径不是宿主自有产物。
+                # get_local_image_path 取的是记录里的 local_path，最终交给第三方
+                # recorder 插件的 get_media_absolute_path 解析（recorder_bridge.py:74,86），
+                # 而 local_path 源头是对端可控的 OneBot 字段。若 resolver 是朴素
+                # 拼接，`../../..` 可逃出媒体目录 —— 与本阶段要关的攻击面同型。
+                # recorder 媒体目录在 <data>/plugin_data/ 下，已被 data_root 覆盖，
+                # 合法文件不受影响。
+                data_url = await asyncio.to_thread(
+                    self._file_to_data_url, local_path, trusted=False
+                )
                 if data_url:
                     return data_url
 
@@ -414,16 +503,22 @@ class ImageParser:
                 data_url = await self._fetch_image_data_url(file_value)
                 if data_url:
                     return data_url
-                logger.info("[%s] image URL download failed: %s", PLUGIN_ID, file_value[:80])
+                logger.info(
+                    "[%s] image URL download failed: %s", PLUGIN_ID, _redact_url(file_value)
+                )
                 return None
             path = Path(file_value)
-            trusted = bool(image_info.trusted_local_path)
+            # 本地路径一律走 allowlist（阶段 1.1）：image_info.trusted_local_path
+            # 由提取层从「组件不是 Mapping」推断，而对端可控的 OneBot file 值
+            # 恰好装配成非 Mapping 的 pydantic Image，该推断可被伪造。
+            # 相对路径经录制桥解析后同样不升 trusted（复审补漏）：resolver 的入参
+            # 就是这里的 file_value —— 对端可控，`../../..` 不受 is_absolute 检查
+            # 拦截，朴素拼接的 resolver 会交出媒体目录之外的路径。
             if not path.is_absolute() and self._recorder_bridge:
                 resolved = self._recorder_bridge.resolve_relative_path(file_value)
                 if resolved is not None:
                     path = resolved
-                    trusted = True
-            data_url = await asyncio.to_thread(self._file_to_data_url, path, trusted=trusted)
+            data_url = await asyncio.to_thread(self._file_to_data_url, path, trusted=False)
             if data_url:
                 return data_url
 
@@ -431,7 +526,9 @@ class ImageParser:
             data_url = await self._fetch_image_data_url(image_info.url)
             if data_url:
                 return data_url
-            logger.info("[%s] image URL download failed: %s", PLUGIN_ID, image_info.url[:80])
+            logger.info(
+                "[%s] image URL download failed: %s", PLUGIN_ID, _redact_url(image_info.url)
+            )
         return None
 
     def _materialize_data_url(self, data_url: str) -> Path | None:
@@ -503,6 +600,19 @@ class ImageParser:
             return None
 
     async def _fetch_image_data_url(self, url: str) -> str | None:
+        """下载远程图片并编码为 ``data:`` URL，失败返回 ``None``。
+
+        安全约束（每条都是拒绝理由，不可为兼容性放宽）：仅走
+        ``_GlobalOnlyTransport``（SSRF 防护，内网地址直接拒绝）、强制
+        ``verify=True``、重定向上限 3 跳、体积双重设限（先看 content-length，
+        再在流式读取中累计校验，声明值不可信）、MIME 由**载荷嗅探**决定而非
+        响应头声明。
+
+        失败时全部静默返回 ``None``（调用方据此降级为"本次不带图"）：
+        httpx 缺失、URL 不安全、状态码 >= 400、超限、空响应、嗅探不出图片
+        类型、以及任何异常（仅异常路径记 debug）。返回 ``None`` 的语义是
+        "这张图不可用"，不是"出错了"——因此不向上抛。
+        """
         if httpx is None or not await self._is_safe_url(url):
             return None
         try:

@@ -152,6 +152,10 @@ def _field_value(source: Any, name: str) -> Any:
         try:
             return getter(name)
         except Exception:
+            # 消息段结构不可信：不同宿主/协议端的段对象可能提供签名不兼容的 get
+            # （如要求两个参数、或对未知键抛错）。此处静默是为了让下方 getattr
+            # 兜底路径继续生效——字段取不到应回退为 None，而不是让整条图片
+            # 提取链失败。
             pass
     return getattr(source, name, None)
 
@@ -217,6 +221,9 @@ def _event_message_id(event: Any) -> str:
         try:
             return str(getter() or "").strip()
         except Exception:
+            # 宿主 get_message_id 的实现不受本插件约束（可能依赖已失效的连接态）。
+            # 消息 ID 仅用于图片缓存去重与日志定位，取不到就返回空串走无 ID 路径，
+            # 不能让取 ID 失败中断整条图片提取。
             pass
     return ""
 
@@ -232,6 +239,21 @@ class ImageExtractor:
         timestamp: float = 0.0,
         skip_stickers: bool = False,
     ) -> list[ImageInfo]:
+        """从消息事件抽取图片来源，归一化为 ``ImageInfo`` 列表。
+
+        对每个图片组件做三件事：判定表情包（``skip_stickers`` 时跳过）、
+        在归一化组件与原始 OneBot 组件之间取回可用来源（AstrBot 可能已把 Image
+        规范化为只在当前事件阶段有效的临时文件，此时需回捞原始 URL/file）、
+        按 scheme 把 URL 与本地路径归位（``file`` 里放的 http(s) 提升为 url，
+        ``url`` 里放的非 http(s) 降级为 file）。
+
+        ``trusted_local_path`` 只在**非 Mapping** 的归一化组件且来源是绝对本地
+        路径时为真：原始 mapping 可能携带用户/平台可控数据，默认不可信，下游
+        ``_file_to_data_url`` 据此决定是否放行本地读取（防任意文件读取外传）。
+
+        失败时：整体 try 包裹，任何宿主结构异常只记 debug 并返回**已抽到的部分**
+        （宁少不炸——图片是增强信息，缺失只降级为纯文本主动回复）。
+        """
         images: list[ImageInfo] = []
         try:
             message_id = _event_message_id(event)

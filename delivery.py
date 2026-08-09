@@ -18,8 +18,8 @@ UNKNOWN 语义（不自动重试、不触发 after-send 钩子、仍消耗冷却
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
-from typing import Any, Protocol
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
@@ -35,42 +35,18 @@ from .models import (
 )
 from .outbound import OutboundGateway
 
-
-class SaveStorageCallback(Protocol):
-    """宿主状态持久化回调。
-
-    生产注入为合并写（异步闭包直连 DebouncedStateSaver.mark_dirty：
-    置脏 + 延迟 flush，窗口内多次记录合并为一次落盘）；异常兜底仅防御
-    宿主回调自身抛错，不承诺同步落盘。
-    """
-
-    def __call__(self) -> Awaitable[None]: ...
-
-
-class CallHookCallback(Protocol):
-    """宿主事件钩子调用回调（event/event_type 位置参数调用）。"""
-
-    def __call__(self, event: Any, event_type: Any) -> Awaitable[None]: ...
-
-
-class ContextSendCallback(Protocol):
-    """宿主 Context.send_message 兜底发送回调（umo/message 位置参数）。"""
-
-    def __call__(self, umo: str, message: Any) -> Awaitable[Any]: ...
-
-
-class SendReplyCallback(Protocol):
-    """发送一条文本回复的回调（umo/reply 位置参数 + expected_generation 关键字）。"""
-
-    def __call__(
-        self, umo: str, reply: str, expected_generation: int | None
-    ) -> Awaitable[SendOutcome]: ...
-
-
-class RuntimeCallback(Protocol):
-    """宿主私有符号适配层获取器（ticket 13：私有符号只经适配层访问）。"""
-
-    def __call__(self) -> Any: ...
+# 注入回调的类型别名。这五个全按位置调用，故用 Callable；models.py 的三个
+# Protocol 有关键字形参（limit / enabled+provider_id / force），Callable 表达不了。
+#
+# - SaveStorageCallback：生产注入 ``_save_storage``（锁串行 + 快照 + to_thread
+#   原子写），返回即已落盘。落盘失败只影响持久化，不影响已发生的投递，故调用点兜异常。
+# - RuntimeCallback：宿主私有符号适配层获取器（ticket 13）。用 getter 而非传值，
+#   使测试替换 ``_AGENT_RUNTIME`` 后仍指向最新实现。
+SaveStorageCallback = Callable[[], Awaitable[None]]
+CallHookCallback = Callable[[Any, Any], Awaitable[None]]
+ContextSendCallback = Callable[[str, Any], Awaitable[Any]]
+SendReplyCallback = Callable[[str, str, int | None], Awaitable[SendOutcome]]
+RuntimeCallback = Callable[[], Any]
 
 
 class DeliveryRunner:
@@ -399,8 +375,8 @@ class DeliveryRunner:
             state.last_proactive_observed_at = (
                 state.last_active_at if observed_active_at is None else observed_active_at
             )
-        # 合并写语义：此处只置脏（见 SaveStorageCallback），落盘由延迟
-        # flush 完成；try/except 兜宿主回调异常，失败仅影响持久化。
+        # 逐次落盘（见 SaveStorageCallback）：写盘经 to_thread + 原子写，
+        # try/except 兜回调自身抛错，失败仅影响持久化不影响已发送事实。
         try:
             await self._save_storage()
             return True

@@ -53,8 +53,13 @@ class WhitelistManager:
         self._tracked_umos = tracked_umos
         self._runtime_umos = runtime_umos
 
-    def replace(self, whitelist: set[str]) -> None:
-        """整表替换白名单，并回收被移出会话的内存状态。"""
+    def replace(self, whitelist: set[str]) -> dict[str, Any]:
+        """整表替换白名单，并回收被移出会话的内存状态。
+
+        返回被移出会话的 SessionState 快照（含群组键），供 ``commit_change``
+        失败回滚时恢复（B2）：``_prune`` 是单向销毁、不幂等，第一次 replace
+        已 pop 的会话状态若不快照，回滚后白名单回来了、配额与冷却却清零了。
+        """
         normalized = {str(item).strip() for item in whitelist if str(item).strip()}
         tracked = set(self._tracked_umos())
         tracked.update(self._sessions)
@@ -68,7 +73,13 @@ class WhitelistManager:
         invalid_sessions = {
             umo for umo in tracked if umo and not session_whitelisted(umo, normalized)
         }
+        pruned: dict[str, Any] = {}
         for umo in invalid_sessions:
+            # 先快照再销毁：_prune 从 sessions 弹掉 umo 与群组键，回滚需要复活。
+            group_key = self._session_group_id(umo)
+            for key in (umo, group_key):
+                if key in self._sessions:
+                    pruned[key] = self._sessions[key]
             self._invalidate(umo)
             # 代次表按 UMO 累积且从不回收；移出白名单时清理内存（含会话锁
             # 与运行标记）。全局单调 token 保证即使会话重新加入，旧任务
@@ -86,14 +97,20 @@ class WhitelistManager:
                 self._runtime_umos[key] = values
             else:
                 self._runtime_umos.pop(key, None)
+        return pruned
 
-    async def commit_change(self, old_whitelist: set[str], label: str) -> None:
+    async def commit_change(
+        self, old_whitelist: set[str], label: str, pruned: dict[str, Any]
+    ) -> None:
         """双写持久化一次变更；失败回滚内存并重写，仍失败则告警上抛。"""
         try:
             self._sync_whitelist()
             await self._save_storage()
         except Exception:
             self.replace(old_whitelist)
+            # 恢复被 _prune 销毁的 SessionState（B2）：成功路径按契约回收，
+            # 失败回滚必须复活，否则日配额/冷却时间戳被静默清零。
+            self._sessions.update(pruned)
             try:
                 self._sync_whitelist()
                 await self._save_storage()
@@ -110,9 +127,9 @@ class WhitelistManager:
         """把当前会话加入白名单；返回是否为新加入（True）或已存在（False）。"""
         existed = session_whitelisted(umo, self.settings.whitelist)
         old_whitelist = set(self.settings.whitelist)
-        self.replace(old_whitelist | {umo})
+        pruned = self.replace(old_whitelist | {umo})
         self._ensure_state(whitelist_storage_key(umo))
-        await self.commit_change(old_whitelist, "add")
+        await self.commit_change(old_whitelist, "add", pruned)
         logger.info(
             "[%s] whitelist add session=%s existed=%s total=%d",
             PLUGIN_ID,
@@ -130,8 +147,8 @@ class WhitelistManager:
         group_id = self._session_group_id(umo)
         if group_id:
             targets.add(group_id)
-        self.replace(old_whitelist - targets)
-        await self.commit_change(old_whitelist, "remove")
+        pruned = self.replace(old_whitelist - targets)
+        await self.commit_change(old_whitelist, "remove", pruned)
         logger.info(
             "[%s] whitelist remove session=%s existed=%s total=%d",
             PLUGIN_ID,

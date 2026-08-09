@@ -4,9 +4,26 @@ import importlib
 import inspect
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, TypeVar
 
+from astrbot.api import logger
+
+from .models import PLUGIN_ID
 from .utils import maybe_await
+
+_T = TypeVar("_T")
+
+
+def _require(value: _T | None, name: str) -> _T:
+    """探测值兜底解包：缺失即 raise，兼作 mypy 的 Optional 收窄。
+
+    不用 assert：`python -O` 下 assert 语句被整体剥除，None 会漏进宿主
+    调用并在更深处以难诊断的形态崩溃。validate() 已在硬模式首错 raise，
+    本函数防御的是 -O 与「探测表新增符号但未进 _probe_problems」的漂移。
+    """
+    if value is None:
+        raise RuntimeError(f"当前 AstrBot 缺少主动回复所需的 {name}")
+    return value
 
 
 @dataclass(frozen=True)
@@ -116,6 +133,11 @@ class AstrBotRuntimeAdapter:
 
     def __init__(self, capabilities: AgentRuntimeCapabilities):
         self.capabilities = capabilities
+        # 契约结论缓存：capabilities 是 frozen dataclass，探测结果在实例生命周期内
+        # 不会变，而 10 个 property 每次访问都会调 validate()（inspect.signature +
+        # 2 次宿主类实例化）。缓存只存 problems 列表，raise 逻辑留在缓存之外，
+        # 因此 hard 模式每次调用仍会抛出。
+        self._validated_problems: list[str] | None = None
 
     @classmethod
     def host_contract(cls) -> list[tuple[str, list[str]]]:
@@ -168,6 +190,19 @@ class AstrBotRuntimeAdapter:
 
     def validate(self, *, soft: bool = False) -> list[str]:
         """契约断言：缺失参数即红。硬模式首错 raise；软模式收集告警不阻塞。
+
+        探测结论按实例缓存（capabilities 不可变），但 raise 不进缓存——
+        硬模式重复调用仍会抛出，语义与未缓存时完全一致。
+        """
+        if self._validated_problems is None:
+            self._validated_problems = self._probe_problems()
+        problems = list(self._validated_problems)
+        if problems and not soft:
+            raise RuntimeError(problems[0])
+        return problems
+
+    def _probe_problems(self) -> list[str]:
+        """执行一次完整契约探测，返回问题列表（无副作用，不 raise 契约错）。
 
         覆盖全部私有入口：构建 / 运行 / 会话装载 / 事件结果 / 事件类型 /
         钩子链 / ProviderRequest / 路径函数。
@@ -236,8 +271,6 @@ class AstrBotRuntimeAdapter:
         ):
             if fn is not None and not callable(fn):
                 problems.append(f"当前 AstrBot 的 {name} 不可调用")
-        if problems and not soft:
-            raise RuntimeError(problems[0])
         return problems
 
     @staticmethod
@@ -265,26 +298,22 @@ class AstrBotRuntimeAdapter:
     @property
     def tool_set(self) -> type[Any]:
         self.validate()
-        assert self.capabilities.tool_set is not None
-        return self.capabilities.tool_set
+        return _require(self.capabilities.tool_set, "主 Agent ToolSet")
 
     @property
     def build_main_agent(self) -> Callable[..., Any]:
         self.validate()
-        assert self.capabilities.build_main_agent is not None
-        return self.capabilities.build_main_agent
+        return _require(self.capabilities.build_main_agent, "build_main_agent")
 
     @property
     def get_session_conv(self) -> Callable[..., Any]:
         self.validate()
-        assert self.capabilities.get_session_conv is not None
-        return self.capabilities.get_session_conv
+        return _require(self.capabilities.get_session_conv, "_get_session_conv")
 
     @property
     def run_agent(self) -> Callable[..., Any]:
         self.validate()
-        assert self.capabilities.run_agent is not None
-        return self.capabilities.run_agent
+        return _require(self.capabilities.run_agent, "run_agent")
 
     def new_tool_set(self) -> Any:
         return self.tool_set()
@@ -293,35 +322,31 @@ class AstrBotRuntimeAdapter:
     def event_type(self) -> Any:
         """宿主 EventType 枚举（成员访问经此唯一出口）。"""
         self.validate()
-        assert self.capabilities.event_type is not None
-        return self.capabilities.event_type
+        return _require(self.capabilities.event_type, "EventType")
 
     @property
     def result_llm_type(self) -> Any:
         """宿主 ResultContentType.LLM_RESULT 值。"""
         self.validate()
-        assert self.capabilities.result_content_type is not None
-        return self.capabilities.result_content_type.LLM_RESULT
+        return _require(self.capabilities.result_content_type, "ResultContentType").LLM_RESULT
 
     def new_event_result(self) -> Any:
         """宿主 MessageEventResult 实例（构造经此唯一出口）。"""
         self.validate()
-        assert self.capabilities.event_result_cls is not None
-        return self.capabilities.event_result_cls()
+        return _require(self.capabilities.event_result_cls, "MessageEventResult")()
 
     def new_provider_request(self) -> Any:
         """宿主 ProviderRequest 实例。"""
         self.validate()
-        assert self.capabilities.provider_request_cls is not None
-        return self.capabilities.provider_request_cls()
+        return _require(self.capabilities.provider_request_cls, "ProviderRequest")()
 
     async def call_event_hook(self, event: Any, event_type: Any, req: Any = None) -> Any:
         """宿主事件钩子链调用（event/event_type 位置参数）。"""
         self.validate()
-        assert self.capabilities.call_event_hook is not None
+        hook = _require(self.capabilities.call_event_hook, "call_event_hook")
         if req is None:
-            return await maybe_await(self.capabilities.call_event_hook(event, event_type))
-        return await maybe_await(self.capabilities.call_event_hook(event, event_type, req))
+            return await maybe_await(hook(event, event_type))
+        return await maybe_await(hook(event, event_type, req))
 
     def config_path(self) -> str | None:
         """宿主配置目录（None = 旧版回退路径）。"""
@@ -356,10 +381,22 @@ class AstrBotRuntimeAdapter:
             return []
         tools = getattr(tool_set, "tools", None)
         if tools is None:
+            # DEBUG 而非 WARNING：本方法是被 filter_final_tools 复用的枚举器，
+            # 决策与告警归调用方，否则单次失败会产生重复告警（实测 2 条）。
+            logger.debug(
+                "[%s] tool enumeration unavailable: func_tool has no 'tools' (type=%s)",
+                PLUGIN_ID,
+                type(tool_set).__name__,
+            )
             return None
         try:
             return [str(getattr(tool, "name", "") or "").strip() for tool in tools]
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "[%s] tool enumeration failed: %s",
+                PLUGIN_ID,
+                exc,
+            )
             return None
 
     def filter_final_tools(
@@ -389,6 +426,12 @@ class AstrBotRuntimeAdapter:
             return True  # No tool set at all: nothing can be called.
         tools = getattr(tool_set, "tools", None)
         if tools is None:
+            logger.warning(
+                "[%s] tool boundary fail-closed: func_tool has no enumerable 'tools' "
+                "(type=%s); aborting proactive run",
+                PLUGIN_ID,
+                type(tool_set).__name__,
+            )
             return False
         try:
             for tool in list(tools):
@@ -400,10 +443,21 @@ class AstrBotRuntimeAdapter:
                         tool_set.remove_tool(name)
                 elif name in drop:
                     tool_set.remove_tool(name)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "[%s] tool boundary fail-closed: removing tools failed (%s); "
+                "aborting proactive run",
+                PLUGIN_ID,
+                exc,
+            )
             return False
         remaining = self.final_tool_ids(req)
         if remaining is None:
+            logger.warning(
+                "[%s] tool boundary fail-closed: post-filter enumeration unavailable; "
+                "aborting proactive run",
+                PLUGIN_ID,
+            )
             return False
         if keep is not None:
             return all(name in keep for name in remaining)

@@ -12,7 +12,7 @@ from typing import Any, Protocol
 from astrbot.api import logger
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.9.2"
+PLUGIN_VERSION = "0.9.3"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -29,10 +29,6 @@ MAX_VISION_IMAGE_AGE_SEC = 86400  # 图片上下文最长保留时间
 MAX_VISION_TIMEOUT_SEC = 120  # 单张图片解析超时上限
 MAX_CACHED_IMAGE_EVENTS = 20  # 每会话临时保留的含图事件数
 MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024  # 图片冻结缓存总容量上限
-# 状态落盘合并窗口：脏标记后静默该秒数才落盘一次（ticket 12）。
-# 高频路径（每次主动回复记录）从逐次写盘改为合并写；终止/重载由
-# terminate 的 flush 兜底，窗口值不影响最终一致性，只影响故障窗口时长。
-STATE_SAVE_DEBOUNCE_SEC = 2.0
 
 # 泄漏告警阈值（ticket 14）：后台任务表/会话代次表规模超阈值时在周期
 # 清理中告警（运维状态）。任务表每会话至多 1-2 个常驻条目，100 已显著
@@ -97,7 +93,7 @@ EVENT_CLEANUP_INTERVAL_SEC = 3600  # 事件清理间隔：1小时清理一次陈
 MAX_CACHED_EVENTS = 100  # 最大缓存事件数：防止内存无限增长
 PATROL_BACKOFF_DELAY_SEC = 60  # 巡检失败退避延迟：避免错误循环
 # 管理员列表重探窗口：高频事件路径在窗口内跳过对 cmd_config.json 的 stat
-#（mtime 缓存只省读文件不省系统调用）；运行期改管理员下个窗口生效，
+# （mtime 缓存只省读文件不省系统调用）；运行期改管理员下个窗口生效，
 # 最大延迟 = 窗口长，探测失败不变更缓存、窗口后重试。
 ADMIN_REFRESH_WINDOW_SEC = 30.0
 
@@ -348,7 +344,13 @@ class SessionState:
 
         ``confirmed=False`` 表示 UNKNOWN 投递：只消耗冷却与日配额，
         不写历史条目。
+
+        先 ``refresh_day`` 再自增：调用方（``_check_session_locked``）的跨天
+        刷新发生在判断+生成之前，二者相隔可达数十秒（判断超时 20s + 生成
+        超时 60s）。跨零点时增量会记到昨日键上，随下一次刷新归零 —— 等于
+        今日配额白送一次。本方法自带刷新后不再依赖调用方的时序。
         """
+        self.refresh_day()
         self.last_proactive_at = at
         self.daily_count += 1
         if not confirmed:
@@ -365,6 +367,213 @@ class SessionState:
     def age_sec(self, now: float) -> float:
         """距上次活跃的经过秒数（从未活跃按 0 计）。"""
         return now - self.last_active_at if self.last_active_at else 0.0
+
+
+@dataclass(frozen=True)
+class ConfigSpec:
+    """单个配置键的完整规格（0.9.3 阶段 2：配置六重镜像的单一事实源）。
+
+    此前同一个键要在六处重复声明：``_conf_schema.json``、``Settings`` 字段表、
+    ``from_config``、``to_config_dict``、``CONFIG_SCHEMA_KEYS``、
+    ``_parse_config_updates``。新增一个键要改三到四处，漏一处审计就静默失效。
+    本表驱动后四者 + ``_AUDITED_CONFIG_KEYS``；``_conf_schema.json`` 保留独立文件
+    （它承载 UI 文案），由 ``tests/test_config_schema.py`` 断言与本表一致。
+
+    为什么描述/提示文案不进表：那是纯 UI 拷贝（每条 1-3 行中文），放进表只会
+    让表变成 schema 的第二份副本。表只收机器可校验的语义：类型、边界、步长、
+    枚举、UI 控件类型、审计标记。
+
+    字段语义：
+        key: 配置键名（= schema 键名）。
+        kind: ``bool`` / ``int`` / ``float`` / ``str`` / ``enum`` / ``text`` / ``list``。
+        default: 缺键时的默认值，须与 schema 的 ``default`` 一致。
+        minimum/maximum: 数值夹取边界，须与 schema ``slider`` 的 min/max 一致。
+        step: 仅 UI 用（slider 步长），Python 侧不参与校验。
+        field_name: ``Settings`` 上的属性名，与 key 同名时留空。
+        options: 枚举取值，须与 schema ``options`` 一致。
+        audited: 是否记 INFO 审计日志（安全敏感键）。
+        container: ``list`` 键在 ``Settings`` 上的容器类型（``set`` 需去重/排序）。
+        legacy_keys: 旧版本键名，只在读侧回退；``to_config_dict`` 只写正式键。
+        special/editor_mode/editor_language: schema 的 UI 专属字段。
+        max_len/max_items: 硬上限（防 OOM 与费用滥用），超限截断并记 warning。
+    """
+
+    key: str
+    kind: str
+    default: Any
+    minimum: float | None = None
+    maximum: float | None = None
+    step: float | None = None
+    field_name: str = ""
+    options: tuple[str, ...] = ()
+    audited: bool = False
+    container: str = ""
+    legacy_keys: tuple[str, ...] = ()
+    special: str = ""
+    editor_mode: bool = False
+    editor_language: str = ""
+    max_len: int | None = None
+    max_items: int | None = None
+
+    @property
+    def attr(self) -> str:
+        """``Settings`` 上的属性名。"""
+        return self.field_name or self.key
+
+    @property
+    def schema_type(self) -> str:
+        """``_conf_schema.json`` 里的 ``type`` 值（enum/str 都渲染成 string）。"""
+        if self.kind in {"enum", "str"}:
+            return "string"
+        return self.kind
+
+
+# 34 个配置键的规格表。顺序 = _conf_schema.json 顺序 = 面板呈现顺序。
+CONFIG_SPECS: tuple[ConfigSpec, ...] = (
+    ConfigSpec("enabled", "bool", True, audited=True),
+    ConfigSpec("decision_model_enabled", "bool", True),
+    ConfigSpec("judge_provider_id", "str", "", special="select_provider", audited=True),
+    ConfigSpec(
+        "decision_prompt_template",
+        "text",
+        "",
+        editor_mode=True,
+        editor_language="text",
+        max_len=MAX_PROMPT_LENGTH,
+    ),
+    ConfigSpec("decision_temperature", "float", 0.2, 0.0, 2.0, step=0.1),
+    ConfigSpec("decision_timeout_sec", "float", 20.0, 1, 300, step=1),
+    ConfigSpec(
+        "decision_history_min_messages",
+        "int",
+        5,
+        0,
+        30,
+        step=1,
+        legacy_keys=("min_context_messages", "proactive_threshold"),
+    ),
+    ConfigSpec(
+        "reply_length_mode",
+        "enum",
+        "balanced",
+        options=("short", "balanced", "expressive"),
+    ),
+    ConfigSpec("allow_multiline_reply", "bool", True),
+    ConfigSpec("max_reply_chars", "int", 220, 0, 2000, step=10),
+    ConfigSpec("log_reply_content", "bool", False),
+    ConfigSpec("bot_aliases", "list", [], container="list"),
+    ConfigSpec("ignored_sender_ids", "list", [], container="set", audited=True),
+    ConfigSpec(
+        "whitelist_sessions",
+        "list",
+        [],
+        field_name="whitelist",
+        container="set",
+        audited=True,
+        legacy_keys=("whitelist",),
+        max_items=MAX_WHITELIST_SIZE,
+    ),
+    ConfigSpec("check_interval_sec", "int", 300, 30, 86400, step=30),
+    ConfigSpec("patrol_inactive_after_sec", "int", 1800, 0, 604800, step=3600),
+    ConfigSpec(
+        "message_delay_sec", "int", 60, 5, 86400, step=5, legacy_keys=("idle_trigger_seconds",)
+    ),
+    ConfigSpec("min_silence_sec", "int", 45, 0, 86400, step=10),
+    ConfigSpec("cooldown_sec", "int", 900, 0, 86400, step=60, legacy_keys=("cooldown_seconds",)),
+    ConfigSpec("max_daily_replies_per_session", "int", 5, 0, MAX_DAILY_REPLIES_LIMIT, step=1),
+    ConfigSpec("recent_message_limit", "int", 20, 3, MAX_RECENT_MESSAGE_LIMIT, step=1),
+    ConfigSpec("quiet_hours", "list", [], container="list"),
+    ConfigSpec("enabled_message_trigger", "bool", True),
+    ConfigSpec("enabled_patrol_trigger", "bool", False),
+    ConfigSpec("generation_timeout_sec", "float", 60.0, 1, 300, step=1),
+    ConfigSpec("proactive_inherit_tools", "bool", False, audited=True),
+    ConfigSpec(
+        "vision_judge_enabled", "bool", False, audited=True, legacy_keys=("vision_enabled",)
+    ),
+    ConfigSpec("vision_main_enabled", "bool", False, audited=True, legacy_keys=("vision_enabled",)),
+    ConfigSpec("vision_provider_id", "str", "", special="select_provider", audited=True),
+    ConfigSpec("vision_skip_stickers", "bool", False),
+    ConfigSpec("vision_judge_provider_id", "str", "", special="select_provider", audited=True),
+    ConfigSpec("vision_max_images", "int", 2, 1, MAX_VISION_IMAGES, step=1),
+    ConfigSpec("vision_image_age_sec", "int", 300, 60, MAX_VISION_IMAGE_AGE_SEC, step=60),
+    ConfigSpec("vision_timeout_sec", "float", 20.0, 1, MAX_VISION_TIMEOUT_SEC, step=1),
+)
+
+CONFIG_SPEC_BY_KEY: dict[str, ConfigSpec] = {spec.key: spec for spec in CONFIG_SPECS}
+
+
+def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
+    """按规格把一个原始配置值强制成目标类型并夹取边界。
+
+    ``fallback`` 与 ``raw`` 分开传：旧键回退时 ``raw`` 取自旧键，而强制失败
+    （None / 不可解析）时要落回同一个旧键的值，而非静态默认——这正是
+    ``vision_enabled`` 迁移到两个新开关的语义（0.9.2 迁移护栏）。
+
+    截断（提示词长度 / 白名单条目数）是防 OOM 与 token 滥用的硬边界，静默
+    生效但必须留 warning，否则用户困惑于"配置没生效"。
+    """
+    if spec.kind == "bool":
+        return as_bool(raw, bool(fallback))
+    if spec.kind == "int":
+        assert spec.minimum is not None and spec.maximum is not None
+        return as_int(raw, int(fallback), int(spec.minimum), int(spec.maximum))
+    if spec.kind == "float":
+        assert spec.minimum is not None and spec.maximum is not None
+        return as_float(raw, float(fallback), float(spec.minimum), float(spec.maximum))
+    if spec.kind == "enum":
+        return choice(raw, set(spec.options), str(fallback))
+    if spec.kind == "text":
+        text = str(raw or "").strip() or DEFAULT_DECISION_PROMPT_TEMPLATE.strip()
+        if spec.max_len is not None and len(text) > spec.max_len:
+            logger.warning(
+                "[%s] 判断提示词过长 (%d 字符)，已截断到 %d 字符",
+                PLUGIN_ID,
+                len(text),
+                spec.max_len,
+            )
+            text = text[: spec.max_len]
+        return text
+    if spec.kind == "list":
+        items = as_list(raw)
+        if spec.max_items is not None and len(items) > spec.max_items:
+            logger.warning(
+                "[%s] %s 过大 (%d 条目)，已截断到前 %d 条",
+                PLUGIN_ID,
+                spec.key,
+                len(items),
+                spec.max_items,
+            )
+            items = items[: spec.max_items]
+        return set(items) if spec.container == "set" else items
+    return str(raw or "").strip()
+
+
+def read_config_value(spec: ConfigSpec, config: Any) -> Any:
+    """从宿主配置对象读一个键：正式键优先，缺失时按旧键顺序回退。
+
+    只强制转换一次。曾经写成「先把旧键值 coerce 成 fallback，再把 fallback 当
+    raw 二次 coerce」，对 list 类键会静默清空——``container="set"`` 的第一次
+    coerce 产出 ``set``，而 ``as_list`` 只认 list/str，第二次遇到 set 返回 ``[]``。
+    存量配置里只有 ``whitelist``（无 ``whitelist_sessions``）的用户会整表丢白名单。
+    规格表落地时由 ``test_spec_table_legacy_fallback_matches_from_config`` 抓到。
+
+    ``fallback`` 的语义是「``raw`` 强制失败时落回哪个值」：正式键存在时落回旧键
+    的值而非静态默认，这是 ``vision_enabled`` → 两个新开关的迁移语义（0.9.2）。
+    """
+    raw: Any = spec.default
+    fallback: Any = spec.default
+    if spec.key in config:
+        raw = config.get(spec.key)
+        for legacy in spec.legacy_keys:
+            if legacy in config:
+                fallback = coerce_config_value(spec, config.get(legacy), spec.default)
+                break
+    else:
+        for legacy in spec.legacy_keys:
+            if legacy in config:
+                raw = config.get(legacy)
+                break
+    return coerce_config_value(spec, raw, fallback)
 
 
 @dataclass
@@ -445,153 +654,39 @@ class Settings:
 
     @classmethod
     def from_config(cls, config: Any) -> Settings:
-        # 提示词长度限制
-        prompt_template = str(
-            config.get("decision_prompt_template", "") or DEFAULT_DECISION_PROMPT_TEMPLATE
-        ).strip()
-        if len(prompt_template) > MAX_PROMPT_LENGTH:
-            logger.warning(
-                "[%s] 判断提示词过长 (%d 字符)，已截断到 %d 字符",
-                PLUGIN_ID,
-                len(prompt_template),
-                MAX_PROMPT_LENGTH,
-            )
-            prompt_template = prompt_template[:MAX_PROMPT_LENGTH]
+        """把宿主配置对象归一化为 ``Settings``：缺键取默认，超限截断，别名回退。
 
-        # 白名单条目数限制
-        # 旧版配置文件可能只有别名键 whitelist：回退读取（迁移护栏 0.9.2 B2）；
-        # to_config_dict() 只写回正式键，一次 load+save 后别名自然消失。
-        whitelist_raw = as_list(config.get("whitelist_sessions", config.get("whitelist", [])))
-        if len(whitelist_raw) > MAX_WHITELIST_SIZE:
-            logger.warning(
-                "[%s] 白名单过大 (%d 条目)，已截断到前 %d 条",
-                PLUGIN_ID,
-                len(whitelist_raw),
-                MAX_WHITELIST_SIZE,
-            )
-            whitelist_raw = whitelist_raw[:MAX_WHITELIST_SIZE]
+        表驱动（0.9.3 阶段 2）：逐字段手写的 118 行归一化已由 ``CONFIG_SPECS``
+        取代。每个键的类型/边界/旧键/上限都只在规格表里声明一次，此处只做遍历。
 
-        # 旧版本只有一个 vision_enabled 开关，作为两个新开关的默认值迁移。
-        # 只读不写：to_config_dict() 不再写回该键，否则它不在 schema 里，
-        # AstrBot 配置页会把它渲染成一个既无效又可编辑的裸文本框。
-        legacy_vision = as_bool(config.get("vision_enabled", False), False)
-        vision_judge_enabled = as_bool(
-            config.get("vision_judge_enabled", legacy_vision), legacy_vision
-        )
-        vision_main_enabled = as_bool(
-            config.get("vision_main_enabled", legacy_vision), legacy_vision
-        )
+        输入不可信（用户手改 JSON、旧版本遗留键），因此每个字段都走类型强制 +
+        边界裁剪，而不是直接取值。别名回退（如 ``whitelist`` → ``whitelist_sessions``）
+        只在读侧生效，``to_config_dict()`` 只写正式键，一次 load+save 后旧键自然消失。
 
-        return cls(
-            enabled=as_bool(config.get("enabled", True), True),
-            judge_provider_id=str(config.get("judge_provider_id", "") or "").strip(),
-            decision_prompt_template=prompt_template,
-            decision_history_min_messages=as_int(
-                config.get(
-                    "decision_history_min_messages",
-                    config.get("min_context_messages", config.get("proactive_threshold", 5)),
-                ),
-                5,
-                0,
-                30,
-            ),
-            decision_temperature=as_float(config.get("decision_temperature", 0.2), 0.2, 0.0, 2.0),
-            decision_timeout_sec=as_float(config.get("decision_timeout_sec", 20), 20, 1, 300),
-            decision_model_enabled=as_bool(config.get("decision_model_enabled", True), True),
-            reply_length_mode=choice(
-                config.get("reply_length_mode", "balanced"),
-                {"short", "balanced", "expressive"},
-                "balanced",
-            ),
-            allow_multiline_reply=as_bool(config.get("allow_multiline_reply", True), True),
-            max_reply_chars=as_int(config.get("max_reply_chars", 220), 220, 0, 2000),
-            log_reply_content=as_bool(config.get("log_reply_content", False), False),
-            bot_aliases=as_list(config.get("bot_aliases", [])),
-            whitelist=set(whitelist_raw),
-            ignored_sender_ids=set(as_list(config.get("ignored_sender_ids", []))),
-            recent_message_limit=as_int(
-                config.get("recent_message_limit", 20), 20, 3, MAX_RECENT_MESSAGE_LIMIT
-            ),
-            message_delay_sec=as_int(
-                config.get("message_delay_sec", config.get("idle_trigger_seconds", 60)),
-                60,
-                5,
-                86400,
-            ),
-            min_silence_sec=as_int(config.get("min_silence_sec", 45), 45, 0, 86400),
-            cooldown_sec=as_int(
-                config.get("cooldown_sec", config.get("cooldown_seconds", 900)),
-                900,
-                0,
-                86400,
-            ),
-            max_daily_replies_per_session=as_int(
-                config.get("max_daily_replies_per_session", 5), 5, 0, MAX_DAILY_REPLIES_LIMIT
-            ),
-            quiet_hours=as_list(config.get("quiet_hours", [])),
-            enabled_message_trigger=as_bool(config.get("enabled_message_trigger", True), True),
-            enabled_patrol_trigger=as_bool(config.get("enabled_patrol_trigger", False), False),
-            check_interval_sec=as_int(config.get("check_interval_sec", 300), 300, 30, 86400),
-            patrol_inactive_after_sec=as_int(
-                config.get("patrol_inactive_after_sec", 1800), 1800, 0, 604800
-            ),
-            generation_timeout_sec=as_float(config.get("generation_timeout_sec", 60), 60, 1, 300),
-            proactive_inherit_tools=as_bool(config.get("proactive_inherit_tools", False), False),
-            vision_judge_enabled=vision_judge_enabled,
-            vision_main_enabled=vision_main_enabled,
-            vision_provider_id=str(config.get("vision_provider_id", "") or "").strip(),
-            vision_judge_provider_id=str(config.get("vision_judge_provider_id", "") or "").strip(),
-            vision_skip_stickers=as_bool(config.get("vision_skip_stickers", False), False),
-            vision_max_images=as_int(config.get("vision_max_images", 2), 2, 1, MAX_VISION_IMAGES),
-            vision_image_age_sec=as_int(
-                config.get("vision_image_age_sec", 300), 300, 60, MAX_VISION_IMAGE_AGE_SEC
-            ),
-            vision_timeout_sec=as_float(
-                config.get("vision_timeout_sec", 20), 20, 1, MAX_VISION_TIMEOUT_SEC
-            ),
-        )
+        失败时：**从不抛异常**，全部降级为默认值或截断后的安全值，并按项记
+        warning。理由是配置解析失败若抛出会让插件整体加载失败，而单个字段异常
+        不该导致主动回复完全不可用；超限截断（提示词/白名单）是防内存与 token
+        滥用的硬边界，静默生效但必须留日志，否则用户会困惑于"配置没生效"。
+        """
+        return cls(**{spec.attr: read_config_value(spec, config) for spec in CONFIG_SPECS})
 
     def to_config_dict(self) -> dict[str, Any]:
         """Return only currently active configuration keys.
 
+        表驱动（0.9.3 阶段 2）：键名与顺序都取自 ``CONFIG_SPECS``，不再手抄。
+
         Deprecated direct-model/direct-plugin settings are ignored and no longer
         written back because proactive replies now use AstrBot's main Agent
-        pipeline. Stealer and LivingMemory participate through their normal
-        tool/hooks instead of this plugin's legacy adapters.
+        pipeline. Legacy alias keys (``vision_enabled``/``whitelist`` 等) are read
+        by ``from_config`` but never written back: they are absent from
+        ``_conf_schema.json``, so writing them makes the host settings panel
+        render a stray editable text box that has no effect.
+
+        ``set`` 容器排序输出：JSON 无集合类型，且无序写盘会让每次保存都产生
+        伪 diff（配置文件被反复标记为已变更）。
         """
-        return {
-            "enabled": self.enabled,
-            "decision_model_enabled": self.decision_model_enabled,
-            "judge_provider_id": self.judge_provider_id,
-            "decision_prompt_template": self.decision_prompt_template,
-            "decision_history_min_messages": self.decision_history_min_messages,
-            "decision_temperature": self.decision_temperature,
-            "decision_timeout_sec": self.decision_timeout_sec,
-            "reply_length_mode": self.reply_length_mode,
-            "allow_multiline_reply": self.allow_multiline_reply,
-            "max_reply_chars": self.max_reply_chars,
-            "log_reply_content": self.log_reply_content,
-            "bot_aliases": self.bot_aliases,
-            "ignored_sender_ids": sorted(self.ignored_sender_ids),
-            "whitelist_sessions": sorted(self.whitelist),
-            "check_interval_sec": self.check_interval_sec,
-            "patrol_inactive_after_sec": self.patrol_inactive_after_sec,
-            "message_delay_sec": self.message_delay_sec,
-            "min_silence_sec": self.min_silence_sec,
-            "cooldown_sec": self.cooldown_sec,
-            "max_daily_replies_per_session": self.max_daily_replies_per_session,
-            "recent_message_limit": self.recent_message_limit,
-            "quiet_hours": self.quiet_hours,
-            "enabled_message_trigger": self.enabled_message_trigger,
-            "enabled_patrol_trigger": self.enabled_patrol_trigger,
-            "generation_timeout_sec": self.generation_timeout_sec,
-            "proactive_inherit_tools": self.proactive_inherit_tools,
-            "vision_judge_enabled": self.vision_judge_enabled,
-            "vision_main_enabled": self.vision_main_enabled,
-            "vision_provider_id": self.vision_provider_id,
-            "vision_judge_provider_id": self.vision_judge_provider_id,
-            "vision_skip_stickers": self.vision_skip_stickers,
-            "vision_max_images": self.vision_max_images,
-            "vision_image_age_sec": self.vision_image_age_sec,
-            "vision_timeout_sec": self.vision_timeout_sec,
-        }
+        payload: dict[str, Any] = {}
+        for spec in CONFIG_SPECS:
+            value = getattr(self, spec.attr)
+            payload[spec.key] = sorted(value) if spec.container == "set" else value
+        return payload

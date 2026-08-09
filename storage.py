@@ -24,6 +24,9 @@ def _config_to_dict(config_obj: Any) -> dict[str, Any]:
         try:
             return {str(key): value for key, value in config_obj.items()}
         except Exception:
+            # 宿主配置对象的形状不受本插件约束：items() 可能不是 Mapping 协议
+            # （惰性代理、属性代理等）。此处静默是为了继续走下方 dict() 兜底，
+            # 两条路都失败才返回空字典——不能在第一条失败时就中断。
             pass
     try:
         return dict(config_obj)
@@ -137,6 +140,18 @@ def _backup_state_file(path: Path) -> None:
 
 
 def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[str, SessionState]:
+    """从 state.json 载入会话状态，只保留仍在白名单内的会话。
+
+    白名单内但文件中缺失的会话补空状态，保证调用方无需处理 KeyError。
+    ``recent`` 用 ``maxlen=recent_limit`` 的 deque 承载，配置调小后自动裁剪。
+
+    失败时分三层，全部不阻断插件加载（宁可丢历史，不可起不来）：
+    1. 文件损坏 / 编码错误 / 版本号不符 —— 先备份原文件再继续（``_backup_state_file``），
+       不静默覆盖用户数据；版本不符仍尽力按当前结构解析，避免丢弃仍兼容的部分。
+    2. 单个会话条目畸形 —— 记 warning 后跳过该条，其余会话正常载入。
+    3. 字段级异常值（NaN/负数/未知 role）—— 由 ``_finite_float`` /
+       ``_nonnegative_int`` 归一，不让脏值进入运行期计算。
+    """
     sessions: dict[str, SessionState] = {}
     raw_sessions: Any = {}
     if path.exists():

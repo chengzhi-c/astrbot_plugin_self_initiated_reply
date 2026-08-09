@@ -1,8 +1,8 @@
 """会话状态协作（自 main.py 拆分，ticket 07）。
 
 把散落在主插件上的隐式会话状态收敛为每会话协作入口：最近事件与事件时间
-的写入、失效级联清理（事件/时间/图片/延迟任务/状态标记）、图片索引写入
-与读取（过期/去重/sticker 过滤）、以及会话阶段（FSM）的显式投影与标记。
+的写入、失效级联清理（事件/时间/图片/延迟任务）、图片索引写入与读取
+（过期/去重/sticker 过滤）。
 
 失效只有单点入口 ``invalidate``：任意路径（新消息/命令/巡检/白名单移除/
 终止）都会级联清理该会话的全部协作资源。代次单调性（防 ABA）与只读视图
@@ -10,13 +10,17 @@
 
 状态容器经引用共享（main 的 dict 属性保持原字段名，既有调用点与测试
 不变）；延迟任务取消与代次推进经注入回调执行。
+
+0.9.3 移除 ``SessionPhase`` FSM 与 ``mark``/``state``：五个阶段只被写入
+（main 的 check 流程 4 处）而无任何生产读点——既不参与任何判定，也未进
+``/status`` 面板，是一层纯记账。运行中判定改由 ``SessionGate.is_running``
+与事件表直接回答。
 """
 
 from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
-from enum import Enum
 from typing import Any
 
 from astrbot.api import logger
@@ -25,18 +29,8 @@ from .models import MAX_CACHED_IMAGE_EVENTS, PLUGIN_ID, now_ts
 from .session_gate import SessionGate
 
 
-class SessionPhase(str, Enum):
-    """会话 FSM 的显式阶段（低峰成功路径的投影，非持久状态）。"""
-
-    IDLE = "idle"
-    OBSERVING = "observing"
-    DECIDING = "deciding"
-    GENERATING = "generating"
-    DELIVERING = "delivering"
-
-
 class SessionCoordinator:
-    """每会话协作：事件缓存、失效级联单点、图片索引与阶段投影。"""
+    """每会话协作：事件缓存、失效级联单点与图片索引。"""
 
     def __init__(
         self,
@@ -54,7 +48,6 @@ class SessionCoordinator:
         self._gate = gate
         self._cancel_delay = cancel_delay
         self._notify_silence = notify_silence
-        self._phases: dict[str, SessionPhase] = {}
 
     # ------------------------------------------------------------------
     # 写点
@@ -74,13 +67,6 @@ class SessionCoordinator:
         image_events = self._images.setdefault(umo, deque(maxlen=MAX_CACHED_IMAGE_EVENTS))
         image_events.append((timestamp, cached_images))
 
-    def mark(self, umo: str, phase: SessionPhase) -> None:
-        """显式标记会话阶段（check 流程调用；invalidate/clear 会清除）。"""
-        if phase is SessionPhase.IDLE:
-            self._phases.pop(umo, None)
-        else:
-            self._phases[umo] = phase
-
     def invalidate(self, umo: str, *, force_cancel: bool = False) -> int:
         """会话失效单点入口：推进代次 → 取消延迟任务 → 级联清理全部协作资源。
 
@@ -92,18 +78,16 @@ class SessionCoordinator:
         return generation
 
     def clear(self, umo: str) -> None:
-        """清理会话的协作资源（事件/时间/图片/阶段标记）。"""
+        """清理会话的协作资源（事件/时间/图片）。"""
         self._events.pop(umo, None)
         self._event_at.pop(umo, None)
         self._images.pop(umo, None)
-        self._phases.pop(umo, None)
 
     def reset_all(self) -> None:
         """清空全部会话协作资源（插件终止路径）。"""
         self._events.clear()
         self._event_at.clear()
         self._images.clear()
-        self._phases.clear()
 
     # ------------------------------------------------------------------
     # 读侧
@@ -143,14 +127,3 @@ class SessionCoordinator:
                 if len(candidates) >= vision_max_images:
                     return list(reversed(candidates))
         return list(reversed(candidates))
-
-    def state(self, umo: str) -> SessionPhase:
-        """会话阶段投影：显式标记优先，否则由协作资源推导。"""
-        phase = self._phases.get(umo)
-        if phase is not None:
-            return phase
-        if self._gate.is_running(umo):
-            return SessionPhase.DECIDING
-        if umo in self._events:
-            return SessionPhase.OBSERVING
-        return SessionPhase.IDLE

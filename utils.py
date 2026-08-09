@@ -255,6 +255,28 @@ def event_sender_name(event: AstrMessageEvent) -> str:
         return "用户"
 
 
+def event_extra(event: AstrMessageEvent, key: str, default: Any = None) -> Any:
+    """读取宿主事件的 extra 字段，跨宿主签名差异做三层回退。
+
+    与本模块其余 ``event_*`` 同属宿主字段兼容探测（0.9.3 自 main.py 外迁）。
+    回退阶梯：无 ``get_extra`` → 默认值；``get_extra(key, default)`` 抛 TypeError
+    （老宿主只收单参）→ 重试 ``get_extra(key)``；仍失败或取到 None → 默认值。
+    """
+    get_extra = getattr(event, "get_extra", None)
+    if not callable(get_extra):
+        return default
+    try:
+        value = get_extra(key, default)
+    except TypeError:
+        try:
+            value = get_extra(key)
+        except Exception:
+            return default
+    except Exception:
+        return default
+    return default if value is None else value
+
+
 def response_text(response: Any) -> str:
     """从宿主响应对象提取纯文本：completion_text 优先，result_chain.get_plain_text 兜底。
 
@@ -281,10 +303,16 @@ def is_self_message(event: AstrMessageEvent) -> bool:
 
 
 def is_admin_event(event: AstrMessageEvent, admin_ids: set[str]) -> bool:
+    """管理员判定：宿主 API → role 字段 → 配置白名单，三级兜底。
+
+    失败方向必须是 fail-safe（判为非管理员），不得为便利改成 ``return True``。
+    """
     try:
         if event.is_admin():
             return True
     except Exception:
+        # 宿主未实现或实现异常时不在此判定结果，继续走下面的 role / admin_ids
+        # 兜底链；三级全不命中才算非管理员。降级方向是收紧权限而非放开。
         pass
     role = str(getattr(event, "role", "") or getattr(event, "role_type", "")).lower()
     if role in {"admin", "owner", "superuser"}:

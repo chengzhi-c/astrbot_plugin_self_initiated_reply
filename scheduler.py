@@ -190,6 +190,18 @@ class SessionScheduler:
         force: bool = False,
         generation: int | None = None,
     ) -> None:
+        """延迟后对会话跑一次检查，穿过三道等待闸门才真正执行。
+
+        闸门顺序：``delay_sec`` 睡眠 → 最小静默期（事件化等待，新消息到达即醒来
+        复查）→ 同会话上一次检查完成。每道闸门后都重验 ``_should_run`` 与代次，
+        任一失效即放弃——白名单移除或会话重加（ABA）后的旧任务不得复活发送。
+        ``force=True`` 跳过静默期，但不跳过代次校验与运行互斥。
+
+        失败时：``CancelledError`` 静默返回（停止/失效路径的正常收敛）；其余异常
+        记 warning 后吞掉，不向调用方冒泡——它由 ``asyncio.Task`` 驱动，抛出只会
+        变成无人接管的任务异常。``finally`` 必定回收本任务创建的静默事件，且仅在
+        表中仍是自己时才删（交错重建时误删会让新任务丢失通知）。
+        """
         try:
             # 早退路径（延迟后插件停用/代次失效）不会到达静默等待段，
             # 但 finally 会回收静默事件：必须先绑定，否则 UnboundLocalError
@@ -260,9 +272,8 @@ class SessionScheduler:
     # 图片与事件清理
     # ------------------------------------------------------------------
 
-    def cleanup_image_sources(self, *, now: float | None = None) -> int:
-        """清理过期图片索引和插件临时缓存，保护仍在有效窗口内的源。"""
-        current = now_ts() if now is None else float(now)
+    def _prune_image_index(self, current: float) -> tuple[float, set[str]]:
+        """回收过期图片索引（纯内存，无磁盘 IO），返回 (保留窗口, 受保护源)。"""
         image_age = max(60.0, float(self.settings.vision_image_age_sec))
         cutoff = current - image_age
         for umo, events in list(self._recent_image_events.items()):
@@ -278,12 +289,10 @@ class SessionScheduler:
             for image in images
             if image.prepared_source
         }
-        removed_images = ImageParser.cleanup_source_cache(
-            self._image_cache_dir,
-            protected_sources=protected_sources,
-            max_age_sec=image_age,
-            now=current,
-        )
+        return image_age, protected_sources
+
+    @staticmethod
+    def _log_removed_images(removed_images: int) -> int:
         if removed_images:
             logger.info(
                 "[%s] cleaned up %d expired frozen images",
@@ -292,10 +301,41 @@ class SessionScheduler:
             )
         return removed_images
 
+    def cleanup_image_sources(self, *, now: float | None = None) -> int:
+        """同步清理过期图片索引与磁盘缓存。
+
+        仅用于无事件循环的场景（插件构造期的启动清理）。协程内必须改用
+        ``run_image_cleanup``，否则磁盘遍历（rglob + 全量 stat）会阻塞事件循环。
+        """
+        current = now_ts() if now is None else float(now)
+        image_age, protected_sources = self._prune_image_index(current)
+        return self._log_removed_images(
+            ImageParser.cleanup_source_cache(
+                self._image_cache_dir,
+                protected_sources=protected_sources,
+                max_age_sec=image_age,
+                now=current,
+            )
+        )
+
     async def run_image_cleanup(self) -> int:
-        """Serialize manual and periodic cleanup requests."""
+        """Serialize manual and periodic cleanup requests.
+
+        索引回收留在事件循环内（纯内存，且须与事件表保持同一时刻视图）；
+        磁盘遍历交由线程执行，避免阻塞事件循环。锁在此处是必需的：
+        to_thread 引入了真实 await 间隙，两次清理可能并发 unlink 同一文件。
+        """
         async with self._image_cleanup_lock:
-            return self.cleanup_image_sources(now=now_ts())
+            current = now_ts()
+            image_age, protected_sources = self._prune_image_index(current)
+            removed_images = await asyncio.to_thread(
+                ImageParser.cleanup_source_cache,
+                self._image_cache_dir,
+                protected_sources=protected_sources,
+                max_age_sec=image_age,
+                now=current,
+            )
+            return self._log_removed_images(removed_images)
 
     def cleanup_events_if_needed(self) -> None:
         """定期清理没有任务或运行中的陈旧事件。"""
@@ -320,7 +360,13 @@ class SessionScheduler:
         for _, umo in stale:
             self._clear_cached_event(umo)
 
-        self.cleanup_image_sources(now=now)
+        # 只做纯内存的图片索引回收：本方法由 on_message（协程）同步调用，
+        # 磁盘遍历会阻塞消息热路径。磁盘侧由 _image_cleanup_loop 经
+        # run_image_cleanup 独立承担，其周期（image_age/2，上限 1h）严于
+        # 本方法的 1h 节流，故回收不会延后。
+        # 此处不得调用 ensure_image_cleanup：它经 create_task 起循环，而本
+        # 方法在无事件循环的同步上下文也会被调用（实测 RuntimeError）。
+        self._prune_image_index(now)
 
         if len(self._last_events) > MAX_CACHED_EVENTS:
             excess = len(self._last_events) - MAX_CACHED_EVENTS
@@ -425,6 +471,17 @@ class SessionScheduler:
             self._patrol_task = self._spawn(self._patrol_loop())
 
     async def _patrol_loop(self) -> None:
+        """巡检后台循环：按 ``check_interval_sec`` 轮询白名单会话并尝试主动接话。
+
+        每轮先做事件缓存清理，再遍历白名单条目展开的运行期 UMO（``seen_patrol_umos``
+        去重，防同一 UMO 被多个白名单条目重复检查）。逐会话跳过：无缓存事件、
+        超过 ``patrol_inactive_after_sec`` 未活动、已有检查在运行。
+
+        失败时分三层，保证循环不死：单会话异常 → warning 后继续下一个会话；
+        整轮异常 → warning 后退避 ``min(PATROL_BACKOFF_DELAY_SEC, check_interval_sec)``
+        再继续（避免异常态高频空转）；``CancelledError`` 向上抛出，terminate
+        才能真正停掉本任务。
+        """
         while self._should_run() and self.settings.enabled_patrol_trigger:
             try:
                 await asyncio.sleep(self.settings.check_interval_sec)
@@ -439,9 +496,7 @@ class SessionScheduler:
                         try:
                             if not self._last_events.get(umo):
                                 continue
-                            state = self._state_for(
-                                whitelist_storage_key(umo)
-                            )
+                            state = self._state_for(whitelist_storage_key(umo))
                             if self.settings.patrol_inactive_after_sec and (
                                 not state.last_active_at
                                 or now - state.last_active_at

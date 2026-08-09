@@ -177,6 +177,16 @@ class DecisionMaker:
     async def ask_decision_model(
         self, umo: str, state: SessionState, *, trigger: str
     ) -> dict[str, Any]:
+        """问判断模型「这轮该不该主动接话」，返回 should_reply / reason / elapsed_sec。
+
+        判断模型关闭时按触发源分流：``patrol`` 放行（巡检本身即意图），其余拒绝
+        （无明确请求不打扰）。
+
+        失败时一律 fail-closed 返回 ``should_reply=False``，并用 reason 区分五种
+        原因，便于 /status 面板归因：provider 解析失败（业务故障，与"未找到"分开
+        以免误导运维）、未找到可用模型、超时、模型异常、返回非法 JSON。
+        每条出口都带 elapsed_sec，异常路径也不例外。
+        """
         started = self._clock()
         if not self.settings.decision_model_enabled:
             if trigger == "patrol":

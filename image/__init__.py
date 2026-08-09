@@ -5,6 +5,7 @@
 """
 
 from .cache import ImageCache
+from .context import format_image_context
 from .extractor import ImageExtractor
 from .models import ImageInfo
 from .parser import ImageParser
@@ -15,6 +16,7 @@ __all__ = [
     "ImageCache",
     "ImageExtractor",
     "ImageParser",
+    "format_image_context",
     "is_image_payload",
     "sniff_image_mime",
 ]

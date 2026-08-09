@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrbot_plugin_self_initiated_reply"
-version = "0.9.2"
+version = "0.9.3"
 requires-python = ">=3.10"
 # 运行时零第三方依赖：全部复用宿主 AstrBot API
 
@@ -19,7 +19,6 @@ artifacts = [
   "metadata.yaml",
   "_conf_schema.json",
   "pages/**",
-  "assets/**",
   "logo.png",
   "LICENSE",
 ]
@@ -28,6 +27,11 @@ artifacts = [
 # 上方显式声明的 LICENSE/metadata.yaml/logo.png 不受影响。
 # 内容断言见 scripts/check_wheel.py（CI build 作业强制）。
 exclude = [
+  # assets/ 是 README 的图源（4 张 JPG / 463KB），代码、pages/、metadata.yaml、
+  # _conf_schema.json 引用数为 0，README 全部走 raw.githubusercontent 绝对链接，
+  # 运行时永不读取。实测占 0.9.2 wheel 的 69%（687,531 → 213,049 B），故不进分发包，
+  # 仍保留在 git 仓库。断言见 scripts/check_wheel.py 的 FORBIDDEN_PREFIXES。
+  "assets/**",
   "tests/**",
   "docs/**",
   "scripts/**",
@@ -36,6 +40,18 @@ exclude = [
   "*.md",
   ".gitignore",
   ".pre-commit-config.yaml",
+  # 测试运行产物。pytest-cov 的并行数据文件名带主机名与 pid
+  # （.coverage.<host>.pid<N>.<rand>），不以固定后缀结尾，仅靠上面的
+  # 具名条目排不掉；实测它会被整目录打包收进 wheel。
+  ".coverage",
+  ".coverage.*",
+  "*.pyc",
+  "__pycache__/**",
+  ".pytest_cache/**",
+  ".ruff_cache/**",
+  ".mypy_cache/**",
+  "dist/**",
+  "data/**",
 ]
 
 [tool.ruff]
@@ -98,7 +114,6 @@ files = [
   "delivery.py",
   "generation.py",
   "session_coordinator.py",
-  "state_saver.py",
   "whitelist.py",
   "image",
 ]

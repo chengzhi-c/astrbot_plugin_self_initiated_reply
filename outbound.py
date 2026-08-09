@@ -48,6 +48,18 @@ class OutboundGateway:
         return tuple(self._direct_texts)
 
     async def send(self, message: Any, *, kind: str = "reply") -> OutboundResult:
+        """经宿主发送一条消息，把结果归一为「是否确定已提交」三态。
+
+        ``kind="tool_direct"`` 走额外的预算与闸门检查（工具侧直发不可无限量，
+        且必须仍处于当前代次）。预算在调用适配器**之前**扣减：调用已开始后抛异常
+        的消息可能已经送达，重试会造成重复发送。
+
+        失败时按「能否确定未提交」分类，这是不重试语义的依据：
+        ``sender`` 不可调用或返回 ``False``（宿主明确表示无可达目标）→
+        ``FAILED_BEFORE_SUBMIT``（确定未提交）；调用中抛异常 →
+        ``UNKNOWN``（可能已达，禁止重试）；预算耗尽或闸门拒绝 → ``SUPPRESSED``。
+        直发文本仅在 DELIVERED/UNKNOWN 时记账，供上层去重最终回复。
+        """
         is_direct = kind == "tool_direct"
         if not callable(self._sender):
             return OutboundResult(

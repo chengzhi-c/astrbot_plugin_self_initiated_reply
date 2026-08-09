@@ -151,24 +151,13 @@ class AstrBotBridge:
             kwargs["max_tokens"] = max_tokens
         if image_urls:
             kwargs["image_urls"] = list(image_urls)
-        aliases = {
-            "chat_provider_id": ("chat_provider_id", "provider_id", "provider"),
-            "prompt": ("prompt", "content", "query"),
-            "system_prompt": ("system_prompt",),
-            "temperature": ("temperature",),
-            "max_tokens": ("max_tokens",),
-            "image_urls": ("image_urls", "images", "image_urls_list"),
-        }
-        if image_urls:
-            supported = self._supported_kwargs(llm_generate, kwargs, aliases)
-            if not any(key in supported for key in aliases["image_urls"]):
-                raise RuntimeError("当前 AstrBot Context 的 LLM 接口不支持图片输入")
-        return await self._call_compat(
-            llm_generate,
-            kwargs=kwargs,
-            minimal_kwargs={"chat_provider_id": provider_id, "prompt": prompt},
-            aliases=aliases,
-        )
+        # 不走 _call_compat：宿主 llm_generate 是带 **kwargs 的公开方法，无需
+        # 别名猜测与 minimal 回退；text_chat 侧兼容层在 llm_generate_direct。
+        call_kwargs = self._supported_kwargs(llm_generate, kwargs)
+        if image_urls and "image_urls" not in call_kwargs:
+            # 图片支持是硬前提，不可静默降级成纯文本判断（看不见图还照样下结论）。
+            raise RuntimeError("当前 AstrBot Context 的 LLM 接口不支持图片输入")
+        return await maybe_await(llm_generate(**call_kwargs))
 
     async def llm_generate_direct(
         self,
@@ -249,13 +238,8 @@ class AstrBotBridge:
             )
             if provider_id:
                 return str(provider_id).strip()
-        get_using_id = getattr(self.context, "get_using_provider_id", None)
-        if callable(get_using_id):
-            provider_id = await self._call_first_supported(
-                get_using_id, umo, "get_using_provider_id"
-            )
-            if provider_id:
-                return str(provider_id).strip()
+        # 二级回退：get_current_chat_provider_id 抛 ProviderNotFoundError 时，
+        # 由 get_using_provider + meta().id 兜底。
         get_using = getattr(self.context, "get_using_provider", None)
         if callable(get_using):
             provider = await self._call_first_supported(get_using, umo, "get_using_provider")
@@ -279,6 +263,17 @@ class AstrBotBridge:
             return ""
 
     async def read_astrbot_history(self, umo: str, *, limit: int) -> list[MessageRecord]:
+        """读宿主会话历史的最后 ``limit`` 条，归一为 ``MessageRecord`` 列表。
+
+        宿主把 history 存成 JSON 字符串或已解析列表两种形态，此处都接受；
+        单条记录经 ``content_to_text`` 归一（多模态分片只取文本部分）。
+
+        失败时**一律返回空列表，从不抛出**：本方法的产出只是判断模型的补充
+        上下文，取不到应当降级为"没有历史"而不是让主动回复整体失败。因此
+        六条早退（无 conversation_manager / 无当前会话 id / 读取或 JSON 解析
+        异常 / history 非列表 / 单条非 dict / role 不在 user|assistant / 文本为空）
+        都静默跳过，只有异常路径记 debug 日志。
+        """
         manager = getattr(self.context, "conversation_manager", None)
         if manager is None:
             return []

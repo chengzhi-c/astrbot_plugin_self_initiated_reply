@@ -19,10 +19,13 @@ except ImportError:  # pragma: no cover - compatibility with older AstrBot hosts
     from quart import request
 
 from .models import (
+    CONFIG_SPEC_BY_KEY,
+    CONFIG_SPECS,
     DEFAULT_DECISION_PROMPT_TEMPLATE,
     MAX_CACHED_IMAGE_EVENTS,
     MAX_STRING_LIST_ITEM_LEN,
     PLUGIN_ID,
+    ConfigSpec,
     Settings,
 )
 
@@ -32,48 +35,14 @@ from .models import (
 # proactive_threshold/vision_enabled/whitelist）已于 0.9.2 移除：随包前端已
 # 切正式键，存量配置由 Settings.from_config 回退读取迁移，一致性守卫见
 # tests/test_config_schema.py。
+#
+# 0.9.3 阶段 2：改为从 models.CONFIG_SPECS 派生，不再手抄 34 行。此前新增一个
+# 键要同时改 schema / Settings 字段 / from_config / to_config_dict / 本名单 /
+# _parse_config_updates 六处，漏一处即静默失效（漏本名单 → 面板提交被 400 拒）。
+CONFIG_SCHEMA_KEYS = frozenset(spec.key for spec in CONFIG_SPECS)
 
-CONFIG_SCHEMA_KEYS = frozenset(
-    {
-        "enabled",
-        "decision_model_enabled",
-        "judge_provider_id",
-        "decision_prompt_template",
-        "decision_history_min_messages",
-        "decision_temperature",
-        "decision_timeout_sec",
-        "reply_length_mode",
-        "allow_multiline_reply",
-        "max_reply_chars",
-        "log_reply_content",
-        "bot_aliases",
-        "ignored_sender_ids",
-        "whitelist_sessions",
-        "check_interval_sec",
-        "patrol_inactive_after_sec",
-        "message_delay_sec",
-        "min_silence_sec",
-        "cooldown_sec",
-        "max_daily_replies_per_session",
-        "recent_message_limit",
-        "quiet_hours",
-        "enabled_message_trigger",
-        "enabled_patrol_trigger",
-        "generation_timeout_sec",
-        "proactive_inherit_tools",
-        "vision_judge_enabled",
-        "vision_main_enabled",
-        "vision_provider_id",
-        "vision_judge_provider_id",
-        "vision_skip_stickers",
-        "vision_max_images",
-        "vision_image_age_sec",
-        "vision_timeout_sec",
-    }
-)
-
-# 枚举型字符串键 → 合法取值集合（schema options 的运行时镜像）
-_REPLY_LENGTH_MODES = {"short", "balanced", "expressive"}
+# 枚举型字符串键 → 合法取值集合（schema options 的运行时镜像，同样派生自规格表）
+_REPLY_LENGTH_MODES = set(CONFIG_SPEC_BY_KEY["reply_length_mode"].options)
 
 
 def _config_value(config: Any, key: str, default: Any = "") -> Any:
@@ -195,8 +164,10 @@ async def _api_get_config(plugin):
             "vision_timeout_sec": plugin.settings.vision_timeout_sec,
         }
     except Exception as exc:
+        # 详情只进服务端日志（阶段 1.2）：异常文本可能带绝对路径、内部键名或
+        # 上游 provider 报错原文，回显给客户端等于把内部结构透给调用方。
         logger.warning("[%s] api get config failed: %s", PLUGIN_ID, exc)
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": "配置读取失败"}
 
 
 async def _api_providers(plugin):
@@ -204,8 +175,9 @@ async def _api_providers(plugin):
     try:
         return {"ok": True, "providers": _collect_provider_options(plugin)}
     except Exception as exc:
+        # 同上：provider 枚举失败常带上游 SDK 的内部异常原文，不回显（阶段 1.2）
         logger.warning("[%s] api providers failed: %s", PLUGIN_ID, exc)
-        return {"ok": False, "providers": [], "error": str(exc)}
+        return {"ok": False, "providers": [], "error": "Provider 列表读取失败"}
 
 
 async def _api_cleanup_image_cache(plugin):
@@ -271,7 +243,9 @@ async def _api_post_ui_theme(plugin):
         return {"ok": False, "error": "请求体必须是 JSON 对象"}
     theme = str(data.get("theme", "")).strip()
     if theme not in {"auto", "light", "dark"}:
-        return {"ok": False, "error": f"无效主题: {theme!r}"}
+        # 不回显 theme 原值（阶段 1.2）：那是客户端可控输入，回显等于把请求体
+        # 原文反射回响应。合法取值是固定枚举，直接告知即可，无需回放输入。
+        return {"ok": False, "error": "无效主题，可选值：auto / light / dark"}
     if theme != plugin._ui_theme:
         if not _save_ui_theme(plugin, theme):
             return {"ok": False, "error": "主题写入失败"}
@@ -298,10 +272,13 @@ def _string_list(data: dict[str, Any], key: str) -> list[str]:
         text = str(item).strip()
         if not text:
             continue
-        if len(text) > MAX_STRING_LIST_ITEM_LEN:
-            raise ValueError(f"{key} 条目过长: {text[:20]}…")
+        # 先查非法字符再查长度（阶段 1.2 复审）：过长文案会把 text[:20] 带进
+        # logger.warning，若其中含 \n / 控制字符即可伪造日志行。收窄顺序后，
+        # 能进日志的片段必然已通过控制字符过滤。
         if re.search(r"[\x00-\x1f\"'\\]", text):
             raise ValueError(f"{key} 条目含非法字符")
+        if len(text) > MAX_STRING_LIST_ITEM_LEN:
+            raise ValueError(f"{key} 条目过长: {text[:20]}…")
         items.append(text)
     return items
 
@@ -344,13 +321,31 @@ async def _api_post_config_locked(plugin):
         data = await _request_json()
         updates = _parse_config_updates(data)
         return await _apply_config_updates(plugin, updates)
-    except Exception as exc:
-        logger.warning("[%s] api post config failed: %s", PLUGIN_ID, exc)
+    except ValueError as exc:
+        # 校验失败的文案要回显（阶段 1.2）：它由本模块自己构造，只含字段名与
+        # 规则（"cooldown_sec 必须是整数"），不含内部路径/栈信息，且前端表单
+        # 依赖它定位出错字段。
+        logger.warning("[%s] api post config rejected: %s", PLUGIN_ID, exc)
         return {"ok": False, "error": str(exc)}
+    except Exception as exc:
+        # 内部异常一律通用文案：_apply_config_updates 会调 _save_storage，
+        # OSError 的 str() 带绝对路径（磁盘布局泄露）。详情只进服务端日志。
+        logger.warning("[%s] api post config failed: %s", PLUGIN_ID, exc)
+        return {"ok": False, "error": "配置保存失败，请查看 AstrBot 日志"}
 
 
 def _parse_config_updates(data: Any) -> dict[str, Any]:
-    """从请求体提取合法配置变更并做严格类型校验；非法字段抛 ValueError。"""
+    """从请求体提取合法配置变更并做严格类型校验；非法字段抛 ValueError。
+
+    表驱动（0.9.3 阶段 2）：此前 34 个键各写一段 ``if key in data``，119 行、
+    圈复杂度 38（全仓最差）。真正的问题不是长度而是「新增键要记得同时改这里」，
+    漏一处该键就被静默丢弃——面板上能改、保存返回成功、值不生效。
+
+    与 ``Settings.from_config`` 的关键差异（不可统一，故意分开）：这里对非法
+    输入 **抛异常**，而 from_config 静默夹取。webapi 面对的是交互式提交，用户
+    需要知道"这个值不合法"；from_config 面对的是磁盘上已存在的配置，抛异常会
+    让插件整体加载失败。
+    """
     if not isinstance(data, dict):
         raise ValueError("请求体必须是 JSON 对象")
 
@@ -359,122 +354,53 @@ def _parse_config_updates(data: Any) -> dict[str, Any]:
         raise ValueError(f"未知配置键: {', '.join(unknown)}")
 
     updates: dict[str, Any] = {}
-    if "enabled" in data:
-        updates["enabled"] = _strict_bool(data["enabled"], "enabled")
-    if "recent_message_limit" in data:
-        updates["recent_message_limit"] = _strict_int(
-            data["recent_message_limit"], "recent_message_limit"
-        )
-    if "reply_length_mode" in data:
-        mode = str(data["reply_length_mode"] or "").strip()
-        if mode not in _REPLY_LENGTH_MODES:
-            raise ValueError(f"reply_length_mode 必须是 {'/'.join(sorted(_REPLY_LENGTH_MODES))}")
-        updates["reply_length_mode"] = mode
-    if "allow_multiline_reply" in data:
-        updates["allow_multiline_reply"] = _strict_bool(
-            data["allow_multiline_reply"], "allow_multiline_reply"
-        )
-    if "max_reply_chars" in data:
-        updates["max_reply_chars"] = _strict_int(data["max_reply_chars"], "max_reply_chars")
-    if "log_reply_content" in data:
-        updates["log_reply_content"] = _strict_bool(data["log_reply_content"], "log_reply_content")
-    if "bot_aliases" in data:
-        updates["bot_aliases"] = _string_list(data, "bot_aliases")
-    if "ignored_sender_ids" in data:
-        updates["ignored_sender_ids"] = _string_list(data, "ignored_sender_ids")
-    if "check_interval_sec" in data:
-        updates["check_interval_sec"] = _strict_int(
-            data["check_interval_sec"], "check_interval_sec"
-        )
-    if "max_daily_replies_per_session" in data:
-        updates["max_daily_replies_per_session"] = _strict_int(
-            data["max_daily_replies_per_session"], "max_daily_replies_per_session"
-        )
-    if "quiet_hours" in data:
-        updates["quiet_hours"] = _string_list(data, "quiet_hours")
-    if "enabled_message_trigger" in data:
-        updates["enabled_message_trigger"] = _strict_bool(
-            data["enabled_message_trigger"], "enabled_message_trigger"
-        )
-    if "enabled_patrol_trigger" in data:
-        updates["enabled_patrol_trigger"] = _strict_bool(
-            data["enabled_patrol_trigger"], "enabled_patrol_trigger"
-        )
-    if "generation_timeout_sec" in data:
-        updates["generation_timeout_sec"] = _strict_float(
-            data["generation_timeout_sec"], "generation_timeout_sec"
-        )
-    if "decision_model_enabled" in data:
-        updates["decision_model_enabled"] = _strict_bool(
-            data["decision_model_enabled"], "decision_model_enabled"
-        )
-    if "judge_provider_id" in data:
-        updates["judge_provider_id"] = str(data["judge_provider_id"] or "").strip()
-    if "decision_prompt_template" in data:
-        prompt = str(data["decision_prompt_template"] or "").strip()
-        updates["decision_prompt_template"] = prompt or DEFAULT_DECISION_PROMPT_TEMPLATE
-    if "decision_temperature" in data:
-        updates["decision_temperature"] = _strict_float(
-            data["decision_temperature"], "decision_temperature"
-        )
-    if "decision_timeout_sec" in data:
-        updates["decision_timeout_sec"] = _strict_float(
-            data["decision_timeout_sec"], "decision_timeout_sec"
-        )
-    if "cooldown_sec" in data:
-        updates["cooldown_sec"] = _strict_int(data["cooldown_sec"], "cooldown_sec")
-    if "message_delay_sec" in data:
-        updates["message_delay_sec"] = _strict_int(
-            data["message_delay_sec"], "message_delay_sec"
-        )
-    if "min_silence_sec" in data:
-        updates["min_silence_sec"] = _strict_int(data["min_silence_sec"], "min_silence_sec")
-    if "patrol_inactive_after_sec" in data:
-        updates["patrol_inactive_after_sec"] = _strict_int(
-            data["patrol_inactive_after_sec"], "patrol_inactive_after_sec"
-        )
-    if "decision_history_min_messages" in data:
-        updates["decision_history_min_messages"] = _strict_int(
-            data["decision_history_min_messages"], "decision_history_min_messages"
-        )
-    if "proactive_inherit_tools" in data:
-        updates["proactive_inherit_tools"] = _strict_bool(
-            data["proactive_inherit_tools"], "proactive_inherit_tools"
-        )
-    if "vision_judge_enabled" in data:
-        updates["vision_judge_enabled"] = _strict_bool(
-            data["vision_judge_enabled"], "vision_judge_enabled"
-        )
-    if "vision_main_enabled" in data:
-        updates["vision_main_enabled"] = _strict_bool(
-            data["vision_main_enabled"], "vision_main_enabled"
-        )
-    if "vision_provider_id" in data:
-        updates["vision_provider_id"] = str(data["vision_provider_id"] or "").strip()
-    if "vision_judge_provider_id" in data:
-        updates["vision_judge_provider_id"] = str(data["vision_judge_provider_id"] or "").strip()
-    if "vision_skip_stickers" in data:
-        updates["vision_skip_stickers"] = _strict_bool(
-            data["vision_skip_stickers"], "vision_skip_stickers"
-        )
-    if "vision_max_images" in data:
-        updates["vision_max_images"] = _strict_int(data["vision_max_images"], "vision_max_images")
-    if "vision_image_age_sec" in data:
-        updates["vision_image_age_sec"] = _strict_int(
-            data["vision_image_age_sec"], "vision_image_age_sec"
-        )
-    if "vision_timeout_sec" in data:
-        updates["vision_timeout_sec"] = _strict_float(
-            data["vision_timeout_sec"], "vision_timeout_sec"
-        )
-    if "whitelist_sessions" in data:
-        updates["whitelist_sessions"] = _string_list(data, "whitelist_sessions")
+    for spec in CONFIG_SPECS:
+        if spec.key not in data:
+            continue
+        updates[spec.key] = _strict_value(spec, data)
     return updates
+
+
+def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
+    """按规格严格校验单个提交值；不合法抛 ValueError（含字段名，供前端定位）。
+
+    不夹取边界：越界值交给 ``Settings.from_config`` 的 as_int/as_float 夹取，
+    与磁盘加载路径共用同一套边界，避免"webapi 一套、加载一套"的第二份镜像。
+    """
+    raw = data[spec.key]
+    if spec.kind == "bool":
+        return _strict_bool(raw, spec.key)
+    if spec.kind == "int":
+        return _strict_int(raw, spec.key)
+    if spec.kind == "float":
+        return _strict_float(raw, spec.key)
+    if spec.kind == "list":
+        return _string_list(data, spec.key)
+    if spec.kind == "enum":
+        value = str(raw or "").strip()
+        if value not in spec.options:
+            raise ValueError(f"{spec.key} 必须是 {'/'.join(sorted(spec.options))}")
+        return value
+    if spec.kind == "text":
+        # 空提交 = 恢复内置默认（面板留空即复位是产品语义，见 test_config_schema
+        # 的 _INTENTIONAL_EMPTY_DEFAULT）
+        return str(raw or "").strip() or DEFAULT_DECISION_PROMPT_TEMPLATE
+    return str(raw or "").strip()
 
 
 # 安全敏感配置键：变更记 INFO 审计日志。webapi 无独立鉴权，
 # 访问控制依赖宿主 Dashboard；留痕便于事后追溯。
-_AUDITED_CONFIG_KEYS = ("enabled", "proactive_inherit_tools", "whitelist_sessions")
+#
+# 由规格表的 audited 标记派生（阶段 2）：此前是手工名单，与
+# `_parse_config_updates` 分处两地，漏一处审计就静默失效——注释里那两条
+# 「新增键的前提」正是在手工维护这个约束。现在两者同源于 CONFIG_SPECS，
+# 前提由 tests/test_config_schema.py 的守卫强制。
+#
+# 入表理由（语义仍需人判断，故记录在此）：Provider 类键
+# （judge/vision/vision_judge）决定群聊上下文与图片发往哪个上游端点，被改指向
+# 攻击者 provider 即为持续数据外泄；vision_*_enabled 是图片外发总开关；
+# ignored_sender_ids 能静默屏蔽特定用户（含管理员），是可滥用的隐蔽开关。
+_AUDITED_CONFIG_KEYS = tuple(spec.key for spec in CONFIG_SPECS if spec.audited)
 
 
 def _snapshot_plugin_state(plugin) -> dict[str, Any]:
@@ -503,12 +429,21 @@ async def _restore_plugin_state(plugin, snapshot: dict[str, Any]) -> None:
     # 引用，整体替换会让它们读到过期配置（0.9.0 轴 A）。
     plugin.settings.apply(snapshot["settings"])
     plugin.runtime_enabled = snapshot["runtime_enabled"]
-    plugin._last_events = snapshot["last_events"]
-    plugin._last_event_at = snapshot["last_event_at"]
-    plugin._recent_image_events = snapshot["recent_image_events"]
-    plugin._whitelist_runtime_umos = snapshot["whitelist_runtime_umos"]
+    # 容器也必须原地恢复（B1）：scheduler/coordinator/whitelist 构造时
+    # 捕获的是这些 dict 对象本身的引用（main.py 装配段），属性重绑定会让
+    # 它们继续写孤儿容器——回滚后 main 从新 dict 读、协作对象写旧 dict，
+    # 该会话主动回复静默停止直到重启。clear+update 保持容器身份不变。
+    plugin._last_events.clear()
+    plugin._last_events.update(snapshot["last_events"])
+    plugin._last_event_at.clear()
+    plugin._last_event_at.update(snapshot["last_event_at"])
+    plugin._recent_image_events.clear()
+    plugin._recent_image_events.update(snapshot["recent_image_events"])
+    plugin._whitelist_runtime_umos.clear()
+    plugin._whitelist_runtime_umos.update(snapshot["whitelist_runtime_umos"])
     plugin._gate.restore(snapshot["gate"])
-    plugin.sessions = snapshot["sessions"]
+    plugin.sessions.clear()
+    plugin.sessions.update(snapshot["sessions"])
     # 回滚后重新调度被白名单变更取消的延迟检查（已取消的任务对象
     # 不可复用，只能按默认 message_delay 语义重建）。
     for umo in snapshot["delay_umos"]:
@@ -723,17 +658,12 @@ class UnifiedManagerApi:
         }
 
     def _self_reply_summary(self) -> dict[str, Any]:
-        settings = self.owner.settings
-        # 0.9.2 起只返回正式键（cooldown_seconds/idle_trigger_seconds/
-        # min_context_messages 兼容别名已移除）；随包前端仅消费 whitelist_count。
+        """概览页摘要：只含前端 ``loadOverview`` 消费的键（形状守卫见 test_webapi_fixes）。
+
+        配置值一律不在此镜像——``GET /config`` 与 ``/status`` 已是权威来源。
+        ``available`` 不是配置值，是端点可用性契约标记。
+        """
         return {
             "available": True,
-            "enabled": bool(self.owner.runtime_enabled),
-            "decision_model_enabled": settings.decision_model_enabled,
-            "whitelist_count": len(settings.whitelist),
-            "message_delay_sec": settings.message_delay_sec,
-            "min_silence_sec": settings.min_silence_sec,
-            "cooldown_sec": settings.cooldown_sec,
-            "patrol_inactive_after_sec": settings.patrol_inactive_after_sec,
-            "decision_history_min_messages": settings.decision_history_min_messages,
+            "whitelist_count": len(self.owner.settings.whitelist),
         }
