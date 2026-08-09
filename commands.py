@@ -1,3 +1,12 @@
+"""指令文本的解析与回显拼装。
+
+拥有：``/selfreply`` 及其别名的文本解析、帮助与状态与列表与调试四类回显
+文本的拼装。全部是纯函数，文本进文本出。
+
+不执行指令、不判权限、不碰状态：处理器在 ``main`` 的 ``@selfreply.command``
+下，权限由宿主 ``permission_type`` 装饰器判定。文案改动是用户可见变更。
+"""
+
 from __future__ import annotations
 
 from astrbot.api.event import AstrMessageEvent

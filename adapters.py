@@ -1,3 +1,13 @@
+"""宿主公开 API 的调用封装（``AstrBotBridge``）。
+
+拥有：provider 的文本生成调用与形态兼容、provider id 解析、宿主会话历史
+读取，以及这些调用在不同宿主版本上的返回形态归一。
+
+与 ``runtime_adapter`` 的分工是本文件最容易混淆的一点：这里只走
+``astrbot.api.*`` 公开层，私有层（``astrbot.core.*``）的符号探测与契约校验
+全在 ``runtime_adapter``。两者都叫「适配」，但隔离对象不同，不可合并。
+"""
+
 from __future__ import annotations
 
 import inspect
@@ -19,7 +29,7 @@ class AstrBotBridge:
     their normal llm_tool and event-hook paths.
     """
 
-    def __init__(self, context: Context):
+    def __init__(self, context: Context) -> None:
         self.context = context
 
     @staticmethod

@@ -102,7 +102,7 @@ if httpx is not None:
     class _GlobalOnlyTransport(httpx.AsyncBaseTransport):
         """Re-check DNS immediately before connecting to reduce DNS rebinding risk."""
 
-        def __init__(self, wrapped: Any):
+        def __init__(self, wrapped: Any) -> None:
             self._wrapped = wrapped
 
         async def handle_async_request(self, request: Any) -> Any:
@@ -127,7 +127,7 @@ class ImageParser:
         timeout_sec: float = 20.0,
         source_cache_dir: Path | None = None,
         data_root: Path | None = None,
-    ):
+    ) -> None:
         self._bridge = bridge
         self._provider_id = str(provider_id or "").strip()
         self._recorder_bridge = recorder_bridge

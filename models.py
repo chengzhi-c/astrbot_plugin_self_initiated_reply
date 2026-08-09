@@ -1,3 +1,13 @@
+"""数据形状、配置规约与无依赖纯函数。
+
+拥有：会话状态与投递结果的数据类、``Settings`` / ``ConfigSpec`` 的配置读写
+规约、上限常量、时间与类型转换纯函数、跨模块回调的 ``Protocol`` 形状。
+
+不拥有任何 I/O 与业务判断：落盘属 ``storage``，宿主字段读取属 ``utils``，
+是否接话属 ``decision``。本模块是依赖图的叶子（只依赖标准库与宿主 logger），
+19 个生产模块从这里取形状，反向依赖会立刻成环。
+"""
+
 from __future__ import annotations
 
 import math

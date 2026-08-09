@@ -23,7 +23,7 @@ class ImageCache:
         'description1'
     """
 
-    def __init__(self, max_size: int = 50):
+    def __init__(self, max_size: int = 50) -> None:
         """初始化缓存
 
         Args:

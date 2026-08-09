@@ -1,3 +1,14 @@
+"""外发网关：一次发送尝试的结果分类与直发预算。
+
+拥有：把宿主 sender 的多种返回形态归一为三态（DELIVERED /
+FAILED_BEFORE_SUBMIT / UNKNOWN，加闸门与预算的 SUPPRESSED）、工具直发的
+预算扣减与文本记账。
+
+预算在调用适配器**之前**扣（``send`` 内），因为提交之后抛异常仍可能已送达，
+那种情况必须计入而非退还。三态只描述「这一次尝试的结果」，是否重试、是否
+消耗冷却与配额由 ``delivery`` 决定。
+"""
+
 from __future__ import annotations
 
 import asyncio

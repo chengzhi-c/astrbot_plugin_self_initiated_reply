@@ -1,12 +1,28 @@
+"""插件入口与装配层。
+
+拥有：唯一的 ``Star`` 子类、宿主事件接入（``on_message``）、``/selfreply``
+指令处理器、生命周期（``terminate`` 与优雅停止），以及把各协作者接线成一个
+流程的构造顺序。
+
+业务规则不在这里：是否接话属 ``decision``，正文生成属 ``generation``，发送
+状态机属 ``delivery``，定时与巡检属 ``scheduler``，会话状态属
+``session_coordinator``。本文件只回答「谁先造、谁依赖谁、事件从哪进」。
+
+模块顶部的 import 被 ``_AGENT_RUNTIME`` 分成两段（故 ruff 对本文件忽略
+E402）：宿主私有符号必须先经适配层探测并绑到模块级名字，后续模块才能拿到
+可被测试替换的那几个名字；整体上移会断掉这条测试缝。
+"""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import re
 from collections import deque
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
@@ -17,6 +33,19 @@ from .runtime_adapter import AstrBotRuntimeAdapter
 from .scheduler import SessionScheduler
 from .session_coordinator import SessionCoordinator
 from .session_gate import SessionGate
+
+if TYPE_CHECKING:
+    from astrbot.api.event import MessageEventResult
+
+    # 指令处理器的产出类型：每个 @selfreply.command 处理器都是 async generator，
+    # 逐条 yield event.plain_result(...)。宿主侧契约是
+    # AsyncGenerator[MessageEventResult | str | None]，本插件只 yield 前者。
+    #
+    # 只在 TYPE_CHECKING 下可见（纯文档用途，不引入加载期宿主依赖）。别改成运行时
+    # import：宿主注册指令时只读 signature.parameters，从不读 return_annotation，
+    # 也不用 get_type_hints/eval_str，故运行时无需此名字；而运行时 import 会让本文件
+    # 多一条宿主符号硬依赖，且测试替身未导出该符号。
+    CommandReply = AsyncGenerator[MessageEventResult, None]
 
 _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
 
@@ -97,7 +126,9 @@ from .whitelist import WhitelistManager
     PLUGIN_VERSION,
 )
 class SelfInitiatedReplyPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
+    def __init__(
+        self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None
+    ) -> None:
         """装配插件：校验宿主 API → 解析路径 → 载入配置与状态 → 组装协作对象。
 
         顺序有硬依赖：``_validate_agent_api`` 必须最先（宿主不兼容时应在加载期
@@ -1170,21 +1201,21 @@ class SelfInitiatedReplyPlugin(Star):
     # 顺序反了插件加载即报 AttributeError（0.7.15 曾因此线上安装失败）。
     @filter.command_group("selfreply")
     @permission_type(PermissionType.ADMIN)
-    async def selfreply(self, event: AstrMessageEvent):
+    async def selfreply(self, event: AstrMessageEvent) -> CommandReply:
         """主动回复：查看指令说明。"""
         self._set_command_handled(event)
         yield event.plain_result(help_text())
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("help", alias={"h"})
-    async def selfreply_help(self, event: AstrMessageEvent):
+    async def selfreply_help(self, event: AstrMessageEvent) -> CommandReply:
         """帮助：显示主动回复指令说明。"""
         self._set_command_handled(event)
         yield event.plain_result(help_text())
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("status", alias={"stat"})
-    async def selfreply_status(self, event: AstrMessageEvent):
+    async def selfreply_status(self, event: AstrMessageEvent) -> CommandReply:
         """状态：查看运行状态、判断模型和白名单信息。"""
         self._set_command_handled(event)
         umo = event_umo(event)
@@ -1193,49 +1224,49 @@ class SelfInitiatedReplyPlugin(Star):
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("list", alias={"ls", "whitelist"})
-    async def selfreply_list(self, event: AstrMessageEvent):
+    async def selfreply_list(self, event: AstrMessageEvent) -> CommandReply:
         """列表：查看主动回复白名单。"""
         self._set_command_handled(event)
         yield event.plain_result(list_text(self.settings))
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("add")
-    async def selfreply_add(self, event: AstrMessageEvent):
+    async def selfreply_add(self, event: AstrMessageEvent) -> CommandReply:
         """加入：将当前会话加入主动回复白名单。"""
         self._set_command_handled(event)
         yield event.plain_result(await self._command_text(event, "add"))
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("remove", alias={"rm", "del", "delete"})
-    async def selfreply_remove(self, event: AstrMessageEvent):
+    async def selfreply_remove(self, event: AstrMessageEvent) -> CommandReply:
         """移除：将当前会话移出主动回复白名单。"""
         self._set_command_handled(event)
         yield event.plain_result(await self._command_text(event, "remove"))
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("check", alias={"test"})
-    async def selfreply_check(self, event: AstrMessageEvent):
+    async def selfreply_check(self, event: AstrMessageEvent) -> CommandReply:
         """检查：手动测试一次主动回复，可附带测试内容。"""
         self._set_command_handled(event)
         yield event.plain_result(await self._command_text(event, "check"))
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("on", alias={"enable", "start"})
-    async def selfreply_on(self, event: AstrMessageEvent):
+    async def selfreply_on(self, event: AstrMessageEvent) -> CommandReply:
         """开启：临时启用主动回复运行。"""
         self._set_command_handled(event)
         yield event.plain_result(await self._command_text(event, "on"))
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("off", alias={"disable", "pause", "stop"})
-    async def selfreply_off(self, event: AstrMessageEvent):
+    async def selfreply_off(self, event: AstrMessageEvent) -> CommandReply:
         """关闭：临时暂停主动回复运行。"""
         self._set_command_handled(event)
         yield event.plain_result(await self._command_text(event, "off"))
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("debug", alias={"diag", "diagnose"})
-    async def selfreply_debug(self, event: AstrMessageEvent):
+    async def selfreply_debug(self, event: AstrMessageEvent) -> CommandReply:
         """调试：查看当前会话、发送者和触发识别信息。"""
         self._set_command_handled(event)
         yield event.plain_result(

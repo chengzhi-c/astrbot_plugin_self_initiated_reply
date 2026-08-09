@@ -19,7 +19,7 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 class MessageRecorderBridge:
     """Resolve platform media references to local files when recorder is available."""
 
-    def __init__(self, context: Any | None = None):
+    def __init__(self, context: Any | None = None) -> None:
         self._context = context
         self._api: Any = None
         self._checked = False

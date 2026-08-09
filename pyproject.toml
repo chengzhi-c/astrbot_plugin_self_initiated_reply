@@ -98,6 +98,11 @@ fail_under = 89
 # 0.9.0 D2：全源码显式入清单（原 6 模块仅经 main.py 传递检查）。
 explicit_package_bases = true
 ignore_missing_imports = true
+# 无注解函数的函数体默认被 mypy 跳过。打开后这些函数体也进检查，作用面是
+# 「参数与返回全无注解」的函数（实测当前 8 处，全在 webapi.py 的 HTTP 处理器）。
+# 实测零新增错误。注意 ignore_missing_imports 让 astrbot.* 全部解析为 Any，
+# 故涉及宿主类型的注解只有文档价值，不产生类型检查力。
+check_untyped_defs = true
 files = [
   "main.py",
   "models.py",

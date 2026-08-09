@@ -1,3 +1,15 @@
+"""宿主私有层（``astrbot.core.*``）的隔离墙。
+
+拥有：``_HOST_CONTRACT`` 单源符号表、加载期一次性探测与契约校验、以及一组
+窄方法——事件结果、provider 请求、事件类型、钩子、路径全经这里出去。
+
+隔离的价值在于宿主升级时的失败位置：符号缺失在加载期即报（core 组缺失拒绝
+加载，probe 组缺失降级为 None），而不是在某次发送的半路。增删宿主符号只改
+``_HOST_CONTRACT``，``compat_check`` 与 ``host_contract()`` 都从它取清单。
+
+不含业务逻辑，也不管公开层——``astrbot.api.*`` 由各模块直接 import。
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -131,7 +143,7 @@ class AstrBotRuntimeAdapter:
         }
     )
 
-    def __init__(self, capabilities: AgentRuntimeCapabilities):
+    def __init__(self, capabilities: AgentRuntimeCapabilities) -> None:
         self.capabilities = capabilities
         # 契约结论缓存：capabilities 是 frozen dataclass，探测结果在实例生命周期内
         # 不会变，而 10 个 property 每次访问都会调 validate()（inspect.signature +
