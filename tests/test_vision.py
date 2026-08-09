@@ -1288,16 +1288,21 @@ def _locked_host_version() -> str:
 
 
 def _find_host_platform_sources() -> Path | None:
-    """定位**锁定版**宿主源码副本的 platform/sources 目录，找不到返回 None。
+    """定位**锁定版**宿主源码的 platform/sources 目录，找不到返回 None。
 
-    只接受与 metadata.yaml 锁定版精确一致的目录名。曾经用
-    ``sorted(glob("astrbot-*"), reverse=True)`` 取"最新"，那是字典序：
-    ``astrbot-4.5.8`` 会排在 ``astrbot-4.23.3`` 前面（"5" > "2"），于是扫了
-    半年前的旧版源码，得出的漂移结论与锁定版无关。版本必须精确锚定。
+    三级候选，全部要求版本等于 metadata.yaml 的锁定版：
 
-    注意盘符写法：必须是 ``E:/astrbot-compat/srcs``。Git Bash 里的 ``/e/...``
-    是 shell 侧的挂载映射，Python 的 Path 不认，会静默 ``is_dir()==False``
-    从而让本守卫恒 skip（"探针无效时通过不算结论" 的同类陷阱）。
+    1. ``SELFREPLY_HOST_SRC`` 环境变量指定的源码树（人工指定，不校验版本）
+    2. **pip 安装的 astrbot 包**——wheel 自带完整适配器源码。CI 的 compat 作业
+       会 ``pip install astrbot==<锁定版>``，走这条本守卫才能在 CI 里真正生效
+    3. 本机兼容矩阵解包目录 ``<盘>:/astrbot-compat/srcs/astrbot-<ver>/``
+
+    两个踩过的坑：版本必须精确锚定，曾用
+    ``sorted(glob("astrbot-*"), reverse=True)`` 取"最新"，那是字典序，
+    ``astrbot-4.5.8`` 排在 ``astrbot-4.23.3`` 前面（"5" > "2"），于是扫了旧版
+    源码，得出的漂移结论与锁定版无关。盘符必须写 ``E:/astrbot-compat/srcs``，
+    Git Bash 的 ``/e/...`` 只是 shell 侧挂载映射，Python 的 Path 不认，会静默
+    ``is_dir()==False`` 让本守卫恒 skip（"探针无效时通过不算结论" 的同类陷阱）。
     """
     env = os.environ.get("SELFREPLY_HOST_SRC", "").strip()
     if env:
@@ -1312,6 +1317,25 @@ def _find_host_platform_sources() -> Path | None:
     version = _locked_host_version()
     if not version:
         return None
+
+    # 首选：真实安装的 astrbot 包（pip 装的 wheel 自带完整适配器源码）。
+    # CI 的 compat 作业会 `pip install astrbot==<锁定版>`，走这条即可让本守卫
+    # 在 CI 里真正生效，而不是恒 skip。仍校验版本等于锁定版：装的是 latest
+    # 时扫出的漂移与锁定版无关，交给 compat 作业的 latest 预警去管。
+    try:
+        import importlib.metadata as _md
+
+        import astrbot as _astrbot
+
+        installed = _md.version("astrbot")
+        if installed == version and _astrbot.__file__:
+            sources = Path(_astrbot.__file__).parent / "core" / "platform" / "sources"
+            if sources.is_dir():
+                return sources
+    except Exception:
+        # 宿主未安装 / 元数据缺失 / 布局变动：继续走本地源码副本候选。
+        pass
+
     bases = [Path(f"{drive}:/astrbot-compat/srcs") for drive in ("E", "D", "C")] + [
         ROOT.parent / "astrbot-compat" / "srcs",
         ROOT.parent.parent / "astrbot-compat" / "srcs",

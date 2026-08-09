@@ -106,3 +106,10 @@ jobs:
         # 锁定版是硬门禁；latest 是上游漂移预警，不阻塞
         run: python scripts/compat_check.py
         continue-on-error: ${{ matrix.astrbot == 'latest' }}
+      - name: Host platform adapter drift guard
+        # 平台适配器落盘位置漂移预警：本守卫需要**真实宿主源码**，而 test 作业
+        # 不装 astrbot（那里它恒 skip）。只有这里装了锁定版才真正生效：
+        # 适配器一旦改用 <data> 之外的系统临时目录，插件 allowlist 会静默拒掉
+        # 真实图片（只在真机暴露）。latest 同 compat 语义，只告警不阻塞。
+        run: pytest tests/test_vision.py -k host_platform_adapters -p no:cacheprovider --no-cov -q -rs
+        continue-on-error: ${{ matrix.astrbot == 'latest' }}
