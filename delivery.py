@@ -186,6 +186,9 @@ class DeliveryRunner:
         self, umo: str, reply: str, *, expected_generation: int | None = None
     ) -> SendOutcome:
         """Send one proactive reply without retrying an unknown submission."""
+        # 复核点 1/4（真实窗口）：expected_generation 是生成前 advance 拿到的 token，
+        # 到此已隔整轮 LLM 生成（多个 await），代次极可能已被新消息推进。此处尚未
+        # set_result，无需 _clear_result。
         if not self._gate.is_current(umo, expected_generation):
             logger.info("[%s] suppress stale reply before hooks session=%s", PLUGIN_ID, umo)
             return SendOutcome(SendStatus.SUPPRESSED, "generation changed before hooks")
@@ -203,6 +206,8 @@ class DeliveryRunner:
                 await self._call_hook(
                     last_event, self._runtime().event_type.OnDecoratingResultEvent
                 )
+                # 复核点 2/4（真实窗口）：装饰钩子是 await，期间其他任务可运行、新消息
+                # 可推进代次。四处中只有此处与复核点 1 存在真实竞态窗口。
                 if not self._gate.is_current(umo, expected_generation):
                     self._clear_result(last_event)
                     logger.info(
@@ -217,6 +222,11 @@ class DeliveryRunner:
                     return SendOutcome(
                         SendStatus.FAILED_BEFORE_SUBMIT, "decorating hook produced no result"
                     )
+                # 复核点 3/4（结构防线）：与复核点 2 之间零 await（get_result 同步），
+                # 当前代码下代次不可能在此变化，覆盖靠 test_delivery_blindspots 的
+                # _FlipGate(true_times=2) 数调用次数翻转。保留理由是结构性：
+                # test_storage_and_umo 锁「钩子后、send 前必须有复核」，此处紧贴
+                # outbound.send；上方一旦插入任何 await，这道防线立即变实。
                 if not self._gate.is_current(umo, expected_generation):
                     self._clear_result(last_event)
                     logger.info(
@@ -282,6 +292,9 @@ class DeliveryRunner:
                     return SendOutcome(SendStatus.UNKNOWN, str(exc))
                 return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, str(exc))
 
+        # 复核点 4/4（结构防线）：仅 last_event 为假时可达（上方 if 块各分支全终结），
+        # 与复核点 1 之间零 await，性质同复核点 3，为日后此路径插入异步查询留拦截位。
+        # 此路径未 set_result，无需 _clear_result。
         if not self._gate.is_current(umo, expected_generation):
             logger.info("[%s] suppress stale reply before context send session=%s", PLUGIN_ID, umo)
             return SendOutcome(SendStatus.SUPPRESSED, "generation changed before context send")
