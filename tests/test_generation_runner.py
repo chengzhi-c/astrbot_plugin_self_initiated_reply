@@ -288,6 +288,27 @@ async def test_install_boundary_raises_without_plugins_name(tmp_path: Path) -> N
         assert "插件工具边界" in str(exc)
 
 
+async def test_install_boundary_raises_when_assignment_fails(tmp_path: Path) -> None:
+    """plugins_name 只读时边界安装抛出（赋值失败）。
+
+    部分宿主版本 plugins_name 是只读属性或 __slots__ 成员（restore_agent_tool_boundary
+    注释明写此窗口）。本条验 install 路径：赋值抛异常 → 翻译成 RuntimeError 上抛。
+    """
+    _, _, runner, _, _, _ = _make_runner(tmp_path)
+
+    class _ReadOnly:
+        @property
+        def plugins_name(self) -> list[str]:
+            return ["a", "b"]
+
+    event = _ReadOnly()
+    try:
+        runner.install_agent_tool_boundary(event, False)
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "插件工具边界" in str(exc)
+
+
 # ============================================================================
 # 直发预算与代次闸门（验收项 2）
 # ============================================================================

@@ -947,6 +947,14 @@ def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplo
             "校验文案被一并通用化，前端无法定位出错字段"
         )
 
+        # 3) enum 校验失败同样回显字段名（options 不匹配路径）
+        web.request.payload = {"reply_length_mode": "verbose"}
+        rejected_enum = await plugin._api_post_config()
+        assert rejected_enum.get("ok") is False
+        assert "reply_length_mode" in str(rejected_enum.get("error", "")), (
+            "enum 校验文案被一并通用化，前端无法定位出错字段"
+        )
+
         # 3) 主题接口不得反射客户端原值
         web.request.payload = {"theme": "<script>alert(1)</script>"}
         theme_result = await plugin._api_post_ui_theme()
