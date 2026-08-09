@@ -231,6 +231,13 @@ class DeliveryRunner:
                     len(getattr(result, "chain", []) or []),
                 )
                 outbound = OutboundGateway(last_event.send)
+                # 悲观默认：send 调用一旦开始，消息就可能已提交。gateway 内部虽把
+                # adapter 异常转成 UNKNOWN，但其 except 块自身仍可能抛（异常对象的
+                # ``__str__`` 坏掉时 ``str(exc)`` 二次抛），此时异常逃出 gateway 而
+                # adapter 早已调用过——下方 except 必须仍归 UNKNOWN，归
+                # FAILED_BEFORE_SUBMIT 会不消耗冷却而重发。send 正常返回后再用
+                # submitted 精确化（gateway 明确说未提交时才降为提交前失败）。
+                send_started = True
                 send_result = await outbound.send(result)
                 send_started = send_result.submitted
                 if not send_result.submitted:
@@ -278,6 +285,16 @@ class DeliveryRunner:
         if not self._gate.is_current(umo, expected_generation):
             logger.info("[%s] suppress stale reply before context send session=%s", PLUGIN_ID, umo)
             return SendOutcome(SendStatus.SUPPRESSED, "generation changed before context send")
+        # send_started 取自 ``OutboundResult.submitted``（DELIVERED/UNKNOWN 为真），
+        # 与事件路径上方那处同源：是否已提交由 gateway 的分类结果决定，不靠此处
+        # 枚举失败场景。下方 ``except`` 必须条件式归类，两个方向的代价不对称——
+        # 提交前记 UNKNOWN 会经 record_proactive_state(confirmed=False) 白吃冷却
+        # 与日配额；已提交记 FAILED_BEFORE_SUBMIT 会不消耗冷却而重发，制造重复
+        # 消息。三条测试各钉一侧：提交前失败、提交后失败、异常逃出 gateway。
+        # 注意 ``CancelledError`` 不经此分类（下方单独 raise）：取消发生在 adapter
+        # 调用期间时消息可能已提交，而调用方 deliver_reply 走不到状态记录，冷却
+        # 与观察窗口都不推进。属既有语义缺口，非本处引入。
+        send_started = False
         try:
             outbound = OutboundGateway(
                 lambda message: self._context_send(umo, message),
@@ -286,7 +303,11 @@ class DeliveryRunner:
                 # 提交，记 DELIVERED 才能写入 assistant 历史供后续决策参考。
                 none_status=SendStatus.DELIVERED,
             )
-            send_result = await outbound.send(MessageChain().message(reply))
+            chain = MessageChain().message(reply)
+            # 悲观默认，理由见事件路径同处注释。
+            send_started = True
+            send_result = await outbound.send(chain)
+            send_started = send_result.submitted
             if send_result.outcome.status is SendStatus.UNKNOWN:
                 logger.warning(
                     "[%s] context send result unknown session=%s detail=%s",
@@ -308,7 +329,9 @@ class DeliveryRunner:
             raise
         except Exception as exc:
             logger.warning("[%s] send reply failed session=%s error=%s", PLUGIN_ID, umo, exc)
-            return SendOutcome(SendStatus.UNKNOWN, str(exc))
+            if send_started:
+                return SendOutcome(SendStatus.UNKNOWN, str(exc))
+            return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, str(exc))
 
     async def _record_direct_sends(
         self,

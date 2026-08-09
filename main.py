@@ -234,9 +234,6 @@ class SelfInitiatedReplyPlugin(Star):
             last_events=self._last_events,
         )
 
-        # 投递职责（门卫/钩子/发送分类/UNKNOWN 语义/状态记录）迁入
-        # DeliveryRunner（ticket 05）。钩子与 context 发送经 lambda 运行时
-        # 查找，测试替换 main.call_event_hook 或插件 context 后仍指向最新实现。
         # 会话协作（事件/时间/图片缓存 + 失效级联单点 + 阶段投影）迁入
         # SessionCoordinator（ticket 07）。状态容器经引用共享，测试直连
         # _last_events 等属性保持原字段名访问。
@@ -249,6 +246,12 @@ class SelfInitiatedReplyPlugin(Star):
             notify_silence=lambda umo: self._scheduler.notify_activity(umo),
         )
 
+        # 投递职责（门卫/钩子/发送分类/UNKNOWN 语义/状态记录）迁入
+        # DeliveryRunner（ticket 05）。钩子与 context 发送经 lambda 运行时
+        # 查找，测试替换 main.call_event_hook 或插件 context 后仍指向最新实现。
+        # local_gate 是全部注入回调里唯一的绑定方法，构造期即解析：
+        # DecisionMaker 必须早于 GenerationRunner 与 DeliveryRunner 构造，
+        # 否则重排顺序会静默 AttributeError。
         self._delivery = DeliveryRunner(
             settings=self.settings,
             gate=self._gate,

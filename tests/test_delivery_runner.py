@@ -478,3 +478,145 @@ async def test_send_reply_context_fallback_when_no_event(tmp_path: Path) -> None
 
     assert outcome.status is models.SendStatus.DELIVERED
     assert [umo for umo, _msg in context_send.calls] == ["s1"]
+
+
+async def test_context_send_pre_submit_failure_is_not_unknown(tmp_path: Path, monkeypatch) -> None:
+    """context 路径提交前失败必须记 FAILED_BEFORE_SUBMIT，不得白吃冷却与日配额。
+
+    ``MessageChain`` 构造失败发生在 ``outbound.send`` 调用之前，adapter 从未
+    被触及。返回 UNKNOWN 会经 ``record_proactive_state(confirmed=False)`` 消耗
+    冷却与日配额，等于为一条从未发出的回复付费。
+
+    本条只钉「提交前误记 UNKNOWN」这一侧；反向（已提交误降为提交前失败）
+    由下两条守。三条合起来才能拦住全部无条件化改法。
+    """
+    delivery, models, runner, _ = _make_runner(tmp_path)
+
+    class BoomChain:
+        def __init__(self) -> None:
+            raise RuntimeError("chain construction failed")
+
+    monkeypatch.setattr(delivery, "MessageChain", BoomChain)
+
+    outcome = await runner.send_reply("s1", "你好", expected_generation=1)
+
+    assert outcome.status is models.SendStatus.FAILED_BEFORE_SUBMIT, (
+        f"提交前失败被误判为 {outcome.status!r}，会白吃冷却与日配额"
+    )
+
+
+async def test_context_send_post_submit_failure_stays_unknown(tmp_path: Path, monkeypatch) -> None:
+    """护栏：context 路径提交后失败必须仍记 UNKNOWN，不得降级为提交前失败。
+
+    这条守的是上一条修复的反向风险。``_context_send`` 抛异常时 gateway 已调过
+    adapter，结果不可知（可能已达），此时若日志分支再抛，外层 except 必须保持
+    UNKNOWN —— 降级成 FAILED_BEFORE_SUBMIT 会让插件不消耗冷却而重发，制造重复
+    消息。故修复必须是条件式的，不能把末尾 except 整体改成提交前失败。
+    """
+    delivery, models, runner, _ = _make_runner(tmp_path)
+
+    async def boom_context_send(umo: str, message: object) -> None:
+        raise RuntimeError("adapter died mid-send")
+
+    runner._context_send = boom_context_send
+
+    # 只让提交后那次日志抛（UNKNOWN 分支）；外层 except 自己的日志必须能正常
+    # 执行，否则异常直接逃出 send_reply，测试观察不到返回值。
+    #
+    # 按日志模板锚定，而不是按「第一次调用」计数：计数法把断言钉在调用顺序上，
+    # 将来有人在 send 之前新增一条 warning，就会打错位置，让这条测试静默变成
+    # 「测的不是目标路径」的虚假绿灯。下方 fired 断言进一步保证锚点脱落时报红
+    # 而不是无声通过。
+    unknown_branch_marker = "context send result unknown"
+    fired = {"n": 0}
+    real_warning = delivery.logger.warning
+
+    def boom_on_unknown_branch(*args: object, **kwargs: object) -> None:
+        if args and isinstance(args[0], str) and unknown_branch_marker in args[0]:
+            fired["n"] += 1
+            raise RuntimeError("logger exploded after submit")
+        real_warning(*args, **kwargs)
+
+    monkeypatch.setattr(delivery.logger, "warning", boom_on_unknown_branch)
+
+    outcome = await runner.send_reply("s1", "你好", expected_generation=1)
+
+    assert fired["n"] == 1, (
+        "UNKNOWN 分支的日志未被触发：本测试没有走到提交后失败那条路径，"
+        f"断言无意义（日志模板 {unknown_branch_marker!r} 可能已改名）"
+    )
+    assert outcome.status is models.SendStatus.UNKNOWN, (
+        f"提交后失败被降级为 {outcome.status!r}，会导致不消耗冷却而重发"
+    )
+
+
+async def test_send_escaping_from_gateway_after_adapter_call_stays_unknown(
+    tmp_path: Path,
+) -> None:
+    """护栏：异常逃出 ``OutboundGateway.send`` 时必须仍记 UNKNOWN。
+
+    ``outbound.py`` 的 ``except Exception`` 用 ``str(exc)`` 构造 ``SendOutcome``。
+    若 adapter 抛出的异常对象自身 ``__str__`` 坏掉，这次 ``str()`` 会在 except
+    块内二次抛出，不再被同一 try 捕获，于是异常**逃出 gateway**。
+
+    这条通道的真实状态是「adapter 已调用过，可能已提交」，必须保守记 UNKNOWN。
+    若按「gateway 之后才算已提交」的直觉去写标志位，这里会翻转成
+    FAILED_BEFORE_SUBMIT —— 不消耗冷却 → 后续触发重发 → 重复消息。
+
+    故标志位必须在 ``await outbound.send`` **之前**置位：语义是「adapter 调用
+    即将开始」，而非「gateway 已返回」。
+    """
+    _, models, runner, _ = _make_runner(tmp_path)
+
+    class UnstringableError(RuntimeError):
+        def __str__(self) -> str:
+            raise ValueError("__str__ is broken")
+
+    async def boom_context_send(umo: str, message: object) -> None:
+        raise UnstringableError
+
+    runner._context_send = boom_context_send
+
+    outcome = await runner.send_reply("s1", "你好", expected_generation=1)
+
+    # 路径锚定：detail 必须来自坏 __str__ 抛出的那个 ValueError，证明异常确实是
+    # 从 gateway 内部逃出的，而不是走了别的失败通道后碰巧也返回 UNKNOWN。
+    assert outcome.detail == "__str__ is broken", (
+        f"detail={outcome.detail!r}，未走「异常逃出 gateway」通道，断言无意义"
+    )
+    assert outcome.status is models.SendStatus.UNKNOWN, (
+        f"异常逃出 gateway 后被判为 {outcome.status!r}；adapter 已调用过，"
+        "判成提交前失败会不消耗冷却而重发"
+    )
+
+
+async def test_event_send_escaping_from_gateway_stays_unknown(tmp_path: Path) -> None:
+    """护栏：事件路径的异常逃出 gateway 时必须仍记 UNKNOWN。
+
+    与上一条同源缺陷，只是发生在事件路径（``last_event.send``）。两条路径各自
+    有独立的标志位与 ``except``，改一处不会连带另一处——本条测试专门守事件侧，
+    否则事件路径的悲观默认会成为无回归网的裸改动（实测：删掉它，全量测试仍全绿）。
+    """
+    _, models, runner, last_events = _make_runner(tmp_path)
+
+    class UnstringableError(RuntimeError):
+        def __str__(self) -> str:
+            raise ValueError("__str__ is broken")
+
+    async def boom_send(_message: object) -> None:
+        raise UnstringableError
+
+    event = FakeEvent()
+    event.send = boom_send
+    last_events["s1"] = event
+
+    outcome = await runner.send_reply("s1", "你好", expected_generation=1)
+
+    # 路径锚定，同 context 侧那条：detail 必须来自坏 __str__ 抛出的 ValueError。
+    assert outcome.detail == "__str__ is broken", (
+        f"detail={outcome.detail!r}，未走「异常逃出 gateway」通道，断言无意义"
+    )
+    assert outcome.status is models.SendStatus.UNKNOWN, (
+        f"事件路径异常逃出 gateway 后被判为 {outcome.status!r}；adapter 已调用过，"
+        "判成提交前失败会不消耗冷却而重发"
+    )
