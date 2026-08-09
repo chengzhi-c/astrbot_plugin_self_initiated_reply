@@ -368,8 +368,11 @@ class GenerationRunner:
         - conversation 结构异常（缺 ``history`` 属性等）：warning 级但换文案，别贴
           「损坏」标签误导排障。
 
-        本方法永不向外抛：调用方 ``generate`` 的外层 ``except`` 会把整轮生成判失败，
-        而历史读不到不该让这一轮回复消失。
+        本方法把 ``Exception`` 全部降级消化——历史读不到不该让这一轮回复消失，而调用方
+        ``generate`` 的外层 ``except`` 会把抛出来的东西判为整轮失败。两类仍会穿透：
+        ``BaseException`` 子类（``CancelledError`` / ``KeyboardInterrupt``）是刻意的，
+        取消必须能中断这一轮；``logger`` 自身抛异常则会被外层兜住并判整轮失败，属已知
+        窄缺口，与提取前的行为一致。
         """
         try:
             conversation = await self._runtime().load_session_conversation(
@@ -399,8 +402,22 @@ class GenerationRunner:
         """跑完宿主 Agent 的产出流并丢弃中间消息。
 
         主动回复只取最终 LLM 响应（``get_final_llm_resp``），中间步骤既不展示工具
-        调用也不流式外发，所以这里只需把生成器抽干。参数全部关闭是刻意的：任何一项
-        打开都会让宿主直接向会话推送内容，绕过本插件的预算与代次闸门。
+        调用也不流式外发，所以这里只需把生成器抽干。
+
+        每个参数的取值都是刻意的，但失效机制分两类：
+
+        - ``show_tool_use=False``：宿主在它为真时会 ``await event.send(工具状态消息)``。
+          那条消息的 type 是 ``"tool_call"``，不匹配 ``tracked_send`` 只认的
+          ``"tool_direct_result"``，于是被透传给原始 ``send``——绕过预算与代次闸门直接
+          进会话。``show_tool_call_result`` 单独打开无此效果：宿主要求它与
+          ``show_tool_use`` 同时为真才发。
+        - ``stream_to_general=False`` 配 ``buffer_intermediate_messages=True``：这对组合
+          让宿主 ``_should_buffer_llm_result`` 成立，中间 ``llm_result`` 缓冲到结束才合并
+          成一条。任一项反向改动都会让每个中间步骤各自 ``set_result``，中间产物经宿主管线
+          发出——本方法只丢弃 ``yield`` 出来的 chain，拦不住已经落在事件结果上的内容。
+
+        ``show_reasoning`` 只在流式分支生效，主动回复是非流式，改它无影响；``max_step``
+        是步数上限，不是开关。
         """
         async for _ in self._runtime().run(
             agent_runner,
