@@ -80,15 +80,11 @@ addopts = "--cov=. --cov-report=term-missing"
 omit = ["tests/*", "scripts/*"]
 
 [tool.coverage.report]
-# 门槛 70%：生产口径（omit tests/）实测 75.43%（2026-08-04 批次3 补盲后），按"实测-5%"留缓冲。
-# 门槛调整以生产口径覆盖率工件实测为准，杜绝拍脑袋定数。
-# 历史：0.8.3 及之前 --cov=. 把 tests/ 计入分母，81.62% 为假绿灯，本次已修正口径；
-# 65 为 0.8.3 起沿用值（非 -5% 公式产物；公式仅用于门槛调整时）：ffb733a 首次引入
-# fail_under=65（当时含 tests 口径实测 77.4%），6c3b97f 修正口径后沿用；
-# adapters 37%→97%、recorder_bridge 38%→95% 补盲后实测 75.43%，按 -5% 上调至 70；
-# 复审后实测 75.79%；0.9.0 D1 三盲区补盲（scheduler 76→98 / delivery 74→94 /
-# storage 72→95）后实测 94.47%，按 -5% 上调至 89。
-# 模块级门槛（main.py / image/parser.py）见 scripts/coverage_gates.py，
+# 门槛 89%：生产口径（omit tests/）实测 94.47% 后按“实测 − 5%”留缓冲定档
+# （0.9.0 D1 三盲区补盲：scheduler 76→98 / delivery 74→94 / storage 72→95）。
+# 门槛调整一律以生产口径覆盖率工件实测为准，杜绝拍脑袋定数；口径本身为何
+# 排除 tests/ 见上方 [tool.coverage.run] 的说明。
+# 模块级门槛（main.py / image/parser.py 等）见 scripts/coverage_gates.py，
 # 由 CI test 作业在 pytest 之后强制；阈值 = 实测-5% 缓冲，禁止下调。
 fail_under = 89
 

@@ -146,8 +146,9 @@ class AstrBotRuntimeAdapter:
     def __init__(self, capabilities: AgentRuntimeCapabilities) -> None:
         self.capabilities = capabilities
         # 契约结论缓存：capabilities 是 frozen dataclass，探测结果在实例生命周期内
-        # 不会变，而 10 个 property 每次访问都会调 validate()（inspect.signature +
-        # 2 次宿主类实例化）。缓存只存 problems 列表，raise 逻辑留在缓存之外，
+        # 不会变，而 10 个入口（6 个 property + new_event_result / new_provider_request /
+        # call_event_hook / new_build_config）每次访问都会调 validate()（inspect.signature
+        # + 2 次宿主类实例化）。缓存只存 problems 列表，raise 逻辑留在缓存之外，
         # 因此 hard 模式每次调用仍会抛出。
         self._validated_problems: list[str] | None = None
 
