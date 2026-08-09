@@ -837,13 +837,20 @@ def test_event_extra_non_callable_getter_returns_default(tmp_path: Path) -> None
 # 下面两条补的是同一条因果链的入口。``whitelist.commit_change`` 用
 # ``except Exception`` 包住 ``_sync_whitelist()`` 与 ``_save_storage()``，捕到异常
 # 才回滚内存白名单并复活被 ``_prune`` 销毁的 SessionState。这两个方法把 writer 的
-# ``False`` 翻译成 ``OSError`` 是那个 except 唯一的触发源：改成记日志后正常返回，
-# 回滚永不发生，内存白名单与磁盘永久分叉。
+# ``False`` 翻译成 ``OSError``，是那个 except 的触发源之一，也是其中唯一「写失败却
+# 不抛」的一条：writer 自身抛出的异常本就会上冒，而返回 ``False`` 这条路一旦改成记
+# 日志后正常返回，回滚永不发生，内存白名单与磁盘永久分叉。
+#
+# 同一个 ``OSError`` 还有第二个下游消费者：``webapi.py`` 的 ``_api_post_config``
+# 用 ``except Exception`` → ``_restore_plugin_state`` 回滚 plugin 侧容器。
 #
 # 既有 8 处失败注入（test_config_hot_reload 3 / test_regressions 2 / test_security 1 /
 # test_webapi_fixes 2）全部把 ``plugin._sync_whitelist`` 或 ``plugin._save_storage``
 # 整体替换成直接抛的 boom，验的是「方法抛了之后会回滚」。真实方法体在 writer 返回
 # ``False`` 时从未执行过，翻译这一步此前零覆盖。
+#
+# 覆盖范围声明：``_save_storage`` 里同型翻译有两处，本轮只覆盖正常路径那处；取消
+# 分支的 ``raise ... from None`` 需要精确的取消时机才能进入，仍未覆盖。
 #
 # 只断言通用文案、不断言路径：``pytest.raises(OSError)`` 加文案已经把「False 翻译成
 # OSError」这条契约钉死，而文案里带绝对路径这件事由 ``test_security.py`` 从响应边界
