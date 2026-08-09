@@ -19,6 +19,8 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from .host_stubs import until, with_plugin
 from .test_main_runtime import UMO, _make_event, _PipelineTestAdapter
 
@@ -825,5 +827,60 @@ def test_event_extra_non_callable_getter_returns_default(tmp_path: Path) -> None
         event = _make_event()
         event.get_extra = None
         assert utils.event_extra(event, "key", default="d") == "d"
+
+    with_plugin(tmp_path, scenario)
+
+
+# ============================================================================
+# 双写失败上抛 —— 白名单回滚的触发线
+# ============================================================================
+# 下面两条补的是同一条因果链的入口。``whitelist.commit_change`` 用
+# ``except Exception`` 包住 ``_sync_whitelist()`` 与 ``_save_storage()``，捕到异常
+# 才回滚内存白名单并复活被 ``_prune`` 销毁的 SessionState。这两个方法把 writer 的
+# ``False`` 翻译成 ``OSError`` 是那个 except 唯一的触发源：改成记日志后正常返回，
+# 回滚永不发生，内存白名单与磁盘永久分叉。
+#
+# 既有 8 处失败注入（test_config_hot_reload 3 / test_regressions 2 / test_security 1 /
+# test_webapi_fixes 2）全部把 ``plugin._sync_whitelist`` 或 ``plugin._save_storage``
+# 整体替换成直接抛的 boom，验的是「方法抛了之后会回滚」。真实方法体在 writer 返回
+# ``False`` 时从未执行过，翻译这一步此前零覆盖。
+#
+# 只断言通用文案、不断言路径：``pytest.raises(OSError)`` 加文案已经把「False 翻译成
+# OSError」这条契约钉死，而文案里带绝对路径这件事由 ``test_security.py`` 从响应边界
+# 那一侧负责（那条守卫要求路径进服务端日志、不进 HTTP 响应）。
+
+
+def test_save_storage_raises_when_writer_reports_failure(tmp_path: Path) -> None:
+    """``write_sessions_payload`` 返回 False 时 ``_save_storage`` 必须抛 OSError。"""
+
+    async def scenario(plugin, main):
+        original = main.write_sessions_payload
+        main.write_sessions_payload = lambda *_args, **_kwargs: False
+        try:
+            with pytest.raises(OSError) as excinfo:
+                await plugin._save_storage()
+        finally:
+            main.write_sessions_payload = original
+        assert "状态文件写入失败" in str(excinfo.value)
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_sync_whitelist_raises_when_config_write_reports_failure(tmp_path: Path) -> None:
+    """``sync_config_whitelist`` 返回 False 时 ``_sync_whitelist`` 必须抛 OSError。
+
+    覆盖双写的第一步。``test_storage_blindspots.py:262`` 已证该函数会在写失败时返回
+    ``False``，但没有测试把那个 ``False`` 接到本方法的 raise 上。
+    """
+
+    async def scenario(plugin, main):
+        original = main.sync_config_whitelist
+        main.sync_config_whitelist = lambda *_args, **_kwargs: False
+        try:
+            with pytest.raises(OSError) as excinfo:
+                plugin._sync_whitelist()
+        finally:
+            main.sync_config_whitelist = original
+        assert "配置文件写入失败" in str(excinfo.value)
 
     with_plugin(tmp_path, scenario)
