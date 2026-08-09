@@ -9,10 +9,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import deque
 from pathlib import Path
 
-from .host_stubs import until
+from .host_stubs import capture_logs, messages_at_least, until
 from .test_session_scheduler import _make_scheduler
 
 
@@ -68,9 +69,15 @@ async def test_patrol_loop_full_cycle_branches(tmp_path: Path) -> None:
     assert expected_generation == 0  # 无代次记录会话保持 None→基线 0 语义
 
 
-async def test_patrol_loop_session_error_continues(tmp_path: Path) -> None:
-    """单个会话检查抛错：记 warning 后继续巡检其余轮次（不终止循环）。"""
-    _, models, scheduler, _, _ = _make_scheduler(tmp_path, {"enabled_patrol_trigger": True})
+async def test_patrol_loop_session_error_continues(tmp_path: Path, caplog: object) -> None:
+    """单个会话检查抛错：记 warning 后继续巡检其余轮次（不终止循环）。
+
+    循环吞掉异常继续跑，是可用性上的正确选择，但也意味着一个会话可以永久
+    失败而无人知晓。warning 是唯一的暴露渠道。
+    """
+    scheduler_mod, models, scheduler, _, _ = _make_scheduler(
+        tmp_path, {"enabled_patrol_trigger": True}
+    )
     scheduler.settings.check_interval_sec = 0
     scheduler.settings.patrol_inactive_after_sec = 0
     flags = _run_flags(scheduler)
@@ -86,13 +93,19 @@ async def test_patrol_loop_session_error_continues(tmp_path: Path) -> None:
         raise RuntimeError("session check broken")
 
     scheduler._check_session = boom
-    task = asyncio.create_task(scheduler._patrol_loop())
-    try:
-        # ≥2 次尝试证明异常后循环仍在推进（内层 except 生效）
-        await until(lambda: attempts["n"] >= 2)
-    finally:
-        flags["run"] = False
-        await asyncio.wait_for(task, timeout=5)
+    with capture_logs(caplog, scheduler_mod.logger, logging.WARNING):
+        task = asyncio.create_task(scheduler._patrol_loop())
+        try:
+            # ≥2 次尝试证明异常后循环仍在推进（内层 except 生效）
+            await until(lambda: attempts["n"] >= 2)
+        finally:
+            flags["run"] = False
+            await asyncio.wait_for(task, timeout=5)
+
+    warnings = messages_at_least(caplog, logging.WARNING)
+    assert any("patrol session failed" in msg for msg in warnings), (
+        f"会话巡检失败未记 warning，故障会话可永久静默失败：{warnings}"
+    )
 
 
 async def test_patrol_loop_outer_backoff_on_cleanup_error(tmp_path: Path) -> None:
@@ -231,18 +244,36 @@ def test_schedule_spawn_none_skips_registration(tmp_path: Path) -> None:
 
 
 async def test_delayed_check_exits_when_disabled_after_sleep(tmp_path: Path) -> None:
-    """延迟结束后插件已停用：直接退出不再检查。"""
+    """延迟结束后插件已停用：直接退出，不得再落到会话检查。"""
     _, _, scheduler, _, _ = _make_scheduler(tmp_path)
     scheduler._should_run = lambda: False
-    await scheduler.delayed_check("s1", delay_sec=0)  # 无异常即通过
+
+    calls: list[str] = []
+
+    async def record(umo, *, trigger, force, expected_generation):
+        calls.append(umo)
+
+    scheduler._check_session = record
+    await scheduler.delayed_check("s1", delay_sec=0)
+    assert calls == [], "插件已停用仍执行了会话检查：停用后的旧延迟任务会复活发送"
 
 
-async def test_delayed_check_warns_on_check_error(tmp_path: Path) -> None:
-    """检查回调抛错：warning 吞掉，不向上传播。"""
-    _, _, scheduler, _, _ = _make_scheduler(tmp_path)
+async def test_delayed_check_warns_on_check_error(tmp_path: Path, caplog: object) -> None:
+    """检查回调抛错：记 warning 后吞掉，不向上传播。
+
+    异常必须留痕。它由 ``asyncio.Task`` 驱动，抛出只会变成无人接管的任务异常；
+    若降级为 debug 或静默 pass，线上就再也看不到检查失败。
+    """
+    scheduler_mod, _, scheduler, _, _ = _make_scheduler(tmp_path)
 
     async def boom(umo, *, trigger, force, expected_generation):
         raise RuntimeError("check broken")
 
     scheduler._check_session = boom
-    await scheduler.delayed_check("s1", delay_sec=0)  # 异常应被内部吞掉
+    with capture_logs(caplog, scheduler_mod.logger, logging.WARNING):
+        await scheduler.delayed_check("s1", delay_sec=0)  # 异常应被内部吞掉
+
+    warnings = messages_at_least(caplog, logging.WARNING)
+    assert any("check broken" in msg or "delayed check" in msg for msg in warnings), (
+        f"检查失败未记 warning，异常被静默吞掉：{warnings}"
+    )

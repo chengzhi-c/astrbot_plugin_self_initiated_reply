@@ -14,3 +14,14 @@ repos:
     hooks:
       - id: end-of-file-fixer
       - id: trailing-whitespace
+  - repo: local
+    hooks:
+      # 长函数/高复杂度函数必须有 docstring（0.9.3 B4）。纯 stdlib，无额外依赖。
+      # 与 CI lint 作业跑同一脚本，本地先红可省一次 CI 往返。
+      - id: docstring-gates
+        name: docstring gates (long/complex functions)
+        entry: python scripts/docstring_gates.py
+        language: system
+        pass_filenames: false
+        # 脚本自行遍历生产代码，只需任一 .py 变更即触发
+        files: \.py$

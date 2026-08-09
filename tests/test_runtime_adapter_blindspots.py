@@ -251,3 +251,43 @@ def test_filter_final_tools_skip_nameless_and_fail_closed() -> None:
     assert (
         adapter.filter_final_tools(SimpleNamespace(func_tool=vanish_set), keep=frozenset()) is False
     )
+
+
+def test_fail_closed_emits_exactly_one_warning(caplog: object) -> None:
+    """工具边界 fail-closed 每次失败只允许一条 WARNING（低噪音日志约定）。
+
+    历史缺陷：final_tool_ids 与 filter_final_tools 各自 warning，单次失败
+    经 filter → final_tool_ids 会打出两条同源告警，叠加 generation 调用方
+    的第三条。现约定：底层枚举器降 DEBUG，决策点 filter 保留 WARNING。
+    """
+    import logging
+
+    runtime = _load_adapter()
+    adapter = _adapter(runtime)
+
+    # 移除后枚举失败：filter 内部会再调 final_tool_ids，最易产生重复告警
+    vanish_set = _ToolSet([_Tool("x")], none_after=True)
+    with caplog.at_level(logging.DEBUG, logger="astrbot"):
+        assert (
+            adapter.filter_final_tools(SimpleNamespace(func_tool=vanish_set), keep=frozenset())
+            is False
+        )
+    warnings = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    rendered = [record.getMessage() for record in warnings]
+    assert len(warnings) == 1, f"单次 fail-closed 打出 {len(warnings)} 条告警：{rendered}"
+    # 仍须留下可排查线索（降级为 DEBUG 的枚举细节不算噪音）
+    assert "fail-closed" in rendered[0]
+
+
+def test_fail_closed_warning_names_the_reason(caplog: object) -> None:
+    """告警须点明失败原因，否则 fail-closed 静默等同无日志。"""
+    import logging
+
+    runtime = _load_adapter()
+    adapter = _adapter(runtime)
+
+    with caplog.at_level(logging.WARNING, logger="astrbot"):
+        result = adapter.filter_final_tools(SimpleNamespace(func_tool=object()), keep=frozenset())
+    assert result is False
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("tools" in message for message in messages), f"告警未点明原因：{messages}"

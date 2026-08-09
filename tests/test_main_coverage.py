@@ -665,11 +665,14 @@ def test_resolve_paths_branches(tmp_path: Path) -> None:
 
 
 def test_event_extra_tolerates_host_signature_differences(tmp_path: Path) -> None:
+    """0.9.3：`_event_extra` 已外迁为 `utils.event_extra`（同族宿主字段兼容探测）。"""
+
     async def scenario(plugin, main):
+        utils = importlib.import_module(f"{main.__package__}.utils")
         event = _make_event()
         event.set_extra("key", "value")
-        assert plugin._event_extra(event, "key") == "value"
-        assert plugin._event_extra(event, "missing", default="d") == "d"
+        assert utils.event_extra(event, "key") == "value"
+        assert utils.event_extra(event, "missing", default="d") == "d"
 
         def type_error_extra(*_args):
             raise TypeError("signature mismatch")
@@ -678,9 +681,9 @@ def test_event_extra_tolerates_host_signature_differences(tmp_path: Path) -> Non
             raise RuntimeError("host error")
 
         event.get_extra = type_error_extra
-        assert plugin._event_extra(event, "key", default="d") == "d"
+        assert utils.event_extra(event, "key", default="d") == "d"
         event.get_extra = broken_extra
-        assert plugin._event_extra(event, "key", default="d") == "d"
+        assert utils.event_extra(event, "key", default="d") == "d"
 
         def bad_set_extra(*_args, **_kwargs):
             raise RuntimeError("set failed")
@@ -818,8 +821,9 @@ def test_build_image_context_without_parser_returns_empty(tmp_path: Path) -> Non
 
 def test_event_extra_non_callable_getter_returns_default(tmp_path: Path) -> None:
     async def scenario(plugin, main):
+        utils = importlib.import_module(f"{main.__package__}.utils")
         event = _make_event()
         event.get_extra = None
-        assert plugin._event_extra(event, "key", default="d") == "d"
+        assert utils.event_extra(event, "key", default="d") == "d"
 
     with_plugin(tmp_path, scenario)

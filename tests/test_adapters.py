@@ -275,6 +275,26 @@ async def test_llm_generate_full_kwargs(bridge) -> None:
     assert captured["image_urls"] == ["u1"]
 
 
+async def test_llm_generate_does_not_guess_parameter_aliases(bridge) -> None:
+    """llm_generate 侧对形参名不匹配的 Context 必须 fail-loud。
+
+    语义是"不猜别名"：第三方 Context 若用别的形参名，直接抛 TypeError，
+    而不是被别名表悄悄适配上去。重新引入别名表则调用意外成功，此处变红。
+    """
+    from types import SimpleNamespace
+
+    calls: list[Any] = []
+
+    async def llm_generate(provider_id, content):  # 形参名与宿主不同
+        calls.append((provider_id, content))
+        return "ok"
+
+    ctx = SimpleNamespace(llm_generate=llm_generate)
+    with pytest.raises(TypeError):
+        await bridge(ctx).llm_generate(provider_id="p1", prompt="hi")
+    assert calls == []
+
+
 # ============================================================================
 # llm_generate_direct
 # ============================================================================
@@ -407,15 +427,23 @@ async def test_resolve_provider_id_via_current_chat(bridge) -> None:
     assert await bridge(ctx).resolve_provider_id("umo1", "") == "p-curr"
 
 
-async def test_resolve_provider_id_via_using_id(bridge) -> None:
+async def test_resolve_provider_id_ignores_get_using_provider_id(bridge) -> None:
+    """``get_using_provider_id`` 不再被探测（0.9.3 阶段 3 删死分支）。
+
+    宿主 4.23.3 Context 无此方法。若未来某个第三方 Context 提供它，本插件
+    也不再调用它——落到 ``get_using_provider`` 兜底或返回空串。
+    """
     from types import SimpleNamespace
 
-    class ProviderId:
-        async def get_using_provider_id(self, umo):
-            return "p-using"
+    calls: list[str] = []
 
-    ctx = SimpleNamespace(get_using_provider_id=ProviderId().get_using_provider_id)
-    assert await bridge(ctx).resolve_provider_id("umo1", "") == "p-using"
+    async def get_using_provider_id(umo):  # pragma: no cover - 不应被调用
+        calls.append(umo)
+        return "p-using"
+
+    ctx = SimpleNamespace(get_using_provider_id=get_using_provider_id)
+    assert await bridge(ctx).resolve_provider_id("umo1", "") == ""
+    assert calls == []
 
 
 async def test_resolve_provider_id_via_using_provider_meta(bridge) -> None:

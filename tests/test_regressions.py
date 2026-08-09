@@ -19,6 +19,7 @@ import types
 from pathlib import Path
 
 from .host_stubs import with_plugin
+from .source_contract import calls_in, defines, logger_levels_for, method_source, source_of
 from .test_main_runtime import UMO, _make_event, _PipelineTestAdapter
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,22 +86,19 @@ def _main_source() -> str:
 
 
 def test_inline_command_requires_slash_or_mention() -> None:
-    """裸词 selfreply 不应在任意会话里被当成命令并 stop_event。"""
-    source = _main_source()
-    start = source.index("    async def on_message(")
-    end = source.index("\n    def _should_ignore_event(", start)
-    handler = source[start:end]
+    """裸词 selfreply 不应在任意会话里被当成命令并 stop_event。
 
-    gated = (
-        'startswith("/")' in handler
-        or "is_at_or_wake_command_event" in handler
-        or "_looks_like_command_entry" in handler
+    契约分两段：``on_message`` 消费命令前必须经 ``_is_command_entry`` 把门，
+    门本身必须要求显式入口（斜杠 / 点名 / 唤醒词）。
+    """
+    assert "self._is_command_entry" in calls_in("main.py", "on_message"), (
+        "on_message 未经 _is_command_entry 把门：任意群成员发送裸词 selfreply "
+        "就能让 Bot 回复整段帮助文本并 stop_event()，从而吞掉该消息、阻断其他插件"
     )
 
-    assert gated, (
-        "on_message 未校验命令前缀：任意群成员发送裸词 selfreply 就能让 Bot "
-        "回复整段帮助文本并 stop_event()，从而吞掉该消息、阻断其他插件"
-    )
+    gate = method_source("main.py", "_is_command_entry")
+    assert 'startswith("/")' in gate
+    assert "is_at_or_wake_command_event" in gate, "命令入口门未要求斜杠前缀或点名/唤醒"
 
 
 def test_help_action_is_reachable_without_admin() -> None:
@@ -118,25 +116,9 @@ def test_bare_command_word_is_parsed_as_command() -> None:
     assert commands.parse_command_text("selfreply add") == ("add", "")
 
 
-# ============================================================================
-# RL-5 Web 配置读取失败返回 None（低危）
-# ============================================================================
-
-
-def test_api_get_config_returns_payload_on_failure() -> None:
-    """Quart 路由不能返回 None，否则失败时抛 TypeError 变成 500。"""
-    source = (ROOT / "webapi.py").read_text(encoding="utf-8")
-    start = source.index("async def _api_get_config(")
-    end = source.index("\nasync def _api_providers(", start)
-    method = source[start:end]
-
-    tail = method[method.index("except Exception") :]
-    stripped = [item.strip() for item in tail.splitlines()]
-
-    assert "return" not in stripped, (
-        "_api_get_config 异常分支使用裸 return（None），"
-        "Quart 无法序列化 None，会把可恢复的读取失败放大成 500"
-    )
+# RL-5（Web 配置读取失败返回 None）的守卫已迁至
+# test_webapi_fixes.py::test_api_get_config_error_path —— 那里是真调 API 断言
+# 载荷形状，比在 except 尾段里搜 "return" 更直接，也不会因重排 except 而误红。
 
 
 # ============================================================================
@@ -146,10 +128,7 @@ def test_api_get_config_returns_payload_on_failure() -> None:
 
 def test_session_generation_map_is_pruned_on_whitelist_removal() -> None:
     """移出白名单时应清理会话代次记录，避免长期运行内存缓慢增长。"""
-    whitelist_source = (ROOT / "whitelist.py").read_text(encoding="utf-8")
-    start = whitelist_source.index("    def replace(")
-    end = whitelist_source.index("\n    async def commit_change(", start)
-    method = whitelist_source[start:end]
+    method = method_source("whitelist.py", "replace")
 
     assert "self._prune(umo)" in method, (
         "replace 未通过 gate.prune 清理代次/锁/运行集；"
@@ -163,53 +142,32 @@ def test_terminate_clears_image_event_cache() -> None:
     实现随 07 迁入 SessionCoordinator：terminate 走 reset_all 级联清空
     （事件/时间/图片/阶段标记），断言锚定单点入口。
     """
-    source = _main_source()
-    coordinator_source = (ROOT / "session_coordinator.py").read_text(encoding="utf-8")
-    method = source[source.index("    async def terminate(") :]
-
-    assert "self._coordinator.reset_all()" in method, (
+    assert "self._coordinator.reset_all()" in method_source("main.py", "terminate"), (
         "terminate 未经 reset_all 清空会话协作资源（含图片缓存）"
     )
-    reset = coordinator_source[
-        coordinator_source.index("    def reset_all(") : coordinator_source.index(
-            "\n    # ---------", coordinator_source.index("    def reset_all(")
-        )
-    ]
+    reset = method_source("session_coordinator.py", "reset_all")
     assert "_images.clear()" in reset, "reset_all 未清空图片索引"
 
 
 def test_terminate_waits_for_cancelled_background_tasks() -> None:
     """取消后台任务后必须等待其收尾，避免旧任务越过终止边界。"""
-    source = _main_source()
-    terminate = source[source.index("    async def terminate(") :]
-    wait_method_start = source.index("    async def _wait_background_tasks(")
-    wait_method_end = source.index("\n    async def _stop_patrol_task(", wait_method_start)
-    wait_method = source[wait_method_start:wait_method_end]
-
-    assert "await self._wait_background_tasks()" in terminate
+    assert "await self._wait_background_tasks()" in method_source("main.py", "terminate")
+    wait_method = method_source("main.py", "_wait_background_tasks")
     assert "asyncio.gather" in wait_method
     assert "self._background_tasks" in wait_method
 
 
 def test_image_cache_cleanup_has_manual_api_and_startup_sweep() -> None:
     """图片缓存既要能手动清理，也要在插件重载时立即扫一次。"""
-    source = _main_source()
-    webapi_source = (ROOT / "webapi.py").read_text(encoding="utf-8")
-    register_start = webapi_source.index("def register_web_apis(")
-    register_end = webapi_source.index("\ndef bind_api_handlers(", register_start)
-    registration = webapi_source[register_start:register_end]
+    registration = method_source("webapi.py", "register_web_apis")
 
     assert 'f"{route}/image-cache/cleanup"' in registration
     assert '"POST"' in registration
     assert "_api_cleanup_image_cache" in registration
-    assert "self._cleanup_image_sources(now=now_ts())" in source
-    assert (
-        "if not self.settings.vision_enabled"
-        not in source[
-            source.index("    def _cleanup_image_sources(") : source.index(
-                "    def _cleanup_old_events_if_needed("
-            )
-        ]
+    assert "self._cleanup_image_sources(now=now_ts())" in _main_source()
+    # 清理必须与 vision_enabled 解耦：关掉视觉后旧缓存仍要能被回收。
+    assert "if not self.settings.vision_enabled" not in method_source(
+        "main.py", "_cleanup_image_sources"
     )
 
 
@@ -227,37 +185,27 @@ def test_plugin_logo_is_root_square_png() -> None:
 
 def test_successful_image_cache_logs_are_debug_only() -> None:
     """高频成功路径不应在 INFO 级别刷屏，失败日志仍保留原级别。"""
-    source = _main_source()
-    parser_source = (ROOT / "image" / "parser.py").read_text(encoding="utf-8")
+    captured = "[%s] captured %s/%s images into local vision cache for umo=%s"
+    snapshot = "[%s] host image snapshot created: %s"
 
-    assert (
-        "logger.debug(\n"
-        '                "[%s] captured %s/%s images into local vision cache for umo=%s",' in source
+    assert logger_levels_for("main.py", captured) == ["logger.debug"], (
+        "图片入缓存成功日志必须是 debug：每条含图消息都会打，INFO 会刷屏"
     )
-    assert (
-        "logger.info(\n"
-        '                "[%s] captured %s/%s images into local vision cache for umo=%s",'
-        not in source
-    )
-    assert 'logger.debug(\n                "[%s] host image snapshot created: %s",' in parser_source
-    assert (
-        'logger.info(\n                "[%s] host image snapshot created: %s",' not in parser_source
+    assert logger_levels_for("image/parser.py", snapshot) == ["logger.debug"], (
+        "宿主图片快照成功日志必须是 debug"
     )
 
 
 def test_config_mutations_share_one_lock_and_settings_normalizer() -> None:
     """白名单和 Web 配置更新不能交错覆盖，配置必须经统一入口规范化。"""
-    webapi_source = (ROOT / "webapi.py").read_text(encoding="utf-8")
-    whitelist_source = (ROOT / "whitelist.py").read_text(encoding="utf-8")
-    api_start = webapi_source.index("async def _api_post_config(")
-    api_end = webapi_source.index("\nasync def _api_status(", api_start)
-    api = webapi_source[api_start:api_end]
+    api = method_source("webapi.py", "_api_post_config")
 
     assert "async with plugin._config_lock" in api
     assert "_api_post_config_locked" in api
-    assert "async def add(" in whitelist_source
-    assert "async def remove(" in whitelist_source
-    assert "Settings.from_config(candidate)" in api
+    assert defines("whitelist.py", "WhitelistManager.add")
+    assert defines("whitelist.py", "WhitelistManager.remove")
+    # 规范化入口：候选配置必须经 Settings.from_config 归一，不得直接落库
+    assert "Settings.from_config(candidate)" in method_source("webapi.py", "_apply_config_updates")
 
 
 def test_proactive_agent_starts_with_restricted_tool_scope() -> None:
@@ -265,55 +213,55 @@ def test_proactive_agent_starts_with_restricted_tool_scope() -> None:
 
     实现随 04 拆分迁入 generation.py：锚定新文件，断言内容不变（捕获力保持）。
     """
-    generation_source = (ROOT / "generation.py").read_text(encoding="utf-8")
-    main_source = _main_source()
-    start = generation_source.index("    async def generate(")
-    end = generation_source.index("\n    def enforce_final_tool_policy(", start)
-    method = generation_source[start:end]
+    method = method_source("generation.py", "generate")
+    calls = calls_in("generation.py", "generate")
 
     assert "req.func_tool = self._runtime().new_tool_set()" in method
-    assert "self.install_agent_tool_boundary(last_event, inherit_tools)" in method
-    assert "self._enforce_policy(req, inherit_tools)" in method
-    assert "self._call_hook(" in method
-    boundary_start = generation_source.index("    def install_agent_tool_boundary(")
-    boundary_end = generation_source.index(
-        "\n    @staticmethod\n    def restore_agent_tool_boundary", boundary_start
-    )
-    boundary = generation_source[boundary_start:boundary_end]
+    assert "self.install_agent_tool_boundary" in calls
+    assert "self._enforce_policy" in calls
+    assert "self._call_hook" in calls
+    assert "self.restore_agent_tool_boundary" in method
+
+    boundary = method_source("generation.py", "install_agent_tool_boundary")
     assert "event.plugins_name = []" in boundary
     # 共享 platform_meta 是适配器单例，禁止原地修改；边界必须靠最终工具集策略。
     assert "support_proactive_message" not in boundary
-    policy_start = generation_source.index("    def enforce_final_tool_policy(")
-    policy_end = generation_source.index("\n    def install_agent_tool_boundary(", policy_start)
-    policy = generation_source[policy_start:policy_end]
+
+    policy = method_source("generation.py", "enforce_final_tool_policy")
     assert "filter_final_tools(req, keep=PROACTIVE_ALLOWED_TOOL_IDS)" in policy
-    assert "self.restore_agent_tool_boundary" in method
+
     # 主插件仍经委托壳暴露原方法名（测试与外部调用面保持）
-    assert "    async def _generate_reply_via_pipeline(" in main_source
-    assert "    def _enforce_final_tool_policy(" in main_source
-    assert "    def _install_agent_tool_boundary(" in main_source
+    for shell in (
+        "_generate_reply_via_pipeline",
+        "_enforce_final_tool_policy",
+        "_install_agent_tool_boundary",
+    ):
+        assert defines("main.py", f"SelfInitiatedReplyPlugin.{shell}"), (
+            f"main 未保留委托壳 {shell}（外部调用面与测试替换点）"
+        )
 
 
 def test_new_message_does_not_cancel_running_decorating_hook() -> None:
-    """新消息应使旧回复失效，但不能取消正在执行的装饰钩子。"""
-    source = _main_source()
-    scheduler_source = (ROOT / "scheduler.py").read_text(encoding="utf-8")
-    cancel_start = source.index("    def _cancel_delay_task(")
-    cancel_end = source.index("\n    def _clear_cached_event(", cancel_start)
-    cancel_method = source[cancel_start:cancel_end]
-    invalidate_start = source.index("    def _invalidate_session(")
-    invalidate_end = source.index("\n    def _cancel_event_session(", invalidate_start)
-    invalidate_method = source[invalidate_start:invalidate_end]
-    bulk_start = source.index("    def _cancel_delay_tasks(")
-    bulk_end = source.index("\n    async def _stop_patrol_task(", bulk_start)
-    bulk_method = source[bulk_start:bulk_end]
+    """新消息应使旧回复失效，但不能取消正在执行的装饰钩子。
 
-    # 实现迁入 SessionScheduler（ticket 02）：插件壳只委托，守卫在调度器内
-    assert "self._scheduler.cancel_delay(umo, force=force)" in cancel_method
-    assert "self._gate.is_running(umo)" in scheduler_source
-    assert "force" in cancel_method
-    assert "force_cancel" in invalidate_method
-    assert "force_cancel=True" in bulk_method
+    守卫点在 ``SessionScheduler.cancel_delay``：``not force`` 与 ``is_running``
+    必须在同一个短路条件里，运行中的会话才不会被普通新消息掐断。
+    """
+    cancel_delay = method_source("scheduler.py", "SessionScheduler.cancel_delay")
+    assert "not force" in cancel_delay and "self._gate.is_running(umo)" in cancel_delay, (
+        "cancel_delay 未用 not force + is_running 短路保护运行中的会话："
+        "普通新消息会掐断正在执行的装饰钩子"
+    )
+
+    # 实现迁入 SessionScheduler（ticket 02）：插件壳只委托，语义由 force 传递
+    cancel_shell = method_source("main.py", "SelfInitiatedReplyPlugin._cancel_delay_task")
+    assert "self._scheduler.cancel_delay(umo, force=force)" in cancel_shell
+    assert "force_cancel" in method_source(
+        "main.py", "SelfInitiatedReplyPlugin._invalidate_session"
+    )
+    assert "force_cancel=True" in method_source(
+        "main.py", "SelfInitiatedReplyPlugin._cancel_delay_tasks"
+    )
 
 
 if __name__ == "__main__":
@@ -997,89 +945,38 @@ def test_r12_non_force_check_rejected_for_non_whitelisted_session(tmp_path: Path
 # ============================================================================
 
 
-def _log_call_level(source: str, frag: str) -> list[str]:
-    """定位 frag 消息对应的 logger 调用前缀（rfind 最近调用点，支持多处）。"""
-    levels: list[str] = []
-    search_from = 0
-    while True:
-        idx = source.find(frag, search_from)
-        if idx == -1:
-            break
-        call = source.rfind("logger.", 0, idx)
-        assert call != -1, f"no logger call before {frag!r}"
-        levels.append(source[call : source.index("(", call)])
-        search_from = idx + len(frag)
-    return levels
+# 高频成功路径的日志模板 → 期望级别。每条消息在正常运行时按会话/按消息触发，
+# 升到 INFO 会刷屏（0.7.x 实测），故契约是「必须 debug」。列表长度即调用点个数：
+# proactive reply sent 有两处（log_reply_content 的 if/else 双分支）。
+_DEBUG_LOG_CONTRACTS = [
+    ("scheduler.py", "[%s] wait for minimum silence session=", 1),
+    ("main.py", "[%s] skip session=%s trigger=", 1),
+    ("main.py", "[%s] decision session=%s trigger=", 1),
+    ("delivery.py", "[%s] skip before send session=", 1),
+    ("delivery.py", "[%s] proactive reply sent session=", 2),
+    ("delivery.py", "[%s] event send completed session=", 1),
+    ("image/parser.py", "image frozen to local cache: %s", 1),
+    ("image/parser.py", "image frozen as in-memory data URL", 1),
+]
 
 
-def _parser_source() -> str:
-    import tests.test_vision as vision
+def test_high_frequency_success_logs_stay_debug() -> None:
+    """8 处高频成功路径必须保持 DEBUG，且调用点个数不变。
 
-    return (Path(vision.ROOT) / "image" / "parser.py").read_text(encoding="utf-8")
-
-
-def _scheduler_source() -> str:
-    import tests.test_vision as vision
-
-    return (Path(vision.ROOT) / "scheduler.py").read_text(encoding="utf-8")
-
-
-def _delivery_source() -> str:
-    import tests.test_vision as vision
-
-    return (Path(vision.ROOT) / "delivery.py").read_text(encoding="utf-8")
-
-
-# ============================================================================
-# main.py：7 处降级点（静默等待日志随 02 拆分迁入 scheduler.py）
-# ============================================================================
-
-
-def test_main_logs_wait_silence_is_debug() -> None:
-    source = _scheduler_source()
-    assert _log_call_level(source, "[%s] wait for minimum silence session=") == ["logger.debug"]
-
-
-def test_main_logs_skip_session_is_debug() -> None:
-    source = _main_source()
-    assert _log_call_level(source, "[%s] skip session=%s trigger=") == ["logger.debug"]
-
-
-def test_main_logs_decision_is_debug() -> None:
-    source = _main_source()
-    assert _log_call_level(source, "[%s] decision session=%s trigger=") == ["logger.debug"]
-
-
-def test_main_logs_skip_before_send_is_debug() -> None:
-    source = _delivery_source()
-    assert _log_call_level(source, "[%s] skip before send session=") == ["logger.debug"]
-
-
-def test_main_logs_reply_sent_both_branches_are_debug() -> None:
-    """log_reply_content 的 if/else 双分支都必须降级（两处调用点）。"""
-    source = _delivery_source()
-    levels = _log_call_level(source, "[%s] proactive reply sent session=")
-    assert levels == ["logger.debug", "logger.debug"]
-
-
-def test_main_logs_event_send_completed_is_debug() -> None:
-    source = _delivery_source()
-    assert _log_call_level(source, "[%s] event send completed session=") == ["logger.debug"]
-
-
-# ============================================================================
-# image/parser.py：2 处降级点
-# ============================================================================
-
-
-def test_parser_logs_image_frozen_to_cache_is_debug() -> None:
-    source = _parser_source()
-    assert _log_call_level(source, "image frozen to local cache: %s") == ["logger.debug"]
-
-
-def test_parser_logs_image_frozen_data_url_is_debug() -> None:
-    source = _parser_source()
-    assert _log_call_level(source, "image frozen as in-memory data URL") == ["logger.debug"]
+    个数一起断言，是因为只查级别时模板整体消失会静默通过——那正是日志退化的
+    常见形态。
+    """
+    problems: list[str] = []
+    for rel, template, expected_sites in _DEBUG_LOG_CONTRACTS:
+        levels = logger_levels_for(rel, template)
+        if len(levels) != expected_sites:
+            problems.append(
+                f"{rel}: {template!r} 有 {len(levels)} 个调用点，期望 {expected_sites}"
+                "（模板被删除或新增了调用点）"
+            )
+        elif set(levels) != {"logger.debug"}:
+            problems.append(f"{rel}: {template!r} 级别为 {levels}，必须全部 logger.debug")
+    assert not problems, "高频成功路径日志级别契约破坏：\n" + "\n".join(problems)
 
 
 # ============================================================================
@@ -1325,10 +1222,7 @@ def test_r18_aba_old_task_does_not_revive_after_re_add(tmp_path: Path) -> None:
 
 def test_r19_no_scattered_event_table_mutation_in_main() -> None:
     """事件/时间/图片三表的清理必须收敛经 SessionCoordinator，main 只经委托壳。"""
-    import tests.test_vision as vision
-
-    main_source = (Path(vision.ROOT) / "main.py").read_text(encoding="utf-8")
-    coordinator_source = (Path(vision.ROOT) / "session_coordinator.py").read_text(encoding="utf-8")
+    main_source = source_of("main.py")
 
     for frag in [
         "_last_events.pop",
@@ -1341,38 +1235,37 @@ def test_r19_no_scattered_event_table_mutation_in_main() -> None:
         assert frag not in main_source, f"main 不应散落清理 {frag}（收敛到 SessionCoordinator）"
 
     # 级联单点存在：invalidate 必须推进代次 + 取消延迟 + 清三表
-    invalidate = coordinator_source[
-        coordinator_source.index("    def invalidate(") : coordinator_source.index(
-            "\n    def clear(", coordinator_source.index("    def invalidate(")
-        )
-    ]
-    assert "self._gate.advance(umo)" in invalidate
-    assert "self._cancel_delay(umo, force_cancel)" in invalidate
-    assert "self.clear(umo)" in invalidate
+    invalidate_calls = calls_in("session_coordinator.py", "SessionCoordinator.invalidate")
+    for callee in ("self._gate.advance", "self._cancel_delay", "self.clear"):
+        assert callee in invalidate_calls, f"invalidate 未级联 {callee}"
 
-    clear = coordinator_source[
-        coordinator_source.index("    def clear(") : coordinator_source.index(
-            "\n    def reset_all(", coordinator_source.index("    def clear(")
-        )
-    ]
-    for frag in ["_events.pop", "_event_at.pop", "_images.pop", "_phases.pop"]:
+    clear = method_source("session_coordinator.py", "SessionCoordinator.clear")
+    for frag in ["_events.pop", "_event_at.pop", "_images.pop"]:
         assert frag in clear, f"clear 必须级联清理 {frag}"
 
 
 # ============================================================================
-# R20：FSM 状态可观测（on_message 记录事件后处于 OBSERVING）
+# R20：会话失效清空观察素材
 # ============================================================================
 
 
-def test_r20_state_is_observing_after_message_recorded(tmp_path: Path) -> None:
+def test_r20_invalidate_clears_observation_material(tmp_path: Path) -> None:
+    """记录事件后会话持有观察素材；invalidate 必须清空事件表并推进代次。
+
+    「持有观察素材」以事件表为准（_last_events/_last_event_at），不经任何
+    阶段投影——残留一条就足以让下一轮决策拿到已失效会话的旧消息。
+    """
+
     async def scenario(plugin, main):
         event = _make_event()
         plugin._coordinator.record_event(UMO, event, 1.0)
+        assert UMO in plugin._last_events
 
-        phase = plugin._coordinator.state(UMO)
-        assert phase.value == "observing"
-
+        before = plugin._gate.current(UMO)
         plugin._coordinator.invalidate(UMO)
-        assert plugin._coordinator.state(UMO).value == "idle"
+
+        assert UMO not in plugin._last_events
+        assert UMO not in plugin._last_event_at
+        assert plugin._gate.current(UMO) > before
 
     with_plugin(tmp_path, scenario)

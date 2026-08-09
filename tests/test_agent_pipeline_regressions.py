@@ -448,6 +448,8 @@ def test_config_rollback_restores_task_topology(tmp_path: Path) -> None:
         finally:
             plugin._stop_patrol_task = original_stop
 
+    with_plugin(tmp_path, scenario, enabled_patrol_trigger=True)
+
 
 def test_config_rollback_reschedules_cancelled_delayed_checks(tmp_path: Path) -> None:
     """回滚后按快照重建被取消的延迟检查（message_delay 语义）。"""

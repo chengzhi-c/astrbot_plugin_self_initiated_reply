@@ -7,6 +7,7 @@ cleanup/status/theme API、回滚 dropped 分支与 _request_json 回退。
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -259,6 +260,22 @@ def test_api_status(tmp_path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+def test_unified_overview_returns_only_frontend_consumed_keys(tmp_path) -> None:
+    """概览端点只返回前端消费的键：漏 whitelist_count 则会话计数恒为 0，
+    多出配置值镜像（/config 与 /status 已有内容的第三份副本）即红。
+    """
+
+    async def scenario(plugin, main):
+        plugin.settings.whitelist = {"qq:GroupMessage:1", "qq:GroupMessage:2"}
+        payload = await plugin.unified_manager.overview()
+        assert payload["ok"] is True
+        summary = payload["self_reply"]
+        assert summary["whitelist_count"] == 2
+        assert set(summary) == {"available", "whitelist_count"}
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_api_cleanup_image_cache_paths(tmp_path) -> None:
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]
@@ -393,6 +410,11 @@ def test_request_json_fallbacks(tmp_path) -> None:
 
 
 def test_api_get_config_error_path(tmp_path) -> None:
+    """读取失败必须返回可序列化的失败载荷，不能返回 None（RL-5）。
+
+    Quart 无法序列化 None：裸 ``return`` 会把一次可恢复的读取失败放大成 500。
+    """
+
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]
 
@@ -402,7 +424,10 @@ def test_api_get_config_error_path(tmp_path) -> None:
 
         plugin.settings = BoomSettings()
         result = await webapi._api_get_config(plugin)
+        assert result is not None, "异常分支返回 None，Quart 会抛 TypeError 变成 500"
+        assert isinstance(result, dict)
         assert result["ok"] is False
+        assert json.dumps(result), "失败载荷必须可 JSON 序列化"
 
     with_plugin(tmp_path, scenario)
 

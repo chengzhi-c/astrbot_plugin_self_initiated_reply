@@ -8,8 +8,9 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .coverage
-.mutation_check.lock
-.mutation_result.log
+# pytest-cov 并行数据碎片：.coverage.<host>.pid<N>.<rand>。
+# 只写 .coverage 认不出它；实测它曾被打进 wheel（守卫见 scripts/check_wheel.py）。
+.coverage.*
 .scratch/
 dist/
 data/

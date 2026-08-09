@@ -647,6 +647,59 @@ def test_cleanup_quota_stat_failure_is_ignored(tmp_path: Path, monkeypatch) -> N
     assert removed == 0
 
 
+def test_cleanup_expired_files_are_not_counted_against_quota(tmp_path: Path) -> None:
+    """过期阶段已删除的文件不得计入配额总量。
+
+    单遍采集把整棵树读进一张表，过期删除与配额计账都用它。若配额阶段直接拿
+    采集表计账，已被删掉的文件仍占着字节数，配额就会误判超限并继续删本该
+    存活的新鲜文件——用户侧表现为刚发的图片描述缓存被连带清掉。
+    """
+    _, image, _ = _load_modules()
+    root = tmp_path / "cache"
+    root.mkdir()
+    expired = root / "expired.png"
+    expired.write_bytes(b"1234")
+    os.utime(expired, (100.0, 100.0))
+    fresh = root / "fresh.png"
+    fresh.write_bytes(b"5678")
+    os.utime(fresh, (4900.0, 4900.0))
+
+    # 配额恰好等于 fresh 的大小：只有把 expired 从账上剔除才刚好不超限
+    removed = image.ImageParser.cleanup_source_cache(
+        root, max_age_sec=1000.0, max_total_bytes=4, now=5000.0
+    )
+
+    assert removed == 1
+    assert not expired.exists()
+    assert fresh.exists(), "已删除文件仍被计入配额，连带删掉了新鲜文件"
+
+
+def test_cleanup_walks_tree_once(tmp_path: Path, monkeypatch) -> None:
+    """整轮清理只遍历目录一次：三阶段共享同一时刻的目录视图。"""
+    _, image, _ = _load_modules()
+    root = tmp_path / "cache"
+    (root / "aa").mkdir(parents=True)
+    fresh = root / "aa" / "fresh.png"
+    fresh.write_bytes(b"1234")
+    os.utime(fresh, (4900.0, 4900.0))
+
+    rglob_calls: list[str] = []
+    original_rglob = Path.rglob
+
+    def counting_rglob(self, pattern, *args, **kwargs):
+        rglob_calls.append(pattern)
+        return original_rglob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "rglob", counting_rglob)
+    removed = image.ImageParser.cleanup_source_cache(
+        root, max_age_sec=1000.0, max_total_bytes=1024, now=5000.0
+    )
+
+    assert removed == 0
+    assert fresh.exists()
+    assert len(rglob_calls) == 1, f"目录被遍历 {len(rglob_calls)} 遍，单遍契约退化"
+
+
 # ============================================================================
 # _resolve_image_url()：源解析分支
 # ============================================================================
@@ -661,6 +714,10 @@ def test_resolve_uses_prepared_data_url(tmp_path: Path) -> None:
 
 
 def test_resolve_uses_recorder_local_path(tmp_path: Path) -> None:
+    # 生产装配等价（阶段 1.1 复审）：recorder 的媒体目录在
+    # <data>/plugin_data/astrbot_plugin_message_recorder/ 下，故注入 data_root。
+    # recorder 交回的路径同样要过 allowlist——它的入参 local_path 来自对端可控
+    # 的消息组件，resolver 又是第三方插件函数，不能无条件当可信。
     _, image, _ = _load_modules()
     source = _png_file(tmp_path)
 
@@ -668,9 +725,38 @@ def test_resolve_uses_recorder_local_path(tmp_path: Path) -> None:
         async def get_local_image_path(self, _message_id, _image_url):
             return source
 
-    parser = image.ImageParser(object(), recorder_bridge=Recorder())
+    parser = image.ImageParser(object(), recorder_bridge=Recorder(), data_root=tmp_path)
     info = image.ImageInfo(url="https://x/y.png", message_id="m1")
     assert asyncio.run(parser._resolve_image_url(info)) == PNG_DATA_URL
+
+
+def test_resolve_rejects_recorder_path_outside_data_root(tmp_path: Path) -> None:
+    """recorder 解析出的越界路径必须被拒（阶段 1.1 复审补漏）。
+
+    攻击链：对端把 ``local_path`` 设成 ``../../../secrets/x.png``（相对路径，
+    绕过 ``is_absolute`` 检查）→ 若第三方 recorder 的 resolver 是朴素
+    ``root / value``，就会交回 <data> 之外的绝对路径。修复前该分支直接
+    ``trusted=True`` 全量放行，与阶段 1.1 要关的攻击面同型。
+    """
+    _, image, _ = _load_modules()
+    data_root = tmp_path / "data"
+    data_root.mkdir(parents=True, exist_ok=True)
+    outside = _png_file(tmp_path / "secrets", "private.png")
+
+    class TraversalRecorder:
+        async def get_local_image_path(self, _message_id, _image_url):
+            return outside
+
+        def resolve_relative_path(self, _value):
+            return outside
+
+    parser = image.ImageParser(object(), recorder_bridge=TraversalRecorder(), data_root=data_root)
+    # 两个 recorder 入口都必须拒：按 message_id 查回的路径……
+    by_id = image.ImageInfo(message_id="m1")
+    assert asyncio.run(parser._resolve_image_url(by_id)) is None
+    # ……以及相对路径解析升级来的路径
+    by_relative = image.ImageInfo(file_path="../../../secrets/private.png")
+    assert asyncio.run(parser._resolve_image_url(by_relative)) is None
 
 
 def test_resolve_recorder_miss_falls_through(tmp_path: Path, monkeypatch) -> None:
@@ -715,6 +801,7 @@ def test_resolve_http_file_path_fetch_failure_returns_none(tmp_path: Path, monke
 
 
 def test_resolve_relative_path_via_recorder(tmp_path: Path) -> None:
+    # 同上：合法的 recorder 媒体文件在 <data> 下，注入 data_root 后照常放行。
     _, image, _ = _load_modules()
     source = _png_file(tmp_path, "media.png")
 
@@ -722,9 +809,50 @@ def test_resolve_relative_path_via_recorder(tmp_path: Path) -> None:
         def resolve_relative_path(self, value):
             return source if value == "media/photo.png" else None
 
-    parser = image.ImageParser(object(), recorder_bridge=Recorder())
+    parser = image.ImageParser(object(), recorder_bridge=Recorder(), data_root=tmp_path)
     info = image.ImageInfo(file_path="media/photo.png")
     assert asyncio.run(parser._resolve_image_url(info)) == PNG_DATA_URL
+
+
+def test_recorder_resolved_path_outside_roots_is_rejected(tmp_path: Path) -> None:
+    """录制桥交回的路径也必须过 allowlist（阶段 1.1 复审补漏）。
+
+    这条曾被我判为"不由消息内容决定"而放行，是错的：``resolve_relative_path``
+    的入参就是对端可控的 OneBot ``file`` / ``local_path``，而 resolver 是第三方
+    插件函数（``recorder_bridge.py:86``）。若它做朴素的 ``root / value`` 拼接，
+    ``../`` 就能逃出媒体目录并拿到无条件放行——与本轮要关的攻击面同型。
+    """
+    _, image, _ = _load_modules()
+    data_root = tmp_path / "data"
+    (data_root / "plugin_data").mkdir(parents=True, exist_ok=True)
+    # <data> 之外的真实图片（魔数合法，只有 allowlist 能拦）
+    outside = tmp_path / "elsewhere" / "leaked.png"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(PNG_BYTES)
+
+    class NaiveRecorder:
+        """模拟未做路径收敛的第三方 resolver（../ 逃出媒体根）。"""
+
+        def resolve_relative_path(self, value):
+            return outside
+
+        async def get_local_image_path(self, _message_id, _image_url):
+            return outside
+
+    parser = image.ImageParser(object(), recorder_bridge=NaiveRecorder(), data_root=data_root)
+
+    # 相对路径分支
+    relative = image.ImageInfo(file_path="../../elsewhere/leaked.png")
+    assert asyncio.run(parser._resolve_image_url(relative)) is None
+    # message_id 查回分支
+    by_id = image.ImageInfo(url="https://x/y.png", message_id="m1")
+    parser2 = image.ImageParser(object(), recorder_bridge=NaiveRecorder(), data_root=data_root)
+
+    async def no_fetch(_url):
+        return None
+
+    parser2._fetch_image_data_url = no_fetch  # 断掉远程回退，只看本地分支结论
+    assert asyncio.run(parser2._resolve_image_url(by_id)) is None
 
 
 # ============================================================================

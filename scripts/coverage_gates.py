@@ -4,6 +4,11 @@
 掩盖局部盲区。本脚本按文件粒度校验关键模块，口径与整体门槛一致（生产
 口径：排除 tests/），阈值按"实测 - 5%"留缓冲（同 fail_under 规约）。
 
+未覆盖行不是一律该补的。三个长期停在 85-91% 的模块（generation / utils /
+image/extractor）已按"宿主异常兜底 / 防御性早退 / 降级日志 / 宿主对象形态变体"
+四类逐行留痕于 docs/COVERAGE_BLIND_SPOTS.md，其中真实逻辑已在 0.9.3 C2 补齐。
+改这三个模块的阈值前先读该文档，避免重复一轮"这 30 行能不能补"的分析。
+
 用法：先跑 pytest 生成 .coverage，再从仓库根执行 `python scripts/coverage_gates.py`。
 """
 
@@ -47,6 +52,13 @@ THRESHOLDS = {
     # 0.9.0 P2 降级宿主分支补盲后 86% → 100%，实测 − 5%；
     # 宿主兼容层升级风险最高，门禁守护防回归
     "runtime_adapter.py": 95,
+    # 0.9.3 C2：盲区分类后补真实逻辑测试（event_umo 群组改写 / dedupe 保留最新 /
+    # reason 截断 / content_to_text 多形态），86% → 91.3%，实测 − 5%。
+    # 此前它是三个薄弱模块中唯一无门禁者——补测收益无人守护。
+    "utils.py": 86,
+    # 0.9.3 C2：组件类型枚举形态与 URL/file scheme 互换补测，85% → 87.4%，实测 − 5%。
+    # 剩余盲区已在 docs/COVERAGE_BLIND_SPOTS.md 分类留痕，不再追数字。
+    "image/extractor.py": 82,
 }
 
 ROOT = Path(__file__).resolve().parents[1]

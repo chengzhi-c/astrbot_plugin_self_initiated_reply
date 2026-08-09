@@ -10,6 +10,7 @@ FakeToolSet / FakeEvent / FakeContext / FakeBuildResult。stub 安装是幂等�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import logging
 import sys
@@ -201,6 +202,33 @@ async def until(predicate: Any, timeout: float = 2.0) -> None:
         await asyncio.wait_for(_loop(), timeout=timeout)
     except asyncio.TimeoutError as exc:
         raise AssertionError(f"等待条件超时（{timeout}s）") from exc
+
+
+@contextlib.contextmanager
+def capture_logs(caplog: Any, logger: Any, level: int = logging.DEBUG) -> Any:
+    """在 ``caplog`` 中捕获插件日志，无论拿到的是桩 logger 还是宿主 logger。
+
+    宿主的 ``astrbot`` logger 带 loguru 拦截器且 ``propagate=False``，记录不流向
+    caplog 挂在 root 的处理器——``caplog.at_level`` 无论带不带 ``logger=`` 参数都
+    只调级别、不改传播，于是 ``caplog.records`` 恒空，日志断言变成假绿灯。本辅助
+    在块内临时放行传播并复原。
+
+    ``logger`` 传被测模块的 ``logger`` 对象（如 ``storage.logger``），不要传名字：
+    模块按动态包名加载，同一份源码在不同测试里可能绑到不同 logger 实例。
+    """
+    previous = logger.propagate
+    logger.propagate = True
+    try:
+        with caplog.at_level(level, logger=logger.name):
+            caplog.clear()
+            yield caplog
+    finally:
+        logger.propagate = previous
+
+
+def messages_at_least(caplog: Any, level: int) -> list[str]:
+    """caplog 中级别 >= ``level`` 的日志正文（已格式化）。"""
+    return [record.getMessage() for record in caplog.records if record.levelno >= level]
 
 
 def with_plugin(tmp_path: Path, scenario: Any, **config_overrides: Any) -> Any:

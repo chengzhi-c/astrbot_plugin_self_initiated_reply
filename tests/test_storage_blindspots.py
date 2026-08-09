@@ -8,8 +8,10 @@ _persist_config_obj 的多态宿主对象分支、原子写未预期异常、加
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
+from .host_stubs import capture_logs, messages_at_least
 from .test_storage_and_umo import PACKAGE_NAME, _load_modules
 
 
@@ -127,8 +129,12 @@ def test_write_json_atomic_unexpected_error(tmp_path: Path) -> None:
     assert storage._write_json_atomic(WeirdPath(), {"a": 1}) is False
 
 
-def test_load_config_data_unexpected_error() -> None:
-    """读取配置抛未预期异常：error 留痕后回退宿主传入值。"""
+def test_load_config_data_unexpected_error(caplog: object) -> None:
+    """读取配置抛未预期异常：error 留痕后回退宿主传入值。
+
+    回退是静默降级——用户配置读不出来却照常启动。若不记 error，线上表现为
+    「设置改了不生效」且无任何线索可归因。
+    """
     storage = _storage_module()
 
     class ReadBoomPath:
@@ -138,8 +144,14 @@ def test_load_config_data_unexpected_error() -> None:
         def read_text(self, encoding=None):
             raise RuntimeError("read broken")
 
-    data = storage.load_config_data(ReadBoomPath(), {"base": 1})
+    with capture_logs(caplog, storage.logger, logging.ERROR):
+        data = storage.load_config_data(ReadBoomPath(), {"base": 1})
+
     assert data == {"base": 1}
+    errors = messages_at_least(caplog, logging.ERROR)
+    assert any(
+        "read broken" in msg or "unexpected error loading config" in msg for msg in errors
+    ), f"配置读取失败未留痕，静默回退无法归因：{errors}"
 
 
 def test_load_sessions_unexpected_error_backs_up(tmp_path: Path) -> None:
@@ -195,8 +207,12 @@ def test_load_sessions_malformed_recent_items(tmp_path: Path) -> None:
     assert [item.text for item in sessions[umo].recent] == ["kept"]
 
 
-def test_load_sessions_record_exception_skips_session(tmp_path: Path) -> None:
-    """单个会话解析抛错：warning 跳过，不中断其余加载。"""
+def test_load_sessions_record_exception_skips_session(tmp_path: Path, caplog: object) -> None:
+    """单个会话解析抛错：warning 跳过，不中断其余加载。
+
+    跳过会静默丢掉该会话的配额与冷却历史。若不记 warning，表现为「某个群的
+    日限额莫名重置」，无痕可查。
+    """
     storage = _storage_module()
     path = tmp_path / "state.json"
     path.write_text("{}", encoding="utf-8")
@@ -213,12 +229,18 @@ def test_load_sessions_record_exception_skips_session(tmp_path: Path) -> None:
         "sessions": {"plat:GroupMessage:1": GetBoom()},
     }
     try:
-        sessions = storage.load_sessions(path, {"plat:GroupMessage:1"}, 5)
+        with capture_logs(caplog, storage.logger, logging.WARNING):
+            sessions = storage.load_sessions(path, {"plat:GroupMessage:1"}, 5)
     finally:
         storage.json.loads = orig_loads
     # 解析失败的会话被跳过；白名单 setdefault 重建的空壳不携带任何历史
     assert len(sessions["plat:GroupMessage:1"].recent) == 0
     assert sessions["plat:GroupMessage:1"].daily_count == 0
+
+    warnings = messages_at_least(caplog, logging.WARNING)
+    assert any(
+        "skipped malformed session state" in msg or "field broken" in msg for msg in warnings
+    ), f"会话被静默跳过，配额/冷却历史丢失却无痕：{warnings}"
 
 
 # ============================================================================

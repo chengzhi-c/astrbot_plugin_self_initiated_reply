@@ -20,7 +20,7 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
-from .host_stubs import MAIN_PACKAGE_NAME, with_plugin
+from .host_stubs import MAIN_PACKAGE_NAME, install_astrbot_stubs, load_package, with_plugin
 from .test_main_runtime import _make_event
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -740,9 +740,7 @@ def test_api_post_config_rejects_oversized_whitelist_item(tmp_path: Path) -> Non
     async def scenario(plugin, main):
         models = importlib.import_module(f"{main.__package__}.models")
         web = sys.modules["astrbot.api.web"]
-        web.request.payload = {
-            "whitelist_sessions": ["x" * (models.MAX_STRING_LIST_ITEM_LEN + 1)]
-        }
+        web.request.payload = {"whitelist_sessions": ["x" * (models.MAX_STRING_LIST_ITEM_LEN + 1)]}
         result = await plugin._api_post_config()
         assert result.get("ok") is False
         assert "过长" in result.get("error", "")
@@ -818,5 +816,141 @@ def test_admin_ids_hot_reload_on_file_change(tmp_path: Path) -> None:
         cmd.unlink()
         plugin._admin_probe_ts = 0.0
         assert plugin._refresh_admin_ids() == {"222"}
+
+    with_plugin(tmp_path, scenario)
+
+
+# ============================================================================
+# webapi 配置审计键守卫（0.9.3：Provider/屏蔽名单入表，防条目丢失与静默失效）
+# ============================================================================
+
+# 必须被审计的安全敏感键。webapi 无独立鉴权，访问控制依赖宿主 Dashboard，
+# 这些键被篡改的后果是持续数据外泄或静默屏蔽，只能靠 INFO 留痕事后追溯。
+# 条目消失即红（防回退），新增条目需在此登记并说明理由。
+_REQUIRED_AUDITED_KEYS = {
+    "enabled",  # 插件总开关
+    "proactive_inherit_tools",  # 工具继承：放大宿主能力面
+    "whitelist_sessions",  # 生效范围
+    "judge_provider_id",  # 裁决上游：群聊上下文的去向
+    "vision_provider_id",  # 视觉上游：图片的去向
+    "vision_judge_provider_id",  # 视觉裁决上游：同上
+    "vision_judge_enabled",  # 图片外发总开关
+    "vision_main_enabled",  # 图片外发总开关
+    "ignored_sender_ids",  # 可静默屏蔽管理员的隐蔽开关
+}
+
+
+def test_audited_config_keys_cover_sensitive_surface() -> None:
+    """审计键集不得丢条目，且每个键必须真的能被审计到。
+
+    两个前提缺一，审计就静默失效（加了键却永不触发）：
+    1. 键在 CONFIG_SCHEMA_KEYS 内，`_parse_config_updates` 才会写入 updates；
+    2. `Settings` 上有可取值的字段，`_log_audited_changes` 才比得出新旧差异。
+    """
+    # webapi 顶层 import 宿主符号，必须先装桩；load_package 只注册动态包名。
+    # 缺任一步，单独跑本用例就会 ModuleNotFoundError（不能依赖其他用例的副作用）。
+    install_astrbot_stubs()
+    webapi = load_package(MAIN_PACKAGE_NAME, "webapi")
+    models = load_package(MAIN_PACKAGE_NAME, "models")
+
+    audited = set(webapi._AUDITED_CONFIG_KEYS)
+    missing = _REQUIRED_AUDITED_KEYS - audited
+    assert not missing, f"安全敏感键脱离审计: {sorted(missing)}"
+
+    settings = models.Settings.from_config({})
+    for key in audited:
+        assert key in webapi.CONFIG_SCHEMA_KEYS, f"{key} 不在 schema 内，updates 永不含它"
+        # whitelist_sessions 是唯一的键名/字段名不一致项，映射在 _log_audited_changes 内
+        attr = "whitelist" if key == "whitelist_sessions" else key
+        assert hasattr(settings, attr), f"{key} 在 Settings 上无 {attr} 字段，审计取不到值"
+
+
+def test_provider_change_emits_audit_log(tmp_path: Path, caplog: object) -> None:
+    """改 Provider 指向必须留下 INFO 审计；未变更的键不得刷日志。"""
+
+    async def scenario(plugin, main):
+        web = sys.modules["astrbot.api.web"]
+
+        with caplog.at_level(logging.INFO):
+            caplog.clear()
+            web.request.payload = {
+                "judge_provider_id": "attacker-endpoint",
+                "vision_provider_id": "attacker-vision",
+                "ignored_sender_ids": ["10001"],
+            }
+            assert (await plugin._api_post_config()).get("ok") is True
+
+        audit = [r.getMessage() for r in caplog.records if "config audit" in r.getMessage()]
+        assert audit, "Provider 变更未留审计日志"
+        joined = " ".join(audit)
+        for key in ("judge_provider_id", "vision_provider_id", "ignored_sender_ids"):
+            assert key in joined, f"{key} 变更未进审计"
+        assert plugin.settings.judge_provider_id == "attacker-endpoint"
+
+        # 幂等重放：值未变则不得再刷审计（防日志噪音掩盖真实变更）
+        with caplog.at_level(logging.INFO):
+            caplog.clear()
+            web.request.payload = {"judge_provider_id": "attacker-endpoint"}
+            assert (await plugin._api_post_config()).get("ok") is True
+        assert not [r for r in caplog.records if "config audit" in r.getMessage()], (
+            "值未变更却记录了审计日志"
+        )
+
+    with_plugin(tmp_path, scenario)
+
+
+# ============================================================================
+# 阶段 1.2：异常回显收口——内部细节只进服务端日志，不回客户端
+# ============================================================================
+
+
+def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplog: object) -> None:
+    """内部异常的 str() 不得进入 HTTP 响应；详情只落服务端日志（阶段 1.2）。
+
+    攻击面：``_save_storage`` 的 ``OSError`` 文本带绝对路径，回显即泄露磁盘布局；
+    provider 枚举异常常带上游 SDK 原文。此处用一个含可识别路径的异常做探针，
+    断言它出现在日志里、但不出现在响应里。
+
+    断言必须取 ``result["error"]`` 原字符串，**不能**用 ``str(result)``：dict 的
+    repr 会把 Windows 路径里的 ``\\`` 转义成 ``\\\\``，探针字符串于是永远匹配不上，
+    测试会在真的泄露时依然变绿（首次写这条守卫时实测踩到，反向验证才发现）。
+    """
+    secret = "C:\\internal\\secret-layout\\state.json"
+
+    async def scenario(plugin, main):
+        web = sys.modules["astrbot.api.web"]
+
+        # 1) 配置保存内部失败：响应必须是通用文案
+        async def boom() -> None:
+            raise OSError(f"[Errno 13] Permission denied: {secret}")
+
+        plugin._save_storage = boom
+        with caplog.at_level(logging.WARNING):
+            caplog.clear()
+            web.request.payload = {"cooldown_sec": 77}
+            result = await plugin._api_post_config()
+        assert result.get("ok") is False
+        echoed = str(result.get("error", ""))
+        assert secret not in echoed, f"内部路径回显给了客户端: {echoed}"
+        assert "Errno" not in echoed and "Permission denied" not in echoed, (
+            f"底层异常原文回显给了客户端: {echoed}"
+        )
+        assert secret in " ".join(r.getMessage() for r in caplog.records), (
+            "内部细节既没回显也没进日志——排障线索被一起丢掉了"
+        )
+
+        # 2) 校验失败仍须回显字段级文案（前端表单靠它定位出错字段）
+        web.request.payload = {"cooldown_sec": "not-an-int"}
+        rejected = await plugin._api_post_config()
+        assert rejected.get("ok") is False
+        assert "cooldown_sec" in str(rejected.get("error", "")), (
+            "校验文案被一并通用化，前端无法定位出错字段"
+        )
+
+        # 3) 主题接口不得反射客户端原值
+        web.request.payload = {"theme": "<script>alert(1)</script>"}
+        theme_result = await plugin._api_post_ui_theme()
+        assert theme_result.get("ok") is False
+        assert "script" not in str(theme_result.get("error", "")), "回显了客户端可控原值"
 
     with_plugin(tmp_path, scenario)

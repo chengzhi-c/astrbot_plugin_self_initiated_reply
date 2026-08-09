@@ -86,10 +86,9 @@ def _images_for(coordinator, umo: str, *, age_sec: float = 3600.0):
 
 
 async def test_invalidate_cascades_all_resources() -> None:
-    mod, coordinator, ctx = _make_coordinator()
+    _, coordinator, ctx = _make_coordinator()
     coordinator.record_event("s1", object(), 100.0)
     coordinator.capture_images("s1", 100.0, [_Image("a")])
-    coordinator.mark("s1", mod.SessionPhase.GENERATING)
 
     generation = coordinator.invalidate("s1", force_cancel=True)
 
@@ -98,7 +97,6 @@ async def test_invalidate_cascades_all_resources() -> None:
     assert "s1" not in ctx.events
     assert "s1" not in ctx.event_at
     assert "s1" not in ctx.images
-    assert coordinator.state("s1") is mod.SessionPhase.IDLE
 
 
 async def test_record_event_notifies_silence_reset() -> None:
@@ -142,43 +140,6 @@ async def test_reset_all_clears_everything() -> None:
     assert ctx.events == {}
     assert ctx.event_at == {}
     assert ctx.images == {}
-
-
-# ============================================================================
-# FSM 状态投影
-# ============================================================================
-
-
-async def test_state_projection_from_resources() -> None:
-    mod, coordinator, ctx = _make_coordinator()
-    assert coordinator.state("s1") is mod.SessionPhase.IDLE
-
-    coordinator.record_event("s1", object(), 1.0)
-    assert coordinator.state("s1") is mod.SessionPhase.OBSERVING
-
-    ctx.running.add("s1")
-    assert coordinator.state("s1") is mod.SessionPhase.DECIDING  # 运行标记优先于事件
-
-
-async def test_explicit_phase_overrides_projection() -> None:
-    mod, coordinator, _ = _make_coordinator()
-    coordinator.mark("s1", mod.SessionPhase.GENERATING)
-    assert coordinator.state("s1") is mod.SessionPhase.GENERATING
-
-    coordinator.mark("s1", mod.SessionPhase.DELIVERING)
-    assert coordinator.state("s1") is mod.SessionPhase.DELIVERING
-
-    coordinator.mark("s1", mod.SessionPhase.IDLE)
-    assert coordinator.state("s1") is mod.SessionPhase.IDLE
-
-
-async def test_invalidate_resets_explicit_phase() -> None:
-    mod, coordinator, _ = _make_coordinator()
-    coordinator.mark("s1", mod.SessionPhase.DECIDING)
-
-    coordinator.invalidate("s1")
-
-    assert coordinator.state("s1") is mod.SessionPhase.IDLE
 
 
 # ============================================================================

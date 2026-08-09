@@ -10,12 +10,12 @@
 
 <p align="center">
   让 AstrBot 在白名单会话里学会"自然接话"的插件。<br>
-  <img alt="版本" src="https://img.shields.io/badge/版本-0.9.2-4a5580">
+  <img alt="版本" src="https://img.shields.io/badge/版本-0.9.3-4a5580">
   <img alt="AstrBot 插件" src="https://img.shields.io/badge/AstrBot-插件-7b86ab">
 </p>
 
 <p align="center">
-  <strong><a href="#目录">目录</a></strong> · <a href="README.en.md">English</a>
+  <strong><a href="#目录">目录</a></strong> · <a href="#english">English</a>
 </p>
 
 ---
@@ -35,6 +35,7 @@
 - [故障排查](#故障排查)
 - [安全提示](#安全提示)
 - [小结](#小结)
+- [English](#english)
 
 </details>
 
@@ -232,3 +233,39 @@
 ## 📌 小结
 
 业镜让 AstrBot 既能主动搭话又不越界：轻量的判断模型决定"何时开口"，主 Agent 决定"说些什么"，严格的工具边界确保每次主动行为默认安全。从[设置页面](#设置页面)与[建议配置](#建议配置)起步，再用[指令](#指令)与[故障排查](#故障排查)微调与诊断。别忘了把 Dashboard 置于可信访问之后——详见[安全提示](#安全提示)。
+
+---
+
+<a name="english"></a>
+
+## 🌐 English summary
+
+An AstrBot plugin that lets the bot **join conversations on its own** inside
+whitelisted sessions.
+
+- **How it works.** After a message arrives the plugin waits for the
+  conversation to fall silent, then asks a cheap *judge model* one question —
+  "should I reply?" — which must answer with strict JSON
+  (`{"should_reply": bool, "reason": str}`). The reply body itself is produced
+  by AstrBot's own main Agent pipeline.
+- **Two independent paths.** Direct `@Bot` mentions, wake words and commands
+  keep using the normal reply chain; the proactive path never interferes.
+- **Tool boundary is fail-closed.** A proactive run defaults to an empty tool
+  allowlist. If the tool set cannot be enumerated or cleaned, the run is
+  aborted rather than executed with a partial boundary. Host-level dangerous
+  capabilities (cron, browser/computer use, file extraction) stay disabled even
+  when `proactive_inherit_tools` is on.
+- **Optional vision.** Off by default. When enabled, recent images can be
+  described and attached to the judge and/or main prompt. Descriptions are
+  treated as untrusted context: they never enter history or trigger tools.
+- **Commands.** `/selfreply` plus `status`, `add`, `remove`, `list`,
+  `check [content]`, `on`, `off`, `debug`.
+- **Requirements.** AstrBot `>=4.23.3,<5`, Python `>=3.10`, and **zero runtime
+  third-party dependencies** — everything reuses the host API.
+
+> ⚠️ **Security.** The bundled settings page and its Web API have **no
+> independent authentication**; access control is inherited entirely from the
+> AstrBot Dashboard. Do not expose the AstrBot web port to untrusted networks.
+
+Full documentation is Chinese-only (the config schema and UI are Chinese); see
+the sections above.

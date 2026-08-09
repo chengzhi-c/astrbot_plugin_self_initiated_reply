@@ -1,7 +1,6 @@
 """事件忽略判定单测（ticket 06 验收）：should_ignore_event 纯函数行为不变。
 
 覆盖验收项：消息忽略判定（自消息/命令/纯图无识图/忽略名单/直接点名）。
-0.9.0 B4：实现自 events.py 并入 utils.py，断言对象同步改指 utils。
 """
 
 from __future__ import annotations

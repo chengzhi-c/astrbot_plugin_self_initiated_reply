@@ -717,14 +717,37 @@ def test_version_consistency_across_metadata() -> None:
         f"pyproject.toml version={pyproject['project']['version']} 与 PLUGIN_VERSION={version} 不一致，"  # noqa: E501
         "wheel 文件名与 dist-info 会停留在旧版本"
     )
-    # README 版本号由 shields 徽章承载（0.7.22 起，原「当前版本」行随 README 重写移除）；
-    # 中英双语 badge 都校验（中文版「版本-x.y.z」，英文版「version-x.y.z」，
-    # 统一用 -{version}- 子串兼容）
-    for readme_name in ("README.md", "README.en.md"):
-        text = (root / readme_name).read_text(encoding="utf-8")
-        assert f"-{version}-" in text, f"{readme_name} badge 版本与 PLUGIN_VERSION 不一致"  # noqa: E501
+    # README 版本号由 shields 徽章承载（0.7.22 起，原「当前版本」行随 README 重写移除）。
+    # 0.9.3 起 README.en.md（234 行精确镜像）并入 README.md 的英文摘要节，
+    # 单一 README 单一徽章，不再有双语同步义务。
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    assert f"-{version}-" in readme, "README.md badge 版本与 PLUGIN_VERSION 不一致"
     # 宿主下限声明保持一致
     assert '">=4.23.3,<5"' in metadata
+
+
+def test_ci_docstring_gate_comment_matches_real_thresholds() -> None:
+    """ci.yml 里描述 docstring 门禁的注释必须与脚本常量一致。
+
+    0.9.3 收尾实测缺陷：注释写「CC>=16」而 `docstring_gates.py` 的
+    `MIN_CC_REQUIRING_DOC` 实际是 12。这类注释漂移不会让门禁失效，但会让
+    读 CI 的人以为 12~15 的函数不必写 docstring，从而在 review 时放过本该
+    补文档的函数——注释是唯一的对外口径，必须锁在常量上。
+    """
+    root = Path(__file__).resolve().parents[1]
+    gates = (root / "scripts" / "docstring_gates.py").read_text(encoding="utf-8")
+    ci = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    lines_match = re.search(r"^MAX_LINES_WITHOUT_DOC\s*=\s*(\d+)", gates, re.MULTILINE)
+    cc_match = re.search(r"^MIN_CC_REQUIRING_DOC\s*=\s*(\d+)", gates, re.MULTILINE)
+    assert lines_match and cc_match, "docstring_gates.py 的阈值常量名已变，本守卫需同步"
+    max_lines, min_cc = lines_match.group(1), cc_match.group(1)
+
+    # 注释里同时出现行数与 CC 两个口径，二者都必须等于常量真值
+    assert f">{max_lines} 行" in ci, (
+        f"ci.yml 注释的行数阈值与 MAX_LINES_WITHOUT_DOC={max_lines} 不一致"
+    )
+    assert f"CC>={min_cc}" in ci, f"ci.yml 注释的复杂度阈值与 MIN_CC_REQUIRING_DOC={min_cc} 不一致"
 
 
 # ============================================================================

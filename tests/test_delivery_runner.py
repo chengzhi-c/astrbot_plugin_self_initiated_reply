@@ -234,43 +234,27 @@ async def test_record_save_failure_returns_false(tmp_path: Path) -> None:
     assert state.daily_count == 1  # 内存状态仍记录，仅持久化失败
 
 
-async def test_record_proactive_state_flows_through_debounced_saver(tmp_path: Path) -> None:
-    """合并写契约：record_proactive_state 只置脏，flush 才真正落盘。
+async def test_record_proactive_state_persists_every_record(tmp_path: Path) -> None:
+    """落盘契约：每条记录调用返回时状态已持久化，无延迟窗口。
 
-    0.8.8 前 delivery 层测试注入的是直接可 await 的 save，掩盖了生产注入
-    （异步闭包直连 DebouncedStateSaver.mark_dirty）"置脏 ≠ 同步写"
-    的语义；本测试用真实合并器锁定契约。
+    0.9.3 删除 DebouncedStateSaver 后，注入的回调即 ``_save_storage``
+    本体（串行锁 + to_thread 原子写）。本测试锁定"记录即落盘"：
+    崩溃窗口为零，不存在"已发送但状态未落盘"的中间态。
     """
     writes: list[str] = []
-    saver_mod = importlib.import_module(f"{PACKAGE_NAME}.state_saver")
 
-    async def do_save() -> None:
+    async def save() -> None:
         writes.append("save")
 
-    saver = saver_mod.DebouncedStateSaver(do_save=do_save, debounce_sec=60.0)
-
-    async def save_like_production() -> None:
-        # 与生产注入同语义（0.9.0 C' 后为异步闭包直连）：async 包装 + 置脏
-        saver.mark_dirty()
-
-    _, models, runner, _ = _make_runner(tmp_path, save=save_like_production)
+    _, models, runner, _ = _make_runner(tmp_path, save=save)
     state = _state(models)
 
     ok = await runner.record_proactive_state("s1", state, "你好", 0)
     assert ok is True
-    assert writes == [], "合并写：置脏后不得立即落盘"
-    assert saver.pending is True
+    assert writes == ["save"], "记录即落盘，不得延迟"
 
-    await saver.flush()
-    assert writes == ["save"], "flush 后最终落盘"
-    assert saver.pending is False
-
-    # 窗口内第二条记录：不重复落盘，flush 后合并为一次
     await runner.record_proactive_state("s1", state, "第二条", 0)
-    assert writes == ["save"], "窗口内重复置脏不重复落盘"
-    await saver.flush()
-    assert writes == ["save", "save"]
-    saver.cancel()
+    assert writes == ["save", "save"], "每条记录各自落盘"
 
 
 # ============================================================================

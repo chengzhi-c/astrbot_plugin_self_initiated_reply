@@ -14,16 +14,40 @@ from __future__ import annotations
 import glob
 import sys
 import zipfile
+from fnmatch import fnmatch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 # 禁止出现的开发物前缀（相对 wheel 内路径）
-FORBIDDEN_PREFIXES = ("tests/", ".scratch/", "scripts/", "docs/", ".github/", ".gitignore")
+# assets/ 是 README 图源（4 张 JPG / 463KB），运行时零引用；0.9.2 实测它占 wheel 的 69%，
+# 移出后 687,531 → 213,049 B。与 0.8.3 的 exclude 漂移同理，必须由断言锁死防复发。
+FORBIDDEN_PREFIXES = (
+    "tests/",
+    ".scratch/",
+    "scripts/",
+    "docs/",
+    ".github/",
+    ".gitignore",
+    "assets/",
+)
 # 必须存在的运行时文件（相对 wheel 内路径）
 REQUIRED_FILES = ("metadata.yaml", "_conf_schema.json", "main.py", "logo.png", "pages/")
 # 开发配置类：wheel 内不应出现
-FORBIDDEN_SUFFIXES = (".pre-commit-config.yaml",)
+FORBIDDEN_SUFFIXES = (".pre-commit-config.yaml", ".pyc")
+# 测试/工具运行产物。上面按固定前缀与后缀匹配的名单认不出这类文件：
+# pytest-cov 并行数据名为 .coverage.<host>.pid<N>.<rand>，既不在已知前缀下，
+# 也不以已知后缀结尾。0.9.3 阶段 4 实测它被打进 wheel 而守卫仍报"无泄漏"。
+FORBIDDEN_GLOBS = (
+    ".coverage",
+    ".coverage.*",
+    "*/__pycache__/*",
+    "__pycache__/*",
+    ".pytest_cache/*",
+    ".ruff_cache/*",
+    ".mypy_cache/*",
+    "*.egg-info/*",
+)
 
 
 def _find_wheel() -> Path:
@@ -47,6 +71,16 @@ def _expected_version() -> str:
     return match.group(1).strip()
 
 
+def _normalize(name: str) -> str:
+    """wheel 内路径规范化。
+
+    hatchling 生成的路径带 "./" 前缀。必须用 removeprefix 而非 lstrip("./")：
+    后者按字符集剥离，会把 ".github/..." 削成 "github/..."、".gitignore" 削成
+    "gitignore"，使三个以点开头的 FORBIDDEN_PREFIXES 永远匹配不到（0.9.3 修复）。
+    """
+    return name.replace("\\", "/").removeprefix("./")
+
+
 def main() -> int:
     wheel = _find_wheel()
     expected = _expected_version()
@@ -58,13 +92,16 @@ def main() -> int:
 
     failures: list[str] = []
     for name in names:
-        # hatchling 生成的 wheel 路径带 "./" 前缀，规范化后再断言
-        normalized = name.replace("\\", "/").lstrip("./")
-        if normalized.startswith(FORBIDDEN_PREFIXES) or normalized.endswith(FORBIDDEN_SUFFIXES):
+        normalized = _normalize(name)
+        if (
+            normalized.startswith(FORBIDDEN_PREFIXES)
+            or normalized.endswith(FORBIDDEN_SUFFIXES)
+            or any(fnmatch(normalized, pattern) for pattern in FORBIDDEN_GLOBS)
+        ):
             failures.append(f"开发物泄漏: {normalized}")
 
     for required in REQUIRED_FILES:
-        if not any(name.replace("\\", "/").lstrip("./").startswith(required) for name in names):
+        if not any(_normalize(name).startswith(required) for name in names):
             failures.append(f"缺少必需文件: {required}")
 
     # 版本一致性（0.8.3 发布缺陷回归守卫：wheel 文件名与 dist-info 曾停在 0.8.3）

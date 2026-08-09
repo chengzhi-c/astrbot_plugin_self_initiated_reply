@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from .host_stubs import ROOT
+from .source_contract import callers_of, defines, source_of
 from .test_vision import PACKAGE_NAME
 
 # 宿主私有层 import 语句：全仓库只允许出现在收敛点（适配层、宿主桩、兼容检查）
@@ -35,7 +36,6 @@ _CHECKED_MODULES = [
     "scheduler.py",
     "session_coordinator.py",
     "session_gate.py",
-    "state_saver.py",
     "storage.py",
     "utils.py",
     "webapi.py",
@@ -78,12 +78,15 @@ def test_callback_protocols_single_source() -> None:
 
 def test_history_budget_single_shape() -> None:
     """复审 S2：历史补全形状收敛到 utils.build_history_text，无镜像与硬编码。"""
-    src_utils = (ROOT / "utils.py").read_text(encoding="utf-8")
-    src_generation = (ROOT / "generation.py").read_text(encoding="utf-8")
-    src_decision = (ROOT / "decision.py").read_text(encoding="utf-8")
-    assert "async def build_history_text" in src_utils
-    assert "build_history_text(" in src_generation and "build_history_text(" in src_decision
-    assert "min(5," not in src_generation
+    assert defines("utils.py", "build_history_text")
+    assert callers_of("generation.py", "build_history_text") == [
+        "GenerationRunner.build_context_text"
+    ]
+    assert callers_of("decision.py", "build_history_text") == [
+        "DecisionMaker.build_recent_messages"
+    ]
+    # 历史条数预算只能来自配置，不得在 generation 侧硬编码上限
+    assert "min(5," not in source_of("generation.py")
 
 
 def test_build_config_type_dead_property_removed() -> None:
@@ -136,28 +139,29 @@ def test_host_symbol_table_single_source() -> None:
 
 def test_delivery_clear_result_single_shape() -> None:
     """复审 S4：事件结果回收统一经 _clear_result，出口处不得内联 try/except。"""
-    src = (ROOT / "delivery.py").read_text(encoding="utf-8")
-    assert "def _clear_result" in src
-    assert src.count("last_event.clear_result()") == 1  # 仅定义体内一处
+    assert defines("delivery.py", "DeliveryRunner._clear_result")
+    assert callers_of("delivery.py", "last_event.clear_result") == [
+        "DeliveryRunner._clear_result"
+    ], "宿主 clear_result 被在 _clear_result 之外直接调用（异常兜底会散落到各出口）"
 
 
 def test_generation_graceful_stop_single_shape() -> None:
     """复审 S4：超时/取消两分支收敛为 _graceful_stop，request_stop 只出现一处。"""
-    src = (ROOT / "generation.py").read_text(encoding="utf-8")
-    assert "def _graceful_stop" in src
-    assert src.count('"request_stop"') == 1
+    assert defines("generation.py", "GenerationRunner._graceful_stop")
+    assert callers_of("generation.py", "request_stop") == ["GenerationRunner._graceful_stop"], (
+        "宿主 request_stop 被在 _graceful_stop 之外调用（宽限等待语义会分叉）"
+    )
 
 
 def test_silence_remaining_on_state() -> None:
     """复审 S4：静默/活跃时间归属 SessionState，decision/scheduler 不得内联计算形状。"""
-    src_models = (ROOT / "models.py").read_text(encoding="utf-8")
-    src_decision = (ROOT / "decision.py").read_text(encoding="utf-8")
-    src_scheduler = (ROOT / "scheduler.py").read_text(encoding="utf-8")
-    assert "def remaining_silence_sec" in src_models
-    assert "def age_sec" in src_models
-    assert "remaining_silence_sec(" in src_decision
-    assert "max(0.0, silence_left)" not in src_scheduler
-    assert "_clock() - state.last_active_at" not in src_decision
+    assert defines("models.py", "SessionState.remaining_silence_sec")
+    assert defines("models.py", "SessionState.age_sec")
+    # decision 必须问 state 要剩余静默，而不是自己拿时钟减
+    assert callers_of("decision.py", "state.remaining_silence_sec") == ["DecisionMaker.local_gate"]
+    assert "_clock() - state.last_active_at" not in source_of("decision.py")
+    # scheduler 侧同理：夹取归 SessionState，这里不得再套一层 max(0.0, ...)
+    assert "max(0.0, silence_left)" not in source_of("scheduler.py")
 
 
 def _runtime_adapter():

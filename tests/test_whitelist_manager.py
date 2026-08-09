@@ -9,9 +9,11 @@
 from __future__ import annotations
 
 import importlib
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
+from .host_stubs import capture_logs, messages_at_least
 from .test_vision import PACKAGE_NAME, _load_modules
 
 
@@ -123,19 +125,29 @@ async def test_remove_rolls_back_in_memory_on_persist_failure(tmp_path: Path) ->
     assert ctx.persistence.save_calls == 2
 
 
-async def test_rollback_persist_failure_logs_and_rethrows(tmp_path: Path) -> None:
-    """回滚本身也失败：告警日志 + 原始异常继续上抛（不回滚静默吞掉）。"""
+async def test_rollback_persist_failure_logs_and_rethrows(tmp_path: Path, caplog: object) -> None:
+    """回滚本身也失败：告警日志 + 原始异常继续上抛（不回滚静默吞掉）。
+
+    留痕不可省：此时配置与状态文件的一致性已无法保证，若降级为 debug 或静默
+    pass，线上只会看到一次普通的写失败，看不到"连回滚都没成功"。
+    """
     _, _, models = _load_modules()
     ctx = FakeCtx(models)
     manager = ctx.make_manager()
     ctx.persistence.save_fail = True
     ctx.persistence.sync_fail = True  # 回滚时的重写也失败
 
-    try:
-        await manager.add(_umo_with_group())
-        raise AssertionError("expected RuntimeError")
-    except RuntimeError:
-        pass
+    with capture_logs(caplog, _whitelist_module().logger, logging.ERROR):
+        try:
+            await manager.add(_umo_with_group())
+            raise AssertionError("expected RuntimeError")
+        except RuntimeError:
+            pass
+
+    errors = messages_at_least(caplog, logging.ERROR)
+    assert any("rollback persistence failed" in msg for msg in errors), (
+        f"回滚失败未记 error，双写不一致会静默逃逸：{errors}"
+    )
 
 
 async def test_add_success_writes_once_and_creates_state(tmp_path: Path) -> None:
@@ -218,3 +230,53 @@ async def test_replace_filters_runtime_umos(tmp_path: Path) -> None:
     manager.replace({other})
 
     assert ctx.runtime_umos == {"qq:PrivateMessage:8": {other}}
+
+
+async def test_remove_rollback_restores_pruned_session_state(tmp_path: Path) -> None:
+    """B2 回归：remove 落盘失败回滚时，被 _prune 销毁的 SessionState 必须复活。
+
+    缺陷链：replace 先经 _prune 单向销毁会话状态（sessions.pop），commit_change
+    失败回滚只恢复白名单集合，SessionState 永不恢复 → 当日已回 N 次的配额与
+    冷却时间戳被静默清零，配额与冷却被绕过。
+    """
+    _, _, models = _load_modules()
+    umo = _umo_with_group()
+    group = _group_key(umo)
+    ctx = FakeCtx(models, whitelist={umo, group})
+    # 预灌运行态：日配额 7 次 + 冷却时间戳 + 最近事件
+    ctx.sessions[umo] = {"daily_count": 7, "last_proactive_at": 12345.0, "recent": [1]}
+    manager = ctx.make_manager()
+    ctx.persistence.save_fail = True
+
+    try:
+        await manager.remove(umo)
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError:
+        pass
+
+    # 白名单已回滚
+    assert ctx.settings.whitelist == {umo, group}
+    # SessionState 必须存活：配额/冷却/最近事件未被清零（修复前此处为 False）
+    restored = ctx.sessions.get(umo)
+    assert restored is not None, "回滚后 SessionState 被 _prune 销毁"
+    assert restored["daily_count"] == 7
+    assert restored["last_proactive_at"] == 12345.0
+    assert restored["recent"] == [1]
+
+
+async def test_replace_returns_pruned_state_snapshot(tmp_path: Path) -> None:
+    """B2 契约：replace 返回被移出会话的 SessionState 快照（供回滚复活）。"""
+    _, _, models = _load_modules()
+    umo = _umo_with_group()
+    group = _group_key(umo)
+    ctx = FakeCtx(models, whitelist={umo, group})
+    ctx.sessions[umo] = {"daily_count": 3}
+    ctx.sessions[group] = {"daily_count": 9}
+    manager = ctx.make_manager()
+
+    pruned = manager.replace(set())
+
+    # 快照含 umo 与群组键两份状态；内存已按契约回收
+    assert pruned[umo] == {"daily_count": 3}
+    assert pruned[group] == {"daily_count": 9}
+    assert umo not in ctx.sessions and group not in ctx.sessions
