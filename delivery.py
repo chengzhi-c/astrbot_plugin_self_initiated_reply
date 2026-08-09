@@ -26,6 +26,8 @@ from astrbot.api.event import MessageChain
 
 from .models import (
     PLUGIN_ID,
+    STALE_REPLY_MESSAGE,
+    STALE_TASK_MESSAGE,
     LocalGateCallback,
     SendOutcome,
     SendStatus,
@@ -96,9 +98,7 @@ class DeliveryRunner:
         trigger: str,
     ) -> str:
         """发送前门卫与发送状态机；返回结果消息。"""
-        gate = (
-            "" if self._gate.is_current(umo, expected_generation) else "会话已经更新，放弃旧任务。"
-        )
+        gate = "" if self._gate.is_current(umo, expected_generation) else STALE_TASK_MESSAGE
         if not gate:
             gate = self._local_gate(state, force=force)
         if gate:
@@ -146,9 +146,9 @@ class DeliveryRunner:
                         observed_active_at=observed_active_at,
                     )
                 if not self._gate.is_current(umo, expected_generation):
-                    return "会话已更新，放弃旧回复。"
+                    return STALE_REPLY_MESSAGE
                 if sent.status is SendStatus.SUPPRESSED:
-                    return "会话已更新，放弃旧回复。"
+                    return STALE_REPLY_MESSAGE
                 return "主动发送失败。"
         else:
             sent = SendOutcome(SendStatus.DELIVERED, "仅有工具直发")

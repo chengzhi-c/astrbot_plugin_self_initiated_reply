@@ -124,7 +124,6 @@ class ImageParser:
         *,
         provider_id: str = "",
         recorder_bridge: MessageRecorderBridge | None = None,
-        cache: ImageCache | None = None,
         timeout_sec: float = 20.0,
         source_cache_dir: Path | None = None,
         data_root: Path | None = None,
@@ -132,7 +131,7 @@ class ImageParser:
         self._bridge = bridge
         self._provider_id = str(provider_id or "").strip()
         self._recorder_bridge = recorder_bridge
-        self._cache = cache or ImageCache(max_size=50)
+        self._cache = ImageCache(max_size=50)
         # 同 key 并发解析共享同一次 provider 调用（避免重复计费）
         self._inflight: dict[str, asyncio.Future] = {}
         self._timeout_sec = max(1.0, float(timeout_sec))

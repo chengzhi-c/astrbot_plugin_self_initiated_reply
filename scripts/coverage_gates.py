@@ -22,10 +22,9 @@ from pathlib import Path
 import coverage
 
 # 文件路径（相对仓库根）→ 最低覆盖率百分比。
-# 实测基线（2026-08-07，Py 3.14.5，578 tests，0.9.0 D1/P2 补盲后）：main.py 96%、
-# image/parser.py 100%、scheduler.py 98%、decision.py 97%、generation.py 85%、
-# delivery.py 94%、whitelist.py 100%、session_coordinator.py 96%、storage.py 95%、
-# runtime_adapter.py 100%。
+# 每条阈值下方的行内注释记录它的来历（补盲前后实测值 + 定档理由），是修改
+# 阈值时唯一需要读的依据；本脚本运行时会打印各模块当前实测值，故此处不再
+# 复制一份会过期的基线快照。
 # events.py 已并入 utils.py（0.9.0 B4），对应门槛同步移除。
 # runtime_adapter.py 为宿主兼容层（宿主升级最易出问题），P2 补盲后入门禁。
 # 阈值随补盲推进上调，禁止下调（调低即回归）；跨 Python 版本留缓冲，

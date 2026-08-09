@@ -50,6 +50,7 @@ from .models import (
     PLUGIN_ID,
     PLUGIN_VERSION,
     SESSION_CANCEL_COMMAND_ACTIONS,
+    STALE_TASK_MESSAGE,
     MessageRecord,
     PipelineReply,
     SendOutcome,
@@ -844,7 +845,7 @@ class SelfInitiatedReplyPlugin(Star):
         if not force and not session_whitelisted(umo, self.settings.whitelist):
             return "会话不在主动回复白名单。"
         if not self._gate.is_current(umo, expected_generation):
-            return "会话已经更新，放弃旧任务。"
+            return STALE_TASK_MESSAGE
         if not force and not self._last_events.get(umo):
             return "没有可用的最近消息事件。"
         if self._gate.is_running(umo):
@@ -876,7 +877,7 @@ class SelfInitiatedReplyPlugin(Star):
             return decision
 
         if not self._gate.is_current(umo, expected_generation):
-            return "会话已经更新，放弃旧任务。"
+            return STALE_TASK_MESSAGE
         self._record_decision(
             umo,
             trigger,

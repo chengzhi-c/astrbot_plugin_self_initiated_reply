@@ -638,7 +638,6 @@ def bind_api_handlers(plugin) -> None:
 
 # 公开入口：main.py 初始化时加载主题偏好。
 load_ui_theme = _load_ui_theme
-save_ui_theme = _save_ui_theme
 
 
 class UnifiedManagerApi:
