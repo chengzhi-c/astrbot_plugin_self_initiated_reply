@@ -131,7 +131,7 @@ def _providers_from_manager(plugin) -> list[Any]:
     return []
 
 
-async def _api_get_config(plugin):
+async def _api_get_config(plugin) -> dict[str, Any]:
     """返回当前配置。"""
     try:
         return {
@@ -170,7 +170,7 @@ async def _api_get_config(plugin):
         return {"ok": False, "error": "配置读取失败"}
 
 
-async def _api_providers(plugin):
+async def _api_providers(plugin) -> dict[str, Any]:
     """返回当前可选聊天 Provider。"""
     try:
         return {"ok": True, "providers": _collect_provider_options(plugin)}
@@ -180,7 +180,7 @@ async def _api_providers(plugin):
         return {"ok": False, "providers": [], "error": "Provider 列表读取失败"}
 
 
-async def _api_cleanup_image_cache(plugin):
+async def _api_cleanup_image_cache(plugin) -> dict[str, Any]:
     """手动清理过期图片缓存；不删除有效窗口内仍受保护的源。"""
     if plugin._stopping:
         return {"ok": False, "error": "插件正在关闭"}
@@ -228,12 +228,12 @@ def _save_ui_theme(plugin, theme: str) -> bool:
         return False
 
 
-async def _api_get_ui_theme(plugin):
+async def _api_get_ui_theme(plugin) -> dict[str, Any]:
     """获取插件页面 UI 主题偏好。"""
     return {"ok": True, "theme": plugin._ui_theme}
 
 
-async def _api_post_ui_theme(plugin):
+async def _api_post_ui_theme(plugin) -> dict[str, Any]:
     """更新插件页面 UI 主题偏好（持久化到 ui_prefs.json）。"""
     try:
         data = await _request_json()
@@ -308,14 +308,14 @@ async def _request_json() -> Any:
     raise RuntimeError("当前 AstrBot Web API 不支持 JSON 请求读取")
 
 
-async def _api_post_config(plugin):
+async def _api_post_config(plugin) -> dict[str, Any]:
     async with plugin._config_lock:
         if plugin._stopping:
             return {"ok": False, "error": "插件正在关闭"}
         return await _api_post_config_locked(plugin)
 
 
-async def _api_post_config_locked(plugin):
+async def _api_post_config_locked(plugin) -> dict[str, Any]:
     """更新配置。"""
     try:
         data = await _request_json()
@@ -548,7 +548,7 @@ def _log_audited_changes(
         logger.info("[%s] webapi config audit: %s", PLUGIN_ID, ", ".join(changed))
 
 
-async def _api_status(plugin):
+async def _api_status(plugin) -> dict[str, Any]:
     """返回插件集成状态与会话级运行状态（调试面板导出，ticket 14）。
 
     覆盖：代次快照、运行中集合、任务数（延迟/运行中检查/后台）、缓存规模
