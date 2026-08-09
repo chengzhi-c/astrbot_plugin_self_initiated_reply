@@ -291,3 +291,35 @@ def test_fail_closed_warning_names_the_reason(caplog: object) -> None:
     assert result is False
     messages = [record.getMessage() for record in caplog.records]
     assert any("tools" in message for message in messages), f"告警未点明原因：{messages}"
+
+
+# ============================================================================
+# _require：各入口不再逐次 validate 之后的运行期唯一 None 兜底
+# ============================================================================
+
+
+def test_require_is_the_only_runtime_none_guard() -> None:
+    """入口取消逐次 validate 后，``_require`` 成为运行期唯一的 None 兜底。
+
+    加载期守卫（``main._validate_agent_api`` → ``validate()`` 硬模式）拒绝不兼容
+    宿主，但软模式只收集问题、不阻断。此时访问入口必须仍然抛出，且文案须来自
+    ``_require``：``_probe_problems`` 的消息在软模式下已被调用方吞掉，若 ``_require``
+    的 raise 被改成静默返回，None 会漏进宿主调用并在更深处以难诊断的形态崩溃。
+
+    判别串取 ``_require`` 独有的「所需的 」（后跟空格）：``_probe_problems`` 的
+    tool_set 分支写「缺少主 Agent ToolSet，无法建立…」，import_error 分支写
+    「所需的主 Agent API」（无空格），两者都不会误命中本断言。
+    """
+    runtime = _load_adapter()
+
+    # property 入口
+    adapter = _adapter(runtime, tool_set=None)
+    assert any("ToolSet" in item for item in adapter.validate(soft=True))
+    with pytest.raises(RuntimeError, match="缺少主动回复所需的 主 Agent ToolSet"):
+        _ = adapter.tool_set
+
+    # 方法入口
+    adapter = _adapter(runtime, event_result_cls=None)
+    assert any("MessageEventResult" in item for item in adapter.validate(soft=True))
+    with pytest.raises(RuntimeError, match="缺少主动回复所需的 MessageEventResult"):
+        adapter.new_event_result()

@@ -30,8 +30,12 @@ def _require(value: _T | None, name: str) -> _T:
     """探测值兜底解包：缺失即 raise，兼作 mypy 的 Optional 收窄。
 
     不用 assert：`python -O` 下 assert 语句被整体剥除，None 会漏进宿主
-    调用并在更深处以难诊断的形态崩溃。validate() 已在硬模式首错 raise，
-    本函数防御的是 -O 与「探测表新增符号但未进 _probe_problems」的漂移。
+    调用并在更深处以难诊断的形态崩溃。这条理由与是否真用 -O 部署无关，
+    它说明的是本函数为何写成 if/raise 而不是一行 assert，删掉会招来回改。
+
+    ``validate()`` 只在加载期跑一次（``main._validate_agent_api``），各入口
+    不再逐次自校验，因此本函数是运行期唯一的 None 兜底，也防「探测表新增
+    符号但未进 _probe_problems」的漂移。
     """
     if value is None:
         raise RuntimeError(f"当前 AstrBot 缺少主动回复所需的 {name}")
@@ -145,12 +149,6 @@ class AstrBotRuntimeAdapter:
 
     def __init__(self, capabilities: AgentRuntimeCapabilities) -> None:
         self.capabilities = capabilities
-        # 契约结论缓存：capabilities 是 frozen dataclass，探测结果在实例生命周期内
-        # 不会变，而 10 个入口（6 个 property + new_event_result / new_provider_request /
-        # call_event_hook / new_build_config）每次访问都会调 validate()（inspect.signature
-        # + 2 次宿主类实例化）。缓存只存 problems 列表，raise 逻辑留在缓存之外，
-        # 因此 hard 模式每次调用仍会抛出。
-        self._validated_problems: list[str] | None = None
 
     @classmethod
     def host_contract(cls) -> list[tuple[str, list[str]]]:
@@ -204,12 +202,18 @@ class AstrBotRuntimeAdapter:
     def validate(self, *, soft: bool = False) -> list[str]:
         """契约断言：缺失参数即红。硬模式首错 raise；软模式收集告警不阻塞。
 
-        探测结论按实例缓存（capabilities 不可变），但 raise 不进缓存——
-        硬模式重复调用仍会抛出，语义与未缓存时完全一致。
+        调用时机是加载期一次：``main._validate_agent_api`` 在 ``PluginMain.__init__``
+        首条语句执行（无条件、不被 try 包裹），宿主不兼容即拒绝加载。各入口
+        （6 个 property + ``new_event_result`` / ``new_provider_request`` /
+        ``call_event_hook`` / ``new_build_config``）**不再逐次调本方法**：
+        ``capabilities`` 是 frozen dataclass，加载期通过之后契约不会在运行期变化，
+        逐次校验只是重复 ``inspect.signature`` 与两次宿主类实例化。运行期的 None
+        兜底由 ``_require`` 承担。
+
+        所以这里不缓存探测结论：本方法的调用点已从「每次属性访问」降到「加载期
+        一次 + compat_check + 测试显式调用」，缓存换不到收益，只多一个字段。
         """
-        if self._validated_problems is None:
-            self._validated_problems = self._probe_problems()
-        problems = list(self._validated_problems)
+        problems = self._probe_problems()
         if problems and not soft:
             raise RuntimeError(problems[0])
         return problems
@@ -310,22 +314,18 @@ class AstrBotRuntimeAdapter:
 
     @property
     def tool_set(self) -> type[Any]:
-        self.validate()
         return _require(self.capabilities.tool_set, "主 Agent ToolSet")
 
     @property
     def build_main_agent(self) -> Callable[..., Any]:
-        self.validate()
         return _require(self.capabilities.build_main_agent, "build_main_agent")
 
     @property
     def get_session_conv(self) -> Callable[..., Any]:
-        self.validate()
         return _require(self.capabilities.get_session_conv, "_get_session_conv")
 
     @property
     def run_agent(self) -> Callable[..., Any]:
-        self.validate()
         return _require(self.capabilities.run_agent, "run_agent")
 
     def new_tool_set(self) -> Any:
@@ -334,28 +334,23 @@ class AstrBotRuntimeAdapter:
     @property
     def event_type(self) -> Any:
         """宿主 EventType 枚举（成员访问经此唯一出口）。"""
-        self.validate()
         return _require(self.capabilities.event_type, "EventType")
 
     @property
     def result_llm_type(self) -> Any:
         """宿主 ResultContentType.LLM_RESULT 值。"""
-        self.validate()
         return _require(self.capabilities.result_content_type, "ResultContentType").LLM_RESULT
 
     def new_event_result(self) -> Any:
         """宿主 MessageEventResult 实例（构造经此唯一出口）。"""
-        self.validate()
         return _require(self.capabilities.event_result_cls, "MessageEventResult")()
 
     def new_provider_request(self) -> Any:
         """宿主 ProviderRequest 实例。"""
-        self.validate()
         return _require(self.capabilities.provider_request_cls, "ProviderRequest")()
 
     async def call_event_hook(self, event: Any, event_type: Any, req: Any = None) -> Any:
         """宿主事件钩子链调用（event/event_type 位置参数）。"""
-        self.validate()
         hook = _require(self.capabilities.call_event_hook, "call_event_hook")
         if req is None:
             return await maybe_await(hook(event, event_type))
@@ -477,7 +472,6 @@ class AstrBotRuntimeAdapter:
         return all(name not in drop for name in remaining)
 
     def new_build_config(self, **kwargs: Any) -> Any:
-        self.validate()
         config_type = self.capabilities.build_config
         if config_type is None:
             raise RuntimeError("当前 AstrBot 缺少 MainAgentBuildConfig")
