@@ -153,11 +153,16 @@ class SelfInitiatedReplyPlugin(Star):
     def __init__(
         self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None
     ) -> None:
-        """装配插件：校验宿主 API → 解析路径 → 载入配置与状态 → 组装协作对象。
+        """装配插件：校验宿主 API → 解析路径 → 载入配置与状态 → 接线 → 启动副作用。
+
+        三段结构：本体只做「准备状态」与「启动副作用」，中间的六个协作对象构造
+        在 ``_assemble_components``（0.9.5 抽出，那段 120 行内部同质，顺序约束
+        与共享语义都记在它自己的 docstring 里）。
 
         顺序有硬依赖：``_validate_agent_api`` 必须最先（宿主不兼容时应在加载期
         就失败，而非运行到一半）；路径解析先于 ``load_sessions``；``settings``
-        先于所有以它为入参的协作对象（scheduler/decision/delivery/generation）。
+        与各状态容器先于 ``_assemble_components``（它的入参全部来自这里）；
+        ``_assemble_components`` 先于 ``_save_storage_sync`` 与两个 ensure_task。
         协作对象共享状态容器的引用而非副本，因此测试替换实例属性后仍指向最新值。
 
         失败时：宿主 API 缺失直接抛出（拒绝以半可用状态加载）；图片缓存目录
@@ -218,6 +223,65 @@ class SelfInitiatedReplyPlugin(Star):
         # 调试面板最近裁决（ticket 14）：每会话最近一条裁决的触发/原因，
         # 供 /status 导出；仅存内存，不落盘。
         self._last_decisions: dict[str, dict[str, Any]] = {}
+
+        self._assemble_components()
+
+        self._save_storage_sync()
+        try:
+            # Reload/startup is also a maintenance boundary: remove old orphaned
+            # cache files immediately instead of waiting for the first interval.
+            self._cleanup_image_sources(now=now_ts())
+        except Exception as exc:
+            logger.warning("[%s] startup image cache cleanup failed: %s", PLUGIN_ID, exc)
+        self._ensure_patrol_task()
+        self._ensure_image_cleanup_task()
+        logger.info(
+            "[%s] v%s enabled=%s whitelist=%d message_trigger=%s patrol_trigger=%s"
+            " pipeline_mode=true",
+            PLUGIN_ID,
+            PLUGIN_VERSION,
+            self.runtime_enabled,
+            len(self.settings.whitelist),
+            self.settings.enabled_message_trigger,
+            self.settings.enabled_patrol_trigger,
+        )
+        logger.info(
+            "[%s] vision judge=%s main=%s skip_stickers=%s provider=%s judge_provider=%s",
+            PLUGIN_ID,
+            self.settings.vision_judge_enabled,
+            self.settings.vision_main_enabled,
+            self.settings.vision_skip_stickers,
+            self.settings.vision_provider_id or "<current>",
+            self.settings.vision_judge_provider_resolved or "<current>",
+        )
+        bind_api_handlers(self)
+        register_web_apis(self)
+
+    def _assemble_components(self) -> None:
+        """把六个协作对象接线成一个流程（0.9.5 自 ``__init__`` 抽出）。
+
+        抽出的动机是长度：``__init__`` 曾 223 行，本段占其中 120 行且内部同质
+        （六个 ``XxxRunner(...)``，每个都是「注入回调 + 共享状态容器」），抽走后
+        ``__init__`` 回到「准备状态 → 接线 → 启动副作用」三段可扫读的层次。
+        只抽这一段：前面的路径/配置/容器初始化与后面的启动副作用留在原处，
+        因为它们各自主题不同，一起搬会把两个 ``try`` 与启动顺序也搅进来。
+
+        **调用位置的约束（0.9.5 逐项变异实测，不是推断）**：上界是
+        ``self._gate`` 与 ``self.sessions`` / 各状态容器 / ``settings``——它们是本
+        方法全部入参的来源；下界是 ``_ensure_patrol_task`` 与
+        ``_ensure_image_cleanup_task``，两者都走 ``self._scheduler``，挪到它们之后
+        会 ``AttributeError``（实测 136 red）。夹在这两界之间可以自由移动：挪到
+        ``_save_storage_sync`` 之后仍全绿（它只读 ``self.sessions``，不碰协作对象），
+        挪到 ``_last_decisions`` 之前也全绿（没有协作对象引用它）。
+        唯一的静默陷阱是 ``_cleanup_image_sources``：它也走 ``self._scheduler``，
+        但外层 ``try`` 吞掉 ``Exception`` 只打 warning，因此挪到它之后不会红，
+        只是启动清理静默失效——所以本方法必须留在整个启动副作用段之前。
+
+        六个对象之间**不再有构造顺序约束**（历史上有过，见下方 ``_delivery``
+        处的注释），因为所有跨对象引用都走 lambda 运行时查找而非绑定方法。
+        0.9.5 变异实测：把 ``DecisionMaker`` 从第二位挪到最后一位，671 项全绿。
+        协作对象共享状态容器的引用而非副本，因此测试替换实例属性后仍指向最新值。
+        """
         # 调度职责（延迟检查/巡检/清理）迁入 SessionScheduler（ticket 02）。
         # 状态容器经引用共享：测试对 _delay_tasks 等属性断言保持有效；
         # 回调经 lambda 运行时查找，测试替换实例方法后仍指向最新实现。
@@ -342,37 +406,6 @@ class SelfInitiatedReplyPlugin(Star):
             ),
             runtime_umos=self._whitelist_runtime_umos,
         )
-
-        self._save_storage_sync()
-        try:
-            # Reload/startup is also a maintenance boundary: remove old orphaned
-            # cache files immediately instead of waiting for the first interval.
-            self._cleanup_image_sources(now=now_ts())
-        except Exception as exc:
-            logger.warning("[%s] startup image cache cleanup failed: %s", PLUGIN_ID, exc)
-        self._ensure_patrol_task()
-        self._ensure_image_cleanup_task()
-        logger.info(
-            "[%s] v%s enabled=%s whitelist=%d message_trigger=%s patrol_trigger=%s"
-            " pipeline_mode=true",
-            PLUGIN_ID,
-            PLUGIN_VERSION,
-            self.runtime_enabled,
-            len(self.settings.whitelist),
-            self.settings.enabled_message_trigger,
-            self.settings.enabled_patrol_trigger,
-        )
-        logger.info(
-            "[%s] vision judge=%s main=%s skip_stickers=%s provider=%s judge_provider=%s",
-            PLUGIN_ID,
-            self.settings.vision_judge_enabled,
-            self.settings.vision_main_enabled,
-            self.settings.vision_skip_stickers,
-            self.settings.vision_provider_id or "<current>",
-            self.settings.vision_judge_provider_resolved or "<current>",
-        )
-        bind_api_handlers(self)
-        register_web_apis(self)
 
     @staticmethod
     def _validate_agent_api() -> None:
