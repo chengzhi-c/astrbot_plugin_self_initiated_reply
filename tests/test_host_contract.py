@@ -340,3 +340,42 @@ def test_main_no_direct_private_import() -> None:
     src = (ROOT / "main.py").read_text(encoding="utf-8")
     assert "from astrbot.core" not in src
     assert "import astrbot.core" not in src
+
+
+def test_command_handler_annotations_resolve_at_runtime() -> None:
+    """所有宿主注册的处理器注解必须在运行时可解析（0.9.5 线上修复）。
+
+    AstrBot 4.27.2 的加载期会对指令处理器解析类型注解；配合
+    ``from __future__ import annotations``（注解全为字符串），任何
+    TYPE_CHECKING-only 的名字都会在那一步 NameError，插件整体拒绝加载。
+    线上实测报错：``name 'CommandReply' is not defined``。
+
+    4.23.3 上「宿主只读 signature.parameters」曾成立，故此前把 ``CommandReply``
+    放在 TYPE_CHECKING 块里是安全的；4.27.2 起该前提失效。本测试直接复现宿主那一
+    步，把「注解必须运行时可解析」钉成契约，不再依赖对宿主内部实现的假设。
+
+    变异验证：把 main.py 的 ``CommandReply = AsyncGenerator[Any, None]`` 移回
+    ``if TYPE_CHECKING:`` 块内，本测试即红（NameError: CommandReply）。
+    """
+    import importlib
+    import typing
+
+    main_mod = importlib.import_module(f"{PACKAGE_NAME}.main")
+    plugin_cls = main_mod.SelfInitiatedReplyPlugin
+
+    # 宿主注册的两类处理器：event_message_type 钩子与 /selfreply 指令族。
+    handler_names = [
+        name for name in dir(plugin_cls) if name == "on_message" or name.startswith("selfreply")
+    ]
+    assert "on_message" in handler_names
+    # 指令族共 10 个（组本身 selfreply + 9 个子指令），少于此说明漏扫了。
+    assert len([n for n in handler_names if n.startswith("selfreply")]) == 10
+
+    for name in handler_names:
+        target = getattr(plugin_cls, name)
+        func = getattr(target, "handler", target)
+        if not callable(func) or not getattr(func, "__annotations__", None):
+            continue
+        # 等价于宿主加载期那一步；TYPE_CHECKING-only 名字在此 NameError。
+        hints = typing.get_type_hints(func)
+        assert "event" in hints, f"{name} 的 event 注解未能解析"

@@ -14,9 +14,14 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     # 只在类型检查期导入（0.9.4 阶段 2.2）：运行时 main.py 先 import 本模块
     # （main.py:115），反向真导入会成环。`from __future__ import annotations` 已让
-    # 注解全为字符串，故无需 quote、无加载期开销。运行时安全性已实测：宿主
-    # register_web_api 只把 handler 存进元组，全仓无 get_type_hints / eval_str
-    # 调用点，三处 inspect.signature 都只读 parameters，不解析注解字符串。
+    # 注解全为字符串，故无需 quote、无加载期开销。
+    #
+    # 本模块保持 TYPE_CHECKING-only 是安全的，但**理由不是「宿主不解析注解」**：
+    # 4.27.2 已证伪那条假设（见 AGENTS.md 与 main.py 的 CommandReply 注释——指令
+    # 处理器就是因此在加载期 NameError）。这里安全的真实理由是本模块的函数从不以
+    # 裸函数交给宿主：全部经 partial(...) 包装后再 register，partial 对象没有
+    # __annotations__，宿主拿不到也不会去解析这些名字。
+    # 哪天有函数改成裸函数直接注册，就必须同步把注解改成运行时可解析。
     #
     # **诚实说明其检查力**：本注解今天**不产生任何 mypy 检查力**。
     # `ignore_missing_imports = true` 让 astrbot.* 全解析为 Any，而

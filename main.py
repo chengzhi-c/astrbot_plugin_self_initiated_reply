@@ -22,7 +22,7 @@ from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
@@ -34,18 +34,22 @@ from .scheduler import SessionScheduler
 from .session_coordinator import SessionCoordinator
 from .session_gate import SessionGate
 
-if TYPE_CHECKING:
-    from astrbot.api.event import MessageEventResult
-
-    # 指令处理器的产出类型：每个 @selfreply.command 处理器都是 async generator，
-    # 逐条 yield event.plain_result(...)。宿主侧契约是
-    # AsyncGenerator[MessageEventResult | str | None]，本插件只 yield 前者。
-    #
-    # 只在 TYPE_CHECKING 下可见（纯文档用途，不引入加载期宿主依赖）。别改成运行时
-    # import：宿主注册指令时只读 signature.parameters，从不读 return_annotation，
-    # 也不用 get_type_hints/eval_str，故运行时无需此名字；而运行时 import 会让本文件
-    # 多一条宿主符号硬依赖，且测试替身未导出该符号。
-    CommandReply = AsyncGenerator[MessageEventResult, None]
+# 指令处理器的产出类型：每个 @selfreply.command 处理器都是 async generator，
+# 逐条 yield event.plain_result(...)。宿主侧契约是
+# AsyncGenerator[MessageEventResult | str | None]，本插件只 yield 前者。
+#
+# **必须是运行时可解析的名字，不能放回 TYPE_CHECKING 块**（0.9.5 线上修复）：
+# AstrBot 4.27.2 的插件加载期会对指令处理器解析类型注解（等价于 get_type_hints），
+# 而 `from __future__ import annotations` 让注解全是字符串，于是 TYPE_CHECKING-only
+# 的名字在那一步 NameError，整个插件拒绝加载：
+#   加载插件「业镜 · 主动回复」... 原因：name 'CommandReply' is not defined
+# 4.23.3 上实测「宿主只读 signature.parameters」曾经成立，4.27.2 起不再成立。
+#
+# 这里刻意不写成 AsyncGenerator[MessageEventResult, None]：那需要运行时 import 宿主
+# 符号（多一条加载期硬依赖，且测试替身未导出该名字）。参数化成 Any 不损失任何检查力
+# ——astrbot.* 在 mypy 眼里本就全是 Any（AGENTS.md 已记录），精确写法只有文档价值，
+# 该价值由本注释承载。
+CommandReply = AsyncGenerator[Any, None]
 
 _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
 
