@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     # 注解全为字符串，故无需 quote、无加载期开销。
     #
     # 本模块保持 TYPE_CHECKING-only 是安全的，但**理由不是「宿主不解析注解」**：
-    # 4.27.2 已证伪那条假设（见 AGENTS.md 与 main.py 的 CommandReply 注释——指令
+    # 4.27.2 已证伪那条假设（见 main.py 的 CommandReply 注释——指令
     # 处理器就是因此在加载期 NameError）。这里安全的真实理由是本模块的函数从不以
     # 裸函数交给宿主：全部经 partial(...) 包装后再 register，partial 对象没有
     # __annotations__，宿主拿不到也不会去解析这些名字。

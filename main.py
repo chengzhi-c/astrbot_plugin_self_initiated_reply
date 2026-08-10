@@ -52,7 +52,7 @@ from .session_gate import SessionGate
 #
 # 这里刻意不写成 AsyncGenerator[MessageEventResult, None]：那需要运行时 import 宿主
 # 符号（多一条加载期硬依赖，且测试替身未导出该名字）。参数化成 Any 不损失任何检查力
-# ——astrbot.* 在 mypy 眼里本就全是 Any（AGENTS.md 已记录），精确写法只有文档价值，
+# ——astrbot.* 在 mypy 眼里本就全是 Any，精确写法只有文档价值，
 # 该价值由本注释承载。
 CommandReply = AsyncGenerator[Any, None]
 
@@ -137,7 +137,7 @@ from .whitelist import WhitelistManager
 class SelfInitiatedReplyPlugin(Star):
     # 运行时绑定的四个 Web API 处理器（0.9.4 阶段 2.2）。它们不在本类里 def，而是由
     # webapi.bind_api_handlers 在 __init__ 末尾以 partial(...) 挂到实例上，保留历史
-    # 方法名供测试与外部以 plugin._api_* 调用（约 30 处调用点，见 AGENTS.md）。
+    # 方法名供测试与外部以 plugin._api_* 调用（约 30 处调用点）。
     #
     # 这里只写**裸注解、不赋值**：裸注解不创建类属性，运行时行为与此前完全一致
     # （既不会遮蔽 partial 绑定，也不会让 hasattr 提前为真），纯粹是给读者和编辑器

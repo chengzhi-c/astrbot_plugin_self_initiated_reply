@@ -436,7 +436,7 @@ async def test_generate_tracks_direct_sends_within_budget(tmp_path: Path) -> Non
 async def test_generate_passes_non_tool_messages_through_untouched(tmp_path: Path) -> None:
     """非工具消息由 ``tracked_send`` 原样转交宿主 ``original_send``（0.9.4 阶段 4）。
 
-    补的是 `docs/COVERAGE_BLIND_SPOTS.md` 记账的**欠账 2 行**（`generation.py`
+    补的是生成管线此前缺测的 2 行（`generation.py`
     `tracked_send` 的透传分支）。它是生产常态路径——agent 发的普通消息全走这里——
     而此前所有用例只发 ``tool_direct_result``，从未走到。这不是异常兜底：改坏了
     不会抛异常，只会让 agent 的普通消息静默消失或被错误计入直发预算。

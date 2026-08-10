@@ -1386,9 +1386,10 @@ def _find_host_platform_sources() -> Path | None:
     两个踩过的坑：版本必须精确锚定，曾用
     ``sorted(glob("astrbot-*"), reverse=True)`` 取"最新"，那是字典序，
     ``astrbot-4.5.8`` 排在 ``astrbot-4.23.3`` 前面（"5" > "2"），于是扫了旧版
-    源码，得出的漂移结论与锁定版无关。盘符必须写 ``E:/astrbot-compat/srcs``，
-    Git Bash 的 ``/e/...`` 只是 shell 侧挂载映射，Python 的 Path 不认，会静默
-    ``is_dir()==False`` 让本守卫恒 skip（"探针无效时通过不算结论" 的同类陷阱）。
+    源码，得出的漂移结论与锁定版无关。盘符探测顺序见下方
+    ``("E", "D", "C")``；Git Bash 的 ``/e/...`` 只是 shell 侧挂载映射，
+    Python 的 Path 不认，会静默 ``is_dir()==False`` 让本守卫恒 skip
+    （"探针无效时通过不算结论" 的同类陷阱）。
     """
     env = os.environ.get("SELFREPLY_HOST_SRC", "").strip()
     if env:
