@@ -51,6 +51,24 @@ DANGEROUS_TOOL_MODULES = [
 ]
 
 
+# 本检查实际能扫到的处理器数量：on_message + 9 个子指令 = 10（实测，不是推算）。
+#
+# 为什么不是 11：指令组本身（selfreply）在类属性上已被装饰器换成
+# RegisteringCommandable（宿主 star_handler.py:251，只有 group/command/
+# custom_filter/parent_group 四个属性），原函数从类属性取不到，故扫不到它。
+#
+# 这不构成盲区，两条实测理由：
+# 1. 宿主只对 CommandFilter 做注解解析（command.py:66 init_handler_md）。
+#    CommandGroupFilter 与 EventMessageTypeFilter 都没有这个方法，也没有
+#    eval_str 命中——即宿主本身就不解析指令组与 on_message 的注解。本检查扫
+#    10 个是宿主那 9 个的**超集**，严于宿主而非松于宿主。
+# 2. 10 个子指令与指令组共用同一个 CommandReply 别名，别名一旦不可解析，
+#    9 个子指令会同时报错。
+#
+# 加指令时同步改这里与 tests/test_host_contract.py 的同名断言。
+EXPECTED_HANDLER_COUNT = 10
+
+
 def _handler_signature_gaps() -> list[str]:
     """走一遍宿主注册处理器时真正做的那一步注解解析（0.9.5 补）。
 
@@ -65,12 +83,18 @@ def _handler_signature_gaps() -> list[str]:
     这里照抄那一步（``eval_str=True``），因此任何「注解里出现运行时不存在的名字」
     都会在此暴露，而不必等到装机。不去 import 宿主的 CommandFilter 来跑：本函数
     要在锁定版与最新版两种宿主上都成立，直接用 inspect 才不受宿主内部重构影响。
+
+    **不允许静默空转**：处理器是按名字前缀筛的，改名或重构后前缀不再命中时，
+    循环会一个都扫不到而本函数照旧返回空列表——那是假绿，正是本函数要消灭的
+    失败模式的翻版。故先断言扫到的数量等于 ``EXPECTED_HANDLER_COUNT``
+    （见该常量上方对「为什么是 10 而不是 11」的实测说明）。
     """
     import inspect
 
     from astrbot_plugin_self_initiated_reply.main import SelfInitiatedReplyPlugin
 
     gaps: list[str] = []
+    scanned = 0
     for name in sorted(dir(SelfInitiatedReplyPlugin)):
         if name != "on_message" and not name.startswith("selfreply"):
             continue
@@ -78,10 +102,16 @@ def _handler_signature_gaps() -> list[str]:
         func = getattr(target, "handler", target)
         if not callable(func):
             continue
+        scanned += 1
         try:
             inspect.signature(func, eval_str=True)
         except Exception as exc:
             gaps.append(f"处理器 {name} 的注解在加载期无法解析：{type(exc).__name__}: {exc}")
+    if scanned != EXPECTED_HANDLER_COUNT:
+        gaps.append(
+            f"加载路径检查只扫到 {scanned} 个处理器，预期 {EXPECTED_HANDLER_COUNT} 个："
+            f"筛选条件与实际处理器命名已脱节，本检查处于空转状态（假绿）"
+        )
     return gaps
 
 
