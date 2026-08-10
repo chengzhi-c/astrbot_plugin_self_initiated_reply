@@ -10,10 +10,12 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib
 import json
 import logging
+import re
 import sys
 import time
 import types
@@ -727,14 +729,82 @@ def test_response_text_single_source_behavior() -> None:
     assert utils.response_text(object()) == ""
 
 
+def _commands_alias_table() -> dict[str, set[str]]:
+    """``commands.py::parse_command_text`` 的运行时调度表（含 canonical 名）。"""
+    tree = ast.parse((ROOT / "commands.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "aliases" for t in node.targets):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            continue
+        return {
+            key.value: {e.value for e in value.elts if isinstance(e, ast.Constant)}
+            # ast.Dict 的 keys/values 由构造保证等长，strict 只是让这条断言显式化。
+            for key, value in zip(node.value.keys, node.value.values, strict=True)
+            if isinstance(key, ast.Constant) and isinstance(value, ast.Set)
+        }
+    raise AssertionError("commands.py 里找不到 parse_command_text 的 aliases 调度表")
+
+
+def _main_decorator_alias_table() -> dict[str, set[str]]:
+    """``main.py`` 的 ``@selfreply.command`` 注册表，归一成含 canonical 名的全集。
+
+    装饰器的 ``alias=`` 只写「除 canonical 之外」的名字（``add`` 甚至完全没有
+    ``alias=``），而调度表存的是全集，故此处补上 canonical 再比。
+    """
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    found: dict[str, set[str]] = {}
+    for name, alias_body in re.findall(
+        r'@selfreply\.command\(\s*"(\w+)"(?:\s*,\s*alias=\{([^}]*)\})?', source
+    ):
+        found[name] = {name} | set(re.findall(r'"([^"]+)"', alias_body or ""))
+    return found
+
+
 def test_command_aliases_single_source() -> None:
-    """命令别名表必须只在 commands.py 定义一次（main/webapi 不得镜像复制）。"""
-    hits = []
-    for path in production_py_files():
-        source = path.read_text(encoding="utf-8").replace("'", '"')
-        if '"debug", "diag", "diagnose"' in source:
-            hits.append(path.relative_to(ROOT).as_posix())
-    assert hits == ["commands.py"], f"命令别名表定义漂移：{hits}"
+    """``main.py`` 装饰器注册的别名集合必须与 ``commands.py`` 调度表逐组相等。
+
+    改自原字面量搜索版（0.9.5）。原版搜 ``'"debug", "diag", "diagnose"'`` 这一个
+    字符串，断言它只出现在 commands.py，并声称「main/webapi 不得镜像复制」。
+    实测那句声称从未被验证：``main.py`` 本来就有第二份别名数据，只是写成
+    ``alias={"diag", "diagnose"}``（集合字面量、无 canonical 名、顺序不定），
+    与被搜的字符串形态不同，所以搜不到。**9 组别名里原版只守住 1 组**
+    （``debug``），``add`` / ``check`` / ``help`` / ``list`` / ``off`` / ``on`` /
+    ``remove`` / ``status`` 全部可以无声漂移。
+
+    漂移的真实后果（不是洁癖）：给 ``/off`` 的装饰器加一个 ``halt`` 而忘了同步
+    ``commands.py``，宿主会注册 ``/selfreply halt``，但 ``parse_command_text``
+    对它返回 ``None``。于是指令处理器执行了、而依赖 ``parse_command_text`` 的
+    内联路径认不出它——两条路径对「这是不是命令」给出相反答案。在会主动发言的
+    插件里，这类分歧意味着它可能把一条命令当普通消息去接话。
+
+    改为语义断言而非单源化生产代码：装饰器的 ``alias=`` 与调度表语义不同
+    （前者不含 canonical 名），合成一处要么多存一份字段、要么在装饰器处做集合
+    减法；且把同一个 ``set`` 对象交给宿主装饰器，宿主若原地修改就会污染共享表
+    ——那属于未经验证的宿主行为。两侧各自保留、由本用例钉住等价，成本更低。
+
+    变异验证：给 ``main.py`` 的 ``/off`` 装饰器加一个 ``"halt"`` 而不改
+    commands.py，本用例即红并指名 off 组的差集。
+    """
+    table = _commands_alias_table()
+    decorators = _main_decorator_alias_table()
+
+    # 组集合本身先对齐：漏注册/多注册一个子命令在这里就红，而不是等到逐组比对
+    assert set(table) == set(decorators), (
+        f"子命令集合漂移：仅在 commands.py={sorted(set(table) - set(decorators))}，"
+        f"仅在 main.py 装饰器={sorted(set(decorators) - set(table))}"
+    )
+    # 组数一起断言：两侧同时被删空时集合仍相等，会静默通过
+    assert len(table) == 9, f"子命令组数变为 {len(table)}（期望 9），确认是有意增删后再改此数"
+
+    problems = [
+        f"  {action}: commands.py={sorted(names)} main.py 装饰器={sorted(decorators[action])}"
+        for action, names in sorted(table.items())
+        if names != decorators[action]
+    ]
+    assert not problems, "命令别名两侧不等价：\n" + "\n".join(problems)
 
 
 # ============================================================================
