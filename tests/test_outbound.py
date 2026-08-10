@@ -39,6 +39,70 @@ def test_tool_direct_send_budget_is_consumed_before_adapter_call() -> None:
     assert gateway.direct_texts == ("工具消息", "工具消息")
 
 
+def test_tool_direct_false_refunds_budget_and_keeps_count_in_sync() -> None:
+    """红线：sender 返 ``False``（确定未提交）必须退还直发预算。
+
+    不退还时 ``direct_send_count == 1`` 而 ``direct_texts == ()``，两者失去同源；
+    上层 ``main.py`` 的 ``not reply and not direct_send_count`` 因计数非零而不短路，
+    ``delivery.py`` 走"仅有工具直发"分支，于是**扣掉当日配额、推进冷却与观察窗口，
+    并回报"已通过工具主动回复。"，而群里一个字都没收到**。
+
+    变异锚定：删掉 ``outbound.py`` 里 ``self._direct_send_count -= 1`` 这一行，
+    本用例第一条断言即红（计数变 1）。断言的是精确值而非区间——区间断言在这里
+    恰好两边都成立，正是此前 clamp 假绿的同一类陷阱。
+    """
+    outbound = _load_gateway()
+    calls: list[str] = []
+
+    async def sender(_message):
+        calls.append("called")
+        return False
+
+    gateway = outbound.OutboundGateway(sender, max_direct_sends=2)
+    result = asyncio.run(
+        gateway.send(SimpleNamespace(type="tool_direct_result"), kind="tool_direct")
+    )
+
+    assert result.outcome.status.value == "failed_before_submit"
+    assert gateway.direct_send_count == 0
+    assert gateway.direct_texts == ()
+    assert len(calls) == 1
+
+
+def test_tool_direct_failures_are_bounded_after_refund() -> None:
+    """退还预算不得换来无界重试：失败次数自身也要有上限。
+
+    退还后 ``_direct_send_count`` 不再随失败增长，若不另计失败次数，不可达目标
+    会被反复调用，界就外借给了宿主迭代上限（0.9.4 §5 明确禁止这种依赖）。
+
+    变异锚定：删掉 ``_direct_fail_count >= self._max_direct_sends`` 那个早退，
+    ``len(calls)`` 会从 2 变成 4，本用例红。
+    """
+    outbound = _load_gateway()
+    calls: list[str] = []
+
+    async def sender(_message):
+        calls.append("called")
+        return False
+
+    gateway = outbound.OutboundGateway(sender, max_direct_sends=2)
+    statuses = [
+        asyncio.run(
+            gateway.send(SimpleNamespace(type="tool_direct_result"), kind="tool_direct")
+        ).outcome.status.value
+        for _ in range(4)
+    ]
+
+    assert statuses == [
+        "failed_before_submit",
+        "failed_before_submit",
+        "suppressed",
+        "suppressed",
+    ]
+    assert len(calls) == 2
+    assert gateway.direct_send_count == 0
+
+
 def test_tool_direct_exception_is_unknown_and_still_consumes_budget() -> None:
     outbound = _load_gateway()
 

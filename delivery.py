@@ -151,7 +151,13 @@ class DeliveryRunner:
                     return STALE_REPLY_MESSAGE
                 return "主动发送失败。"
         else:
-            sent = SendOutcome(SendStatus.DELIVERED, "仅有工具直发")
+            # 仅有工具直发。这里不再合成 SendOutcome：原先合成的 DELIVERED 之后
+            # 无人读取（下文只用 reply / direct_send_count），却让「确定未提交也算
+            # 已投递」这个错觉留在源码里。真正的把关在 OutboundGateway：确定未提交
+            # 会退还 direct_send_count，于是 main.py 的 `not reply and not
+            # direct_send_count` 会先行短路，走不到这一支。能到这里说明至少有一条
+            # 直发是 DELIVERED/UNKNOWN——UNKNOWN 可能已达，扣配额是正确的兜底。
+            pass
 
         if self.settings.log_reply_content and reply:
             preview = reply if len(reply) <= 80 else reply[:80] + "…"

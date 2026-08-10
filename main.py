@@ -271,7 +271,7 @@ class SelfInitiatedReplyPlugin(Star):
             context=self.context,
             runtime=lambda: _AGENT_RUNTIME,
             gate=self._gate,
-            local_gate=self._decision.local_gate,
+            local_gate=lambda state, force: self._decision.local_gate(state, force=force),
             enforce_policy=lambda req, inherit_tools: self._enforce_final_tool_policy(
                 req, inherit_tools
             ),
@@ -301,13 +301,15 @@ class SelfInitiatedReplyPlugin(Star):
         # 投递职责（门卫/钩子/发送分类/UNKNOWN 语义/状态记录）迁入
         # DeliveryRunner（ticket 05）。钩子与 context 发送经 lambda 运行时
         # 查找，测试替换 main.call_event_hook 或插件 context 后仍指向最新实现。
-        # local_gate 是全部注入回调里唯一的绑定方法，构造期即解析：
-        # DecisionMaker 必须早于 GenerationRunner 与 DeliveryRunner 构造，
-        # 否则重排顺序会静默 AttributeError。
+        # local_gate 原先是全部注入回调里唯一的绑定方法（构造期即解析），迫使
+        # DecisionMaker 必须早于 GenerationRunner 与 DeliveryRunner 构造，否则
+        # 重排顺序会静默 AttributeError。现已与邻居统一为 lambda 运行时查找，
+        # 该顺序约束随之解除——两处注入点（此处与 GenerationRunner）都要保持
+        # lambda 形态，只改一处约束依旧成立。
         self._delivery = DeliveryRunner(
             settings=self.settings,
             gate=self._gate,
-            local_gate=self._decision.local_gate,
+            local_gate=lambda state, force: self._decision.local_gate(state, force=force),
             last_events=self._last_events,
             call_hook=lambda event, event_type: call_event_hook(event, event_type),
             context_send=lambda umo, message: self.context.send_message(umo, message),

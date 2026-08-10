@@ -48,6 +48,11 @@ class OutboundGateway:
         self._allow_direct = allow_direct
         self._none_status = none_status
         self._direct_send_count = 0
+        # 确定未提交（sender 返 False）会退还 _direct_send_count，否则计数与
+        # _direct_texts 失去同源、上层把「一次都没发出去」读成已直发。退还会移除
+        # 「目标不可达时反复调 sender」的那个界，故另设失败上限把界留在本类内，
+        # 不外借给宿主迭代上限（0.9.4 §5：有界等待不得依赖外部兜底）。
+        self._direct_fail_count = 0
         self._direct_texts: list[str] = []
 
     @property
@@ -81,6 +86,12 @@ class OutboundGateway:
                 return OutboundResult(
                     SendOutcome(SendStatus.SUPPRESSED, "direct send budget exhausted")
                 )
+            if self._direct_fail_count >= self._max_direct_sends:
+                # 退还预算后此处是唯一的界：确定未提交不消耗 _direct_send_count，
+                # 若不另计失败次数，不可达目标会被无限重试。
+                return OutboundResult(
+                    SendOutcome(SendStatus.SUPPRESSED, "direct send failure budget exhausted")
+                )
             if self._allow_direct is not None and not self._allow_direct():
                 return OutboundResult(
                     SendOutcome(SendStatus.SUPPRESSED, "direct send gate rejected")
@@ -108,6 +119,12 @@ class OutboundGateway:
                 SendStatus.FAILED_BEFORE_SUBMIT,
                 "sender returned False (definitely not submitted)",
             )
+            if is_direct:
+                # 退还调用前扣掉的预算：确定未提交，没有「可能已送达」的重复风险。
+                # 不退还会让 direct_send_count 计入一条 direct_texts 里没有的消息，
+                # 上层据此把「群里一个字没收到」当成已直发，扣配额并谎报成功。
+                self._direct_send_count -= 1
+                self._direct_fail_count += 1
         elif raw_result is None:
             outcome = SendOutcome(self._none_status, "sender completed")
         else:

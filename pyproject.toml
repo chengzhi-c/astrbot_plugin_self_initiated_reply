@@ -161,8 +161,10 @@ fail_under = 89
 explicit_package_bases = true
 ignore_missing_imports = true
 # 无注解函数的函数体默认被 mypy 跳过。打开后这些函数体也进检查，作用面是
-# 「参数与返回全无注解」的函数（实测当前 8 处，全在 webapi.py 的 HTTP 处理器）。
-# 实测零新增错误。注意 ignore_missing_imports 让 astrbot.* 全部解析为 Any，
+# 「参数与返回全无注解」的函数。实测当前 0 处（webapi.py 的 HTTP 处理器早期
+# 是 8 处，已全部补齐注解），故此标志现为前瞻性保留：新增未注解函数时其函数体
+# 仍进检查，而不是静默跳过。别因「当前空转」删掉它。
+# 注意 ignore_missing_imports 让 astrbot.* 全部解析为 Any，
 # 故涉及宿主类型的注解只有文档价值，不产生类型检查力。
 check_untyped_defs = true
 files = [

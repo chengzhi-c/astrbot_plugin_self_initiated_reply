@@ -346,12 +346,26 @@ def _restored_containers() -> set[str]:
     原地恢复，只认 ``update`` 会把等价重写误判成"该容器不再被原地恢复"，
     进而连带把它的持有者全部报成失效断言（假阳性）。
 
+    反过来，``plugin.X = ...`` 属性重绑定要**从结果里剔除**：它不是写入方式之一，
+    而是原地恢复被破坏的信号。
+
+    此处的覆盖边界经实测厘清，别按直觉复述：**已登记**容器退回属性重绑定，即使
+    没有这条剔除也会红——``clear()`` 进 ``cleared``、``update`` 消失使它不进
+    ``written``，容器被剔出返回集，其持有者随即变成失效断言（``stale`` 方向）。
+    实测把 ``plugin._last_events.update(...)`` 改成重绑定，未加本剔除时
+    ``test_container_holder_table_is_complete`` 已经变红。
+
+    这条剔除补的是另一个形态：**新增**容器一开始就用属性重绑定、且从未登记进
+    ``CONTAINER_HOLDERS``。那时 ``missing`` 与 ``stale`` 两侧都空，守卫全绿，
+    B1 复发而无人知晓。显式剔除让"重绑定"成为可被观察的信号而不是沉默的缺席。
+
     ``_gate`` 走 ``restore()`` 整表替换，不在此列（它没有外部持有者，
     另有 ``test_session_gate_tables_have_no_external_holders`` 看守）。
     """
     node = _lookup_restore()
     cleared: set[str] = set()
     written: set[str] = set()
+    rebound: set[str] = set()
 
     def _plugin_attr(expr: ast.AST) -> str | None:
         """``plugin.X`` → ``"X"``；其余返回 None。"""
@@ -369,13 +383,22 @@ def _restored_containers() -> set[str]:
                 elif child.func.attr in {"update", "setdefault"}:
                     written.add(attr)
         # 形态二：plugin.X[k] = v（clear 后逐项赋值）
+        # 形态三：plugin.X = ...（属性重绑定——**破坏**原地恢复，见下）
         elif isinstance(child, ast.Assign):
             for target in child.targets:
                 if isinstance(target, ast.Subscript):
                     attr = _plugin_attr(target.value)
                     if attr is not None:
                         written.add(attr)
-    return cleared & written
+                else:
+                    attr = _plugin_attr(target)
+                    if attr is not None:
+                        rebound.add(attr)
+    # 属性重绑定不是等价写入：它换掉容器对象本身，组件手里的旧引用就此失联，
+    # 正是 B1 的成因。所以不能并进 written（那会把「已破坏」记成「已恢复」，
+    # 让持有者继续被登记、守卫继续绿）。从原地恢复集里剔除，使该容器的持有者
+    # 变成 stale，test_container_holder_table_is_complete 的第二条断言随即变红。
+    return (cleared & written) - rebound
 
 
 def _lookup_restore() -> ast.AST:
