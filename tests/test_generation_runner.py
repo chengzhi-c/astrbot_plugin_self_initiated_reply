@@ -285,6 +285,80 @@ async def test_generate_installs_and_restores_tool_boundary(tmp_path: Path) -> N
     assert event.get_extra("self_initiated_reply") is True
 
 
+class ThirdPartyHijackRuntime(FakeRuntime):
+    """在本插件运行期间接管 ``event.send``，模拟同事件上的第三方插件。
+
+    真实场景：事件对象不是本插件独占的，实测环境里 astrbot_plugin_AstrNa 也在
+    同一条消息上包装 send。这里在 ``build`` 里接管（时序正确：tracker 装在
+    build 之前），并保留对本插件 tracked_send 的引用，等价于第三方插件自己的
+    包装链——它自己回滚时会连带解开。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.third_party_send: object = None
+
+    async def build(self, **kwargs):
+        event = kwargs["event"]
+        inner = event.send
+
+        async def third_party_send(message):
+            return await inner(message)
+
+        self.third_party_send = third_party_send
+        event.send = third_party_send
+        return await super().build(**kwargs)
+
+
+async def test_generate_leaves_third_party_send_wrapper_intact(tmp_path: Path) -> None:
+    """第三方在运行期接管 send 时，本插件的回滚不得删掉/覆盖它的包装（0.9.5）。
+
+    缺陷形态：``finally`` 原先无条件 ``delattr(event, "send")``（实例上无 send 时）
+    或 ``event.send = original_instance_send``（有时）。两者都**成功执行、不抛异常**，
+    所以同段的 ``except`` 兜不住——删掉的是第三方的属性，覆盖掉的是第三方的包装。
+    症状：那个插件在这条消息之后静默失效，且无任何日志。
+
+    变异验证：把 generation.py 回滚段的 ``if getattr(last_event, "send", None) is
+    tracked_send:`` 去掉，本测试即红（第三方包装被 delattr 抹掉，
+    ``event.send`` 回落到类上的方法）。
+    """
+    _, models, runner, runtime, _, _ = _make_runner(tmp_path, runtime=ThirdPartyHijackRuntime())
+    event = FakeEvent()
+    runner._last_events["s1"] = event
+    result = await runner.generate("s1", _state(models), expected_generation=1, force=True)
+
+    assert result.text == "你好呀"
+    # 第三方的包装必须还在原位，而不是被本插件的回滚抹掉
+    assert event.__dict__.get("send") is runtime.third_party_send
+    # 其余三段回滚不受影响：identity 守卫只跳过 send 这一段
+    assert event.plugins_name == ["other_plugin"]
+    assert event.get_extra("provider_request") is None
+
+
+async def test_generate_does_not_overwrite_third_party_send_over_instance_send(
+    tmp_path: Path,
+) -> None:
+    """同上，但覆盖 ``had_instance_send=True`` 那一支（赋值回滚而非 delattr）。
+
+    上一条走的是「实例上原本没有 send」→ ``delattr`` 分支。本条先在实例上放一个
+    发送器，使回滚走 ``event.send = original_instance_send``——同样会**静默覆盖**
+    第三方的包装，且两支的修复是两行不同的代码，必须各有断言。
+    """
+    _, models, runner, runtime, _, _ = _make_runner(tmp_path, runtime=ThirdPartyHijackRuntime())
+    event = FakeEvent()
+
+    async def preexisting_instance_send(message):
+        return None
+
+    event.send = preexisting_instance_send  # 实例上已有 send（宿主或更早的插件装的）
+    runner._last_events["s1"] = event
+    result = await runner.generate("s1", _state(models), expected_generation=1, force=True)
+
+    assert result.text == "你好呀"
+    assert event.__dict__.get("send") is runtime.third_party_send
+    assert event.__dict__.get("send") is not preexisting_instance_send
+
+
 async def test_generate_inherit_tools_skips_boundary(tmp_path: Path) -> None:
     _, models, runner, _, _, _ = _make_runner(tmp_path, {"proactive_inherit_tools": True})
     event = FakeEvent()

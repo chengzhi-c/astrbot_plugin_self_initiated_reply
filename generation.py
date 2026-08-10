@@ -408,12 +408,23 @@ class GenerationRunner:
                 pass
             if tracker_installed:
                 try:
-                    if had_instance_send:
-                        last_event.send = original_instance_send
-                    else:
-                        delattr(last_event, "send")
+                    # identity 守卫（0.9.5）：只摘自己装的那一个。事件对象不是本插件
+                    # 独占的——同一条消息上可能有第三方插件（实测环境里有
+                    # astrbot_plugin_AstrNa）也在包装 send。若它在本次运行期间接管了
+                    # send，无条件回滚会**删掉/覆盖掉它的包装**：`delattr` 删的是它的
+                    # 属性，`= original_instance_send` 覆盖的是它的包装。两者都成功执行、
+                    # 不抛异常，因此原先的 except 兜不住——症状是那个插件在这条消息之后
+                    # 静默失效，且无任何日志。
+                    # 不是自己的就原样留下：本插件的 tracked_send 由那一层持有引用，
+                    # 它自己回滚时会连带解开，代价仅为本次直发统计可能不准（与原
+                    # except 分支同级的降级），远小于破坏另一个插件。
+                    if getattr(last_event, "send", None) is tracked_send:
+                        if had_instance_send:
+                            last_event.send = original_instance_send
+                        else:
+                            delattr(last_event, "send")
                 except Exception:
-                    # 宿主事件可能已被终结或 send 属性被第三方接管，摘除失败仅影响
+                    # 宿主事件可能已被终结或 send 为只读属性，摘除失败仅影响
                     # 本次直发统计，不能阻断后续两段回滚。
                     pass
             try:
