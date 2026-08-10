@@ -973,7 +973,10 @@ class SelfInitiatedReplyPlugin(Star):
             should_reply=bool(decision.get("should_reply")),
             reason=str(decision.get("reason") or ""),
         )
-        logger.debug(
+        # INFO 级（0.9.5，用户要求）：这是「判断模型最终决定回不回」的裁决行，是排查
+        # 「插件为什么没说话／为什么说话了」唯一需要的一行，DEBUG 下默认看不到。
+        # 同类的过程日志（skip/图片/inline 发送失败）保持 DEBUG，只升这一条。
+        logger.info(
             "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
             PLUGIN_ID,
             umo,

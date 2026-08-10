@@ -956,7 +956,11 @@ def test_r12_non_force_check_rejected_for_non_whitelisted_session(tmp_path: Path
 _DEBUG_LOG_CONTRACTS = [
     ("scheduler.py", "[%s] wait for minimum silence session=", 1),
     ("main.py", "[%s] skip session=%s trigger=", 1),
-    ("main.py", "[%s] decision session=%s trigger=", 1),
+    # `[%s] decision session=` 自 0.9.5 起移出本契约、升为 INFO（用户要求）。
+    # 它不违反本契约的初衷：初衷是拦「逐条消息级」的刷屏，而这一行与
+    # scheduler.py 那条已是 INFO 的 `check result session=` 在常见路径上 1:1
+    # 同频（都在一次 check_session 收敛点各打一次），不引入新的刷屏量级。
+    # 现由 tests/test_observability.py 的 _INFO_WHITELIST 看守。
     ("delivery.py", "[%s] skip before send session=", 1),
     ("delivery.py", "[%s] proactive reply sent session=", 2),
     ("delivery.py", "[%s] event send completed session=", 1),
@@ -966,7 +970,7 @@ _DEBUG_LOG_CONTRACTS = [
 
 
 def test_high_frequency_success_logs_stay_debug() -> None:
-    """8 处高频成功路径必须保持 DEBUG，且调用点个数不变。
+    """7 处高频成功路径必须保持 DEBUG，且调用点个数不变。
 
     个数一起断言，是因为只查级别时模板整体消失会静默通过——那正是日志退化的
     常见形态。
