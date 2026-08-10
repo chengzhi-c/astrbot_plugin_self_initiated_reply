@@ -32,7 +32,18 @@ FORBIDDEN_PREFIXES = (
     "assets/",
 )
 # 必须存在的运行时文件（相对 wheel 内路径）
-REQUIRED_FILES = ("metadata.yaml", "_conf_schema.json", "main.py", "logo.png", "pages/")
+# README.md / CHANGELOG.md 自 0.9.5 起是必需项：exclude 的 `*.md` 曾把它们一起排掉，
+# 装完插件的目录里没有任何面向用户的说明。它们靠 artifacts 收回（artifacts 优先于
+# exclude），而 artifacts 漏一条不会让构建失败——只会静默少文件，故必须在此断言。
+REQUIRED_FILES = (
+    "metadata.yaml",
+    "_conf_schema.json",
+    "main.py",
+    "logo.png",
+    "pages/",
+    "README.md",
+    "CHANGELOG.md",
+)
 # 开发配置类：wheel 内不应出现
 FORBIDDEN_SUFFIXES = (".pre-commit-config.yaml", ".pyc")
 # 测试/工具运行产物。上面按固定前缀与后缀匹配的名单认不出这类文件：

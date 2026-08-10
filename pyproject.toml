@@ -67,6 +67,12 @@ artifacts = [
   "pages/**",
   "logo.png",
   "LICENSE",
+  # 面向用户的两份文档必须随包（0.9.5）：下方 exclude 的 `*.md` 原本把它们一起
+  # 排掉了，装完插件的目录里没有任何说明文件。artifacts 优先于 exclude，故这里
+  # 显式收回这两个，其余 .md（AGENTS.md 与 docs/ 下的维护者文档）仍被排除——
+  # 那些写的是内部批次标记与开发约定，对使用者无意义。
+  "README.md",
+  "CHANGELOG.md",
 ]
 # 开发物不进生产 wheel（实测：整目录打包会把 tests/.scratch/scripts/docs/.github
 # 与开发配置全部打进发布包）；exclude 与 artifacts 并存时 artifacts 优先，

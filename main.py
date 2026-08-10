@@ -491,7 +491,7 @@ class SelfInitiatedReplyPlugin(Star):
             raise OSError(f"配置文件写入失败：{self._config_path}")
 
     async def _persist_enabled(self, enabled: bool) -> None:
-        """把 ``/on`` ``/off`` 的开关落盘，使其跨宿主重启保持（决策 5）。
+        """把 ``/on`` ``/off`` 的开关落盘，使其跨宿主重启保持。
 
         原先只改 ``runtime_enabled`` 这个纯内存量，重启后回落到持久 ``enabled``：
         用户打完 ``/off`` 以为「别再主动说话了」，宿主一重启插件又开始发言，而
@@ -1311,14 +1311,14 @@ class SelfInitiatedReplyPlugin(Star):
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("on", alias={"enable", "start"})
     async def selfreply_on(self, event: AstrMessageEvent) -> CommandReply:
-        """开启：启用主动回复运行，跨宿主重启保持（决策 5）。"""
+        """开启：启用主动回复运行，重启后保持。"""
         self._set_command_handled(event)
         yield event.plain_result(await self._command_text(event, "on"))
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("off", alias={"disable", "pause", "stop"})
     async def selfreply_off(self, event: AstrMessageEvent) -> CommandReply:
-        """关闭：暂停主动回复运行，跨宿主重启保持（决策 5）。"""
+        """关闭：暂停主动回复运行，重启后保持。"""
         self._set_command_handled(event)
         yield event.plain_result(await self._command_text(event, "off"))
 

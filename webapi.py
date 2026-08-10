@@ -161,7 +161,7 @@ async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
         return {
             "ok": True,
             # enabled 是持久配置；runtime_enabled 是当前实际运行态。
-            # 0.9.4 决策 5 后 /on /off 会同时改两者，两者分叉只剩一个来源：
+            # 0.9.4 起 /on /off 会同时改两者，两者分叉只剩一个来源：
             # POST config 提交的 enabled 与现值相同（见下方 elif 分支）。
             # 仍分开暴露——合并会让前端全量保存把运行态固化成持久配置。
             "enabled": plugin.settings.enabled,
@@ -535,8 +535,8 @@ async def _apply_config_updates(
             await plugin._save_storage()
 
         # 持久 enabled 真正变化才重置运行态并同步任务拓扑；全量表单重复提交
-        # 相同值不得改动运行态。决策 5 后 /on /off 自身已落盘，故此处两者
-        # 通常同值；本分支守的是「前端提交的 enabled 与现值不同」这一路。
+        # 相同值不得改动运行态。/on /off 自身已落盘，故此处两者通常同值；
+        # 本分支守的是「前端提交的 enabled 与现值不同」这一路。
         enabled_persisted_changed = (
             "enabled" in updates and snapshot["settings"].enabled != new_settings.enabled
         )
