@@ -841,10 +841,15 @@ def test_r9_timeout_requests_graceful_stop(tmp_path: Path) -> None:
 
 
 def test_r10_get_config_enabled_is_persisted_value(tmp_path: Path) -> None:
-    """/off 临时暂停后，GET config 的 enabled 仍是持久值，runtime_enabled 单独暴露。"""
+    """GET config 的 enabled 必须是持久值，runtime_enabled 单独暴露。
+
+    0.9.4 决策 5 后 ``/off`` 会同时落盘 ``enabled``，故此处不再用 ``/off`` 举例，
+    改为直接构造「两者分叉」这个状态：webapi 仍须分开暴露，否则前端全量保存会把
+    运行态固化成持久配置。分叉现在由 POST config 提交相同 enabled 值时产生。
+    """
 
     async def scenario(plugin, main):
-        plugin.runtime_enabled = False  # 模拟 /off
+        plugin.runtime_enabled = False  # 直接构造分叉态（不再等同于 /off）
         cfg = await plugin._api_get_config()
         # 修复前：enabled 返回 runtime_enabled=False → 前端全量保存会固化关闭（红灯）
         assert cfg["enabled"] is plugin.settings.enabled

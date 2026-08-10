@@ -440,6 +440,87 @@ async def _post_config(plugin, payload: dict) -> None:
     await plugin._api_post_config()
 
 
+def test_off_persists_enabled_across_restart(tmp_path: Path) -> None:
+    """决策 5 红线：``/off`` 必须落盘，重启后仍是关闭。
+
+    改持久前 ``/off`` 只改内存 ``runtime_enabled``，宿主一重启就回落到持久
+    ``enabled=True``——用户打完 ``/off`` 以为「别再主动说话了」，重启后插件又
+    开始发言，而用户不会知道要再打一次。这是静默违背用户意图。
+
+    变异锚定：把 ``_persist_enabled`` 里的 ``self.settings.enabled = enabled``
+    删掉（退回只改 runtime），第二条断言即红（磁盘仍是 True）；再把整个
+    ``_persist_enabled`` 换回 ``self.runtime_enabled = False``，第三条断言
+    （重建插件后仍关闭）也红。断言磁盘原文与重建后的实例，不只断言内存字段。
+    """
+    import json
+
+    async def scenario(plugin, main):
+        assert plugin.settings.enabled is True
+
+        text = await plugin._command_text(_make_event(), "off")
+
+        assert "已暂停" in text
+        assert plugin.runtime_enabled is False
+        assert plugin.settings.enabled is False
+        # 磁盘原文：光看内存字段无法区分「已落盘」与「只改了内存」
+        on_disk = json.loads(plugin._config_path.read_text(encoding="utf-8"))
+        assert on_disk["enabled"] is False
+        return plugin._config_path
+
+    config_path = with_plugin(tmp_path, scenario)
+
+    # 模拟宿主重启：全新实例从同一配置文件读起，必须仍是关闭
+    async def after_restart(plugin, main):
+        assert plugin.settings.enabled is False
+        assert plugin.runtime_enabled is False
+
+    assert json.loads(config_path.read_text(encoding="utf-8"))["enabled"] is False
+    with_plugin(tmp_path, after_restart)
+
+
+def test_off_rolls_back_memory_when_config_write_fails(tmp_path: Path) -> None:
+    """落盘失败必须内存回滚，不留「内存已关、磁盘仍开」的中间态（§6 同一纪律）。
+
+    不回滚的话：磁盘写失败但内存已关，插件当场静默，重启后又按磁盘的 True
+    复活——用户看到的是「关了一会儿自己又开了」，且没有任何错误抵达用户。
+    这里断言异常上抛 + 两个内存字段都回到原值。
+    """
+
+    async def scenario(plugin, main):
+        original_sync = plugin._sync_whitelist
+
+        def failing_sync():
+            raise OSError("配置文件写入失败（模拟）")
+
+        plugin._sync_whitelist = failing_sync
+        try:
+            with pytest.raises(OSError):
+                await plugin._command_text(_make_event(), "off")
+            # 回滚后内存两个字段都必须回到开启
+            assert plugin.settings.enabled is True
+            assert plugin.runtime_enabled is True
+        finally:
+            plugin._sync_whitelist = original_sync
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_on_persists_enabled_across_restart(tmp_path: Path) -> None:
+    """``/on`` 同样落盘：否则 ``/off`` 持久化后就再也开不回来（跨重启）。"""
+    import json
+
+    async def scenario(plugin, main):
+        await plugin._command_text(_make_event(), "off")
+        text = await plugin._command_text(_make_event(), "on")
+
+        assert "已启用" in text
+        assert plugin.settings.enabled is True
+        on_disk = json.loads(plugin._config_path.read_text(encoding="utf-8"))
+        assert on_disk["enabled"] is True
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_runtime_override_survives_unrelated_config_post(tmp_path: Path) -> None:
     """临时 off 后保存无关配置，不得清除临时运行态。"""
 

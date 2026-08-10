@@ -486,6 +486,38 @@ class SelfInitiatedReplyPlugin(Star):
         if not sync_config_whitelist(self._config_path, self.config, self.settings):
             raise OSError(f"配置文件写入失败：{self._config_path}")
 
+    async def _persist_enabled(self, enabled: bool) -> None:
+        """把 ``/on`` ``/off`` 的开关落盘，使其跨宿主重启保持（决策 5）。
+
+        原先只改 ``runtime_enabled`` 这个纯内存量，重启后回落到持久 ``enabled``：
+        用户打完 ``/off`` 以为「别再主动说话了」，宿主一重启插件又开始发言，而
+        用户不会知道要再打一次。这是静默违背用户意图，故改为双写。
+
+        失败按 §6 白名单变更的同一套纪律处理：内存回滚 → 重写 → 仍失败告警并
+        上抛，不留下「内存已关、磁盘仍开」的中间态。``runtime_enabled`` 保留为
+        独立字段而非并进 ``settings.enabled``，因为 webapi 的 GET config 要能
+        区分两者（``test_off_keeps_persisted_enabled_in_config`` 看守该契约）。
+        """
+        old_enabled = self.settings.enabled
+        old_runtime = self.runtime_enabled
+        self.settings.enabled = enabled
+        self.runtime_enabled = enabled
+        try:
+            self._sync_whitelist()
+        except Exception:
+            self.settings.enabled = old_enabled
+            self.runtime_enabled = old_runtime
+            try:
+                self._sync_whitelist()
+            except Exception as rollback_exc:
+                logger.error(
+                    "[%s] enabled=%s rollback persistence failed: %s",
+                    PLUGIN_ID,
+                    enabled,
+                    rollback_exc,
+                )
+            raise
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     @filter.platform_adapter_type(filter.PlatformAdapterType.ALL)
     async def on_message(self, event: AstrMessageEvent) -> None:
@@ -1181,16 +1213,16 @@ class SelfInitiatedReplyPlugin(Star):
             return f"主动回复检查结果：{result}"
         if action == "on":
             async with self._config_lock:
-                self.runtime_enabled = True
+                await self._persist_enabled(True)
                 self._ensure_patrol_task()
                 self._ensure_image_cleanup_task()
-            return "主动回复插件已临时启用。"
+            return "主动回复插件已启用（重启后保持）。"
         if action == "off":
             async with self._config_lock:
-                self.runtime_enabled = False
+                await self._persist_enabled(False)
                 self._cancel_delay_tasks()
                 await self._stop_patrol_task()
-            return "主动回复插件已临时暂停。"
+            return "主动回复插件已暂停（重启后保持）。"
         if action == "debug":
             return debug_text(
                 self.settings,

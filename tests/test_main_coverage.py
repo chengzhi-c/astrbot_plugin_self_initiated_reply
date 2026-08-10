@@ -524,9 +524,9 @@ def test_command_text_toggle_and_debug(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         event = _make_event()
         plugin.runtime_enabled = False
-        assert "已临时启用" in await plugin._command_text(event, "on")
+        assert "已启用" in await plugin._command_text(event, "on")
         assert plugin.runtime_enabled is True
-        assert "已临时暂停" in await plugin._command_text(event, "off")
+        assert "已暂停" in await plugin._command_text(event, "off")
         assert plugin.runtime_enabled is False
         assert await plugin._command_text(event, "debug")
 
@@ -565,8 +565,8 @@ def test_subcommand_handlers_run(tmp_path: Path) -> None:
             assert UMO not in plugin.settings.whitelist
             text = await _consume(plugin.selfreply_check(event))
             assert text.text == "主动回复检查结果：完成"
-            assert "已临时启用" in (await _consume(plugin.selfreply_on(event))).text
-            assert "已临时暂停" in (await _consume(plugin.selfreply_off(event))).text
+            assert "已启用" in (await _consume(plugin.selfreply_on(event))).text
+            assert "已暂停" in (await _consume(plugin.selfreply_off(event))).text
             assert (await _consume(plugin.selfreply_debug(event))).text
         finally:
             plugin._check_session = original_check

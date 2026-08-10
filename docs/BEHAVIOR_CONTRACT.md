@@ -94,6 +94,16 @@ git show 27d8864:scripts/mutation_check.py   # 看第 29 行起的 MUTANTS 表
 - 越权拒绝先行：非管理员写指令不得取消在途回复；只读指令永不打断进行中的
   检查；写指令（add/remove/check/on/off）通过权限校验后才取消。
 
+## 6.1 `/on` `/off` 的持久语义（0.9.4 决策 5）
+
+- `/off` 与 `/on` **跨宿主重启保持**：双写 `settings.enabled` 与配置文件，
+  失败按 §6 同一套纪律回滚（内存回滚 → 重写 → 仍失败告警并上抛）。
+  0.9.4 前它们只改内存 `runtime_enabled`，重启即回落到持久 `enabled`——用户
+  打完 `/off` 以为已经关停，重启后插件继续发言且无从得知要再打一次。
+- `runtime_enabled` 仍是独立字段：webapi 的 GET config 要能把它与持久
+  `enabled` 分开暴露，前端全量保存才不会把临时态固化成持久配置。
+- 回显文案含「重启后保持」，用户可见变更。
+
 ## 7. 配置解析
 
 - 全部数值经 `as_int`/`as_float` 夹取（min/max），布尔严格化；白名单、提示词、
