@@ -61,18 +61,28 @@ pattern = "PLUGIN_VERSION = ['\"](?P<version>[^'\"]+)['\"]"
 # AstrBot 插件布局：仓库根即包（含 __init__.py），整目录打包验证分发。
 packages = ["."]
 # Web 页面、资源与元数据不在 wheel 默认的 .py 收集中，需显式纳入。
+#
+# **每条都必须带前导 `/` 锚到仓库根**（0.9.5 修复）：这些模式是 gitignore 语义，
+# 不带斜杠的 `LICENSE` / `README.md` / `metadata.yaml` 会在**任意深度**命中，而
+# artifacts 优先于 exclude，于是被 exclude 排掉的目录里只要存在同名文件就会被
+# 重新拉回 wheel。实测触发场景：`.scratch/` 下建了一个 venv 后，site-packages
+# 里几百个第三方 LICENSE / README.md / metadata.yaml 全部进包（wheel 213KB →
+# 547KB），check_wheel 报出 100+ 条泄漏。加 `/` 后这些深层路径全部不再命中，
+# 根目录的六个文件照旧命中（pathspec 实测，两组模式逐条对比）。
 artifacts = [
-  "metadata.yaml",
-  "_conf_schema.json",
-  "pages/**",
-  "logo.png",
-  "LICENSE",
+  "/metadata.yaml",
+  "/_conf_schema.json",
+  "/pages/**",
+  "/logo.png",
+  "/LICENSE",
   # 面向用户的两份文档必须随包（0.9.5）：下方 exclude 的 `*.md` 原本把它们一起
   # 排掉了，装完插件的目录里没有任何说明文件。artifacts 优先于 exclude，故这里
   # 显式收回这两个，其余 .md（AGENTS.md 与 docs/ 下的维护者文档）仍被排除——
   # 那些写的是内部批次标记与开发约定，对使用者无意义。
-  "README.md",
-  "CHANGELOG.md",
+  # 注意锚点同时修掉了另一个静默缺口：不带 `/` 时 `docs/README.md` 也会命中，
+  # 把维护者文档拉进包（实测 True → 加锚后 False）。
+  "/README.md",
+  "/CHANGELOG.md",
 ]
 # 开发物不进生产 wheel（实测：整目录打包会把 tests/.scratch/scripts/docs/.github
 # 与开发配置全部打进发布包）；exclude 与 artifacts 并存时 artifacts 优先，

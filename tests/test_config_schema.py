@@ -433,6 +433,65 @@ def test_wheel_forbidden_patterns_are_excluded_by_pyproject() -> None:
     )
 
 
+def test_wheel_artifacts_do_not_override_excludes() -> None:
+    """artifacts 不得把 exclude 排掉的目录里的同名文件重新拉回 wheel（0.9.5）。
+
+    上一个用例只验 exclude 一侧，而 hatchling 里 **artifacts 优先于 exclude**，
+    所以「exclude 匹配得到」并不等于「文件不进包」。这正是 0.9.5 撞上的缺口：
+    artifacts 原本写的是不带斜杠的 ``LICENSE`` / ``README.md`` / ``metadata.yaml``，
+    gitignore 语义下它们命中**任意深度**，于是 ``.scratch/`` 下建了个 venv 之后，
+    site-packages 里几百个第三方同名文件全部被拉回 wheel（213KB → 547KB，
+    check_wheel 报 100+ 条泄漏），而上一个用例始终全绿。
+
+    修法是给每条 artifacts 加前导 ``/`` 锚到仓库根。本用例双向钉住：
+    深层同名文件必须不命中，根层六个文件必须仍命中——只断言前者的话，
+    把 artifacts 全删掉也能全绿，而那会静默丢掉 pages/ 与 metadata.yaml。
+
+    变异验证：去掉任一条的前导 ``/`` → 该模式的深层探针命中，本用例红。
+    """
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python < 3.11
+        import tomli as tomllib  # type: ignore[no-redef]
+
+    import pathspec
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    wheel_cfg = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]
+    artifacts = [str(entry).strip() for entry in wheel_cfg.get("artifacts", [])]
+    excludes = [str(entry).strip() for entry in wheel_cfg.get("exclude", [])]
+    spec = pathspec.GitIgnoreSpec.from_lines(artifacts)
+
+    # 被 exclude 排掉的目录里，放一个与每条 artifacts 同名的文件当探针。
+    # 真实来源：.scratch/venv4272/.../numpy/ma/LICENSE、docs/README.md。
+    excluded_dirs = sorted(
+        entry.removesuffix("/**")
+        for entry in excludes
+        if entry.endswith("/**") and "*" not in entry.removesuffix("/**")
+    )
+    assert excluded_dirs, "未能从 exclude 中取到目录型条目，探针构造失效"
+
+    leaked: list[str] = []
+    for directory in excluded_dirs:
+        for artifact in artifacts:
+            basename = artifact.rsplit("/", 1)[-1]
+            if "*" in basename:
+                continue
+            probe = f"{directory}/nested/deeper/{basename}"
+            if spec.match_file(probe):
+                leaked.append(probe)
+    assert not leaked, (
+        f"artifacts 命中了被 exclude 排掉的深层路径：{leaked}。"
+        f"artifacts 优先于 exclude，这些文件会真的进 wheel。给对应条目加前导 `/`。"
+    )
+
+    # 反向：根层的运行时必需文件必须仍被 artifacts 命中，否则锚过头会静默少文件
+    # （artifacts 漏一条不会让 hatch build 失败，只会少打，见 check_wheel 的注释）。
+    for required in ("metadata.yaml", "_conf_schema.json", "logo.png", "README.md", "CHANGELOG.md"):
+        assert spec.match_file(required), f"artifacts 不再命中根层必需文件 {required}"
+    assert spec.match_file("pages/index.html"), "artifacts 不再命中 pages/ 下的 Web 页面"
+
+
 def test_tool_versions_agree_across_config_sources() -> None:
     """ruff 版本在 ci.yml / .pre-commit-config.yaml / pyproject 三处必须一致（阶段 2.4）。
 

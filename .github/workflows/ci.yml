@@ -94,7 +94,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        astrbot: ["4.23.3", "latest"]
+        # 两个锁定版都是硬门禁，理由不同：
+        # - 4.23.3 是历史基线（本地全局装的也是它）
+        # - 4.27.2 是使用者真机在跑的版本，且 0.9.5 那个 P0 只在它上面复现
+        #   （宿主 CommandFilter.init_handler_md 从 inspect.signature(handler)
+        #   变成 inspect.signature(handler, eval_str=True)）。之前它不在矩阵里
+        #   仅仅因为当时没有这个宿主可装，不是因为不需要——现已实测 674 全绿。
+        # latest 仍是上游漂移预警（continue-on-error），由 nightly schedule 驱动。
+        # 三者的 requires-python 都是 >=3.12，与下方的 3.12 一致。
+        astrbot: ["4.23.3", "4.27.2", "latest"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -109,7 +117,10 @@ jobs:
           fi
           pip install -e ".[dev]"
       - name: Host compatibility smoke
-        # 锁定版是硬门禁；latest 是上游漂移预警，不阻塞
+        # 两个锁定版都是硬门禁；latest 是上游漂移预警，不阻塞。
+        # 自 0.9.5 起本脚本除符号存在性外还走一遍宿主的**加载路径**
+        # （_handler_signature_gaps，照抄 inspect.signature(handler, eval_str=True)）。
+        # 这一步是当初缺的那类检查：符号检查全绿而插件在 4.27.2 上装不上。
         run: python scripts/compat_check.py
         continue-on-error: ${{ matrix.astrbot == 'latest' }}
       - name: Host platform adapter drift guard
@@ -117,5 +128,10 @@ jobs:
         # 不装 astrbot（那里它恒 skip）。只有这里装了锁定版才真正生效：
         # 适配器一旦改用 <data> 之外的系统临时目录，插件 allowlist 会静默拒掉
         # 真实图片（只在真机暴露）。latest 同 compat 语义，只告警不阻塞。
+        #
+        # 注意本守卫只在 4.23.3 那条腿上真跑：它按 metadata.yaml 的
+        # astrbot_version 下限精确锚定版本（理由见 tests/test_vision.py 里
+        # _host_platform_sources_dir 的 docstring——扫非锁定版得出的漂移结论无效），
+        # 因此 4.27.2 与 latest 两条腿上它 skip 而非失败。这是刻意的，不是漏配。
         run: pytest tests/test_vision.py -k host_platform_adapters -p no:cacheprovider --no-cov -q -rs
         continue-on-error: ${{ matrix.astrbot == 'latest' }}
