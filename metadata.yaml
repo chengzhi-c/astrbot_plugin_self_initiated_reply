@@ -8,8 +8,8 @@ help: |
   /selfreply remove: 移出当前会话
   /selfreply list: 查看白名单
   /selfreply check [content]: 手动测试一次主动回复
-  /selfreply on: 临时启用
-  /selfreply off: 临时暂停
+  /selfreply on: 启用（重启后保持）
+  /selfreply off: 暂停（重启后保持）
   /selfreply debug: 查看当前会话识别信息
 version: 0.9.4
 astrbot_version: ">=4.23.3,<5"

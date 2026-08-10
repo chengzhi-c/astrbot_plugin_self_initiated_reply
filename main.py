@@ -1307,14 +1307,14 @@ class SelfInitiatedReplyPlugin(Star):
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("on", alias={"enable", "start"})
     async def selfreply_on(self, event: AstrMessageEvent) -> CommandReply:
-        """开启：临时启用主动回复运行。"""
+        """开启：启用主动回复运行，跨宿主重启保持（决策 5）。"""
         self._set_command_handled(event)
         yield event.plain_result(await self._command_text(event, "on"))
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("off", alias={"disable", "pause", "stop"})
     async def selfreply_off(self, event: AstrMessageEvent) -> CommandReply:
-        """关闭：临时暂停主动回复运行。"""
+        """关闭：暂停主动回复运行，跨宿主重启保持（决策 5）。"""
         self._set_command_handled(event)
         yield event.plain_result(await self._command_text(event, "off"))
 

@@ -167,12 +167,12 @@
 | `/selfreply add` / `remove` | 将当前会话加入 / 移出白名单 |
 | `/selfreply list` | 查看白名单 |
 | `/selfreply check [content]` | 手动测试一次主动回复 |
-| `/selfreply on` / `off` | 临时启用 / 暂停 |
+| `/selfreply on` / `off` | 启用 / 暂停，重启后保持 |
 | `/selfreply debug` | 当前会话、发送者、触发识别信息 |
 
 也支持 `@Bot selfreply add` 这类写法。
 
-> ⚠️ 注意：`/selfreply on` / `off` 是**临时运行态**——官方 Dashboard 保存插件配置会触发热重载并重置临时状态，插件自带设置页保存则不会。
+> ⚠️ 注意：`/selfreply on` / `off` 自 0.9.4 起**直接落盘**，宿主重启后保持。它写的就是插件配置里的 `enabled`，所以官方 Dashboard 的插件配置页会同步显示这个开关状态。
 
 </details>
 
