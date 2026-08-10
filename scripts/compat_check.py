@@ -1,8 +1,12 @@
-"""真实宿主兼容性检查：插件绑定的私有 AstrBot API 符号存在性 + 契约断言。
+"""真实宿主兼容性检查：插件绑定的私有 AstrBot API 符号存在性 + 契约断言 + 加载路径。
 
 在装有真实 ``astrbot`` 包的环境中运行（CI 兼容矩阵 job 用）：
-- 锁定版（默认）：契约缺口（符号缺失/签名缺参/危险工具未覆盖）即 exit 1
+- 锁定版（默认）：契约缺口（符号缺失/签名缺参/危险工具未覆盖/处理器注解不可解析）即 exit 1
 - 最新版（--warn-latest）：同一组检查降级为漂移预警，只告警不阻塞
+
+三类检查的性质不同：前两类只问「宿主有没有这个符号」，第三类
+（``_handler_signature_gaps``）**真的走一遍宿主加载期的动作**。0.9.5 之前只有前两类，
+结果插件在 4.27.2 上装不上而本脚本仍报 OK——见该函数的 docstring。
 
 存在性清单与契约断言单源：符号清单来自 runtime_adapter.host_contract()，
 参数契约来自 AstrBotRuntimeAdapter.validate()——增删符号只需改适配层一处。
@@ -45,6 +49,40 @@ DANGEROUS_TOOL_MODULES = [
     "astrbot.core.tools.computer_tools.python",
     "astrbot.core.tools.computer_tools.shipyard_neo.browser",
 ]
+
+
+def _handler_signature_gaps() -> list[str]:
+    """走一遍宿主注册处理器时真正做的那一步注解解析（0.9.5 补）。
+
+    符号存在性检查**走不到加载路径**，这正是它当初没能拦住 0.9.5 那个 P0 的原因：
+    插件在 4.27.2 上装不上（``name 'CommandReply' is not defined``），而当时
+    ``host compat OK``。根因已在真机确证：宿主
+    ``core/star/filter/command.py::CommandFilter.init_handler_md`` 在 4.23.3 是
+    ``inspect.signature(handler)``，4.27.2 起变成 ``inspect.signature(handler,
+    eval_str=True)``——一个参数之差，让 ``from __future__ import annotations``
+    产出的字符串注解在加载期真的被 eval，于是 TYPE_CHECKING-only 的名字 NameError。
+
+    这里照抄那一步（``eval_str=True``），因此任何「注解里出现运行时不存在的名字」
+    都会在此暴露，而不必等到装机。不去 import 宿主的 CommandFilter 来跑：本函数
+    要在锁定版与最新版两种宿主上都成立，直接用 inspect 才不受宿主内部重构影响。
+    """
+    import inspect
+
+    from astrbot_plugin_self_initiated_reply.main import SelfInitiatedReplyPlugin
+
+    gaps: list[str] = []
+    for name in sorted(dir(SelfInitiatedReplyPlugin)):
+        if name != "on_message" and not name.startswith("selfreply"):
+            continue
+        target = getattr(SelfInitiatedReplyPlugin, name)
+        func = getattr(target, "handler", target)
+        if not callable(func):
+            continue
+        try:
+            inspect.signature(func, eval_str=True)
+        except Exception as exc:
+            gaps.append(f"处理器 {name} 的注解在加载期无法解析：{type(exc).__name__}: {exc}")
+    return gaps
 
 
 def _enumerate_tool_names() -> dict[str, set[str]]:
@@ -103,6 +141,7 @@ def run_contract_checks(*, warn: bool) -> int:
     gaps = _denylist_gaps()
     for module_name, missing in gaps.items():
         failures.append(f"denylist 未覆盖 {module_name}: {', '.join(missing)}")
+    failures.extend(_handler_signature_gaps())
 
     all_problems = failures + problems
     if not all_problems:

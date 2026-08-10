@@ -38,12 +38,17 @@ from .session_gate import SessionGate
 # 逐条 yield event.plain_result(...)。宿主侧契约是
 # AsyncGenerator[MessageEventResult | str | None]，本插件只 yield 前者。
 #
-# **必须是运行时可解析的名字，不能放回 TYPE_CHECKING 块**（0.9.5 线上修复）：
-# AstrBot 4.27.2 的插件加载期会对指令处理器解析类型注解（等价于 get_type_hints），
-# 而 `from __future__ import annotations` 让注解全是字符串，于是 TYPE_CHECKING-only
-# 的名字在那一步 NameError，整个插件拒绝加载：
+# **必须是运行时可解析的名字，不能放回 TYPE_CHECKING 块**（0.9.5 线上修复）。
+# 精确机制已在真机 4.27.2 上读源码确证（不是推断）：宿主
+# `core/star/filter/command.py::CommandFilter.init_handler_md` 注册每个指令处理器时调
+#   4.23.3: inspect.signature(handler)
+#   4.27.2: inspect.signature(handler, eval_str=True)   ← 一个参数之差
+# `eval_str=True` 会把 `from __future__ import annotations` 产出的字符串注解真的
+# eval 一遍，于是 TYPE_CHECKING-only 的名字在那一步 NameError，整个插件拒绝加载：
 #   加载插件「业镜 · 主动回复」... 原因：name 'CommandReply' is not defined
-# 4.23.3 上实测「宿主只读 signature.parameters」曾经成立，4.27.2 起不再成立。
+# 宿主里没有 get_type_hints；早前注释写成「等价于 get_type_hints」是猜的，已订正。
+# 守卫：scripts/compat_check.py::_handler_signature_gaps 照抄这一步，两个宿主版本上
+# 都会红（4.23.3 上宿主自己不会失败，但那不是可依赖的事实——它已经变过一次）。
 #
 # 这里刻意不写成 AsyncGenerator[MessageEventResult, None]：那需要运行时 import 宿主
 # 符号（多一条加载期硬依赖，且测试替身未导出该名字）。参数化成 Any 不损失任何检查力

@@ -345,20 +345,25 @@ def test_main_no_direct_private_import() -> None:
 def test_command_handler_annotations_resolve_at_runtime() -> None:
     """所有宿主注册的处理器注解必须在运行时可解析（0.9.5 线上修复）。
 
-    AstrBot 4.27.2 的加载期会对指令处理器解析类型注解；配合
-    ``from __future__ import annotations``（注解全为字符串），任何
-    TYPE_CHECKING-only 的名字都会在那一步 NameError，插件整体拒绝加载。
+    宿主那一步的精确位置（真机读源码确证，不是推断）：
+    ``core/star/filter/command.py::CommandFilter.init_handler_md`` 在 4.23.3 是
+    ``inspect.signature(handler)``，4.27.2 起是
+    ``inspect.signature(handler, eval_str=True)``。一个参数之差，让
+    ``from __future__ import annotations`` 产出的字符串注解在加载期真的被 eval，
+    于是 TYPE_CHECKING-only 的名字在那里 NameError，插件整体拒绝加载。
     线上实测报错：``name 'CommandReply' is not defined``。
 
     4.23.3 上「宿主只读 signature.parameters」曾成立，故此前把 ``CommandReply``
-    放在 TYPE_CHECKING 块里是安全的；4.27.2 起该前提失效。本测试直接复现宿主那一
-    步，把「注解必须运行时可解析」钉成契约，不再依赖对宿主内部实现的假设。
+    放在 TYPE_CHECKING 块里是安全的；4.27.2 起该前提失效。本测试用与宿主同一个
+    调用（``eval_str=True``，非"等价物"）复现那一步，把「注解必须运行时可解析」
+    钉成契约，不再依赖对宿主内部实现的假设。真机宿主上的同源守卫是
+    ``scripts/compat_check.py::_handler_signature_gaps``。
 
     变异验证：把 main.py 的 ``CommandReply = AsyncGenerator[Any, None]`` 移回
     ``if TYPE_CHECKING:`` 块内，本测试即红（NameError: CommandReply）。
     """
     import importlib
-    import typing
+    import inspect
 
     main_mod = importlib.import_module(f"{PACKAGE_NAME}.main")
     plugin_cls = main_mod.SelfInitiatedReplyPlugin
@@ -376,6 +381,8 @@ def test_command_handler_annotations_resolve_at_runtime() -> None:
         func = getattr(target, "handler", target)
         if not callable(func) or not getattr(func, "__annotations__", None):
             continue
-        # 等价于宿主加载期那一步；TYPE_CHECKING-only 名字在此 NameError。
-        hints = typing.get_type_hints(func)
-        assert "event" in hints, f"{name} 的 event 注解未能解析"
+        # 与宿主加载期同一个调用；TYPE_CHECKING-only 名字在此 NameError。
+        sig = inspect.signature(func, eval_str=True)
+        annotation = sig.parameters["event"].annotation
+        # 注解已被 eval（不再是字符串），说明这一步真的走过了解析而非原样透传。
+        assert not isinstance(annotation, str), f"{name} 的 event 注解未被解析"
