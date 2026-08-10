@@ -73,7 +73,22 @@ EVENT_TYPE_MEMBERS = (
 # 事件结果契约：实例必须可用且具备这两个链式方法（缺失参数即红）
 _EVENT_RESULT_METHODS = ("message", "set_result_content_type")
 
+# 「属性不存在」的哨兵（0.9.4 阶段 1.5）：不能用 None 当 getattr 默认值，因为
+# 宿主 ProviderRequest.func_tool 的合法默认值**就是 None**（实测 AstrBot 4.23.3：
+# 字段存在、默认 None）。用 None 兜底会把「宿主没有这个字段」与「宿主声明本次无
+# 工具」压成同一出口，而两者该走反方向：前者读不到工具边界必须 fail closed，
+# 后者天然无工具可放行。
+_MISSING = object()
+
 # ProviderRequest 实例在 generation 中实际赋值的字段：缺失即红
+#
+# func_tool 是本清单里唯一承担安全职责的字段：它是工具边界的唯一读写点
+# （final_tool_ids / filter_final_tools）。它留在本清单里是 load-bearing 的——
+# 加载期断言缺失即 raise，使 filter_final_tools 的「缺属性」分支在生产上不可达。
+# 删掉它会让那条分支复活成真实 fail-open，故由
+# tests/test_runtime_adapter_blindspots.py::
+# test_func_tool_stays_in_load_time_contract_assertion 把这层耦合钉死
+# （0.9.4 阶段 1.5 前删除它不会让任何用例变红，正是该哨兵要补的缺口）。
 _PROVIDER_REQUEST_FIELDS = frozenset(
     {
         "prompt",
@@ -395,8 +410,20 @@ class AstrBotRuntimeAdapter:
         request object is the authoritative post-build snapshot. Returns
         ``None`` when the tool set cannot be enumerated (callers must fail
         closed).
+
+        ``func_tool`` 属性缺失与显式 ``None`` 分开处理（0.9.4 阶段 1.5）：后者是
+        宿主声明「本次无工具」，枚举结果就是空列表；前者是读不到该字段本身，
+        返回 ``[]`` 会把"查不到"谎报成"查过了、是空的"，故归入枚举失败返回
+        ``None``。
         """
-        tool_set = getattr(req, "func_tool", None)
+        tool_set: Any = getattr(req, "func_tool", _MISSING)  # Any：见 filter_final_tools 说明
+        if tool_set is _MISSING:
+            logger.debug(
+                "[%s] tool enumeration unavailable: req has no 'func_tool' (type=%s)",
+                PLUGIN_ID,
+                type(req).__name__,
+            )
+            return None
         if tool_set is None:
             return []
         tools = getattr(tool_set, "tools", None)
@@ -440,8 +467,40 @@ class AstrBotRuntimeAdapter:
         runner reads at reset and run time. Returns ``False`` when the tool
         set cannot be enumerated or a removal fails; callers must then abort
         the proactive run (fail closed).
+
+        「``func_tool`` 属性缺失」与「显式 ``None``」走反方向（0.9.4 阶段 1.5）：
+
+        - 显式 ``None``：宿主声明本次无工具集，天然无工具可调用，放行；
+        - 属性缺失：读不到工具边界本身，无法枚举、无法移除、也无法事后核验，
+          唯一正确动作是中止（fail closed）。此前两者共用 ``getattr(..., None)``
+          一个出口，都返回 ``True``——实测「缺属性」与「显式 None」结果相同，
+          等于宿主一旦改名该字段，工具策略连白名单模式都会整次放行。
+
+        该缺属性分支在生产上**不可达**：``func_tool`` 在 ``_PROVIDER_REQUEST_FIELDS``
+        中被加载期硬断言（实测改名后 ``validate()`` raise
+        「ProviderRequest 缺少字段：func_tool」，而 ``_validate_agent_api`` 是
+        ``PluginMain.__init__`` 第一条无 try 包裹的语句），且 dataclass 实例
+        ``del`` 掉字段后仍回落到类默认 ``None``（实测 ``hasattr`` 仍为 ``True``）。
+        保留本分支是纵深防御 + 适配层自身契约完整（本方法是公共接缝，接受任意
+        ``req``），不是在修一个可利用的活漏洞。
+
+        这份「不可达」是有前提的，前提由
+        ``test_func_tool_stays_in_load_time_contract_assertion`` 守护：一旦
+        ``func_tool`` 被移出该清单，加载期防线消失，本分支即恢复可达。
         """
-        tool_set = getattr(req, "func_tool", None)
+        # 显式 ``Any``（0.9.4 阶段 1.5）：三参 getattr 的类型是 ``Any | _T``，
+        # 默认值换成哨兵后 ``_T`` 是 ``object``，联合坍缩成 ``object``，下面的
+        # ``tool_set.remove_tool`` 会被 mypy 判成 attr-defined 错误。宿主工具集本就
+        # 是鸭子类型（能力由 validate 在加载期核验），这里保持 ``Any``。
+        tool_set: Any = getattr(req, "func_tool", _MISSING)
+        if tool_set is _MISSING:
+            logger.warning(
+                "[%s] tool boundary fail-closed: req has no 'func_tool' attribute "
+                "(type=%s); aborting proactive run",
+                PLUGIN_ID,
+                type(req).__name__,
+            )
+            return False
         if tool_set is None:
             return True  # No tool set at all: nothing can be called.
         tools = getattr(tool_set, "tools", None)

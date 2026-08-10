@@ -260,6 +260,86 @@ def test_api_status(tmp_path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+def test_api_status_contains_failure_and_hides_details(tmp_path) -> None:
+    """状态端点失败时返回结构化错误，且不回显异常细节（0.9.4 阶段 1.7）。
+
+    补这条 except 前，本端点是唯一没有兜底的 ``_api_*`` 处理器。补的当时并无
+    可达异常（见该函数 docstring），故这里用删属性人工制造失败——不是模拟宿主
+    API 异常，而是验证兜底本身：返回 ``ok=False``、给出中文文案、且异常原文
+    （这里是属性名）不出现在响应里。
+    """
+
+    async def scenario(plugin, main):
+        webapi = sys.modules[f"{PACKAGE}.webapi"]
+        del plugin._last_decisions  # dict() 取值即 AttributeError
+
+        status = await webapi._api_status(plugin)
+
+        assert status["ok"] is False
+        assert status["error"] == "状态读取失败"
+        # 异常原文含属性名，不得出现在回显里
+        assert "_last_decisions" not in str(status)
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_bound_api_handlers_match_class_declarations() -> None:
+    """``bind_api_handlers`` 绑定的名字集合 == 主类里的裸注解声明（0.9.4 阶段 2.2）。
+
+    这四个处理器不在类里 ``def``，而是运行时以 ``partial(...)`` 挂到实例上（供约 30 处
+    测试与外部以 ``plugin._api_*`` 调用）。主类新增了对应的裸注解，让读者在类里搜得到
+    这些名字。两侧各自手工维护，漂移方向决定后果：
+
+    - 绑了没声明：读者在类里搜不到，回到阶段 2.2 之前的状态（声明白写）；
+    - 声明了没绑：注解承诺了一个运行时不存在的属性，比没有注解更误导——读者会以为
+      ``plugin._api_xxx`` 可调用，实际 ``AttributeError``。
+
+    刻意用 AST 读两侧源码而非运行时 ``dir(plugin)``：裸注解**不创建**类属性（这正是
+    选它的原因——不遮蔽 partial 绑定），运行时反射看不到它，只有读源码才能比对。
+    """
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+
+    webapi_tree = ast.parse((root / "webapi.py").read_text(encoding="utf-8"))
+    bound: set[str] = set()
+    for node in ast.walk(webapi_tree):
+        if not isinstance(node, ast.FunctionDef) or node.name != "bind_api_handlers":
+            continue
+        for stmt in ast.walk(node):
+            if not isinstance(stmt, ast.Assign):
+                continue
+            for target in stmt.targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "plugin"
+                ):
+                    bound.add(target.attr)
+    assert bound, "未从 bind_api_handlers 提取到任何绑定（写法变了，需复核本守卫）"
+
+    main_tree = ast.parse((root / "main.py").read_text(encoding="utf-8"))
+    declared: set[str] = set()
+    for node in ast.walk(main_tree):
+        if not isinstance(node, ast.ClassDef) or node.name != "SelfInitiatedReplyPlugin":
+            continue
+        for stmt in node.body:
+            # 裸注解：AnnAssign 且 value 为 None（有 value 就是真赋值，会遮蔽 partial）
+            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                if stmt.target.id.startswith("_api_"):
+                    assert stmt.value is None, (
+                        f"{stmt.target.id} 被赋了值，会遮蔽 bind_api_handlers 的 partial 绑定；"
+                        f"这里必须是裸注解"
+                    )
+                    declared.add(stmt.target.id)
+
+    assert declared == bound, (
+        f"bind_api_handlers 绑定 {sorted(bound)}，主类声明 {sorted(declared)}；"
+        f"只绑未声明={sorted(bound - declared)}，只声明未绑={sorted(declared - bound)}"
+    )
+
+
 def test_unified_overview_returns_only_frontend_consumed_keys(tmp_path) -> None:
     """概览端点只返回前端消费的键：漏 whitelist_count 则会话计数恒为 0，
     多出配置值镜像（/config 与 /status 已有内容的第三份副本）即红。

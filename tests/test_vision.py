@@ -204,6 +204,92 @@ def test_onebot_mixed_message_keeps_normal_image_and_skips_sticker() -> None:
     assert extracted[0].is_sticker is False
 
 
+def test_text_segment_does_not_shift_raw_image_pairing() -> None:
+    """混合消息里的非图片归一化组件不得消耗 ``raw_index``。
+
+    ``_image_entries`` 按顺序把归一化图片与原始图片段配对，而
+    ``_raw_image_components`` 只留图片段。若文本组件也推进 raw 游标，Image 会
+    错配到不存在的下标（或下一张图的原始段），``subType`` 这类只存在于原始段的
+    平台元数据随之丢失——表情包检测静默失效，且不抛任何异常。
+
+    这里 raw 段的 ``subType=1`` 是唯一的表情包依据（归一化组件没有该字段），
+    因此配对正确时 ``skip_stickers=True`` 必须过滤掉它。
+    """
+    _, image, _ = _load_modules()
+
+    class NormalizedImage:
+        type = "image"
+        file = "sticker.jpg"
+        url = "https://multimedia.nt.qq.com.cn/download?fileid=sticker"
+
+    class Plain:
+        type = "plain"
+        text = "看这个"
+
+    event = SimpleNamespace(
+        message_obj=SimpleNamespace(
+            raw_message={
+                "message": [
+                    {"type": "text", "data": {"text": "看这个"}},
+                    {
+                        "type": "image",
+                        "data": {
+                            "file": "sticker.jpg",
+                            "subType": 1,
+                            "url": "https://multimedia.nt.qq.com.cn/download?fileid=sticker",
+                        },
+                    },
+                ]
+            }
+        ),
+        # 文本在前：错配只在「图片不是第一个归一化组件」时才暴露
+        get_messages=lambda: [Plain(), NormalizedImage()],
+    )
+
+    # 只有图片组件进入配对结果，文本不占位
+    extractor = load_package(PACKAGE_NAME, "image.extractor")
+    entries = extractor._image_entries(event)
+    assert len(entries) == 1
+    entry_component, entry_raw = entries[0]
+    assert isinstance(entry_component, NormalizedImage)
+    assert entry_raw is not None and entry_raw["data"]["subType"] == 1
+
+    # 配对正确 ⇒ 原始 subType 生效 ⇒ 被当作表情包过滤
+    assert image.ImageExtractor.has_images(event) is True
+    assert image.ImageExtractor.has_images(event, skip_stickers=True) is False
+    assert image.ImageExtractor.extract_images(event, skip_stickers=True) == []
+
+
+def test_raw_non_image_cq_segments_do_not_shift_pairing() -> None:
+    """裸 CQ 文本里的非图片段（如 ``[CQ:at]``）不得进入原始图片序列。
+
+    ``_parse_raw_cq_components`` 若不过滤非图片类型，``[CQ:at,qq=123]`` 会占据
+    raw 序列首位，图片就会错配到 at 段——它没有 ``subType``/``url``，于是既丢平台
+    元数据又丢回捞来源，同样静默降级。
+    """
+    _, image, _ = _load_modules()
+
+    image_url = "https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=abc"
+    normalized = SimpleNamespace(type="image", file="A.png")
+    event = SimpleNamespace(
+        message_obj=SimpleNamespace(
+            raw_message=("[CQ:at,qq=123][CQ:image,file=A.png,subType=1,url=" + image_url + "]")
+        ),
+        get_messages=lambda: [normalized],
+    )
+
+    # at 段被丢弃，只剩图片段
+    extractor = load_package(PACKAGE_NAME, "image.extractor")
+    raw_components = extractor._raw_image_components(event)
+    assert [item["type"] for item in raw_components] == ["image"]
+
+    # 配对正确 ⇒ 回捞到原始 url，且 subType=1 被识别为表情包
+    extracted = image.ImageExtractor.extract_images(event)
+    assert [item.url for item in extracted] == [image_url]
+    assert extracted[0].is_sticker is True
+    assert image.ImageExtractor.extract_images(event, skip_stickers=True) == []
+
+
 def test_normalized_image_falls_back_to_raw_onebot_subtype() -> None:
     """AstrBot Image may drop subType; raw_message must remain authoritative."""
     _, image, _ = _load_modules()

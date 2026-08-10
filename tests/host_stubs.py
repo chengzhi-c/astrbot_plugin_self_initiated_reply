@@ -22,6 +22,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 MAIN_PACKAGE_NAME = "selfreply_main_test_package"
 
+# 单源守卫的扫描面（0.9.4 阶段 1.6）：此前多处用 ROOT.glob("*.py")（非递归），
+# image/ 子包完全在视野外——而 0.8.8 恰好是从 image/parser.py 收敛掉一处
+# response_text 镜像的。用 rglob 并在此单点声明排除目录，避免各守卫各写一套。
+_NON_PRODUCTION_DIRS = frozenset(
+    {"tests", "scripts", ".scratch", "data", "dist", "build", "__pycache__", ".venv", ".git"}
+)
+
+
+def production_py_files() -> list[Path]:
+    """全部生产 Python 文件（根 + image/ 子包），路径排序稳定。
+
+    守卫类测试应一律用它而非 ``ROOT.glob("*.py")``：后者漏掉子包，
+    使镜像/漂移类断言在子包内静默失效。
+    """
+    return sorted(
+        path
+        for path in ROOT.rglob("*.py")
+        if not _NON_PRODUCTION_DIRS & set(path.relative_to(ROOT).parts)
+    )
+
 
 def _module(name: str) -> types.ModuleType:
     return sys.modules.setdefault(name, types.ModuleType(name))

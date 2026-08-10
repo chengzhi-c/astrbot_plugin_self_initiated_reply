@@ -41,6 +41,12 @@ FORBIDDEN_SUFFIXES = (".pre-commit-config.yaml", ".pyc")
 FORBIDDEN_GLOBS = (
     ".coverage",
     ".coverage.*",
+    # 不带点前缀的覆盖率产物（0.9.4 阶段 2.3）：`coverage json` 写 coverage.json、
+    # CI 的 `pytest --cov-report=xml` 写 coverage.xml，两者都落在仓库根，既不在
+    # 已知前缀下、也不匹配 .coverage*。实测本批次遗留的 coverage.json（220KB）
+    # 被打进 wheel 而守卫仍报"无泄漏"——与上方 .coverage.* 是同一类漏报的第二次
+    # 复发，故这里用通配收口而非再补一个具名条目。
+    "coverage.*",
     "*/__pycache__/*",
     "__pycache__/*",
     ".pytest_cache/*",

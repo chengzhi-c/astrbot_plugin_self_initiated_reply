@@ -713,9 +713,30 @@ def test_version_consistency_across_metadata() -> None:
     except ImportError:  # pragma: no cover - py3.10 兼容分支
         import tomli as tomllib  # type: ignore[no-redef]
     pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    assert pyproject["project"]["version"] == version, (
-        f"pyproject.toml version={pyproject['project']['version']} 与 PLUGIN_VERSION={version} 不一致，"  # noqa: E501
-        "wheel 文件名与 dist-info 会停留在旧版本"
+
+    # 0.9.4 阶段 2.3：pyproject 不再写死版本号，改由 hatchling 从 models.py 读取。
+    # 故这里不再比对两处字面量（已无第二处），改为核验**取值机制真的能取到值**：
+    # 若 path 指错文件或 pattern 与常量名不再匹配，hatchling 构建期会失败——
+    # 但那要等到 CI 的 build 作业，而本用例让它在 test 作业就红。
+    assert "version" in pyproject["project"].get("dynamic", []), (
+        "pyproject 未声明 dynamic = ['version']：若同时也没有静态 version，构建会失败"
+    )
+    assert "version" not in pyproject["project"], (
+        "pyproject 同时存在静态 version 与 dynamic 声明——版本号又出现第二处字面量"
+    )
+    hatch_version = pyproject["tool"]["hatch"]["version"]
+    source_file = root / hatch_version["path"]
+    assert source_file.exists(), (
+        f"[tool.hatch.version].path 指向不存在的文件：{hatch_version['path']}"
+    )
+    extracted = re.search(hatch_version["pattern"], source_file.read_text(encoding="utf-8"))
+    assert extracted is not None, (
+        f"[tool.hatch.version].pattern 在 {hatch_version['path']} 里匹配不到版本号，"
+        f"hatchling 构建会失败（pattern={hatch_version['pattern']!r}）"
+    )
+    assert extracted.group("version") == version, (
+        f"hatchling 会取到 {extracted.group('version')!r}，而 PLUGIN_VERSION={version!r}——"
+        f"pattern 命中了错误的位置"
     )
     # README 版本号由 shields 徽章承载（0.7.22 起，原「当前版本」行随 README 重写移除）。
     # 0.9.3 起 README.en.md（234 行精确镜像）并入 README.md 的英文摘要节，

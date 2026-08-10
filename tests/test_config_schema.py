@@ -341,3 +341,224 @@ def test_wheel_required_files_covered_by_pyproject() -> None:
             pkg == "." or required.startswith(pkg.rstrip("/") + "/") for pkg in packages
         ) or any(required.startswith(a.rstrip("*/")) for a in artifacts)
         assert covered, f"REQUIRED_FILES 的 {required} 未被 pyproject 打包覆盖"
+
+
+def test_wheel_forbidden_patterns_are_excluded_by_pyproject() -> None:
+    """check_wheel 禁止的每类开发物，pyproject 都必须真的排掉（0.9.4 阶段 2.3）。
+
+    这是 ``test_wheel_required_files_covered_by_pyproject`` 的反方向。两份名单
+    分居两个文件、各自手工维护，漂移方向决定后果：
+
+    - pyproject 排了、check_wheel 没禁：wheel 干净但守卫形同虚设，下次 exclude
+      漏一条无人发现；
+    - check_wheel 禁了、pyproject 没排：**每次构建都红**，且只在 CI build 作业
+      才暴露。
+
+    真实复发史：``.coverage.*``（0.9.3 阶段 4）与 ``coverage.json``（0.9.4 阶段
+    2.3，实测 220KB 被打进 wheel 而守卫仍报"无泄漏"）都是"两侧不同步"的产物。
+    本断言把两侧钉在一起，让漏一侧在 test 作业就红。
+
+    比对方式刻意**不比字符串**：两侧语法不同（hatchling 用 ``tests/**``，
+    check_wheel 用前缀 ``tests/``），词干比对要么假红、要么因 ``endswith`` 太松而
+    假绿——本用例首版就是后者：``coverage.*`` 被 ``.coverage`` 的词干"吸收"，恰好
+    放过本阶段刚修的那类漏排。改为给每个禁止模式造代表性路径，用 hatchling 自己的
+    匹配库（pathspec / gitwildmatch）真跑一遍 exclude。
+    """
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python < 3.11
+        import tomli as tomllib  # type: ignore[no-redef]
+
+    import runpy
+
+    import pathspec
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    excludes = [
+        str(entry).strip()
+        for entry in pyproject["tool"]["hatch"]["build"]["targets"]["wheel"].get("exclude", [])
+    ]
+    # 与 hatchling 同一入口：hatchling/builders/config.py 的 exclude_spec 也是
+    # GitIgnoreSpec.from_lines（不是已弃用的 PathSpec.from_lines("gitwildmatch")）。
+    # 走同一 API 才能保证这里判"排掉了"与构建时一致。
+    spec = pathspec.GitIgnoreSpec.from_lines(excludes)
+    check_wheel = runpy.run_path(str(ROOT / "scripts" / "check_wheel.py"))
+
+    # 每个禁止模式的代表性路径。嵌套探针（image/... ）是必要的：hatchling 的无斜杠
+    # 模式匹配任意深度，带斜杠模式带根锚，只测根层会放过"只排根目录"这类漏排。
+    samples = {
+        "tests/": ["tests/test_probe.py"],
+        ".scratch/": [".scratch/probe.py"],
+        "scripts/": ["scripts/probe.py"],
+        "docs/": ["docs/PROBE.md"],
+        ".github/": [".github/workflows/probe.yml"],
+        ".gitignore": [".gitignore"],
+        "assets/": ["assets/probe.jpg"],
+        ".coverage": [".coverage"],
+        ".coverage.*": [".coverage.host.pid1234.PROBE"],
+        "coverage.*": ["coverage.json", "coverage.xml", "coverage.PROBE"],
+        # 探针刻意不带 .pyc 后缀：check_wheel 这两条禁的是"__pycache__ 目录下的
+        # 任何文件"，而 exclude 里另有一条 *.pyc。用 .pyc 名字做探针会被 *.pyc
+        # 顺手匹配掉，于是测的是后缀规则、不是目录规则——实测删掉
+        # `**/__pycache__/**` 后用例仍全绿（本用例的变异 4 一次假绿）。
+        "*/__pycache__/*": ["image/__pycache__/PROBE"],
+        "__pycache__/*": ["__pycache__/PROBE"],
+        ".pytest_cache/*": [".pytest_cache/CACHEDIR.TAG"],
+        ".ruff_cache/*": [".ruff_cache/probe"],
+        ".mypy_cache/*": [".mypy_cache/3.13/probe.json"],
+        "*.egg-info/*": ["astrbot_plugin_self_initiated_reply.egg-info/PKG-INFO"],
+        ".pre-commit-config.yaml": [".pre-commit-config.yaml"],
+        ".pyc": ["probe.pyc", "image/probe.pyc"],
+    }
+    guarded = {
+        *check_wheel["FORBIDDEN_PREFIXES"],
+        *check_wheel["FORBIDDEN_GLOBS"],
+        *check_wheel["FORBIDDEN_SUFFIXES"],
+    }
+    # 新增禁止模式却没给探针 → 这里先红，逼着补样本而不是静默漏测
+    assert guarded == set(samples), (
+        f"check_wheel 的禁止名单与本用例的探针表不同步："
+        f"缺探针 {sorted(guarded - set(samples))}，多余探针 {sorted(set(samples) - guarded)}"
+    )
+
+    unmatched = {
+        pattern: [path for path in paths if not spec.match_file(path)]
+        for pattern, paths in samples.items()
+    }
+    unmatched = {pattern: paths for pattern, paths in unmatched.items() if paths}
+    assert not unmatched, (
+        f"check_wheel 禁止但 pyproject 的 exclude 匹配不到：{unmatched}。"
+        f"这类文件一旦出现在工作树，hatch build 就会把它打进 wheel，"
+        f"而失败只在 CI build 作业才暴露。"
+    )
+
+
+def test_tool_versions_agree_across_config_sources() -> None:
+    """ruff 版本在 ci.yml / .pre-commit-config.yaml / pyproject 三处必须一致（阶段 2.4）。
+
+    这条不变量此前只写在 ci.yml 的注释里（"钉版本与 .pre-commit-config.yaml 的
+    ruff-pre-commit rev 对齐"），没有任何断言。改一处忘另一处的后果是本地 pre-commit
+    与 CI lint **结论相反**：本地用旧版通过、CI 用新版变红（0.15→0.16 新增 Markdown
+    围栏检查就是这样红过一次），或反之被旧版拦下一个 CI 会放行的写法。
+
+    同一断言挂在三处：CI lint 作业、pre-commit 钩子、以及本用例。前两处覆盖日常路径，
+    本用例保证即使有人跳过钩子、或 lint 作业被改坏，test 作业仍会红。
+    """
+    import runpy
+
+    gate = runpy.run_path(str(ROOT / "scripts" / "version_gates.py"))
+    problems = gate["check_cross_source"]()
+    assert not problems, "工具版本跨源不一致：" + "；".join(problems)
+
+
+# ============================================================================
+# 阶段 2.1：反向断言——前端页面 ↔ webapi 配置契约
+#
+# 已有守卫覆盖 CONFIG_SPECS ↔ _conf_schema.json（双向、逐字段）。但链条到
+# webapi 就断了：自定义面板 pages/ 是**手写** JS，它读 GET 响应、构造 POST
+# 请求体，两侧都是字面量。实测确认这一段无人守（全仓只有一处 pages/ 断言，
+# 查的是某个按钮 id），而它有两个反方向的失效模式，故需两条断言。
+# ============================================================================
+
+# GET 返回但面板刻意不渲染的配置键。
+#
+# patrol_inactive_after_sec：实测 git 历史里**从未**出现在 pages/（对 pages/ 的
+# -S 查询零命中），且它经 POST 可写并已被 test_webapi_fixes.py 的严格校验用例
+# 覆盖。故它是「宿主 _conf_schema.json 面板负责、自定义面板不重复呈现」的一项，
+# 不是遗漏。往这里加键前先确认同一件事：它真的有意不上面板，而不是忘了接。
+_FRONTEND_INTENTIONALLY_ABSENT = {"patrol_inactive_after_sec"}
+
+
+def _frontend_sources() -> str:
+    page = ROOT / "pages" / "主动回复设置"
+    return (page / "app.js").read_text(encoding="utf-8") + (page / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+
+def _api_get_config_keys() -> list[str]:
+    """AST 提取 ``_api_get_config`` 返回的 dict 字面量键。
+
+    读源码而非调函数：调函数需要构造完整 plugin，而这里要的是**契约**
+    （声明了哪些键），不是某次运行的取值。
+    """
+    import ast
+
+    tree = ast.parse((ROOT / "webapi.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef) or node.name != "_api_get_config":
+            continue
+        for stmt in ast.walk(node):
+            if isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Dict):
+                return [k.value for k in stmt.value.keys if isinstance(k, ast.Constant)]
+    raise AssertionError("未定位到 _api_get_config 的返回字典（写法变了，需复核本守卫）")
+
+
+def test_every_exposed_config_key_is_consumed_by_the_panel() -> None:
+    """GET 暴露的配置键必须被面板消费，否则是"接口给了、面板没接"。
+
+    失效场景：给 ``_api_get_config`` 加一个键并配好 POST 校验，却忘了在
+    pages/ 加控件。此时后端测试全绿（键在表里、校验通过），面板上却根本
+    看不到这个设置项——用户唯一能改它的地方是宿主面板，而我们以为已经
+    支持了。这条断言让"忘了接前端"在 CI 就红。
+    """
+    models = _models()
+    config_keys = {spec.key for spec in models.CONFIG_SPECS}
+    exposed = [key for key in _api_get_config_keys() if key in config_keys]
+    assert exposed, "未从 _api_get_config 提取到任何配置键（提取逻辑失效）"
+
+    front = _frontend_sources()
+    missing = [
+        key for key in exposed if key not in front and key not in _FRONTEND_INTENTIONALLY_ABSENT
+    ]
+    assert not missing, (
+        f"这些配置键由 /config 返回但 pages/ 零引用：{sorted(missing)}。"
+        f"要么补面板控件，要么加入 _FRONTEND_INTENTIONALLY_ABSENT 并写明为何不上面板。"
+    )
+
+    # 反向：豁免名单不得留下已经不存在的键（否则豁免会悄悄覆盖掉新的遗漏）
+    stale = sorted(_FRONTEND_INTENTIONALLY_ABSENT - set(exposed))
+    assert not stale, f"_FRONTEND_INTENTIONALLY_ABSENT 里的键已不由 /config 返回：{stale}"
+
+
+def test_panel_post_payload_keys_are_all_writable() -> None:
+    """面板 POST 提交的键必须全在 CONFIG_SCHEMA_KEYS 内。
+
+    失效场景：JS 里把 ``cooldown_sec`` 写成 ``cooldown_secs``。后端
+    ``_parse_config_updates`` 对未知键 **抛 ValueError**（"未知配置键"），
+    于是整次保存失败——不是这一项不生效，是**所有**设置都存不进去。前端是
+    手写字面量、没有类型检查，这类拼写错误只能靠断言拦。
+
+    提取口径：``apiPost("config", { ... })`` 请求体里 ``key:`` 形态的标识符。
+    """
+    import re
+
+    webapi = _webapi()
+    front = _frontend_sources()
+
+    match = re.search(r"apiPost\(\s*\"config\"\s*,\s*\{", front)
+    assert match, '未定位到 pages/ 里的 apiPost("config", {...}) 调用（写法变了，需复核本守卫）'
+
+    # 从 "{" 起按括号配平截出请求体字面量
+    start = match.end() - 1
+    depth = 0
+    for index in range(start, len(front)):
+        if front[index] == "{":
+            depth += 1
+        elif front[index] == "}":
+            depth -= 1
+            if depth == 0:
+                body = front[start : index + 1]
+                break
+    else:
+        raise AssertionError("apiPost 请求体括号未配平")
+
+    # 只取该层的 `key:` 标识符（值里的嵌套对象键也会被收，宁多不漏）
+    submitted = set(re.findall(r"(?m)^\s{2,}([a-z_][a-z0-9_]*)\s*:", body))
+    assert submitted, f"未从请求体提取到任何键：{body[:200]}"
+
+    unknown = sorted(submitted - set(webapi.CONFIG_SCHEMA_KEYS))
+    assert not unknown, (
+        f"面板提交了不可写的键 {unknown}：_parse_config_updates 会对未知键抛"
+        f"「未知配置键」，导致整次保存失败（不只是这一项）。"
+    )

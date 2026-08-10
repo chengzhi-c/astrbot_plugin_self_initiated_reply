@@ -20,7 +20,13 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
-from .host_stubs import MAIN_PACKAGE_NAME, install_astrbot_stubs, load_package, with_plugin
+from .host_stubs import (
+    MAIN_PACKAGE_NAME,
+    install_astrbot_stubs,
+    load_package,
+    production_py_files,
+    with_plugin,
+)
 from .test_main_runtime import _make_event
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -701,9 +707,11 @@ if __name__ == "__main__":
 def test_response_text_single_source_behavior() -> None:
     """response_text 必须只在 utils.py 定义一次（0.8.8 收敛 decision/generation/parser
     三处镜像）；行为契约：completion_text 优先、result_chain 兜底、异常兜底为空串。"""
+    # rglob 扫描面（0.9.4 阶段 1.6）：0.8.8 收敛掉的三处镜像之一就在 image/parser.py，
+    # 而原先的 ROOT.glob("*.py") 看不见子包——守卫对它要防的位置恰好失明。
     hits = [
-        path.name
-        for path in ROOT.glob("*.py")
+        path.relative_to(ROOT).as_posix()
+        for path in production_py_files()
         if "def response_text(" in path.read_text(encoding="utf-8")
     ]
     assert hits == ["utils.py"], f"response_text 定义漂移：{hits}"
@@ -722,10 +730,10 @@ def test_response_text_single_source_behavior() -> None:
 def test_command_aliases_single_source() -> None:
     """命令别名表必须只在 commands.py 定义一次（main/webapi 不得镜像复制）。"""
     hits = []
-    for path in ROOT.glob("*.py"):
+    for path in production_py_files():
         source = path.read_text(encoding="utf-8").replace("'", '"')
         if '"debug", "diag", "diagnose"' in source:
-            hits.append(path.name)
+            hits.append(path.relative_to(ROOT).as_posix())
     assert hits == ["commands.py"], f"命令别名表定义漂移：{hits}"
 
 
@@ -818,6 +826,118 @@ def test_admin_ids_hot_reload_on_file_change(tmp_path: Path) -> None:
         assert plugin._refresh_admin_ids() == {"222"}
 
     with_plugin(tmp_path, scenario)
+
+
+def test_bare_alias_is_itself_a_reply_request() -> None:
+    """只喊别名（``is_alias_call`` 命中）本身就是接话请求。
+
+    此前所有用例都走「别名 + 尾巴」或「无别名的通用模式」两条路，
+    ``is_alias_call`` 的 ``return True`` 与 ``looks_like_reply_request`` 里对它的
+    短路从未执行——真正生效的只有后面的 alias_tail 与通用模式。若哪天短路被改坏，
+    裸别名会退到通用模式判定，"阿c" 不含任何锚定词，于是静默变成「不是接话请求」。
+    """
+    _, utils, _ = _load_sec_modules()
+
+    # is_alias_call 自身：全等命中，且不受前导 @ 影响
+    assert utils.is_alias_call("阿c", ["阿c"]) is True
+    assert utils.is_alias_call("阿c", ["别的名字", "阿c"]) is True
+    # 反向锚：别名只做全等，不做前缀
+    assert utils.is_alias_call("阿c回一下", ["阿c"]) is False
+    assert utils.is_alias_call("阿c", []) is False
+
+    # looks_like_reply_request 的短路：裸别名不经通用模式即成立
+    assert utils.looks_like_reply_request("阿c", ["阿c"]) is True
+    # 同一串在没有该别名时不成立 —— 证明 True 只来自别名短路那一级
+    assert utils.looks_like_reply_request("阿c", []) is False
+
+
+def test_empty_after_compaction_is_not_a_reply_request() -> None:
+    """去空白后为空的输入必须直接判否，不得进入别名与通用模式匹配。
+
+    纯空白/纯换行是宿主可能送进来的真实形状（如只发了个空格）。早退这一行未被执行
+    时，空串会一路走到 ``GENERAL_REPLY_REQUEST_PATTERNS``，任何写成可匹配空串的模式
+    都会让「发个空格」触发主动回复。
+    """
+    _, utils, _ = _load_sec_modules()
+
+    for blank in ("", "   ", "\n\n", "\t \r\n"):
+        assert utils.looks_like_reply_request(blank, ["阿c"]) is False
+
+    # 空白别名不得让任何输入命中别名链
+    assert utils.looks_like_reply_request("   ", ["  "]) is False
+
+
+def test_whitespace_only_alias_is_skipped_in_tail_matching() -> None:
+    """空白别名在 ``_alias_request_tail`` 里必须跳过，不能当成"空前缀"命中。
+
+    ``_compact_reply_request_text`` 会把 ``"  "`` 压成空串，而任何字符串都
+    ``startswith("")``。若不跳过，配置里一个手滑的空白别名会让**所有**消息都被
+    当作「别名 + 尾巴」，尾巴取整句去匹配锚定模式，主动回复触发面被悄悄放大。
+    """
+    _, utils, _ = _load_sec_modules()
+
+    # 只有空白别名：整句不得被当作别名尾巴
+    assert utils.looks_like_reply_request("今天天气不错", ["  "]) is False
+    # 空白别名与真别名共存：真别名照常工作，空白项只被跳过
+    assert utils.looks_like_reply_request("阿c回一下", ["  ", "阿c"]) is True
+    assert utils.looks_like_reply_request("阿c", ["  ", "阿c"]) is True
+
+
+def test_clean_reply_returns_empty_when_filtering_consumes_everything() -> None:
+    """过滤后只剩空白时必须返回空串，且不得进入截断分支。
+
+    工具标记清理是逐处替换：整条回复由行内标记与空白组成时，替换完就只剩空白。
+    这一行早退未被执行时，空串会带着 ``max_chars`` 走进截断与正则分支——下游据
+    ``if not cleaned`` 判断是否放弃发送，返回形状必须是干净的空串而非空白串。
+    """
+    _, utils, _ = _load_sec_modules()
+
+    # 空白变体标记：LEAK 要求 "tool call" 单空格，行内模式容忍 \s+，
+    # 于是 "[tool  call]" 绕过整条早退、只被行内清理吃掉 —— 清完就只剩空白
+    single = utils.clean_reply("[tool  call] leaked", allow_multiline=False, max_chars=100)
+    assert single == ""
+
+    # 多行路径同样收敛：逐行清空后 join 出空串
+    multi = utils.clean_reply(
+        "[tool  call] a\n[tool  call] b",
+        allow_multiline=True,
+        max_chars=100,
+    )
+    assert multi == ""
+
+    # 纯空白输入（宿主可能真的送来只有空格的回复）
+    assert utils.clean_reply("   ", allow_multiline=False, max_chars=0) == ""
+
+    # 反向锚：有正文时不受影响（防「恒空」式的错误修复）
+    assert utils.clean_reply("在的", allow_multiline=False, max_chars=100) == "在的"
+    kept = utils.clean_reply("[tool  call] x\n在的", allow_multiline=True, max_chars=100)
+    assert kept == "在的"
+
+
+def test_is_admin_event_trusts_host_api_success_path() -> None:
+    """宿主 API 判为管理员时必须立即成立（`utils.is_admin_event` 的三级链首级）。
+
+    这条正路此前从未被执行：``host_stubs.FakeEvent.is_admin()`` 恒返回 False，
+    于是实际生效的只有 role / admin_ids 两级回退。异常方向（宿主未实现或抛错时
+    收紧权限）已有覆盖，缺的恰是「宿主说是管理员，就认」——若宿主改了该 API 的
+    语义，回退链会把变化掩盖成「照样能判对」，没有任何用例会红。
+
+    ``SimpleNamespace`` 不带 ``get_sender_id``，``event_sender_id`` 因此返回空串；
+    配合空 ``admin_ids``，本用例里 True 只可能来自宿主 API 那一级。
+    """
+    _, utils, _ = _load_sec_modules()
+
+    # 首级命中：role 与 admin_ids 都不成立，True 的唯一来源是 event.is_admin()
+    host_says_admin = SimpleNamespace(is_admin=lambda: True)
+    assert utils.is_admin_event(host_says_admin, set()) is True
+
+    # 首级优先于回退链：role 明确是普通成员也不改变结论
+    host_overrides_role = SimpleNamespace(is_admin=lambda: True, role="member")
+    assert utils.is_admin_event(host_overrides_role, set()) is True
+
+    # 反向锚：三级全不命中才是非管理员（防「恒 True」式的错误修复）
+    host_says_no = SimpleNamespace(is_admin=lambda: False, role="member")
+    assert utils.is_admin_event(host_says_no, set()) is False
 
 
 # ============================================================================

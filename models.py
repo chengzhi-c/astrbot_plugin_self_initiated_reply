@@ -22,7 +22,7 @@ from typing import Any, Protocol
 from astrbot.api import logger
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.9.3"
+PLUGIN_VERSION = "0.9.4"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -108,10 +108,31 @@ REPLY_REQUEST_WINDOW_SEC = 180  # 明确请求窗口：3分钟内的接话请求
 EVENT_CLEANUP_INTERVAL_SEC = 3600  # 事件清理间隔：1小时清理一次陈旧事件
 MAX_CACHED_EVENTS = 100  # 最大缓存事件数：防止内存无限增长
 PATROL_BACKOFF_DELAY_SEC = 60  # 巡检失败退避延迟：避免错误循环
+# release 闸门等待兜底（0.9.4 阶段 1.1）：配置回滚会把运行标记恢复成快照态，
+# 而支撑它的检查任务可能已在回滚窗口内结束。此时 release 事件永远不会
+# 再被 set，裸 wait() 将永久挂起。超时 + 轮次上限把闸门失同步降级为
+# 一次延迟或一次丢弃，而不是让该会话静默死亡或空转独占事件循环。
+RELEASE_WAIT_TIMEOUT_SEC = 30
+MAX_RELEASE_WAIT_ROUNDS = 20
 # 管理员列表重探窗口：高频事件路径在窗口内跳过对 cmd_config.json 的 stat
 # （mtime 缓存只省读文件不省系统调用）；运行期改管理员下个窗口生效，
 # 最大延迟 = 窗口长，探测失败不变更缓存、窗口后重试。
 ADMIN_REFRESH_WINDOW_SEC = 30.0
+# 外部时间戳的容许时钟偏移（0.9.4 阶段 1.4）：状态文件是可被手工编辑的外部输入，
+# 而 _finite_float 只挡 NaN/inf，负值与远未来原样穿透（实测）。两个方向危害不同：
+#
+# - 远未来（now+1e9）：remaining_silence_sec 实测 1000000045 秒 ≈ 31.69 年，
+#   该会话永久锁死；延迟检查以该值为 timeout 停放，notify_activity 唤醒后重算
+#   仍是巨值又停回去（实测连续 3~4 次），成为不死任务；且巡检的
+#   now - last_active_at 为负，永远不大于 patrol_inactive_after_sec，
+#   于是巡检永不跳过这个已锁死的会话，每轮都白跑一次。
+# - 负值：单独毒 last_active_at 会被「这条消息之后已经主动回复过」拦住，但把
+#   last_proactive_observed_at 一并毒成更负即可放行——全新会话被拦、毒过的放行，
+#   是真实的能力提升。
+#
+# 取 300 秒：足够覆盖 NTP 校正与容器宿主间的正常漂移，又把投毒的可利用窗口
+# 压到一次普通延迟。上界用 now + 偏移而非硬编码绝对时刻，避免随时间失效。
+MAX_CLOCK_SKEW_SEC = 300.0
 
 DEFAULT_DECISION_PROMPT_TEMPLATE = """会话: {session}
 触发: {trigger}
@@ -215,6 +236,19 @@ def as_float(value: Any, default: float, minimum: float = 0.0, maximum: float = 
     if not math.isfinite(parsed):
         return default
     return max(minimum, min(maximum, parsed))
+
+
+def as_timestamp(value: Any, *, now: float | None = None) -> float:
+    """把外部来源的 epoch 秒钳到 ``[0, now + MAX_CLOCK_SKEW_SEC]``（0.9.4 阶段 1.4）。
+
+    与 ``as_float`` 的区别只在上界是动态的：时间戳的合法上界随时钟走，写死一个
+    绝对值会随时间失效。NaN/inf/不可解析一律归 0.0（等价「从未活跃」），与
+    ``_finite_float`` 的原语义一致；新增的是两侧钳位。
+
+    ``now`` 可注入以便测试；默认取 ``now_ts()``。
+    """
+    ceiling = (now_ts() if now is None else now) + MAX_CLOCK_SKEW_SEC
+    return as_float(value, 0.0, minimum=0.0, maximum=ceiling)
 
 
 def as_list(value: Any) -> list[str]:

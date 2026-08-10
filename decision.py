@@ -85,7 +85,12 @@ class DecisionMaker:
             return "今日主动回复次数已达上限。"
         silence_left = state.remaining_silence_sec(self.settings.min_silence_sec, self._clock())
         if silence_left > 0 or not state.last_active_at:
-            elapsed = int(self.settings.min_silence_sec - silence_left) if silence_left else 0
+            # max(0, ...)（0.9.4 阶段 1.4）：silence_left 可以大于 min_silence_sec
+            # ——载入时时间戳被钳到 now + MAX_CLOCK_SKEW_SEC，最多仍能超出一个偏移量，
+            # 差值为负会向运营者显示「静默时间不足：-300s / 45s」这种自相矛盾的文案。
+            elapsed = (
+                max(0, int(self.settings.min_silence_sec - silence_left)) if silence_left else 0
+            )
             return f"静默时间不足：{elapsed}s / {self.settings.min_silence_sec}s。"
         cooldown_left = self.settings.cooldown_sec - (self._clock() - state.last_proactive_at)
         if cooldown_left >= 1:

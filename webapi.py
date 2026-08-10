@@ -9,7 +9,26 @@ import math
 import re
 from collections import deque
 from functools import partial
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # 只在类型检查期导入（0.9.4 阶段 2.2）：运行时 main.py 先 import 本模块
+    # （main.py:115），反向真导入会成环。`from __future__ import annotations` 已让
+    # 注解全为字符串，故无需 quote、无加载期开销。运行时安全性已实测：宿主
+    # register_web_api 只把 handler 存进元组，全仓无 get_type_hints / eval_str
+    # 调用点，三处 inspect.signature 都只读 parameters，不解析注解字符串。
+    #
+    # **诚实说明其检查力**：本注解今天**不产生任何 mypy 检查力**。
+    # `ignore_missing_imports = true` 让 astrbot.* 全解析为 Any，而
+    # SelfInitiatedReplyPlugin 继承的 Star 就来自那里，于是整个子类坍缩成 Any——
+    # 实测 `reveal_type(plugin)` 输出 `Any`，故意写错属性名（plugin.contextt）
+    # 也照样 Success。同一结论 [tool.mypy] 的注释已记录过。
+    #
+    # 那为什么还写：它是本模块 17 个函数**唯一说明"这个 plugin 是什么"的地方**。
+    # 此前读者看到裸 `plugin` 只能靠 grep 反查。编辑器的跳转与补全走的是
+    # pyright/Pylance 对 main.py 的直接解析，不受上面那条 mypy 开关影响。
+    # 且宿主哪天发布 py.typed（或本仓库补本地 stub），这 17 处会自动开始真检查。
+    from .main import SelfInitiatedReplyPlugin
 
 from astrbot.api import logger
 
@@ -96,7 +115,7 @@ def _provider_items(source: Any) -> list[Any]:
     return list(source or [])
 
 
-def _collect_provider_options(plugin) -> list[dict[str, str]]:
+def _collect_provider_options(plugin: SelfInitiatedReplyPlugin) -> list[dict[str, str]]:
     providers: list[Any] = []
     get_all = getattr(plugin.context, "get_all_providers", None)
     if callable(get_all):
@@ -123,7 +142,7 @@ def _collect_provider_options(plugin) -> list[dict[str, str]]:
     return sorted(options, key=lambda item: item["label"].lower())
 
 
-def _providers_from_manager(plugin) -> list[Any]:
+def _providers_from_manager(plugin: SelfInitiatedReplyPlugin) -> list[Any]:
     provider_manager = getattr(plugin.context, "provider_manager", None)
     inst_map = getattr(provider_manager, "inst_map", None)
     if isinstance(inst_map, dict):
@@ -131,7 +150,7 @@ def _providers_from_manager(plugin) -> list[Any]:
     return []
 
 
-async def _api_get_config(plugin) -> dict[str, Any]:
+async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """返回当前配置。"""
     try:
         return {
@@ -170,7 +189,7 @@ async def _api_get_config(plugin) -> dict[str, Any]:
         return {"ok": False, "error": "配置读取失败"}
 
 
-async def _api_providers(plugin) -> dict[str, Any]:
+async def _api_providers(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """返回当前可选聊天 Provider。"""
     try:
         return {"ok": True, "providers": _collect_provider_options(plugin)}
@@ -180,7 +199,7 @@ async def _api_providers(plugin) -> dict[str, Any]:
         return {"ok": False, "providers": [], "error": "Provider 列表读取失败"}
 
 
-async def _api_cleanup_image_cache(plugin) -> dict[str, Any]:
+async def _api_cleanup_image_cache(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """手动清理过期图片缓存；不删除有效窗口内仍受保护的源。"""
     if plugin._stopping:
         return {"ok": False, "error": "插件正在关闭"}
@@ -204,7 +223,7 @@ def _strict_bool(value: Any, field: str) -> bool:
     return value
 
 
-def _load_ui_theme(plugin) -> str:
+def _load_ui_theme(plugin: SelfInitiatedReplyPlugin) -> str:
     """从 ui_prefs.json 加载主题偏好；损坏或缺失回退 auto。"""
     try:
         raw = json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8"))
@@ -215,7 +234,7 @@ def _load_ui_theme(plugin) -> str:
     return theme if theme in {"auto", "light", "dark"} else "auto"
 
 
-def _save_ui_theme(plugin, theme: str) -> bool:
+def _save_ui_theme(plugin: SelfInitiatedReplyPlugin, theme: str) -> bool:
     """原子写入主题偏好（tmp + replace）。"""
     try:
         tmp = plugin._ui_prefs_path.with_suffix(".json.tmp")
@@ -228,12 +247,12 @@ def _save_ui_theme(plugin, theme: str) -> bool:
         return False
 
 
-async def _api_get_ui_theme(plugin) -> dict[str, Any]:
+async def _api_get_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """获取插件页面 UI 主题偏好。"""
     return {"ok": True, "theme": plugin._ui_theme}
 
 
-async def _api_post_ui_theme(plugin) -> dict[str, Any]:
+async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """更新插件页面 UI 主题偏好（持久化到 ui_prefs.json）。"""
     try:
         data = await _request_json()
@@ -308,14 +327,14 @@ async def _request_json() -> Any:
     raise RuntimeError("当前 AstrBot Web API 不支持 JSON 请求读取")
 
 
-async def _api_post_config(plugin) -> dict[str, Any]:
+async def _api_post_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     async with plugin._config_lock:
         if plugin._stopping:
             return {"ok": False, "error": "插件正在关闭"}
         return await _api_post_config_locked(plugin)
 
 
-async def _api_post_config_locked(plugin) -> dict[str, Any]:
+async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """更新配置。"""
     try:
         data = await _request_json()
@@ -403,7 +422,7 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
 _AUDITED_CONFIG_KEYS = tuple(spec.key for spec in CONFIG_SPECS if spec.audited)
 
 
-def _snapshot_plugin_state(plugin) -> dict[str, Any]:
+def _snapshot_plugin_state(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """对应用配置前会变更的全部运行态做快照，供回滚恢复。"""
     return {
         "settings": copy.deepcopy(plugin.settings),
@@ -423,7 +442,7 @@ def _snapshot_plugin_state(plugin) -> dict[str, Any]:
     }
 
 
-async def _restore_plugin_state(plugin, snapshot: dict[str, Any]) -> None:
+async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict[str, Any]) -> None:
     """恢复配置应用前快照，重建被取消的延迟检查并恢复任务拓扑。"""
     # 原地恢复（保持 Settings 对象身份）：组件构造时各存 self.settings
     # 引用，整体替换会让它们读到过期配置（0.9.0 轴 A）。
@@ -476,7 +495,9 @@ async def _restore_plugin_state(plugin, snapshot: dict[str, Any]) -> None:
         logger.error("[%s] config rollback persistence failed: %s", PLUGIN_ID, rollback_exc)
 
 
-async def _apply_config_updates(plugin, updates: dict[str, Any]) -> dict[str, Any]:
+async def _apply_config_updates(
+    plugin: SelfInitiatedReplyPlugin, updates: dict[str, Any]
+) -> dict[str, Any]:
     """应用配置变更；任何失败回滚全部运行态后重新抛出。"""
     snapshot = _snapshot_plugin_state(plugin)
     try:
@@ -548,38 +569,55 @@ def _log_audited_changes(
         logger.info("[%s] webapi config audit: %s", PLUGIN_ID, ", ".join(changed))
 
 
-async def _api_status(plugin) -> dict[str, Any]:
+async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """返回插件集成状态与会话级运行状态（调试面板导出，ticket 14）。
 
     覆盖：代次快照、运行中集合、任务数（延迟/运行中检查/后台）、缓存规模
     （事件/图片事件/会话）、每会话最近裁决原因。
+
+    包 try/except 的诚实理由（0.9.4 阶段 1.7）：**今天没有可达异常**。逐项核过
+    ——全是普通属性或平凡 property（``generation_view`` / ``running_sessions_view``
+    只做 ``MappingProxyType`` / ``frozenset`` 包装），且全部在 ``__init__``
+    早于 ``register_web_apis`` 完成初始化，仓内也无线程（故 ``dict()`` 复制期间
+    被并发改动这种理由不成立，不拿它当依据）。
+
+    真实理由是两条：一是本函数是**唯一**没有 ``except`` 的 ``_api_*`` 处理器，
+    未捕获异常将按宿主的方式呈现，而其余处理器加 ``except`` 的初衷正是不让内部
+    细节以任何形式流向调用方——这层保证不该有一个缺口；二是本函数按设计会随
+    调试面板扩字段而增长，每加一项就是一次新的取值机会，届时"当前无可达异常"
+    这个前提不再自动成立。
     """
-    return {
-        "ok": True,
-        "loaded": True,
-        "runtime_enabled": plugin.runtime_enabled,
-        "whitelist_count": len(plugin.settings.whitelist),
-        "pipeline_mode": True,
-        "decision_model_enabled": plugin.settings.decision_model_enabled,
-        "gate": {
-            "generation": dict(getattr(plugin._gate, "generation_view", {})),
-            "running": sorted(getattr(plugin._gate, "running_sessions_view", frozenset())),
-        },
-        "tasks": {
-            "delay": len(plugin._delay_tasks),
-            "running_check": len(plugin._running_check_tasks),
-            "background": len(plugin._background_tasks),
-        },
-        "caches": {
-            "events": len(plugin._last_events),
-            "image_events": len(plugin._recent_image_events),
-            "sessions": len(plugin.sessions),
-        },
-        "last_decisions": dict(plugin._last_decisions),
-    }
+    try:
+        return {
+            "ok": True,
+            "loaded": True,
+            "runtime_enabled": plugin.runtime_enabled,
+            "whitelist_count": len(plugin.settings.whitelist),
+            "pipeline_mode": True,
+            "decision_model_enabled": plugin.settings.decision_model_enabled,
+            "gate": {
+                "generation": dict(getattr(plugin._gate, "generation_view", {})),
+                "running": sorted(getattr(plugin._gate, "running_sessions_view", frozenset())),
+            },
+            "tasks": {
+                "delay": len(plugin._delay_tasks),
+                "running_check": len(plugin._running_check_tasks),
+                "background": len(plugin._background_tasks),
+            },
+            "caches": {
+                "events": len(plugin._last_events),
+                "image_events": len(plugin._recent_image_events),
+                "sessions": len(plugin.sessions),
+            },
+            "last_decisions": dict(plugin._last_decisions),
+        }
+    except Exception as exc:
+        # 同 _api_get_config：详情只进服务端日志，不回显给调用方。
+        logger.warning("[%s] api status failed: %s", PLUGIN_ID, exc)
+        return {"ok": False, "error": "状态读取失败"}
 
 
-def register_web_apis(plugin) -> None:
+def register_web_apis(plugin: SelfInitiatedReplyPlugin) -> None:
     """注册统一管理页面所需的 Web API。"""
     register = plugin.context.register_web_api
     route = f"/{PLUGIN_ID}"
@@ -628,7 +666,7 @@ def register_web_apis(plugin) -> None:
     plugin.unified_manager.register(plugin.context, route)
 
 
-def bind_api_handlers(plugin) -> None:
+def bind_api_handlers(plugin: SelfInitiatedReplyPlugin) -> None:
     """在实例上保留历史方法名，供测试与外部以 plugin._api_* 调用。"""
     plugin._api_get_config = partial(_api_get_config, plugin)
     plugin._api_post_config = partial(_api_post_config, plugin)

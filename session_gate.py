@@ -77,7 +77,12 @@ class SessionGate:
         return self._session_release.setdefault(umo, asyncio.Event())
 
     def snapshot(self) -> dict[str, Any]:
-        """代次/运行集/锁三张表的浅拷贝快照，供配置回滚整表恢复。"""
+        """代次/运行集/锁三张表的浅拷贝快照，供配置回滚原地恢复。
+
+        release 表**刻意不快照**：等待者持有具体 Event 对象，按值恢复会
+        制造孤儿事件（永久挂起），按身份恢复又会带回陈旧的 set 状态
+        （空转饿死）。正确来源是恢复后的运行集，由 ``restore`` 反推。
+        """
         return {
             "generation": dict(self._session_generation),
             "running": set(self._running_sessions),
@@ -85,11 +90,34 @@ class SessionGate:
         }
 
     def restore(self, snap: dict[str, Any]) -> None:
-        """整表替换为快照内容。运行中的 async with 持有旧锁对象引用，
-        替换表项即可，无需深拷贝。"""
-        self._session_generation = snap["generation"]
-        self._running_sessions = snap["running"]
-        self._session_locks = snap["locks"]
+        """原地恢复三张表，并把 release 表校正到与恢复后运行集一致。
+
+        必须原地 clear+update、禁止属性重绑定（契约 §11 B1）：等待者与
+        运行中的 ``async with`` 持有的是容器与 Event/Lock 对象本身的引用，
+        换掉容器身份会让它们继续读写孤儿表。
+
+        release 表**不做整表恢复**：等待者持有的是具体 Event 对象，替换
+        即制造孤儿（与锁对象同一约束）。改为从恢复后的运行集反推应有状态：
+        回滚会把运行标记恢复成快照态，而支撑它的检查任务可能已经在
+        ``_save_storage()`` 的 await 窗口内结束并 ``set()`` 过事件——此时
+        若保留已 set 状态，``scheduler`` 的 ``while is_running`` 循环每轮
+        立即返回，紧密空转独占事件循环（整个 bot 卡死）。
+        """
+        self._session_generation.clear()
+        self._session_generation.update(snap["generation"])
+        self._session_locks.clear()
+        self._session_locks.update(snap["locks"])
+        self._running_sessions.clear()
+        self._running_sessions.update(snap["running"])
+        for umo, release in self._session_release.items():
+            if umo in self._running_sessions:
+                # 仍标记运行中：清掉陈旧的 set，让等待者重新挂起而非空转。
+                # 若该会话的任务其实已结束，由 scheduler 侧的超时兜底与
+                # 轮次上限把它降级为一次延迟/丢弃，而不是饿死事件循环。
+                release.clear()
+            else:
+                # 恢复后不再运行：唤醒等待者，避免等一个不会到来的信号。
+                release.set()
 
     def prune(self, umo: str) -> None:
         """会话移出白名单后回收全部映射与运行标记。"""

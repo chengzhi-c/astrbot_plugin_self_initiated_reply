@@ -19,7 +19,7 @@ import asyncio
 import json
 import re
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
@@ -126,6 +126,26 @@ from .whitelist import WhitelistManager
     PLUGIN_VERSION,
 )
 class SelfInitiatedReplyPlugin(Star):
+    # 运行时绑定的四个 Web API 处理器（0.9.4 阶段 2.2）。它们不在本类里 def，而是由
+    # webapi.bind_api_handlers 在 __init__ 末尾以 partial(...) 挂到实例上，保留历史
+    # 方法名供测试与外部以 plugin._api_* 调用（约 30 处调用点，见 AGENTS.md）。
+    #
+    # 这里只写**裸注解、不赋值**：裸注解不创建类属性，运行时行为与此前完全一致
+    # （既不会遮蔽 partial 绑定，也不会让 hasattr 提前为真），纯粹是给读者和编辑器
+    # 的声明。此前读者在本类里搜 `_api_post_config` 是搜不到的，只能反查 webapi。
+    #
+    # 刻意说明它**不是**为 mypy 加的：实测 mypy 对这四处赋值从不报错——
+    # ignore_missing_imports 让 Star 解析为 Any，整个子类坍缩成 Any，任何属性名都合法
+    # （详见 webapi.py 的 TYPE_CHECKING 块）。所以这组声明的价值是导航，不是检查。
+    #
+    # 与 bind_api_handlers 实际绑定集合的一致性由
+    # tests/test_webapi_fixes.py::test_bound_api_handlers_match_class_declarations 钉住：
+    # 那边新增一个 partial 绑定而这里忘了声明（或反之）就变红。
+    _api_get_config: Callable[[], Awaitable[dict[str, Any]]]
+    _api_post_config: Callable[[], Awaitable[dict[str, Any]]]
+    _api_get_ui_theme: Callable[[], Awaitable[dict[str, Any]]]
+    _api_post_ui_theme: Callable[[], Awaitable[dict[str, Any]]]
+
     def __init__(
         self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None
     ) -> None:

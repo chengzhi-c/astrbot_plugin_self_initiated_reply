@@ -22,8 +22,10 @@ from .models import (
     LEAK_WARN_SESSION_THRESHOLD,
     LEAK_WARN_TASK_THRESHOLD,
     MAX_CACHED_EVENTS,
+    MAX_RELEASE_WAIT_ROUNDS,
     PATROL_BACKOFF_DELAY_SEC,
     PLUGIN_ID,
+    RELEASE_WAIT_TIMEOUT_SEC,
     SessionState,
     Settings,
     now_ts,
@@ -232,6 +234,7 @@ class SessionScheduler:
                 if not self._should_run() or not self._gate.is_current(umo, generation):
                     return
                 silence_left = self.remaining_silence_sec(state)
+            release_rounds = 0
             while self._gate.is_running(umo):
                 logger.debug(
                     "[%s] wait for previous check to finish session=%s trigger=%s",
@@ -239,8 +242,26 @@ class SessionScheduler:
                     umo,
                     trigger,
                 )
-                await self._gate.release_event(umo).wait()
+                # 超时兜底 + 轮次上限（0.9.4 阶段 1.1）：配置回滚可能把运行标记恢复成
+                # 快照态，而支撑它的任务已结束、不会再 set release 事件。裸 wait()
+                # 在这种失同步下永久挂起（该会话静默死亡）。
+                try:
+                    await asyncio.wait_for(
+                        self._gate.release_event(umo).wait(), timeout=RELEASE_WAIT_TIMEOUT_SEC
+                    )
+                except asyncio.TimeoutError:
+                    pass
                 if not self._should_run() or not self._gate.is_current(umo, generation):
+                    return
+                release_rounds += 1
+                if release_rounds >= MAX_RELEASE_WAIT_ROUNDS:
+                    logger.warning(
+                        "[%s] release gate desynced, drop check session=%s trigger=%s rounds=%d",
+                        PLUGIN_ID,
+                        umo,
+                        trigger,
+                        release_rounds,
+                    )
                     return
             running_task = asyncio.current_task()
             if running_task is not None:

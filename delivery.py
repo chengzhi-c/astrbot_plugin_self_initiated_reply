@@ -185,7 +185,14 @@ class DeliveryRunner:
     async def send_reply(
         self, umo: str, reply: str, *, expected_generation: int | None = None
     ) -> SendOutcome:
-        """Send one proactive reply without retrying an unknown submission."""
+        """Send one proactive reply without retrying an unknown submission.
+
+        本方法只做「复核点 1/4 + 选路」，两条投递路径各自成方法（0.9.4 阶段 3 拆分）：
+        事件仍在手边走 ``_send_via_event``（复核点 2/4、3/4，可触发装饰与发送后钩子），
+        否则走 ``_send_via_context``（复核点 4/4，经宿主 context 兜底发送）。
+        拆分不改语义：四个复核点的相对位置、UNKNOWN 归类方向、``_clear_result``
+        的唯一收敛点均保持原样。
+        """
         # 复核点 1/4（真实窗口）：expected_generation 是生成前 advance 拿到的 token，
         # 到此已隔整轮 LLM 生成（多个 await），代次极可能已被新消息推进。此处尚未
         # set_result，无需 _clear_result。
@@ -195,106 +202,128 @@ class DeliveryRunner:
 
         last_event = self._last_events.get(umo)
         if last_event:
-            send_started = False
-            try:
-                last_event.set_result(
-                    self._runtime()
-                    .new_event_result()
-                    .message(reply)
-                    .set_result_content_type(self._runtime().result_llm_type)
-                )
-                await self._call_hook(
-                    last_event, self._runtime().event_type.OnDecoratingResultEvent
-                )
-                # 复核点 2/4（真实窗口）：装饰钩子是 await，期间其他任务可运行、新消息
-                # 可推进代次。四处中只有此处与复核点 1 存在真实竞态窗口。
-                if not self._gate.is_current(umo, expected_generation):
-                    self._clear_result(last_event)
-                    logger.info(
-                        "[%s] suppress stale reply after decorating hook session=%s",
-                        PLUGIN_ID,
-                        umo,
-                    )
-                    return SendOutcome(SendStatus.SUPPRESSED, "generation changed after decorating")
-                result = last_event.get_result()
-                if result is None or not result.chain:
-                    self._clear_result(last_event)
-                    return SendOutcome(
-                        SendStatus.FAILED_BEFORE_SUBMIT, "decorating hook produced no result"
-                    )
-                # 复核点 3/4（结构防线）：与复核点 2 之间零 await（get_result 同步），
-                # 当前代码下代次不可能在此变化，覆盖靠 test_delivery_blindspots 的
-                # _FlipGate(true_times=2) 数调用次数翻转。保留理由是结构性：
-                # test_storage_and_umo 锁「钩子后、send 前必须有复核」，此处紧贴
-                # outbound.send；上方一旦插入任何 await，这道防线立即变实。
-                if not self._gate.is_current(umo, expected_generation):
-                    self._clear_result(last_event)
-                    logger.info(
-                        "[%s] suppress stale reply before event send session=%s", PLUGIN_ID, umo
-                    )
-                    return SendOutcome(SendStatus.SUPPRESSED, "generation changed before send")
-                logger.debug(
-                    "[%s] event send begin session=%s chars=%d chain_items=%d",
+            return await self._send_via_event(
+                umo, reply, last_event, expected_generation=expected_generation
+            )
+        return await self._send_via_context(umo, reply, expected_generation=expected_generation)
+
+    async def _send_via_event(
+        self, umo: str, reply: str, last_event: Any, *, expected_generation: int | None
+    ) -> SendOutcome:
+        """事件路径投递：装饰钩子 → 代次复核 → 事件 send → 发送后钩子。
+
+        仅由 ``send_reply`` 在 ``last_event`` 为真时调用，进入时复核点 1/4 已通过。
+        本方法是唯一会 ``set_result`` 的路径，故所有出口都必须经 ``_clear_result``
+        回收（防结果泄漏到宿主后续流程）。
+        """
+        send_started = False
+        try:
+            last_event.set_result(
+                self._runtime()
+                .new_event_result()
+                .message(reply)
+                .set_result_content_type(self._runtime().result_llm_type)
+            )
+            await self._call_hook(last_event, self._runtime().event_type.OnDecoratingResultEvent)
+            # 复核点 2/4（真实窗口）：装饰钩子是 await，期间其他任务可运行、新消息
+            # 可推进代次。四处中只有此处与复核点 1 存在真实竞态窗口。
+            if not self._gate.is_current(umo, expected_generation):
+                self._clear_result(last_event)
+                logger.info(
+                    "[%s] suppress stale reply after decorating hook session=%s",
                     PLUGIN_ID,
                     umo,
-                    len(reply),
-                    len(getattr(result, "chain", []) or []),
                 )
-                outbound = OutboundGateway(last_event.send)
-                # 悲观默认：send 调用一旦开始，消息就可能已提交。gateway 内部虽把
-                # adapter 异常转成 UNKNOWN，但其 except 块自身仍可能抛（异常对象的
-                # ``__str__`` 坏掉时 ``str(exc)`` 二次抛），此时异常逃出 gateway 而
-                # adapter 早已调用过——下方 except 必须仍归 UNKNOWN，归
-                # FAILED_BEFORE_SUBMIT 会不消耗冷却而重发。send 正常返回后再用
-                # submitted 精确化（gateway 明确说未提交时才降为提交前失败）。
-                send_started = True
-                send_result = await outbound.send(result)
-                send_started = send_result.submitted
-                if not send_result.submitted:
-                    self._clear_result(last_event)
-                    return send_result.outcome
-                logger.debug(
-                    "[%s] event send completed session=%s chars=%d;"
-                    " platform adapter completion is not a delivery receipt",
-                    PLUGIN_ID,
-                    umo,
-                    len(reply),
+                return SendOutcome(SendStatus.SUPPRESSED, "generation changed after decorating")
+            result = last_event.get_result()
+            if result is None or not result.chain:
+                self._clear_result(last_event)
+                return SendOutcome(
+                    SendStatus.FAILED_BEFORE_SUBMIT, "decorating hook produced no result"
                 )
-                if send_result.outcome.status is SendStatus.DELIVERED:
-                    # UNKNOWN 可能已经提交也可能没有，不触发 after-send hook，
-                    # 避免副作用基于未确认的发送结果。
-                    try:
-                        await self._call_hook(
-                            last_event, self._runtime().event_type.OnAfterMessageSentEvent
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "[%s] after-send hook failed session=%s error=%s",
-                            PLUGIN_ID,
-                            umo,
-                            exc,
-                        )
+            # 复核点 3/4（结构防线）：与复核点 2 之间零 await（get_result 同步），
+            # 当前代码下代次不可能在此变化，覆盖靠 test_delivery_blindspots 的
+            # _FlipGate(true_times=2) 数调用次数翻转。保留理由是结构性：
+            # test_storage_and_umo 锁「钩子后、send 前必须有复核」（0.9.4 阶段 3 拆分后
+            # 该断言指向本方法），此处紧贴 outbound.send；上方一旦插入任何 await，
+            # 这道防线立即变实。
+            if not self._gate.is_current(umo, expected_generation):
+                self._clear_result(last_event)
+                logger.info(
+                    "[%s] suppress stale reply before event send session=%s", PLUGIN_ID, umo
+                )
+                return SendOutcome(SendStatus.SUPPRESSED, "generation changed before send")
+            logger.debug(
+                "[%s] event send begin session=%s chars=%d chain_items=%d",
+                PLUGIN_ID,
+                umo,
+                len(reply),
+                len(getattr(result, "chain", []) or []),
+            )
+            outbound = OutboundGateway(last_event.send)
+            # 悲观默认：send 调用一旦开始，消息就可能已提交。gateway 内部虽把
+            # adapter 异常转成 UNKNOWN，但其 except 块自身仍可能抛（异常对象的
+            # ``__str__`` 坏掉时 ``str(exc)`` 二次抛），此时异常逃出 gateway 而
+            # adapter 早已调用过——下方 except 必须仍归 UNKNOWN，归
+            # FAILED_BEFORE_SUBMIT 会不消耗冷却而重发。send 正常返回后再用
+            # submitted 精确化（gateway 明确说未提交时才降为提交前失败）。
+            send_started = True
+            send_result = await outbound.send(result)
+            send_started = send_result.submitted
+            if not send_result.submitted:
                 self._clear_result(last_event)
                 return send_result.outcome
-            except asyncio.CancelledError:
-                self._clear_result(last_event)
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "[%s] event send reply failed session=%s error=%s",
-                    PLUGIN_ID,
-                    umo,
-                    exc,
-                    exc_info=True,
-                )
-                self._clear_result(last_event)
-                if send_started:
-                    return SendOutcome(SendStatus.UNKNOWN, str(exc))
-                return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, str(exc))
+            logger.debug(
+                "[%s] event send completed session=%s chars=%d;"
+                " platform adapter completion is not a delivery receipt",
+                PLUGIN_ID,
+                umo,
+                len(reply),
+            )
+            if send_result.outcome.status is SendStatus.DELIVERED:
+                # UNKNOWN 可能已经提交也可能没有，不触发 after-send hook，
+                # 避免副作用基于未确认的发送结果。
+                try:
+                    await self._call_hook(
+                        last_event, self._runtime().event_type.OnAfterMessageSentEvent
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] after-send hook failed session=%s error=%s",
+                        PLUGIN_ID,
+                        umo,
+                        exc,
+                    )
+            self._clear_result(last_event)
+            return send_result.outcome
+        except asyncio.CancelledError:
+            self._clear_result(last_event)
+            raise
+        except Exception as exc:
+            logger.warning(
+                "[%s] event send reply failed session=%s error=%s",
+                PLUGIN_ID,
+                umo,
+                exc,
+                exc_info=True,
+            )
+            self._clear_result(last_event)
+            if send_started:
+                return SendOutcome(SendStatus.UNKNOWN, str(exc))
+            return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, str(exc))
 
-        # 复核点 4/4（结构防线）：仅 last_event 为假时可达（上方 if 块各分支全终结），
-        # 与复核点 1 之间零 await，性质同复核点 3，为日后此路径插入异步查询留拦截位。
-        # 此路径未 set_result，无需 _clear_result。
+    async def _send_via_context(
+        self, umo: str, reply: str, *, expected_generation: int | None
+    ) -> SendOutcome:
+        """context 兜底投递：事件已不在手边时经宿主 ``Context.send_message`` 发送。
+
+        仅由 ``send_reply`` 在 ``last_event`` 为假时调用。本路径不 ``set_result``、
+        不触发装饰与发送后钩子，故无 ``_clear_result`` 义务。
+        """
+        # 复核点 4/4（结构防线）：与复核点 1 之间没有真实挂起点——
+        # ``await self._send_via_context(...)`` 只是进入协程，不向事件循环让出，
+        # 故 0.9.4 阶段 3 的拆分没有新开竞态窗口。性质同复核点 3：
+        # 为日后此路径插入异步查询预留拦截位。此路径未 set_result，无需 _clear_result。
         if not self._gate.is_current(umo, expected_generation):
             logger.info("[%s] suppress stale reply before context send session=%s", PLUGIN_ID, umo)
             return SendOutcome(SendStatus.SUPPRESSED, "generation changed before context send")

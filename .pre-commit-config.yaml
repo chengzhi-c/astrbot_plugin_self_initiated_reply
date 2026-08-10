@@ -25,3 +25,13 @@ repos:
         pass_filenames: false
         # 脚本自行遍历生产代码，只需任一 .py 变更即触发
         files: \.py$
+      # 工具版本跨源一致性（0.9.4 阶段 2.4）：ruff 同时钉在本文件的 rev、ci.yml 的
+      # lint 作业与 pyproject 的 [dev]，三处漂移会让本地 pre-commit 与 CI 结论相反。
+      # 只在这三个文件之一变更时触发；--cross-only 纯 stdlib，不探测本机版本，
+      # 故不会因开发机装了别的版本而误红。
+      - id: version-cross-source
+        name: version gates (cross-source pins)
+        entry: python scripts/version_gates.py --cross-only
+        language: system
+        pass_filenames: false
+        files: ^(pyproject\.toml|\.pre-commit-config\.yaml|\.github/workflows/ci\.yml)$

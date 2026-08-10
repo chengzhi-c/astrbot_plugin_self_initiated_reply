@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import tempfile
 import time
@@ -20,7 +19,16 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .models import PLUGIN_ID, STATE_VERSION, MessageRecord, SessionState, Settings
+from .models import (
+    PLUGIN_ID,
+    STATE_VERSION,
+    MessageRecord,
+    SessionState,
+    Settings,
+    as_int,
+    as_timestamp,
+    now_ts,
+)
 from .utils import session_whitelisted, whitelist_storage_key
 
 
@@ -122,22 +130,6 @@ def load_config_data(path: Path, config_obj: Any) -> dict[str, Any]:
     return data
 
 
-def _finite_float(value: Any, default: float = 0.0) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return parsed if math.isfinite(parsed) else default
-
-
-def _nonnegative_int(value: Any, default: int = 0) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return max(0, parsed)
-
-
 def _backup_state_file(path: Path) -> None:
     """Move a damaged/incompatible state file aside so the cause is recoverable."""
     try:
@@ -158,9 +150,17 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
     1. 文件损坏 / 编码错误 / 版本号不符 —— 先备份原文件再继续（``_backup_state_file``），
        不静默覆盖用户数据；版本不符仍尽力按当前结构解析，避免丢弃仍兼容的部分。
     2. 单个会话条目畸形 —— 记 warning 后跳过该条，其余会话正常载入。
-    3. 字段级异常值（NaN/负数/未知 role）—— 由 ``_finite_float`` /
-       ``_nonnegative_int`` 归一，不让脏值进入运行期计算。
+    3. 字段级异常值（NaN/负数/远未来/未知 role）—— 由 ``as_timestamp`` /
+       ``as_int`` 归一，不让脏值进入运行期计算。时间戳钳到
+       ``[0, now + MAX_CLOCK_SKEW_SEC]``：状态文件可被手工编辑，远未来值会让
+       ``remaining_silence_sec`` 变成数十年、该会话永久锁死（0.9.4 阶段 1.4，
+       危害与实测见 ``models.MAX_CLOCK_SKEW_SEC`` 的注释）。
+       ``daily_count`` 经 ``as_int`` 后带上界，不再接受任意大整数。
+
+    本次载入的所有时间戳共用同一个 ``load_now`` 上界，避免同一份文件内的条目
+    因逐条取时钟而钳到互不一致的天花板。
     """
+    load_now = now_ts()
     sessions: dict[str, SessionState] = {}
     raw_sessions: Any = {}
     if path.exists():
@@ -196,13 +196,15 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
         try:
             key = whitelist_storage_key(umo)
             state = SessionState(recent=deque(maxlen=recent_limit))
-            state.last_active_at = _finite_float(raw.get("last_active_at"))
+            state.last_active_at = as_timestamp(raw.get("last_active_at"), now=load_now)
             state.last_active_sender_id = str(raw.get("last_active_sender_id") or "")
-            state.last_proactive_at = _finite_float(raw.get("last_proactive_at"))
-            state.last_proactive_observed_at = _finite_float(raw.get("last_proactive_observed_at"))
+            state.last_proactive_at = as_timestamp(raw.get("last_proactive_at"), now=load_now)
+            state.last_proactive_observed_at = as_timestamp(
+                raw.get("last_proactive_observed_at"), now=load_now
+            )
             state.last_proactive_text = str(raw.get("last_proactive_text") or "")
             state.daily_key = str(raw.get("daily_key") or state.daily_key)
-            state.daily_count = _nonnegative_int(raw.get("daily_count"))
+            state.daily_count = as_int(raw.get("daily_count"), 0)
             raw_recent = raw.get("recent", [])
             if not isinstance(raw_recent, list):
                 raw_recent = []
@@ -221,7 +223,7 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
                         name=str(item.get("name") or "用户"),
                         text=text,
                         sender_id=str(item.get("sender_id") or ""),
-                        at=_finite_float(item.get("at")),
+                        at=as_timestamp(item.get("at"), now=load_now),
                     )
                 )
             sessions[key] = state

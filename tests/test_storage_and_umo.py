@@ -46,10 +46,13 @@ def test_final_send_path_rechecks_generation_after_decorating_hook() -> None:
     本条守的是结构：复核点存在且**位置在钩子之后、发送之前**。
     """
     assert "expected_generation" in params_of("delivery.py", "DeliveryRunner.send_reply")
+    # 0.9.4 阶段 3 把两条投递路径拆成独立方法，钩子与发送整体迁入 _send_via_event，
+    # 故顺序契约的锚点随之下移。代次仍必须透传到该方法（否则复核拿到 None）。
+    assert "expected_generation" in params_of("delivery.py", "DeliveryRunner._send_via_event")
 
     order = call_order(
         "delivery.py",
-        "DeliveryRunner.send_reply",
+        "DeliveryRunner._send_via_event",
         ("self._call_hook", "self._gate.is_current", "outbound.send"),
     )
     # 取第一个装饰钩子之后的片段：必须先出现 is_current，才允许出现 outbound.send
@@ -112,6 +115,131 @@ def test_malformed_session_record_does_not_abort_load(tmp_path: Path) -> None:
     assert sessions["qq:GroupMessage:123"].daily_count == 0
     assert sessions["qq:GroupMessage:456"].recent[0].role == "user"
     assert "qq:GroupMessage:789" not in sessions
+
+
+# ============================================================================
+# 0.9.4 阶段 1.4：外部时间戳两侧钳位（配对 models.MAX_CLOCK_SKEW_SEC）
+# ============================================================================
+
+
+def test_as_timestamp_clamps_both_directions() -> None:
+    """``as_timestamp`` 的纯函数语义：负值归 0，远未来钳到 now+skew，NaN/inf 归 0。
+
+    注入 ``now`` 而非取真实时钟——上界是动态的，用真实时钟断言会因毫秒级漂移偶发
+    flaky（实测漂移 4.2ms 就足以让「等于上界」的断言翻面）。
+    """
+    models, _, _ = _load_modules()
+    now = 1_000_000.0
+    ceiling = now + models.MAX_CLOCK_SKEW_SEC
+
+    assert models.as_timestamp(-1.0e9, now=now) == 0.0  # 负值 → 从未活跃
+    assert models.as_timestamp(now + 1.0e9, now=now) == ceiling  # 远未来 → 钳到上界
+    assert models.as_timestamp(float("nan"), now=now) == 0.0
+    assert models.as_timestamp(float("inf"), now=now) == 0.0
+    assert models.as_timestamp("bad", now=now) == 0.0
+    assert models.as_timestamp(None, now=now) == 0.0
+    assert models.as_timestamp(now - 300.0, now=now) == now - 300.0  # 正常值原样保留
+    assert models.as_timestamp(ceiling, now=now) == ceiling  # 恰在上界：不改
+
+
+def test_far_future_timestamp_cannot_lock_session_forever(tmp_path: Path) -> None:
+    """状态文件里的远未来时间戳不得让会话永久锁死（0.9.4 阶段 1.4）。
+
+    修复前实测：``last_active_at = now + 1e9`` 使 ``remaining_silence_sec`` 得到
+    1000000045 秒 ≈ 31.69 年，该会话永久不可主动发言；延迟检查还会以该值为
+    timeout 停放，``notify_activity`` 唤醒后重算仍是巨值又停回去（实测连续 4 次），
+    形成不死任务；巡检侧 ``now - last_active_at`` 为负，永远不大于
+    ``patrol_inactive_after_sec``，于是每轮巡检都白跑这个已锁死的会话。
+
+    断言用「调用后取时钟」作上界：``load_sessions`` 内部取自己的时钟（必然不早于
+    调用前），拿调用前的时钟当上界会因亚秒漂移偶发红灯。
+    """
+    import time
+
+    models, _, storage = _load_modules()
+    key = "qq:GroupMessage:123"
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps({"sessions": {key: {"last_active_at": time.time() + 1.0e9}}}),
+        encoding="utf-8",
+    )
+
+    sessions = storage.load_sessions(path, {"123"}, 5)
+    ceiling_after = time.time() + models.MAX_CLOCK_SKEW_SEC
+
+    state = sessions[key]
+    assert 0.0 <= state.last_active_at <= ceiling_after
+    # 核心不变式：静默剩余量必须有界，不能是数十年
+    silence_left = state.remaining_silence_sec(45.0, time.time())
+    assert silence_left <= 45.0 + models.MAX_CLOCK_SKEW_SEC
+    # age_sec 不得为大负数（巡检的 inactive 判据依赖它）
+    assert state.age_sec(time.time()) >= -models.MAX_CLOCK_SKEW_SEC
+
+
+def test_negative_timestamps_cannot_bypass_proactive_gate(tmp_path: Path) -> None:
+    """负值时间戳不得成为「已回复过」判据的旁路（0.9.4 阶段 1.4）。
+
+    修复前实测：只毒 ``last_active_at`` 会被「这条消息之后已经主动回复过」拦住，
+    但把 ``last_proactive_observed_at`` 一并毒成更负（-1e10 < -1e9）即可放行——
+    全新会话被拦、投毒会话放行，是真实的能力提升。钳位后两者同归 0.0，
+    与全新会话完全同构，能力提升消失。
+    """
+    _, _, storage = _load_modules()
+    key = "qq:GroupMessage:123"
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "sessions": {
+                    key: {
+                        "last_active_at": -1.0e9,
+                        "last_proactive_observed_at": -1.0e10,
+                        "last_proactive_at": -1.0e10,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = storage.load_sessions(path, {"123"}, 5)[key]
+
+    assert state.last_active_at == 0.0
+    assert state.last_proactive_observed_at == 0.0
+    assert state.last_proactive_at == 0.0
+    # 与全新会话同构：observed >= last_active 成立，且静默门按「从未活跃」处理
+    assert state.last_proactive_observed_at >= state.last_active_at
+
+
+def test_recent_record_timestamps_are_clamped(tmp_path: Path) -> None:
+    """``recent[].at`` 同样来自外部文件，同样要钳（0.9.4 阶段 1.4）。"""
+    import time
+
+    models, _, storage = _load_modules()
+    key = "qq:GroupMessage:123"
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "sessions": {
+                    key: {
+                        "recent": [
+                            {"role": "user", "text": "future", "at": time.time() + 1.0e9},
+                            {"role": "user", "text": "negative", "at": -1.0e9},
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    records = list(storage.load_sessions(path, {"123"}, 5)[key].recent)
+    ceiling_after = time.time() + models.MAX_CLOCK_SKEW_SEC
+
+    assert len(records) == 2
+    assert all(0.0 <= item.at <= ceiling_after for item in records)
+    assert records[1].at == 0.0  # 负值归 0
 
 
 def test_corrupt_state_file_is_backed_up_and_load_continues(tmp_path: Path) -> None:

@@ -319,6 +319,25 @@ async def test_local_gate_silence(tmp_path: Path) -> None:
     assert maker.local_gate(state, force=False) == "静默时间不足：10s / 60s。"
 
 
+async def test_local_gate_silence_never_reports_negative_elapsed(tmp_path: Path) -> None:
+    """静默不足文案里的已过秒数不得为负（0.9.4 阶段 1.4）。
+
+    钳位把外部时间戳压到 ``now + MAX_CLOCK_SKEW_SEC``，但**恰在上界**时
+    ``silence_left = min_silence + skew``，仍大于 ``min_silence``，差值为负——
+    修复前会向运营者显示「静默时间不足：-300s / 60s。」这种自相矛盾的文案。
+    所以钳位之外还需要这一处 ``max(0, ...)``：两者缺一不可，本用例锁的是后者。
+    """
+    _, models, maker, clock_value, _ = _make_decision(tmp_path, {"min_silence_sec": 60})
+    clock_value[0] = 1000.0
+    # 恰好落在钳位上界：now + skew
+    state = _state(models, active_at=1000.0 + models.MAX_CLOCK_SKEW_SEC)
+
+    reason = maker.local_gate(state, force=False)
+
+    assert reason == "静默时间不足：0s / 60s。"  # 修复前为 -300s
+    assert "-" not in reason
+
+
 async def test_local_gate_cooldown(tmp_path: Path) -> None:
     _, models, maker, clock_value, _ = _make_decision(tmp_path, {"cooldown_sec": 300})
     clock_value[0] = 1050.0

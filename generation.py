@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -57,6 +58,45 @@ _TOOL_HINT_RESTRICTED = (
     "读写文件、访问浏览器、创建定时任务、管理技能、写入记忆或向其他会话发消息。"
 )
 
+# 信封标签名只在这里出现一次（0.9.4 阶段 1.2）：中和用的正则由它拼出，
+# 信封本身也由它拼出。若只改一处、另一处仍写死旧名，中和会静默失效——
+# 这是本类修复最典型的腐化方式，故从源头上让二者不可能不一致。
+_ENVELOPE_TAG = "recent_chat"
+
+# 匹配伪造的信封标签，容忍空白与大小写变形（``< / Recent_Chat >`` 同样拦下）。
+# 只针对信封自身的标签名，不动其他尖括号：聊天记录里的代码片段、表情
+# ``<_<``、泛型 ``List<int>`` 都应原样进入模型，全局转义会把正常内容变成噪音。
+_ENVELOPE_TAG_RE = re.compile(rf"<\s*/?\s*{_ENVELOPE_TAG}\s*>", re.IGNORECASE)
+
+
+def neutralize_envelope_tags(text: str) -> str:
+    """把用户内容里伪造的 ``<recent_chat>`` 标签换成全角尖括号（0.9.4 阶段 1.2）。
+
+    实测的攻击面：``format_message_records`` 原样拼接 ``MessageRecord.text``，
+    该文本直接被插进 ``<recent_chat>`` 信封。用户只要发一条含 ``</recent_chat>``
+    的消息，信封就提前闭合，其后的文字落到信封**之外**——与插件自己的尾部指令
+    同一层级（实测：注入位于首个闭合标签之后，模型看到的信封外内容含攻击者指令）。
+
+    不复用 ``sanitize_prompt_variable`` 的两个实测理由：
+    1. 它只改写 ``"`` 与控制字符，``</recent_chat>`` 原样穿透（字节不变）；
+    2. 它按 ``max_length`` 截断——2000 上限把 3579 字符的历史砍到 2003，
+       会吃掉聊天记录。本函数不截断，长度另由 ``recent_message_limit`` 约束。
+
+    改用全角而非删除：保留攻击痕迹可读，运营者事后翻提示词能看出发生了什么，
+    且与 ``sanitize_prompt_variable`` 把 ``"`` 改成中文引号的既有手法一致。
+    全角替换是等长的，不影响任何长度预算。
+
+    只中和信封标签、不做全局尖括号转义：信封**内部**出现 ``<system>`` 之类
+    伪造标签并不构成越权（仍在不可信区内，且提示词已声明该区不可信），真正的
+    提权只有"闭合信封"这一条路。范围收窄到此，避免把正常代码内容打成乱码。
+
+    不记日志：本函数被 ``build_proactive_prompt`` 用作纯函数（无共享可变状态），
+    加 I/O 会破坏该性质；且中和后已无残留风险，日志对运营者无可行动性。
+    """
+    return _ENVELOPE_TAG_RE.sub(
+        lambda match: match.group(0).replace("<", "＜").replace(">", "＞"), text
+    )
+
 
 def build_proactive_prompt(
     reply_length_mode: str, context_text: str, *, inherit_tools: bool
@@ -66,10 +106,14 @@ def build_proactive_prompt(
     抽离理由：这段拼装无共享可变状态，与 ``generate`` 的资源获取阶梯
     （send tracker / 工具边界 / provider_request）无耦合，独立后可直接单测文案契约。
 
-    安全契约（改文案必须同时守住这三条，见 tests/test_generation_runner.py）：
+    安全契约（改文案必须同时守住这四条，见 tests/test_generation_runner.py）：
     1. ``recent_chat`` 必须被显式声明为不可信内容，且声明在聊天记录**之前**出现；
     2. 工具边界措辞必须随 ``inherit_tools`` 切换，继承态也要点明宿主级危险能力不可用；
-    3. 无可用工具时要求直接输出文本，避免模型臆造工具调用。
+    3. 无可用工具时要求直接输出文本，避免模型臆造工具调用；
+    4. 信封必须不可被内容闭合——``context_text`` 一律先过
+       ``neutralize_envelope_tags``（0.9.4 阶段 1.2）。中和放在本函数内而非调用方，
+       是为了让"信封闭合不了"成为本函数的内在性质：任何新调用方都自动获得该保证，
+       不依赖各自记得先净化。
     """
     length_hint = _LENGTH_HINTS.get(reply_length_mode, _DEFAULT_LENGTH_HINT)
     tool_hint = _TOOL_HINT_INHERIT if inherit_tools else _TOOL_HINT_RESTRICTED
@@ -82,7 +126,12 @@ def build_proactive_prompt(
         "如果当前请求没有明确提供可用且安全的工具，直接生成文本回复，不要臆造工具调用。"
         "不要解释你为什么出现，不要提系统/模型/API/插件。"
     )
-    return f"{system_hint}\n\n<recent_chat>\n{context_text}\n</recent_chat>\n\n请自然地接一句话。"
+    safe_context = neutralize_envelope_tags(context_text)
+    return (
+        f"{system_hint}\n\n"
+        f"<{_ENVELOPE_TAG}>\n{safe_context}\n</{_ENVELOPE_TAG}>\n\n"
+        "请自然地接一句话。"
+    )
 
 
 class GenerationRunner:
@@ -170,6 +219,10 @@ class GenerationRunner:
         direct_send_count = 0
         direct_send_texts: list[str] = []
         tool_boundary_state: dict[str, Any] | None = None
+        # 与 tool_boundary_state 同理（0.9.4 阶段 1.3）：finally 是唯一回收点，而
+        # build 在 try 体内，所以 reset 协程必须先在 try 之外占位，否则 build 之前
+        # 抛异常会让 finally 撞上 UnboundLocalError，反而吃掉真正的异常。
+        reset_coro: Any = None
         original_send = getattr(last_event, "send", None)
         event_dict = getattr(last_event, "__dict__", {})
         had_instance_send = isinstance(event_dict, dict) and "send" in event_dict
@@ -231,7 +284,12 @@ class GenerationRunner:
 
                 四个早退点语义相同——不产出文本，但工具直发的消息已经发出去了，
                 调用方要靠这个计数记冷却与日配额，返回空 PipelineReply 会漏账。
-                ``pending`` 不 close 会留下 "never awaited" 告警并泄漏宿主状态。
+
+                ``pending`` 的 close 自 0.9.4 阶段 1.3 起**已不是唯一防线**：
+                finally 新增的第四段会兜底关闭任何未结算的 reset 协程。保留这里的
+                eager close 是为了让早退点自身语义完整（不依赖远处的 finally），
+                代价是二者观测等价、无法被测试区分——把 ``_abort(reset_coro)``
+                变异成 ``_abort()`` 不会变红。这是已知且有意保留的冗余。
                 """
                 if pending is not None:
                     pending.close()
@@ -249,25 +307,26 @@ class GenerationRunner:
             )
             if build_result is None:
                 return _abort()
+            reset_coro = build_result.reset_coro
 
             if not self._enforce_policy(req, inherit_tools):
-                return _abort(build_result.reset_coro)
+                return _abort(reset_coro)
 
             if await self._call_hook(
                 last_event,
                 self._runtime().event_type.OnLLMRequestEvent,
                 build_result.provider_request,
             ):
-                return _abort(build_result.reset_coro)
+                return _abort(reset_coro)
 
             # Second enforcement point: a hook may have injected tools into the
             # request between build and reset. Enforce BEFORE reset so that any
             # tool set the host copies into the runner during reset is already
             # clean; the runner only ever sees the allowlisted set.
             if not self._enforce_policy(req, inherit_tools):
-                return _abort(build_result.reset_coro)
-            if build_result.reset_coro:
-                await build_result.reset_coro
+                return _abort(reset_coro)
+            if reset_coro:
+                await reset_coro
 
             run_task = asyncio.ensure_future(self._drain(build_result.agent_runner))
             self._background_tasks.add(run_task)
@@ -326,10 +385,27 @@ class GenerationRunner:
                 direct_texts=tuple(direct_send_texts),
             )
         finally:
-            # 以下三段清理各自独立静默兜底：finally 是唯一的回滚点，任一段失败都
-            # 不能中断其余段，否则会留下本函数正要防止的泄漏（send 劫持未摘除、
-            # 工具边界未复原、provider_request 悬挂）。此处不加日志：清理链上引入
-            # I/O 会带来二次异常面，且失败信息对调用方无可行动性。
+            # 以下四段清理各自独立静默兜底：finally 是唯一的回滚点，任一段失败都
+            # 不能中断其余段，否则会留下本函数正要防止的泄漏（reset 协程悬挂、
+            # send 劫持未摘除、工具边界未复原、provider_request 悬挂）。此处不加
+            # 日志：清理链上引入 I/O 会带来二次异常面，且失败信息对调用方无可行动性。
+            # 第一段必须排在摘除 send 之前：close() 会向挂起的协程抛 GeneratorExit，
+            # 其 finally 若回发消息，只有 tracker 仍在位才会**受门控拦截**（代次闸门与
+            # 直发预算）——这与三个早退点经 _abort 关闭时的时序一致（那时本 finally
+            # 尚未执行）。注意此处只保住门控、保不住账：Python 先求值 return 的
+            # PipelineReply 再跑 finally，此刻的直发增量已无法进入返回值。故本段的
+            # 收益是"不让清理期的发送绕过闸门"，不是"计数准确"。
+            try:
+                if reset_coro is not None:
+                    # 正常路径已在成功分支 await、三个早退点已由 _abort 关闭；但两处
+                    # _enforce_policy 与 _call_hook 抛异常时，控制流直奔 except，
+                    # 两个 return 都不碰它。close() 对「已 await 完成」「已 close」
+                    # 「未启动」三态均为安全空操作，故无需 reset_done 标志。
+                    reset_coro.close()
+            except Exception:
+                # 宿主 reset 协程的 GeneratorExit 处理可能自身抛错；回收失败只留一条
+                # never-awaited 告警，不能阻断后续三段回滚。
+                pass
             if tracker_installed:
                 try:
                     if had_instance_send:

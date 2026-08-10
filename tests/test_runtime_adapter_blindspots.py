@@ -253,6 +253,94 @@ def test_filter_final_tools_skip_nameless_and_fail_closed() -> None:
     )
 
 
+def test_missing_func_tool_attribute_fails_closed_not_open(caplog: object) -> None:
+    """``func_tool`` 属性缺失必须 fail closed，不能与显式 ``None`` 同一出口。
+
+    修复前实测：``getattr(req, "func_tool", None)`` 把两种情形压成一个出口，
+    「缺属性」与「显式 None」都返回 ``True``——白名单模式下等于整次放行，
+    而白名单模式的默认白名单是空集（本该移除全部工具）。
+
+    两者语义相反：显式 ``None`` 是宿主声明本次无工具（放行正确）；属性缺失是
+    读不到工具边界本身，无法枚举、无法移除、无法核验，只能中止。
+
+    末段一并锁住低噪音约定：本出口同样只许一条 WARNING。它现在天然满足
+    （直接 return，不经 ``final_tool_ids``），但这是实现细节——若日后把它改成
+    先枚举再判定，就会与 ``test_fail_closed_emits_exactly_one_warning`` 记录的
+    历史缺陷同形（同源告警打两条），故在此就地钉住。
+    """
+    import logging
+
+    runtime = _load_adapter()
+    adapter = _adapter(runtime)
+
+    class NoFuncTool:
+        """连 func_tool 属性都没有的 req（宿主改名该字段后的形态）。"""
+
+    # 缺属性 → fail closed（两种模式都必须拦）
+    with caplog.at_level(logging.DEBUG, logger="astrbot"):
+        assert adapter.filter_final_tools(NoFuncTool(), keep=frozenset()) is False
+    warnings = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    rendered = [record.getMessage() for record in warnings]
+    assert len(warnings) == 1, f"缺属性 fail-closed 打出 {len(warnings)} 条告警：{rendered}"
+    assert "func_tool" in rendered[0], f"告警未点明缺哪个字段：{rendered}"
+
+    assert adapter.filter_final_tools(NoFuncTool(), drop=frozenset({"danger"})) is False
+
+    # 显式 None 的既有语义不受影响：宿主声明无工具，放行
+    assert adapter.filter_final_tools(SimpleNamespace(func_tool=None), keep=frozenset()) is True
+
+
+def test_final_tool_ids_separates_unreadable_from_empty() -> None:
+    """枚举器把「读不到 ``func_tool``」与「查过了、是空的」分开（0.9.4 阶段 1.5）。
+
+    与上一个用例刻意分开：那个盯 ``filter_final_tools`` 的决策出口，这个盯
+    ``final_tool_ids`` 的枚举出口。两处的 ``getattr`` 默认值各改一处都会被
+    对应用例单独抓到（实测两次变异各只有一个用例变红），所以谁退化了、
+    退化在哪一层，从失败用例名就能读出来。
+
+    缺属性返回 ``[]`` 的危害不止于本方法：``filter_final_tools`` 末尾用它做
+    移除后的复核，空列表会让 ``all(...)`` 在空集上恒真，把"查不到"谎报成
+    "已确认干净"。
+    """
+    runtime = _load_adapter()
+    adapter = _adapter(runtime)
+
+    class NoFuncTool:
+        """连 func_tool 属性都没有的 req。"""
+
+    assert adapter.final_tool_ids(NoFuncTool()) is None  # 查不到
+    assert adapter.final_tool_ids(SimpleNamespace(func_tool=None)) == []  # 查过了，是空的
+
+
+def test_func_tool_stays_in_load_time_contract_assertion() -> None:
+    """耦合哨兵：``func_tool`` 必须留在加载期断言的字段清单里。
+
+    上一个用例的缺属性分支在生产上不可达，靠的正是这条加载期断言：宿主若改名
+    ``func_tool``，``validate()`` 在 ``PluginMain.__init__`` 第一条语句就 raise，
+    插件拒绝加载，运行期根本走不到 ``filter_final_tools``。
+
+    危险在于这个依赖是隐式的。若有人把 ``func_tool`` 从 ``_PROVIDER_REQUEST_FIELDS``
+    删掉（比如认为"这个字段不是我们直接赋值的"），加载期防线消失、运行期那条
+    分支复活成真实 fail-open，而**没有任何现有用例会变红**。本用例就是那道红线。
+    """
+    runtime = _load_adapter()
+    assert "func_tool" in runtime._PROVIDER_REQUEST_FIELDS, (
+        "func_tool 已从加载期断言清单移除——filter_final_tools 的缺属性分支"
+        "将从『不可达的纵深防御』变成『可达的 fail-open』，请先读该分支的 docstring"
+    )
+
+    # 正向确认这条断言真的会拦下改名：把 ProviderRequest 换成缺该字段的形态
+    renamed = type(
+        "RenamedFuncTool",
+        (),
+        {field: None for field in runtime._PROVIDER_REQUEST_FIELDS if field != "func_tool"},
+    )
+    problems = _adapter(runtime, provider_request_cls=renamed).validate(soft=True)
+    assert any("func_tool" in problem for problem in problems), (
+        f"改名 func_tool 未被加载期断言拦下：{problems}"
+    )
+
+
 def test_fail_closed_emits_exactly_one_warning(caplog: object) -> None:
     """工具边界 fail-closed 每次失败只允许一条 WARNING（低噪音日志约定）。
 

@@ -502,6 +502,58 @@ def test_gate_restore_recovers_running_set(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+def test_gate_restore_clears_stale_release_for_still_running(tmp_path: Path) -> None:
+    """回滚后仍标记运行中的会话：陈旧的 release set 必须清掉，事件身份必须不变。
+
+    ``unmark_running`` 只 set 不 pop，所以回滚把运行标记恢复成快照态后，表里
+    那个事件仍是已 set 的。此时 scheduler 的 ``while is_running: await
+    release_event(umo).wait()`` 每轮立即返回——紧密空转独占事件循环，整个 bot
+    卡死（0.9.4 阶段 1.1）。
+
+    变异锚定：删除 ``restore`` 中的 ``release.clear()`` 分支后本测试必须变红。
+    """
+
+    async def scenario(plugin, main):
+        gate = plugin._gate
+        gate.mark_running(UMO)
+        waiter_event = gate.release_event(UMO)  # 等待者持有此对象
+        snap = gate.snapshot()
+        gate.unmark_running(UMO)  # set 但不 pop
+        assert waiter_event.is_set()
+
+        gate.restore(snap)
+
+        assert gate.is_running(UMO) is True
+        assert gate.release_event(UMO) is waiter_event, "等待者持有的事件被换掉（孤儿事件）"
+        assert not waiter_event.is_set(), "陈旧 set 未清除：scheduler 将空转饿死事件循环"
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(waiter_event.wait(), timeout=0.02)
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_gate_restore_wakes_waiter_for_no_longer_running(tmp_path: Path) -> None:
+    """回滚后不再运行的会话：等待者必须被唤醒，否则它等一个不会到来的信号。
+
+    变异锚定：删除 ``restore`` 中的 ``release.set()`` 分支后本测试必须变红。
+    """
+
+    async def scenario(plugin, main):
+        gate = plugin._gate
+        snap = gate.snapshot()  # 快照时该会话未运行
+        gate.mark_running(UMO)
+        waiter_event = gate.release_event(UMO)
+        assert not waiter_event.is_set()
+
+        gate.restore(snap)
+
+        assert gate.is_running(UMO) is False
+        assert waiter_event.is_set(), "等待者未被唤醒：该会话主动回复静默死亡"
+        await asyncio.wait_for(waiter_event.wait(), timeout=0.02)
+
+    with_plugin(tmp_path, scenario)
+
+
 # ============================================================================
 # 0.5 P2：_call_compat TypeError 重试双执行
 # ============================================================================
