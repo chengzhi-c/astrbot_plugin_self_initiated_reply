@@ -90,20 +90,28 @@ def test_persist_config_obj_variants() -> None:
     assert storage._persist_config_obj(ok, {"a": 1}) is True
     assert ok.data == {"a": 1}
 
-    class TypeErrThenOK:
-        """save_config(data) 不支持 → 回退无参形态。"""
+    class SaveWithoutData:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def save_config(self):
+            self.calls += 1
+
+    no_data = SaveWithoutData()
+    assert storage._persist_config_obj(no_data, {"a": 1}) is True
+    assert no_data.calls == 1
+
+    class TypeErrorInBody:
+        def __init__(self) -> None:
+            self.calls = 0
 
         def save_config(self, data=None):
-            if data is not None:
-                raise TypeError("no args supported")
-
-    assert storage._persist_config_obj(TypeErrThenOK(), {"a": 1}) is True
-
-    class TypeErrThenBoom:
-        def save_config(self, data=None):
+            self.calls += 1
             raise TypeError("always broken")
 
-    assert storage._persist_config_obj(TypeErrThenBoom(), {}) is False
+    body_error = TypeErrorInBody()
+    assert storage._persist_config_obj(body_error, {}) is False
+    assert body_error.calls == 1
 
     class SaveBoom:
         def save_config(self, data):

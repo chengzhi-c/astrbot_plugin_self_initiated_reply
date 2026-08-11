@@ -1075,6 +1075,9 @@ def test_provider_change_emits_audit_log(tmp_path: Path, caplog: object) -> None
         joined = " ".join(audit)
         for key in ("judge_provider_id", "vision_provider_id", "ignored_sender_ids"):
             assert key in joined, f"{key} 变更未进审计"
+        assert "10001" not in joined, "审计日志不得记录敏感列表的完整值"
+        assert "ignored_sender_ids=count=1" in joined
+        assert "sha256=" in joined
         assert plugin.settings.judge_provider_id == "attacker-endpoint"
 
         # 幂等重放：值未变则不得再刷审计（防日志噪音掩盖真实变更）

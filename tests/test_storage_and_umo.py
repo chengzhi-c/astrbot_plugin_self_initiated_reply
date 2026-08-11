@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from collections import deque
 from pathlib import Path
@@ -88,6 +89,102 @@ def test_bare_group_whitelist_keeps_platform_state_isolated(tmp_path: Path) -> N
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert set(payload["sessions"]) == {qq, telegram}
+
+
+def test_parse_decision_json_rejects_missing_or_invalid_should_reply() -> None:
+    _, utils, _ = _load_modules()
+
+    assert utils.parse_decision_json('{"reason": "missing flag"}') is None
+    assert utils.parse_decision_json('{"should_reply": []}') is None
+
+
+def test_session_whitelisted_rejects_empty_umo() -> None:
+    _, utils, _ = _load_modules()
+
+    assert not utils.session_whitelisted("   ", {"12345"})
+
+
+def test_raw_umo_returns_empty_when_host_callable_fails() -> None:
+    _, utils, _ = _load_modules()
+
+    class BrokenEvent:
+        def unified_msg_origin(self) -> str:
+            raise RuntimeError("host failure")
+
+    assert utils.raw_umo(BrokenEvent()) == ""
+
+
+def test_event_self_id_returns_empty_when_host_getter_fails() -> None:
+    _, utils, _ = _load_modules()
+
+    class BrokenEvent:
+        def get_self_id(self) -> str:
+            raise RuntimeError("host failure")
+
+    assert utils.event_self_id(BrokenEvent()) == ""
+
+
+def test_event_extra_uses_two_arguments_when_host_signature_is_opaque() -> None:
+    _, utils, _ = _load_modules()
+
+    class OpaqueExtra:
+        received: tuple[str, str] | None = None
+
+        @property
+        def __signature__(self):
+            raise ValueError("signature unavailable")
+
+        def __call__(self, key: str, default: str) -> str:
+            self.received = (key, default)
+            return "value"
+
+    class Event:
+        pass
+
+    event = Event()
+    getter = OpaqueExtra()
+    event.get_extra = getter
+
+    assert utils.event_extra(event, "key", default="fallback") == "value"
+    assert getter.received == ("key", "fallback")
+
+
+def test_event_extra_supports_single_argument_host_getter() -> None:
+    _, utils, _ = _load_modules()
+
+    class Event:
+        pass
+
+    event = Event()
+    event.get_extra = lambda key: f"value:{key}"
+
+    assert utils.event_extra(event, "key", default="fallback") == "value:key"
+
+
+def test_event_extra_returns_default_for_incompatible_host_getter() -> None:
+    _, utils, _ = _load_modules()
+
+    class IncompatibleExtra:
+        called = False
+
+        @property
+        def __signature__(self):
+            return inspect.Signature([inspect.Parameter("key", inspect.Parameter.KEYWORD_ONLY)])
+
+        def __call__(self, *_args: object) -> str:
+            self.called = True
+            return "unexpected"
+
+    class Event:
+        pass
+
+    event = Event()
+    getter = IncompatibleExtra()
+    event.get_extra = getter
+
+    result = utils.event_extra(event, "key", default="fallback")
+    assert not getter.called
+    assert result == "fallback"
 
 
 def test_malformed_session_record_does_not_abort_load(tmp_path: Path) -> None:

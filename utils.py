@@ -270,19 +270,30 @@ def event_extra(event: AstrMessageEvent, key: str, default: Any = None) -> Any:
     """读取宿主事件的 extra 字段，跨宿主签名差异做三层回退。
 
     与本模块其余 ``event_*`` 同属宿主字段兼容探测（0.9.3 自 main.py 外迁）。
-    回退阶梯：无 ``get_extra`` → 默认值；``get_extra(key, default)`` 抛 TypeError
-    （老宿主只收单参）→ 重试 ``get_extra(key)``；仍失败或取到 None → 默认值。
+    回退阶梯：无 ``get_extra`` → 默认值；可检查签名时先预绑定双参，若仅单参
+    可绑定则调用 ``get_extra(key)``；无法检查签名时仅尝试双参一次；仍失败或取到
+    None → 默认值。
     """
     get_extra = getattr(event, "get_extra", None)
     if not callable(get_extra):
         return default
+    args: tuple[Any, ...]
     try:
-        value = get_extra(key, default)
-    except TypeError:
+        signature = inspect.signature(get_extra)
+    except (TypeError, ValueError):
+        args = (key, default)
+    else:
         try:
-            value = get_extra(key)
-        except Exception:
-            return default
+            signature.bind(key, default)
+            args = (key, default)
+        except TypeError:
+            try:
+                signature.bind(key)
+            except TypeError:
+                return default
+            args = (key,)
+    try:
+        value = get_extra(*args)
     except Exception:
         return default
     return default if value is None else value

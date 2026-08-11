@@ -38,6 +38,20 @@ jobs:
         # 纯 stdlib，无需装项目依赖，故挂在 lint 作业而非 test 作业。
         run: python scripts/docstring_gates.py
 
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Frontend syntax
+        run: |
+          node --check "pages/主动回复设置/app.js"
+          node --check "pages/主动回复设置/frontend-core.mjs"
+      - name: Frontend contract
+        run: node --test tests/frontend_contract.test.mjs
+
   mypy:
     runs-on: ubuntu-latest
     steps:

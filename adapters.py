@@ -33,6 +33,15 @@ class AstrBotBridge:
         self.context = context
 
     @staticmethod
+    def _is_missing_provider_error(exc: Exception) -> bool:
+        """识别未由公开 Context API 导出的缺失 Provider 异常。"""
+        return any(
+            error_type.__module__ == "astrbot.core.exceptions"
+            and error_type.__name__ == "ProviderNotFoundError"
+            for error_type in type(exc).__mro__
+        )
+
+    @staticmethod
     def _supported_kwargs(
         func: Any,
         kwargs: dict[str, Any],
@@ -116,18 +125,26 @@ class AstrBotBridge:
 
     @staticmethod
     async def _call_first_supported(func: Any, umo: str, log_name: str) -> Any:
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            args, kwargs = AstrBotBridge._method_call_options(func, umo)[0]
+            try:
+                return await maybe_await(func(*args, **kwargs))
+            except Exception as exc:
+                logger.warning("[%s] %s failed: %s", PLUGIN_ID, log_name, exc)
+                raise
+
         last_type_error: TypeError | None = None
         for args, kwargs in AstrBotBridge._method_call_options(func, umo):
             try:
-                return await maybe_await(func(*args, **kwargs))
+                signature.bind(*args, **kwargs)
             except TypeError as exc:
-                # 签名不匹配：换下一个调用形态继续探测。
                 last_type_error = exc
                 continue
+            try:
+                return await maybe_await(func(*args, **kwargs))
             except Exception as exc:
-                # 非 TypeError 是真实业务故障（provider 配置坏、DB 读错等），
-                # 换签名重试没有意义；记录 warning 并向上传播，
-                # 避免被调用方当作"接口不存在"而静默降级。
                 logger.warning("[%s] %s failed: %s", PLUGIN_ID, log_name, exc)
                 raise
         if last_type_error:
@@ -243,9 +260,14 @@ class AstrBotBridge:
             return preferred
         get_current = getattr(self.context, "get_current_chat_provider_id", None)
         if callable(get_current):
-            provider_id = await self._call_first_supported(
-                get_current, umo, "get_current_chat_provider_id"
-            )
+            try:
+                provider_id = await self._call_first_supported(
+                    get_current, umo, "get_current_chat_provider_id"
+                )
+            except Exception as exc:
+                if not self._is_missing_provider_error(exc):
+                    raise
+                provider_id = ""
             if provider_id:
                 return str(provider_id).strip()
         # 二级回退：get_current_chat_provider_id 抛 ProviderNotFoundError 时，

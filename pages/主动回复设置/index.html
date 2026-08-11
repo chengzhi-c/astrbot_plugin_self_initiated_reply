@@ -45,6 +45,7 @@
     <symbol id="i-power" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v8"/><path d="M7.5 7a7 7 0 1 0 9 0"/></symbol>
     <symbol id="i-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12a8.5 8.5 0 0 1 17 0z" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-bold" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 5v15"/><path d="M6 5h7a3.5 3.5 0 0 1 0 7H6"/><path d="M6 12h7.5a4 4 0 0 1 0 8H6"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></symbol>
   </svg>
 
   <!-- 氛围层：纯渐变晕光，不画具象物体。功能区保持素净 -->
@@ -87,10 +88,17 @@
           </svg>
           <span class="theme-label"></span>
         </button>
-        <button class="btn secondary" id="dimBtn" type="button" title="压暗亮度" aria-label="压暗亮度"><svg class="inline-icon" aria-hidden="true"><use href="#i-dim"/></svg></button>
-        <button class="btn secondary" id="boldBtn" type="button" title="粗体字" aria-label="粗体字"><svg class="inline-icon" aria-hidden="true"><use href="#i-bold"/></svg></button>
-        <button class="btn secondary" id="refreshBtn" type="button" aria-label="刷新"><svg class="inline-icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>
-        <button class="btn primary" id="saveTopBtn" type="button">
+        <div class="more-actions" id="moreActions">
+          <button class="btn secondary more-actions-trigger" id="moreActionsBtn" type="button" aria-label="更多操作" aria-controls="moreActionsMenu" aria-expanded="false">
+            <svg class="inline-icon" aria-hidden="true"><use href="#i-more"/></svg>
+          </button>
+          <div class="more-actions-menu" id="moreActionsMenu" hidden>
+            <button class="btn secondary" id="dimBtn" type="button" title="压暗亮度" aria-label="压暗亮度"><svg class="inline-icon" aria-hidden="true"><use href="#i-dim"/></svg><span class="more-actions-label">压暗亮度</span></button>
+            <button class="btn secondary" id="boldBtn" type="button" title="粗体字" aria-label="粗体字"><svg class="inline-icon" aria-hidden="true"><use href="#i-bold"/></svg><span class="more-actions-label">粗体字</span></button>
+            <button class="btn secondary" id="refreshBtn" type="button" aria-label="刷新"><svg class="inline-icon" aria-hidden="true"><use href="#i-refresh"/></svg><span class="more-actions-label">刷新</span></button>
+          </div>
+        </div>
+        <button class="btn primary" id="saveTopBtn" type="button" aria-label="保存配置">
           <span class="spinner" aria-hidden="true"></span>
           <svg class="inline-icon" aria-hidden="true"><use href="#i-save"/></svg>
           <span class="btn-label">保存配置</span>
@@ -98,7 +106,7 @@
       </div>
     </header>
 
-    <div class="layout">
+    <main class="layout">
       <!-- 分区导航：桌面为左侧 sticky 栏，移动端转为顶部横向滚动条 -->
       <nav class="sidenav" id="sidenav" aria-label="配置分区导航">
         <p class="sidenav-title">配置分区</p>
@@ -179,7 +187,7 @@
           </div>
           <label class="field">
             <span class="field-label">白名单会话 UMO / QQ 群号<em>每行一个</em></span>
-            <textarea id="whitelistInput" rows="5" spellcheck="false"
+            <textarea id="whitelistInput" rows="5" spellcheck="false" aria-describedby="whitelistError"
               placeholder="留空则任何会话都不会主动回复&#10;群聊可填完整 UMO，也可直接填 QQ 群号"></textarea>
             <span class="field-error" id="whitelistError" role="alert"></span>
             <p class="field-hint">每行一个 UMO 或 QQ 群号，可填完整 UMO 或纯群号</p>
@@ -262,10 +270,11 @@
                 <select id="judgeProviderSelect">
                   <option value="">使用当前会话默认模型</option>
                 </select>
-                <button class="btn-link" id="providerManualBtn" type="button">手动输入</button>
+                <button class="btn-link" id="providerManualBtn" type="button" aria-controls="judgeProviderInput" aria-expanded="false">手动输入</button>
               </div>
-              <input class="provider-manual-input" type="text" id="judgeProviderInput" placeholder="手动填写 Provider ID" aria-label="手动填写判断模型 Provider ID">
+              <input class="provider-manual-input" type="text" id="judgeProviderInput" placeholder="手动填写 Provider ID" aria-label="手动填写判断模型 Provider ID" hidden>
               <span class="muted provider-hint" id="providerHint">留空表示使用当前会话默认模型</span>
+              <span class="field-hint provider-list-state" id="providerListState" role="status" aria-live="polite"></span>
             </div>
             <label class="field">
               <span class="field-label">判断温度</span>
@@ -378,8 +387,8 @@
                   <select id="visionProviderSelect">
                     <option value="">使用当前会话模型</option>
                   </select>
-                  <input type="text" id="visionProviderInput" placeholder="手动输入 Provider ID" aria-label="手动填写识图模型 Provider ID" style="display: none;">
-                  <button type="button" class="btn-link" id="visionProviderManualBtn">手动输入</button>
+                  <input type="text" id="visionProviderInput" placeholder="手动输入 Provider ID" aria-label="手动填写识图模型 Provider ID" hidden>
+                  <button type="button" class="btn-link" id="visionProviderManualBtn" aria-controls="visionProviderInput" aria-expanded="false">手动输入</button>
                 </div>
               </div>
               <div class="field provider-cell">
@@ -388,8 +397,8 @@
                   <select id="visionJudgeProviderSelect">
                     <option value="">与识图模型一致</option>
                   </select>
-                  <input type="text" id="visionJudgeProviderInput" placeholder="手动输入 Provider ID" aria-label="手动填写判断阶段识图 Provider ID" style="display: none;">
-                  <button type="button" class="btn-link" id="visionJudgeProviderManualBtn">手动输入</button>
+                  <input type="text" id="visionJudgeProviderInput" placeholder="手动输入 Provider ID" aria-label="手动填写判断阶段识图 Provider ID" hidden>
+                  <button type="button" class="btn-link" id="visionJudgeProviderManualBtn" aria-controls="visionJudgeProviderInput" aria-expanded="false">手动输入</button>
                 </div>
               </div>
               <div class="field-row">
@@ -430,7 +439,7 @@
           <span class="muted form-actions-hint">改动后需要保存才会生效</span>
         </div>
       </form>
-    </div>
+    </main>
   </div>
 
   <!-- 移动端固定保存条：始终可达的保存入口 + 实时保存态 -->

@@ -676,7 +676,11 @@ def test_event_extra_tolerates_host_signature_differences(tmp_path: Path) -> Non
         assert utils.event_extra(event, "key") == "value"
         assert utils.event_extra(event, "missing", default="d") == "d"
 
+        type_error_calls = 0
+
         def type_error_extra(*_args):
+            nonlocal type_error_calls
+            type_error_calls += 1
             raise TypeError("signature mismatch")
 
         def broken_extra(*_args):
@@ -684,6 +688,7 @@ def test_event_extra_tolerates_host_signature_differences(tmp_path: Path) -> Non
 
         event.get_extra = type_error_extra
         assert utils.event_extra(event, "key", default="d") == "d"
+        assert type_error_calls == 1
         event.get_extra = broken_extra
         assert utils.event_extra(event, "key", default="d") == "d"
 

@@ -339,9 +339,9 @@ class DeliveryRunner:
         # 提交前记 UNKNOWN 会经 record_proactive_state(confirmed=False) 白吃冷却
         # 与日配额；已提交记 FAILED_BEFORE_SUBMIT 会不消耗冷却而重发，制造重复
         # 消息。三条测试各钉一侧：提交前失败、提交后失败、异常逃出 gateway。
-        # 注意 ``CancelledError`` 不经此分类（下方单独 raise）：取消发生在 adapter
-        # 调用期间时消息可能已提交，而调用方 deliver_reply 走不到状态记录，冷却
-        # 与观察窗口都不推进。属既有语义缺口，非本处引入。
+        # OutboundGateway 会把 adapter 调用期间的 CancelledError 归类为 UNKNOWN，
+        # 让 deliver_reply 继续按不重试语义记录状态；本处单独 raise 只保留给
+        # gateway 之外的取消点。
         send_started = False
         try:
             outbound = OutboundGateway(

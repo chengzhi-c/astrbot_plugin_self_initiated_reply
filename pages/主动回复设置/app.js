@@ -1,5 +1,10 @@
 ﻿const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
 
+import {
+  providerNeedsManualInput,
+  requestPluginApi,
+} from "./frontend-core.mjs";
+
 let els = null;
 
 function getEls() {
@@ -32,6 +37,7 @@ function getEls() {
     visionJudgeProviderInput: document.getElementById("visionJudgeProviderInput"),
     visionJudgeProviderManualBtn: document.getElementById("visionJudgeProviderManualBtn"),
     providerHint: document.getElementById("providerHint"),
+    providerListState: document.getElementById("providerListState"),
     decisionTempInput: document.getElementById("decisionTempInput"),
     decisionTimeoutInput: document.getElementById("decisionTimeoutInput"),
     decisionPromptInput: document.getElementById("decisionPromptInput"),
@@ -60,6 +66,9 @@ function getEls() {
     saveMobileBtn: document.getElementById("saveMobileBtn"),
     mobileTabbar: document.getElementById("mobileTabbar"),
     sidenavList: document.querySelector(".sidenav-list"),
+    moreActions: document.getElementById("moreActions"),
+    moreActionsBtn: document.getElementById("moreActionsBtn"),
+    moreActionsMenu: document.getElementById("moreActionsMenu"),
   };
   return els;
 }
@@ -73,6 +82,7 @@ if (document.readyState === 'loading') {
 
 let bridgeReady = null;
 let providerOptions = [];
+let providerListAvailable = false;
 let savingConfig = false;
 let configLoaded = false;
 
@@ -261,6 +271,45 @@ function showToast(message) {
   showToast.timer = window.setTimeout(() => els.toast.classList.remove("show"), TOAST_MS);
 }
 
+const MORE_ACTIONS_MEDIA = "(max-width: 460px)";
+
+function setMoreActionsOpen(open, focusMenu = false) {
+  if (!els.moreActions || !els.moreActionsBtn || !els.moreActionsMenu) return;
+  const compact = window.matchMedia(MORE_ACTIONS_MEDIA).matches;
+  const visible = compact && Boolean(open);
+  els.moreActions.classList.toggle("is-open", visible);
+  els.moreActionsMenu.hidden = compact ? !visible : false;
+  els.moreActionsBtn.setAttribute("aria-expanded", String(visible));
+  if (visible && focusMenu) {
+    const firstAction = els.moreActionsMenu.querySelector("button:not([disabled])");
+    window.requestAnimationFrame(() => firstAction?.focus());
+  }
+}
+
+function setupMoreActionsMenu() {
+  if (!els.moreActions || !els.moreActionsBtn || !els.moreActionsMenu) return;
+  const media = window.matchMedia(MORE_ACTIONS_MEDIA);
+  const closeMenu = () => setMoreActionsOpen(false);
+
+  els.moreActionsBtn.addEventListener("click", () => {
+    setMoreActionsOpen(els.moreActionsMenu.hidden, true);
+  });
+  els.moreActionsMenu.querySelectorAll("button").forEach((button) => {
+    button.addEventListener("click", closeMenu);
+  });
+  document.addEventListener("click", (event) => {
+    if (media.matches && !els.moreActions.contains(event.target)) closeMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !media.matches || els.moreActionsMenu.hidden) return;
+    event.preventDefault();
+    closeMenu();
+    els.moreActionsBtn.focus();
+  });
+  media.addEventListener("change", closeMenu);
+  closeMenu();
+}
+
 // 输入防抖：预览区每次按键全量重渲染，低频设备会卡（复审 P2-8）
 function debounce(fn, delay) {
   let timer = null;
@@ -279,61 +328,33 @@ async function getBridge() {
   return window.AstrBotPluginPage;
 }
 
-// P1-4: 统一 fetch 错误包装，提升后端不可达时的用户体验
-function wrapFetchError(error) {
-  const message = String(error?.message || error || "");
-  if (message === "Failed to fetch" || message.includes("fetch")) {
-    throw new Error("无法连接插件 API，请重载页面或重启 AstrBot 后重试");
-  }
-  throw error;
-}
-
 // P1-5: fetch 超时保护，防止后端挂起时请求永不 settle
 const FETCH_TIMEOUT_MS = 15000;
 
-async function apiGet(endpoint, params = {}) {
-  try {
-    const bridge = await getBridge();
-    if (bridge) return bridge.apiGet(endpoint, params);
-    const url = new URL(`/api/plug/${PLUGIN_ID}/${endpoint}`, window.location.href);
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
-    });
-    const response = await fetch(url, {
-      credentials: "include",
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(result?.error || `请求失败 (${response.status})`);
-    }
-    return result;
-  } catch (error) {
-    wrapFetchError(error);
-  }
+function apiGet(endpoint, params = {}) {
+  return requestPluginApi({
+    getBridge,
+    pluginId: PLUGIN_ID,
+    endpoint,
+    method: "GET",
+    params,
+    fetchImpl: window.fetch.bind(window),
+    pageUrl: window.location.href,
+    timeoutMs: FETCH_TIMEOUT_MS,
+  });
 }
 
-async function apiPost(endpoint, body = {}) {
-  try {
-    const bridge = await getBridge();
-    if (bridge) return bridge.apiPost(endpoint, body);
-
-    const url = new URL(`/api/plug/${PLUGIN_ID}/${endpoint}`, window.location.href);
-    const response = await fetch(url, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(result?.error || `请求失败 (${response.status})`);
-    }
-    return result;
-  } catch (error) {
-    wrapFetchError(error);
-  }
+function apiPost(endpoint, body = {}) {
+  return requestPluginApi({
+    getBridge,
+    pluginId: PLUGIN_ID,
+    endpoint,
+    method: "POST",
+    body,
+    fetchImpl: window.fetch.bind(window),
+    pageUrl: window.location.href,
+    timeoutMs: FETCH_TIMEOUT_MS,
+  });
 }
 
 function fmtBool(value) {
@@ -386,12 +407,16 @@ function renderPromptPreview() {
 function createProviderControl(refs, onModeChange) {
   let manual = false;
 
-  function setManual(enabled) {
+  function setManual(enabled, focusInput = false) {
     manual = Boolean(enabled);
-    if (refs.button) refs.button.textContent = manual ? "使用列表" : "手动输入";
-    if (refs.select) refs.select.style.display = manual ? "none" : "block";
-    if (refs.input) refs.input.style.display = manual ? "block" : "none";
+    if (refs.button) {
+      refs.button.textContent = manual ? "使用列表" : "手动输入";
+      refs.button.setAttribute("aria-expanded", String(manual));
+    }
+    if (refs.select) refs.select.hidden = manual;
+    if (refs.input) refs.input.hidden = !manual;
     if (onModeChange) onModeChange(manual);
+    if (manual && focusInput && refs.input) refs.input.focus();
   }
 
   function value() {
@@ -418,8 +443,7 @@ function createProviderControl(refs, onModeChange) {
 
   function sync(providerId) {
     const next = String(providerId || "").trim();
-    const known = next === "" || providerOptions.some((provider) => provider.id === next);
-    if (known && refs.select) {
+    if (!providerNeedsManualInput(next, providerOptions, providerListAvailable) && refs.select) {
       refs.select.value = next;
       if (refs.input) refs.input.value = "";
       setManual(false);
@@ -437,7 +461,7 @@ function createProviderControl(refs, onModeChange) {
         return;
       }
       if (refs.input) refs.input.value = refs.select ? refs.select.value || "" : "";
-      setManual(true);
+      setManual(true, true);
     });
   }
   if (refs.select) {
@@ -491,16 +515,26 @@ async function loadProviders() {
     providerOptions = Array.isArray(result.providers)
       ? result.providers.filter((item) => item && item.id)
       : [];
+    providerListAvailable = true;
     judgeProviderControl.render();
     visionProviderControl.render();
     visionJudgeProviderControl.render();
+    if (els.providerListState) els.providerListState.textContent = "";
+    return { listAvailable: true };
   } catch (error) {
     providerOptions = [];
+    providerListAvailable = false;
     judgeProviderControl.render();
     visionProviderControl.render();
     visionJudgeProviderControl.render();
     judgeProviderControl.setManual(true);
+    visionProviderControl.setManual(true);
+    visionJudgeProviderControl.setManual(true);
+    if (els.providerListState) {
+      els.providerListState.textContent = "Provider 列表不可用，三个 Provider 均可手动填写";
+    }
     showToast("无法加载 Provider 列表，可手动填写");
+    return { listAvailable: false };
   }
 }
 
@@ -572,7 +606,9 @@ function setupValidation() {
     const max = input.hasAttribute("max") ? Number(input.getAttribute("max")) : null;
     const error = document.createElement("span");
     error.className = "field-error";
+    error.id = `${input.id}Error`;
     error.setAttribute("role", "alert");
+    input.setAttribute("aria-describedby", error.id);
     input.insertAdjacentElement("afterend", error);
     const entry = { input, error, min, max };
     numberFields.push(entry);
@@ -708,7 +744,7 @@ function setCurrentNav(active) {
   document.querySelectorAll(".sidenav-link").forEach((link) => {
     const on = link === active;
     link.classList.toggle("is-current", on);
-    if (on) link.setAttribute("aria-current", "true");
+    if (on) link.setAttribute("aria-current", "location");
     else link.removeAttribute("aria-current");
   });
   updateNavFades();
@@ -747,7 +783,10 @@ function syncMobileTabs(active) {
   if (!els.mobileTabbar || !active) return;
   const group = TAB_GROUPS[active.dataset.target] || active.dataset.target;
   els.mobileTabbar.querySelectorAll(".mtab").forEach((tab) => {
-    tab.classList.toggle("is-current", tab.dataset.target === group);
+    const current = tab.dataset.target === group;
+    tab.classList.toggle("is-current", current);
+    if (current) tab.setAttribute("aria-current", "location");
+    else tab.removeAttribute("aria-current");
   });
 }
 
@@ -919,8 +958,9 @@ async function loadOverview() {
 }
 
 async function loadAll() {
-  await loadProviders();
+  const providers = await loadProviders();
   await Promise.all([loadConfig(), loadOverview()]);
+  return providers;
 }
 
 // 刷新：iframe 沙箱里 window.confirm 可能不弹窗直接返回 false（点击看似无反应），
@@ -1063,6 +1103,7 @@ if (els.saveTopBtn) {
 // 导航 / 校验 / 滚动反馈初始化（不依赖后端，先就绪）
 setupNav();
 setupValidation();
+setupMoreActionsMenu();
 window.addEventListener("scroll", onScroll, { passive: true });
 updateScrollProgress();
 updateTopbarStuck();

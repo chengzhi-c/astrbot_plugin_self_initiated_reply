@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import tempfile
@@ -70,15 +71,26 @@ def _update_config_obj(config_obj: Any, data: dict[str, Any]) -> bool:
 def _persist_config_obj(config_obj: Any, data: dict[str, Any]) -> bool:
     if config_obj is None or not hasattr(config_obj, "save_config"):
         return True
+    save_config = config_obj.save_config
+    args: tuple[Any, ...]
     try:
-        config_obj.save_config(data)
-        return True
-    except TypeError:
+        signature = inspect.signature(save_config)
+    except (TypeError, ValueError):
+        args = (data,)
+    else:
         try:
-            config_obj.save_config()
-            return True
-        except Exception as exc:
-            logger.warning("[%s] failed to save AstrBot config: %s", PLUGIN_ID, exc)
+            signature.bind(data)
+            args = (data,)
+        except TypeError:
+            try:
+                signature.bind()
+            except TypeError as exc:
+                logger.warning("[%s] unsupported AstrBot config save signature: %s", PLUGIN_ID, exc)
+                return False
+            args = ()
+    try:
+        save_config(*args)
+        return True
     except Exception as exc:
         logger.warning("[%s] failed to save AstrBot config: %s", PLUGIN_ID, exc)
     return False

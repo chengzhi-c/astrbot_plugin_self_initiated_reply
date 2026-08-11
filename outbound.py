@@ -105,7 +105,10 @@ class OutboundGateway:
             if inspect.isawaitable(raw_result):
                 raw_result = await raw_result
         except asyncio.CancelledError:
-            raise
+            # The adapter has already been invoked. It may have accepted the
+            # message before cancellation reached this task, so retain the
+            # no-retry contract and let the caller record an unconfirmed send.
+            return OutboundResult(SendOutcome(SendStatus.UNKNOWN, "sender cancelled after start"))
         except Exception as exc:
             # An exception after the call began may still have reached the
             # adapter; the outcome is UNKNOWN and must not be retried.

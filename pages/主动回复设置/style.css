@@ -485,6 +485,18 @@ code {
   flex-wrap: wrap;
 }
 
+.more-actions,
+.more-actions-menu {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.more-actions-trigger,
+.more-actions-label { display: none; }
+
+.more-actions-menu[hidden] { display: none; }
+
 /* --------------------------------------------------------------------------
    布局 · 桌面双栏（侧栏导航 + 内容）
    -------------------------------------------------------------------------- */
@@ -1332,9 +1344,7 @@ textarea {
   align-items: center;
 }
 
-.provider-manual-input { display: none; }
-.provider-field.manual .provider-manual-input { display: block; }
-.provider-field.manual .provider-control select { display: none; }
+.provider-manual-input { min-width: 0; }
 
 .provider-field.manual .provider-control {
   grid-template-columns: auto;
@@ -2208,6 +2218,73 @@ textarea {
   .top-actions { flex-wrap: nowrap; }
   .theme-toggle .theme-label { display: none; }
   .theme-toggle { padding: 0 10px; }
+
+  .more-actions { position: relative; flex: none; }
+
+  .more-actions-trigger {
+    display: inline-flex;
+    flex: none;
+    width: var(--tap);
+    min-width: var(--tap);
+    height: var(--tap);
+    min-height: var(--tap);
+    padding: 0;
+  }
+
+  .more-actions-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 50;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    min-width: 132px;
+    padding: 6px;
+    border: var(--border-w) solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    box-shadow: var(--shadow-drop);
+  }
+
+  .more-actions-menu .btn {
+    justify-content: flex-start;
+    width: 100%;
+    min-height: var(--tap);
+    padding: 0 10px;
+  }
+
+  .more-actions-menu .more-actions-label { display: inline; }
+}
+
+@media (max-width: 360px) {
+  .topbar {
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+
+  .topbar .brand { flex: none; }
+  .topbar .brand-text { display: none; }
+
+  .top-actions {
+    flex: 1 1 auto;
+    justify-content: flex-end;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .theme-toggle,
+  .top-actions #saveTopBtn {
+    flex: none;
+    width: var(--tap);
+    min-width: var(--tap);
+    height: var(--tap);
+    min-height: var(--tap);
+    padding: 0;
+    gap: 0;
+  }
+
+  .top-actions #saveTopBtn .btn-label { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

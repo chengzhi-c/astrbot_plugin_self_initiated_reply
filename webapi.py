@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
+import inspect
 import json
 import math
 import re
@@ -51,6 +53,7 @@ from .models import (
     PLUGIN_ID,
     ConfigSpec,
     Settings,
+    normalize_config_updates,
 )
 
 # 配置 schema 全键（_conf_schema.json，与正式键一一对应）。此名单之外的键
@@ -178,7 +181,7 @@ async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
             "cooldown_sec": plugin.settings.cooldown_sec,
             "patrol_inactive_after_sec": plugin.settings.patrol_inactive_after_sec,
             "proactive_inherit_tools": plugin.settings.proactive_inherit_tools,
-            "whitelist_sessions": list(plugin.settings.whitelist),
+            "whitelist_sessions": sorted(plugin.settings.whitelist),
             "pipeline_mode": True,
             "vision_judge_enabled": plugin.settings.vision_judge_enabled,
             "vision_main_enabled": plugin.settings.vision_main_enabled,
@@ -325,9 +328,18 @@ async def _request_json() -> Any:
     json_reader = getattr(request, "json", None)
     if callable(json_reader):
         try:
+            signature = inspect.signature(json_reader)
+        except (TypeError, ValueError):
             return await json_reader(default={})
+        try:
+            signature.bind(default={})
         except TypeError:
+            try:
+                signature.bind()
+            except TypeError as exc:
+                raise RuntimeError("当前 AstrBot Web API 不支持 JSON 请求读取") from exc
             return await json_reader()
+        return await json_reader(default={})
     get_json = getattr(request, "get_json", None)
     if callable(get_json):
         return await get_json(silent=True)
@@ -426,6 +438,15 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
 # （judge/vision/vision_judge）决定群聊上下文与图片发往哪个上游端点，被改指向
 # 攻击者 provider 即为持续数据外泄；vision_*_enabled 是图片外发总开关；
 # ignored_sender_ids 能静默屏蔽特定用户（含管理员），是可滥用的隐蔽开关。
+def _config_update_was_adjusted(
+    spec: ConfigSpec, submitted: Any, normalized: dict[str, Any]
+) -> bool:
+    actual = normalized[spec.key]
+    if spec.container == "set":
+        return set(submitted) != set(actual)
+    return submitted != actual
+
+
 _AUDITED_CONFIG_KEYS = tuple(spec.key for spec in CONFIG_SPECS if spec.audited)
 
 
@@ -509,7 +530,8 @@ async def _apply_config_updates(
     snapshot = _snapshot_plugin_state(plugin)
     try:
         candidate = plugin.settings.to_config_dict()
-        for key, value in updates.items():
+        normalized_updates = normalize_config_updates(updates)
+        for key, value in normalized_updates.items():
             candidate[key] = value
         new_settings = Settings.from_config(candidate)
         vision_changed = any(
@@ -551,10 +573,26 @@ async def _apply_config_updates(
         elif plugin.runtime_enabled:
             plugin._ensure_image_cleanup_task()
         _log_audited_changes(snapshot, new_settings, updates)
-        return {"ok": True}
+        config = new_settings.to_config_dict()
+        adjusted_fields = sorted(
+            key
+            for key, value in updates.items()
+            if _config_update_was_adjusted(CONFIG_SPEC_BY_KEY[key], value, config)
+        )
+        return {"ok": True, "config": config, "adjusted_fields": adjusted_fields}
     except Exception:
         await _restore_plugin_state(plugin, snapshot)
         raise
+
+
+def _audit_value(value: Any) -> str:
+    if isinstance(value, (set, list)):
+        items = sorted(str(item) for item in value)
+        digest = hashlib.sha256(
+            json.dumps(items, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:12]
+        return f"count={len(items)},sha256={digest}"
+    return repr(value)
 
 
 def _log_audited_changes(
@@ -572,7 +610,7 @@ def _log_audited_changes(
         old_norm = sorted(old_value) if isinstance(old_value, (set, list)) else old_value
         new_norm = sorted(new_value) if isinstance(new_value, (set, list)) else new_value
         if old_norm != new_norm:
-            changed.append(f"{key}={new_norm!r}")
+            changed.append(f"{key}={_audit_value(new_value)}")
     if changed:
         logger.info("[%s] webapi config audit: %s", PLUGIN_ID, ", ".join(changed))
 

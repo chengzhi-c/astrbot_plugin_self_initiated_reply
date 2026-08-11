@@ -598,6 +598,16 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
     return str(raw or "").strip()
 
 
+def normalize_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
+    """Return API updates in the same canonical form persisted by ``Settings``."""
+    normalized: dict[str, Any] = {}
+    for key, value in updates.items():
+        spec = CONFIG_SPEC_BY_KEY[key]
+        value = coerce_config_value(spec, value, spec.default)
+        normalized[key] = sorted(value) if spec.container == "set" else value
+    return normalized
+
+
 def read_config_value(spec: ConfigSpec, config: Any) -> Any:
     """从宿主配置对象读一个键：正式键优先，缺失时按旧键顺序回退。
 

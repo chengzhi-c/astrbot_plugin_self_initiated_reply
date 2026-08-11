@@ -471,6 +471,14 @@ def test_request_json_fallbacks(tmp_path) -> None:
             async def json(self):
                 return {"via": "bare"}
 
+        class BodyTypeErr:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def json(self, default=None):
+                self.calls += 1
+                raise TypeError("reader body failed")
+
         try:
             webapi.request = OnlyGetJson()
             assert await webapi._request_json() == {"via": "get_json"}
@@ -479,6 +487,11 @@ def test_request_json_fallbacks(tmp_path) -> None:
                 await webapi._request_json()
             webapi.request = TypeErrBoom()
             assert await webapi._request_json() == {"via": "bare"}
+            reader = BodyTypeErr()
+            webapi.request = reader
+            with pytest.raises(TypeError, match="reader body failed"):
+                await webapi._request_json()
+            assert reader.calls == 1
             # _api_post_ui_theme 在 json 读取失败时回退空 dict → 无效主题
             webapi.request = Boom()
             result = await webapi._api_post_ui_theme(plugin)
@@ -519,6 +532,60 @@ def test_api_post_config_stopping(tmp_path) -> None:
         plugin._stopping = True
         result = await plugin._api_post_config()
         assert result["ok"] is False
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_api_post_config_returns_normalized_values(tmp_path) -> None:
+    """成功的 POST 必须返回规格表实际生效的规范值与调整字段。"""
+
+    async def scenario(plugin, main):
+        models = sys.modules[f"{PACKAGE}.models"]
+        web = sys.modules["astrbot.api.web"]
+        whitelist = [f"session-{index:04d}" for index in range(models.MAX_WHITELIST_SIZE + 1)]
+        web.request.payload = {
+            "cooldown_sec": 999999,
+            "decision_temperature": 9,
+            "decision_prompt_template": "p" * (models.MAX_PROMPT_LENGTH + 1),
+            "whitelist_sessions": list(reversed(whitelist)),
+        }
+
+        result = await plugin._api_post_config()
+
+        assert result["ok"] is True
+        assert result["adjusted_fields"] == [
+            "cooldown_sec",
+            "decision_prompt_template",
+            "decision_temperature",
+            "whitelist_sessions",
+        ]
+        config = result["config"]
+        assert config["cooldown_sec"] == int(models.CONFIG_SPEC_BY_KEY["cooldown_sec"].maximum)
+        assert (
+            config["decision_temperature"]
+            == models.CONFIG_SPEC_BY_KEY["decision_temperature"].maximum
+        )
+        assert len(config["decision_prompt_template"]) == models.MAX_PROMPT_LENGTH
+        assert config["whitelist_sessions"] == sorted(whitelist)[1:]
+        assert config["whitelist_sessions"] == sorted(config["whitelist_sessions"])
+        assert plugin.settings.to_config_dict() == config
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_api_get_config_sorts_whitelist_sessions(tmp_path) -> None:
+    async def scenario(plugin, main):
+        webapi = sys.modules[f"{PACKAGE}.webapi"]
+
+        class UnsortedSet(set[str]):
+            def __iter__(self):
+                return iter(("session-z", "session-a"))
+
+        plugin.settings.whitelist = UnsortedSet({"session-a", "session-z"})
+
+        result = await webapi._api_get_config(plugin)
+
+        assert result["whitelist_sessions"] == ["session-a", "session-z"]
 
     with_plugin(tmp_path, scenario)
 

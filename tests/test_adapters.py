@@ -193,18 +193,16 @@ def test_method_call_options_no_params(bridge) -> None:
     assert bridge._method_call_options(target, "umo1") == [((), {})]
 
 
-async def test_call_first_supported_retries_on_type_error(bridge) -> None:
+async def test_call_first_supported_does_not_retry_body_type_error(bridge) -> None:
     calls: list[str] = []
 
     async def target(umo=None):
         calls.append(str(umo))
-        if len(calls) == 1:
-            raise TypeError("first form unsupported")
-        return "resolved"
+        raise TypeError("body boom")
 
-    result = await bridge._call_first_supported(target, "umo1", "probe")
-    assert result == "resolved"
-    assert calls == ["umo1", "None"]
+    with pytest.raises(TypeError, match="body boom"):
+        await bridge._call_first_supported(target, "umo1", "probe")
+    assert calls == ["umo1"]
 
 
 async def test_call_first_supported_raises_business_error(bridge) -> None:
@@ -216,12 +214,15 @@ async def test_call_first_supported_raises_business_error(bridge) -> None:
 
 
 async def test_call_first_supported_all_unsupported_returns_none(bridge) -> None:
-    # 每个形态都能绑定成功，但函数体抛 TypeError 使该形态被判定为不支持，
-    # 全部形态耗尽后返回 None（语义：找不到可执行形态）
-    def target(required: int) -> str:
-        raise TypeError("body boom")
+    calls = 0
+
+    def target(*, required: int) -> str:
+        nonlocal calls
+        calls += 1
+        return "unreachable"
 
     assert await bridge._call_first_supported(target, "umo1", "probe") is None
+    assert calls == 0
 
 
 # ============================================================================
@@ -425,6 +426,60 @@ async def test_resolve_provider_id_via_current_chat(bridge) -> None:
 
     ctx = SimpleNamespace(get_current_chat_provider_id=get_current_chat_provider_id)
     assert await bridge(ctx).resolve_provider_id("umo1", "") == "p-curr"
+
+
+async def test_resolve_provider_id_falls_back_when_current_provider_is_missing(bridge) -> None:
+    from types import SimpleNamespace
+
+    ProviderNotFoundError = type(
+        "ProviderNotFoundError",
+        (Exception,),
+        {"__module__": "astrbot.core.exceptions"},
+    )
+
+    class CurrentProviderNotFoundError(ProviderNotFoundError):
+        pass
+
+    calls = 0
+
+    async def get_current_chat_provider_id(umo: str) -> str:
+        raise CurrentProviderNotFoundError("missing current provider")
+
+    async def get_using_provider(umo: str):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(meta=lambda: {"id": "p-fallback"})
+
+    ctx = SimpleNamespace(
+        get_current_chat_provider_id=get_current_chat_provider_id,
+        get_using_provider=get_using_provider,
+    )
+
+    assert await bridge(ctx).resolve_provider_id("umo1", "") == "p-fallback"
+    assert calls == 1
+
+
+async def test_resolve_provider_id_propagates_current_provider_errors(bridge) -> None:
+    from types import SimpleNamespace
+
+    calls = 0
+
+    async def get_current_chat_provider_id(umo: str) -> str:
+        raise OSError("provider storage unavailable")
+
+    async def get_using_provider(umo: str):
+        nonlocal calls
+        calls += 1
+        return None
+
+    ctx = SimpleNamespace(
+        get_current_chat_provider_id=get_current_chat_provider_id,
+        get_using_provider=get_using_provider,
+    )
+
+    with pytest.raises(OSError, match="provider storage unavailable"):
+        await bridge(ctx).resolve_provider_id("umo1", "")
+    assert calls == 0
 
 
 async def test_resolve_provider_id_ignores_get_using_provider_id(bridge) -> None:

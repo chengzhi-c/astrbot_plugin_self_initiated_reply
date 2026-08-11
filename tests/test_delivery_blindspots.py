@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from .host_stubs import FakeEvent
@@ -14,6 +15,7 @@ from .test_delivery_runner import (
     FakeContextSend,
     FakeHook,
     FakeSave,
+    _hook_names,
     _make_runner,
     _state,
 )
@@ -168,6 +170,88 @@ async def test_send_reply_context_send_rejected_false(tmp_path: Path) -> None:
     _, models, runner, _ = _make_runner(tmp_path, context_send=FalseSend())
     outcome = await runner.send_reply("s1", "hello", expected_generation=None)
     assert outcome.status is models.SendStatus.FAILED_BEFORE_SUBMIT
+
+
+async def test_deliver_context_cancellation_records_unknown_state(tmp_path: Path) -> None:
+    """提交中的任务取消时，仍需把可能已送达的尝试记为 UNKNOWN。"""
+
+    class CancelAfterStart(FakeContextSend):
+        async def __call__(self, umo: str, message: object) -> None:
+            self.calls.append((umo, message))
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            await asyncio.sleep(0)
+
+    hook = FakeHook()
+    _, models, runner, _ = _make_runner(
+        tmp_path,
+        context_send=CancelAfterStart(),
+        hook=hook,
+    )
+
+    async def send_via_runner(umo: str, reply: str, expected_generation: int | None):
+        return await runner.send_reply(umo, reply, expected_generation=expected_generation)
+
+    runner._send_reply = send_via_runner
+    state = _state(models)
+
+    result = await runner.deliver_reply(
+        "s1",
+        state,
+        "hello",
+        0,
+        expected_generation=1,
+        observed_active_at=100.0,
+        force=False,
+        trigger="patrol",
+    )
+
+    assert "状态未知" in result
+    assert state.daily_count == 1
+    assert state.last_proactive_at > 0
+    assert state.last_proactive_observed_at == 100.0
+    assert all(record.role != "assistant" for record in state.recent)
+    assert hook.calls == []
+
+
+async def test_deliver_event_cancellation_records_unknown_state(tmp_path: Path) -> None:
+    """事件发送取消时，仍需清理结果并完成 UNKNOWN 状态记账。"""
+
+    class CancelAfterStart(FakeEvent):
+        async def send(self, message: object) -> None:
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            await asyncio.sleep(0)
+
+    hook = FakeHook()
+    _, models, runner, last_events = _make_runner(tmp_path, hook=hook)
+    last_events["s1"] = CancelAfterStart()
+
+    async def send_via_runner(umo: str, reply: str, expected_generation: int | None):
+        return await runner.send_reply(umo, reply, expected_generation=expected_generation)
+
+    runner._send_reply = send_via_runner
+    state = _state(models)
+
+    result = await runner.deliver_reply(
+        "s1",
+        state,
+        "hello",
+        0,
+        expected_generation=1,
+        observed_active_at=100.0,
+        force=False,
+        trigger="patrol",
+    )
+
+    assert "状态未知" in result
+    assert state.daily_count == 1
+    assert state.last_proactive_at > 0
+    assert state.last_proactive_observed_at == 100.0
+    assert all(record.role != "assistant" for record in state.recent)
+    assert _hook_names(hook) == ["OnDecoratingResultEvent"]
 
 
 # ============================================================================
