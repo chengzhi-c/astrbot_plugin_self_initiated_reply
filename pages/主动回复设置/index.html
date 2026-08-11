@@ -238,13 +238,13 @@
 
             <fieldset class="origin origin-count">
               <legend class="origin-head">
-                <span class="origin-title">上下文场景数</span>
+                <span class="origin-title">判断时参考的聊天记录</span>
               </legend>
               <div class="field-grid">
                 <label class="field">
-                  <span class="field-label">最少上下文消息数<em>条</em></span>
+                  <span class="field-label">少于多少条时补读历史</span>
                   <input type="number" id="minContextInput" min="0" max="30">
-                  <p class="field-hint">上下文至少几条消息才判断接话</p>
+                  <p class="field-hint">本插件记录的文字消息少于此数时，会尝试读取同一会话的旧消息，帮助判断要不要接话。设为 0 时，只看插件已记录的消息。</p>
                 </label>
               </div>
             </fieldset>
