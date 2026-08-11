@@ -22,7 +22,7 @@ from typing import Any, Protocol
 from astrbot.api import logger
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "0.9.5"
+PLUGIN_VERSION = "0.9.6"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
