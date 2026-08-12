@@ -1,22 +1,22 @@
-"""指令文本的解析与回显拼装。
+"""指令文本解析、回显拼装，以及写动作分派。
 
-拥有：``/selfreply`` 及其别名的文本解析、帮助与状态与列表与调试四类回显
-文本的拼装。全部是纯函数，文本进文本出。
-
-不执行指令、不判权限、不碰状态：处理器在 ``main`` 的 ``@selfreply.command``
-下，权限由宿主 ``permission_type`` 装饰器判定。文案改动是用户可见变更。
+解析/帮助/状态/列表/调试为纯函数。``dispatch_command_action`` 承载 add/remove/
+check/on/off 等有副作用分支，经 plugin 回调访问状态（测试可替换实例方法）。
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from astrbot.api.event import AstrMessageEvent
 
-from .models import Settings, fmt_ts
+from .models import MessageRecord, SessionState, Settings, fmt_ts, now_ts
 from .utils import (
     clean_chat_text,
     event_group_id,
     event_self_id,
     event_sender_id,
+    event_sender_name,
     event_text,
     event_umo,
     is_at_or_wake_command_event,
@@ -25,6 +25,7 @@ from .utils import (
     raw_umo,
     session_whitelisted,
     strip_leading_mentions,
+    whitelist_storage_key,
 )
 
 
@@ -137,3 +138,81 @@ def debug_text(settings: Settings, event: AstrMessageEvent, ignored_sender: bool
             f"{looks_like_reply_request(clean_chat_text(text), settings.bot_aliases)}",
         ]
     )
+
+
+async def dispatch_command_action(
+    plugin: Any, event: AstrMessageEvent, action: str, arg: str = ""
+) -> str:
+    """指令动作 → 回显文本。check 在 finally 回收缓存；未知 action 回落 help。"""
+    umo = event_umo(event)
+    if action == "help":
+        return help_text()
+    if action == "status":
+        state = plugin._state_for(whitelist_storage_key(umo)) if umo else SessionState()
+        return status_text(plugin.settings, event, state, plugin.runtime_enabled)
+    if action == "list":
+        return list_text(plugin.settings)
+    if not umo:
+        return "无法识别当前会话。"
+    if action == "add":
+        added = await plugin._add_whitelist_session(umo)
+        return (
+            f"已将当前会话加入主动回复白名单：{umo}"
+            if added
+            else f"当前会话已在主动回复白名单中：{umo}"
+        )
+    if action == "remove":
+        removed = await plugin._remove_whitelist_session(umo)
+        return (
+            f"已移出主动回复白名单：{umo}"
+            if removed
+            else f"当前会话本不在主动回复白名单：{umo}"
+        )
+    if action == "check":
+        generation = plugin._invalidate_session(umo)
+        plugin._coordinator.record_event(umo, event, now_ts())
+        state = plugin._state_for(whitelist_storage_key(umo))
+        text = clean_chat_text(arg or strip_command_prefix(event_text(event)))
+        if text:
+            state.last_active_at = now_ts()
+            state.last_active_sender_id = event_sender_id(event)
+            state.recent.append(
+                MessageRecord(
+                    role="user",
+                    name=event_sender_name(event),
+                    text=text,
+                    at=state.last_active_at,
+                )
+            )
+        try:
+            result = await plugin._check_session(
+                umo,
+                trigger="manual",
+                force=True,
+                expected_generation=generation,
+            )
+        finally:
+            if plugin._last_events.get(umo) is event:
+                plugin._clear_cached_event(umo)
+            if not session_whitelisted(umo, plugin.settings.whitelist):
+                plugin._prune_session(umo)
+        return f"主动回复检查结果：{result}"
+    if action == "on":
+        async with plugin._config_lock:
+            await plugin._persist_enabled(True)
+            plugin._ensure_patrol_task()
+            plugin._ensure_image_cleanup_task()
+        return "主动回复插件已启用（重启后保持）。"
+    if action == "off":
+        async with plugin._config_lock:
+            await plugin._persist_enabled(False)
+            plugin._cancel_delay_tasks()
+            await plugin._stop_patrol_task()
+        return "主动回复插件已暂停（重启后保持）。"
+    if action == "debug":
+        return debug_text(
+            plugin.settings,
+            event,
+            ignored_sender=event_sender_id(event) in plugin.settings.ignored_sender_ids,
+        )
+    return help_text()

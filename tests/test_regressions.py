@@ -91,7 +91,9 @@ def test_inline_command_requires_slash_or_mention() -> None:
     契约分两段：``on_message`` 消费命令前必须经 ``_is_command_entry`` 把门，
     门本身必须要求显式入口（斜杠 / 点名 / 唤醒词）。
     """
-    assert "self._is_command_entry" in calls_in("main.py", "on_message"), (
+    assert "plugin._is_command_entry" in calls_in(
+        "message_ingress.py", "handle_incoming_message"
+    ), (
         "on_message 未经 _is_command_entry 把门：任意群成员发送裸词 selfreply "
         "就能让 Bot 回复整段帮助文本并 stop_event()，从而吞掉该消息、阻断其他插件"
     )
@@ -188,7 +190,7 @@ def test_successful_image_cache_logs_are_debug_only() -> None:
     captured = "[%s] captured %s/%s images into local vision cache for umo=%s"
     snapshot = "[%s] host image snapshot created: %s"
 
-    assert logger_levels_for("main.py", captured) == ["logger.debug"], (
+    assert logger_levels_for("image/vision_runtime.py", captured) == ["logger.debug"], (
         "图片入缓存成功日志必须是 debug：每条含图消息都会打，INFO 会刷屏"
     )
     assert logger_levels_for("image/parser.py", snapshot) == ["logger.debug"], (

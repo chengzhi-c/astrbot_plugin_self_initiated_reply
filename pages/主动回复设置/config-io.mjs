@@ -1,11 +1,8 @@
 /** 配置加载 / 保存 / 字段校验。 */
-
 import { DEFAULT_CONFIG, num } from "./config-form.mjs";
 import { isSuccessfulConfigPayload } from "./frontend-core.mjs";
-
 const WHITELIST_ITEM_MAX_LEN = 200;
 const WHITELIST_ILLEGAL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f]/;
-
 export function createConfigIo(deps) {
   const {
     getEls,
@@ -21,14 +18,11 @@ export function createConfigIo(deps) {
     visionJudgeProviderControl,
     fmtBool,
   } = deps;
-
   let numberFields = [];
   let saveStateKind = "";
-
   function els() {
     return getEls();
   }
-
   function setSaveState(message, state) {
     saveStateKind = state;
     const e = els();
@@ -70,7 +64,6 @@ export function createConfigIo(deps) {
       }
     }
   }
-
   function setDirty(dirty = true) {
     setState({ isDirty: dirty });
     const e = els();
@@ -85,7 +78,6 @@ export function createConfigIo(deps) {
     if (dirty && saveStateKind !== "saving") setSaveState("有未保存改动", "dirty");
     else if (!dirty && saveStateKind === "dirty") setSaveState("", "");
   }
-
   function attachDirtyListeners() {
     const e = els();
     if (!e.configForm) return;
@@ -94,7 +86,6 @@ export function createConfigIo(deps) {
       if (ev.target.tagName === "INPUT" || ev.target.tagName === "TEXTAREA") setDirty(true);
     });
   }
-
   function setSaving(loading) {
     const e = els();
     const { configLoaded } = getState();
@@ -110,7 +101,6 @@ export function createConfigIo(deps) {
     });
     if (e.refreshBtn) e.refreshBtn.disabled = loading;
   }
-
   function setupValidation() {
     const e = els();
     if (!e.configForm) return;
@@ -131,7 +121,6 @@ export function createConfigIo(deps) {
       input.addEventListener("blur", () => validateField(field));
     });
   }
-
   function validateField(field) {
     const raw = field.input.value;
     if (raw === "") {
@@ -156,7 +145,6 @@ export function createConfigIo(deps) {
     field.error.textContent = "";
     return true;
   }
-
   function validateAll() {
     let firstBad = null;
     for (const field of numberFields) {
@@ -168,7 +156,6 @@ export function createConfigIo(deps) {
     }
     return true;
   }
-
   function validateWhitelist() {
     const e = els();
     if (!e.whitelistInput || !e.whitelistError) return true;
@@ -194,7 +181,6 @@ export function createConfigIo(deps) {
     e.whitelistError.textContent = "";
     return true;
   }
-
   async function loadConfig() {
     const e = els();
     const config = await apiGet("config");
@@ -250,7 +236,6 @@ export function createConfigIo(deps) {
     setSaving(false);
     setDirty(false);
   }
-
   async function saveConfig(event) {
     event.preventDefault();
     const state = getState();
@@ -334,14 +319,12 @@ export function createConfigIo(deps) {
       setSaving(false);
     }
   }
-
   async function loadOverview() {
     const e = els();
     const overview = await apiGet("unified/overview");
     const self = overview.self_reply || {};
     e.whitelistCount.textContent = String(self.whitelist_count || 0);
   }
-
   async function cleanupImageCache() {
     const e = els();
     if (!e.cleanupImageCacheBtn) return;
@@ -366,7 +349,6 @@ export function createConfigIo(deps) {
       e.cleanupImageCacheBtn.disabled = false;
     }
   }
-
   return {
     setSaveState,
     setDirty,

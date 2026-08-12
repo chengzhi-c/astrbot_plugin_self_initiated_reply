@@ -1,9 +1,7 @@
 /** 导航 / 滚动 / 更多菜单 / 亮度粗体等壳层 UI。 */
-
 const MORE_ACTIONS_MEDIA = "(max-width: 460px)";
 const DIM_KEY = "selfreply-dim";
 const BOLD_KEY = "selfreply-bold";
-
 const TAB_GROUPS = {
   selfStat: "selfStat",
   "sec-scope": "sec-scope",
@@ -12,11 +10,9 @@ const TAB_GROUPS = {
   "sec-runtime": "sec-runtime",
   "sec-vision": "sec-runtime",
 };
-
 export function prefersReducedMotion() {
   return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
-
 export function setupMoreActionsMenu(els) {
   if (!els.moreActions || !els.moreActionsBtn || !els.moreActionsMenu) return;
   const media = window.matchMedia(MORE_ACTIONS_MEDIA);
@@ -50,7 +46,6 @@ export function setupMoreActionsMenu(els) {
   media.addEventListener("change", closeMenu);
   closeMenu();
 }
-
 export function updateNavFades(els) {
   if (!els.sidenavList) return;
   const list = els.sidenavList;
@@ -62,7 +57,6 @@ export function updateNavFades(els) {
     endFade.classList.toggle("is-hidden", atEnd);
   }
 }
-
 function syncMobileTabs(els, active) {
   if (!els.mobileTabbar || !active) return;
   const group = TAB_GROUPS[active.dataset.target] || active.dataset.target;
@@ -73,7 +67,6 @@ function syncMobileTabs(els, active) {
     else tab.removeAttribute("aria-current");
   });
 }
-
 export function setCurrentNav(els, active) {
   document.querySelectorAll(".sidenav-link").forEach((link) => {
     const on = link === active;
@@ -95,7 +88,6 @@ export function setCurrentNav(els, active) {
   }
   syncMobileTabs(els, active);
 }
-
 export function setupNav(els) {
   const links = Array.from(document.querySelectorAll(".sidenav-link"));
   if (!links.length) return;
@@ -136,7 +128,6 @@ export function setupNav(els) {
   }
   setCurrentNav(els, links[0]);
 }
-
 export function setupMobileTabs(els) {
   if (!els.mobileTabbar) return;
   els.mobileTabbar.querySelectorAll(".mtab").forEach((tab) => {
@@ -156,13 +147,11 @@ export function setupMobileTabs(els) {
     });
   });
 }
-
 export function updateTopbarStuck(els) {
   if (!els.topbar) return;
   const y = window.scrollY || document.documentElement.scrollTop || 0;
   els.topbar.classList.toggle("is-stuck", y > 8);
 }
-
 export function createScrollHandler(els) {
   let ticking = false;
   return () => {
@@ -174,7 +163,6 @@ export function createScrollHandler(els) {
     });
   };
 }
-
 export function applyDim(on) {
   document.documentElement.classList.toggle("dimmed", on);
   const btn = document.getElementById("dimBtn");
@@ -185,7 +173,6 @@ export function applyDim(on) {
     /* ignore */
   }
 }
-
 export function applyBold(on) {
   document.documentElement.classList.toggle("bold-text", on);
   const btn = document.getElementById("boldBtn");
@@ -196,7 +183,6 @@ export function applyBold(on) {
     /* ignore */
   }
 }
-
 export function restoreDimBold() {
   try {
     if (localStorage.getItem(DIM_KEY) === "1") applyDim(true);
@@ -205,7 +191,6 @@ export function restoreDimBold() {
     /* ignore */
   }
 }
-
 export function bindDimBoldButtons() {
   const dimBtn = document.getElementById("dimBtn");
   const boldBtn = document.getElementById("boldBtn");
@@ -220,7 +205,6 @@ export function bindDimBoldButtons() {
     );
   }
 }
-
 export function hideBoot(els) {
   if (els.boot) els.boot.classList.add("is-hidden");
   document.body.classList.add("is-ready");

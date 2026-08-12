@@ -409,23 +409,28 @@ def _lookup_restore() -> ast.AST:
 
 
 def _actual_holders() -> set[tuple[str, str, str]]:
-    """扫 main.py 的组件装配段，反推 (main 容器名, 组件属性, 组件字段) 三元组。"""
+    """扫装配段（main.py / assembly.py），反推 (容器名, 组件属性, 组件字段)。"""
     restored = _restored_containers()
     holders: set[tuple[str, str, str]] = set()
     for rel, cls, owner_attr in COMPONENT_CONSTRUCTORS:
         bindings = constructor_param_bindings(rel, cls)
-        for node in ast.walk(module_ast("main.py")):
-            if not (isinstance(node, ast.Call) and ast.unparse(node.func) == cls):
-                continue
-            for kw in node.keywords:
-                if kw.arg is None:
+        for source in ("main.py", "assembly.py"):
+            for node in ast.walk(module_ast(source)):
+                if not (isinstance(node, ast.Call) and ast.unparse(node.func) == cls):
                     continue
-                value = ast.unparse(kw.value)
-                if not value.startswith("self."):
-                    continue
-                container = value[len("self.") :]
-                if container in restored and kw.arg in bindings:
-                    holders.add((container, owner_attr, bindings[kw.arg]))
+                for kw in node.keywords:
+                    if kw.arg is None:
+                        continue
+                    value = ast.unparse(kw.value)
+                    # main 内 self.x；assembly 内 plugin.x
+                    if value.startswith("self."):
+                        container = value[len("self.") :]
+                    elif value.startswith("plugin."):
+                        container = value[len("plugin.") :]
+                    else:
+                        continue
+                    if container in restored and kw.arg in bindings:
+                        holders.add((container, owner_attr, bindings[kw.arg]))
     return holders
 
 

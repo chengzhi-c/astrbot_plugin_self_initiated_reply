@@ -29,10 +29,14 @@ from astrbot.api.event.filter import PermissionType, permission_type
 from astrbot.api.star import Context, Star, register
 
 from .runtime_adapter import AstrBotRuntimeAdapter
-from .scheduler import SessionScheduler
-from .session_coordinator import SessionCoordinator
 from .session_gate import SessionGate
-from .session_pipeline import SessionPipeline
+from .assembly import assemble_plugin_components
+from .message_ingress import handle_incoming_message
+from .image.vision_runtime import (
+    build_image_context as vision_build_image_context,
+    get_image_parser as vision_get_image_parser,
+    prepare_images_for_session as vision_prepare_images_for_session,
+)
 
 # 指令处理器的产出类型：每个 @selfreply.command 处理器都是 async generator，
 # 逐条 yield event.plain_result(...)。宿主侧契约是
@@ -69,17 +73,13 @@ get_astrbot_plugin_data_path = _AGENT_RUNTIME.capabilities.plugin_data_path_fn
 from .adapters import AstrBotBridge
 from .commands import (
     debug_text,
+    dispatch_command_action,
     help_text,
     list_text,
-    parse_command_text,
     status_text,
-    strip_command_prefix,
 )
-from .decision import DECISION_MAX_TOKENS, DECISION_SYSTEM_PROMPT, DecisionMaker
-from .delivery import DeliveryRunner
 from .generation import GenerationRunner
-from .image import ImageExtractor, ImageInfo, ImageParser, format_image_context
-from .image.recorder_bridge import get_recorder_bridge
+from .image import ImageInfo, ImageParser
 from .models import (
     ADMIN_COMMAND_ACTIONS,
     ADMIN_REFRESH_WINDOW_SEC,
@@ -89,13 +89,15 @@ from .models import (
     PLUGIN_VERSION,
     SESSION_CANCEL_COMMAND_ACTIONS,
     STALE_TASK_MESSAGE,
-    MessageRecord,
     PipelineReply,
     SendOutcome,
     SessionState,
     Settings,
     now_ts,
 )
+
+# 测试会替换 main.GRACEFUL_STOP_GRACE_SEC；装配 lambda 经 models 常量名解析时
+# 需保证本模块仍暴露同名绑定（grace_stop_sec 读 assembly 注入的 getter）。
 from .storage import (
     build_sessions_payload,
     load_config_data,
@@ -105,24 +107,17 @@ from .storage import (
     write_sessions_payload,
 )
 from .utils import (
-    clean_chat_text,
-    event_extra,
     event_sender_id,
-    event_sender_name,
-    event_text,
     event_umo,
     is_admin_event,
     is_at_or_wake_command_event,
     is_explicit_direct_call,
-    is_self_message,
-    looks_like_reply_request,
     session_group_id,
     session_whitelisted,
     should_ignore_event,
     whitelist_storage_key,
 )
 from .webapi import UnifiedManagerApi, bind_api_handlers, load_ui_theme, register_web_apis
-from .whitelist import WhitelistManager
 
 # ADMIN_COMMAND_ACTIONS 与 GRACEFUL_STOP_GRACE_SEC 统一从 models 导入，
 # 避免同名常量在多处定义。
@@ -248,118 +243,12 @@ class SelfInitiatedReplyPlugin(Star):
         register_web_apis(self)
 
     def _assemble_components(self) -> None:
-        """接线协作对象。须在 gate/状态容器就绪之后、ensure_task 之前调用。
-
-        跨对象依赖一律 lambda 运行时查找，便于测试替换实例方法。
-        """
-        self._scheduler = SessionScheduler(
-            settings=self.settings,
-            gate=self._gate,
-            image_cache_dir=self._image_cache_dir,
-            spawn=self._track_background_task,
-            should_run=lambda: not self._stopping and self.runtime_enabled,
-            state_for=lambda umo: self._state_for(umo),
-            check_session=lambda umo, trigger, force, expected_generation: self._check_session(
-                umo,
-                trigger=trigger,
-                force=force,
-                expected_generation=expected_generation,
-            ),
-            clear_cached_event=lambda umo: self._clear_cached_event(umo),
-            last_events=self._last_events,
-            last_event_at=self._last_event_at,
-            recent_image_events=self._recent_image_events,
-            whitelist_runtime_umos=self._whitelist_runtime_umos,
-            delay_tasks=self._delay_tasks,
-            running_check_tasks=self._running_check_tasks,
-            background_tasks=self._background_tasks,
-        )
-        self._scheduler.last_cleanup_at = now_ts()
-
-        self._decision = DecisionMaker(
-            settings=self.settings,
-            resolve_provider=lambda umo: self.bridge.resolve_provider_id(
-                umo, self.settings.judge_provider_id
-            ),
-            llm_generate=lambda provider_id, prompt: self.bridge.llm_generate(
-                provider_id=provider_id,
-                prompt=prompt,
-                system_prompt=DECISION_SYSTEM_PROMPT,
-                temperature=self.settings.decision_temperature,
-                max_tokens=DECISION_MAX_TOKENS,
-            ),
-            read_history=lambda umo, limit: self.bridge.read_astrbot_history(umo, limit=limit),
-            build_image_context=lambda umo, enabled, provider_id: self._build_image_context(
-                umo, enabled=enabled, provider_id=provider_id
-            ),
-        )
-
-        self._generation = GenerationRunner(
-            settings=self.settings,
-            context=self.context,
-            runtime=lambda: _AGENT_RUNTIME,
-            gate=self._gate,
-            local_gate=lambda state, force: self._decision.local_gate(state, force=force),
-            enforce_policy=lambda req, inherit_tools: self._enforce_final_tool_policy(
-                req, inherit_tools
-            ),
-            call_hook=lambda event, event_type, req: call_event_hook(event, event_type, req),
-            grace_stop_sec=lambda: GRACEFUL_STOP_GRACE_SEC,
-            background_tasks=self._background_tasks,
-            discard_background=self._background_tasks.discard,
-            read_history=lambda umo, limit: self.bridge.read_astrbot_history(umo, limit=limit),
-            build_image_context=lambda umo, enabled, provider_id: self._build_image_context(
-                umo, enabled=enabled, provider_id=provider_id
-            ),
-            last_events=self._last_events,
-        )
-
-        self._coordinator = SessionCoordinator(
-            events=self._last_events,
-            event_at=self._last_event_at,
-            images=self._recent_image_events,
-            gate=self._gate,
-            cancel_delay=lambda umo, force: self._cancel_delay_task(umo, force=force),
-            notify_silence=lambda umo: self._scheduler.notify_activity(umo),
-        )
-
-        self._delivery = DeliveryRunner(
-            settings=self.settings,
-            gate=self._gate,
-            local_gate=lambda state, force: self._decision.local_gate(state, force=force),
-            last_events=self._last_events,
-            call_hook=lambda event, event_type: call_event_hook(event, event_type),
-            context_send=lambda umo, message: self.context.send_message(umo, message),
-            send_reply=lambda umo, reply, expected_generation: self._send_reply(
-                umo, reply, expected_generation=expected_generation
-            ),
-            save_storage=lambda: self._save_storage(),
-            runtime=lambda: _AGENT_RUNTIME,
-        )
-
-        self._whitelist = WhitelistManager(
-            settings=self.settings,
-            sync_whitelist=lambda: self._sync_whitelist(),
-            save_storage=lambda: self._save_storage(),
-            ensure_state=lambda key: self._state_for(key),
-            invalidate=lambda umo: self._invalidate_session(umo),
-            prune=lambda umo: self._prune_session(umo),
-            sessions=self.sessions,
-            tracked_umos=lambda: (
-                set(self._last_events)
-                | set(self._delay_tasks)
-                | set(self._running_sessions)
-                | set(self._session_locks)
-            ),
-            runtime_umos=self._whitelist_runtime_umos,
-        )
-
-        self._pipeline = SessionPipeline(
-            owner=self,
-            settings=self.settings,
-            gate=self._gate,
-            decision=self._decision,
-            last_events=self._last_events,
+        """接线协作对象。须在 gate/状态容器就绪之后、ensure_task 之前调用。"""
+        assemble_plugin_components(
+            self,
+            get_runtime=lambda: _AGENT_RUNTIME,
+            get_call_hook=lambda: call_event_hook,
+            get_grace_stop_sec=lambda: GRACEFUL_STOP_GRACE_SEC,
         )
 
     @staticmethod
@@ -514,115 +403,7 @@ class SelfInitiatedReplyPlugin(Star):
     @filter.platform_adapter_type(filter.PlatformAdapterType.ALL)
     async def on_message(self, event: AstrMessageEvent) -> None:
         """指令分流 → 白名单 → 记上下文 → 延迟检查。顺序是安全边界，不可重排。"""
-        text = event_text(event).strip()
-        if event_extra(event, COMMAND_HANDLED_KEY, False):
-            return
-        parsed = parse_command_text(text)
-        if parsed is not None and self._is_command_entry(event, text):
-            await self._handle_inline_command(event, parsed)
-            return
-
-        if self._stopping or not self.runtime_enabled or event.is_stopped():
-            return
-        umo = event_umo(event)
-
-        if not session_whitelisted(umo, self.settings.whitelist):
-            return
-        state_key = whitelist_storage_key(umo)
-        self._whitelist_runtime_umos.setdefault(state_key, set()).add(umo)
-        group_id = session_group_id(umo)
-        if group_id:
-            self._whitelist_runtime_umos.setdefault(group_id, set()).add(umo)
-
-        clean_text = clean_chat_text(text)
-        # Compute Vision eligibility once and pass it through the generic event
-        # gate; the capture path below reuses the same decision.
-        has_images = self.settings.vision_enabled and ImageExtractor.has_images(
-            event,
-            skip_stickers=self.settings.vision_skip_stickers,
-        )
-        if self._should_ignore_event(event, text, vision_has_images=has_images):
-            self._invalidate_session(umo)
-            if not is_self_message(event) and is_explicit_direct_call(event, text):
-                state = self._state_for(state_key)
-                state.last_active_at = now_ts()
-                state.last_active_sender_id = event_sender_id(event)
-            return
-
-        if not clean_text and not has_images:
-            self._invalidate_session(umo)
-            return
-        if not clean_text:
-            # Image-only events remain observable when Vision is explicitly enabled.
-            clean_text = "[图片]"
-
-        generation = self._gate.advance(umo)
-        active_at = now_ts()
-        state = self._state_for(state_key)
-        state.last_active_at = active_at
-        state.last_active_sender_id = event_sender_id(event)
-        state.recent.append(
-            MessageRecord(
-                role="user",
-                name=event_sender_name(event),
-                sender_id=state.last_active_sender_id,
-                text=clean_text,
-                at=active_at,
-            )
-        )
-
-        # Keep one recent event for message-triggered and patrol checks. The
-        # timestamp lets cleanup retain events that are still useful to a task.
-        self._coordinator.record_event(umo, event, active_at)
-        if has_images:
-            # Capture only the amount that a later Vision request can consume.
-            # Local host files are snapshotted below while the event is alive;
-            # slow CDN downloads remain in a tracked background task.
-            images = ImageExtractor.extract_images(
-                event,
-                sender_id=event_sender_id(event),
-                timestamp=active_at,
-                skip_stickers=self.settings.vision_skip_stickers,
-            )[: max(1, int(self.settings.vision_max_images))]
-            if images:
-                # AstrBot 的归一化 Image 可能指向只在当前事件阶段有效的
-                # 临时文件。先复制宿主本地源，再把远程下载和索引写入放到后台。
-                parser = self._get_image_parser()
-                if parser is not None:
-                    try:
-                        await parser.snapshot_local_sources(images, max_concurrent=2)
-                    except Exception as exc:
-                        logger.debug("[%s] local image snapshot stage failed: %s", PLUGIN_ID, exc)
-                self._track_background_task(
-                    self._prepare_images_for_session(
-                        umo,
-                        generation=generation,
-                        active_at=active_at,
-                        images=images,
-                    )
-                )
-            else:
-                logger.debug(
-                    "[%s] has_images=True but extract_images returned empty for umo=%s",
-                    PLUGIN_ID,
-                    umo,
-                )
-        self._cleanup_old_events_if_needed()
-
-        if self.settings.enabled_message_trigger:
-            trigger = (
-                "reply_request"
-                if looks_like_reply_request(clean_text, self.settings.bot_aliases)
-                else "message_delay"
-            )
-            delay = self._scheduler.message_trigger_delay(trigger)
-            self._schedule_delayed_check(
-                umo,
-                delay_sec=delay,
-                trigger=trigger,
-                force=False,
-                generation=generation,
-            )
+        await handle_incoming_message(self, event)
 
     @staticmethod
     def _is_command_entry(event: AstrMessageEvent, text: str) -> bool:
@@ -697,40 +478,9 @@ class SelfInitiatedReplyPlugin(Star):
         active_at: float,
         images: list[ImageInfo],
     ) -> None:
-        try:
-            parser = self._get_image_parser()
-            if parser is None:
-                return
-            prepared = await asyncio.wait_for(
-                parser.prepare_batch(images, max_concurrent=2),
-                timeout=max(5.0, min(30.0, float(self.settings.vision_timeout_sec) * 2)),
-            )
-            # A stale freeze must not mutate the current session's image index.
-            if self._stopping or not self._gate.is_current(umo, generation):
-                return
-            cached_images = [image for image, ok in zip(images, prepared, strict=True) if ok]
-            if not cached_images:
-                logger.warning(
-                    "[%s] extracted %s images but none could be frozen for umo=%s",
-                    PLUGIN_ID,
-                    len(images),
-                    umo,
-                )
-                return
-            self._coordinator.capture_images(umo, active_at, cached_images)
-            logger.debug(
-                "[%s] captured %s/%s images into local vision cache for umo=%s",
-                PLUGIN_ID,
-                len(cached_images),
-                len(images),
-                umo,
-            )
-        except asyncio.CancelledError:
-            raise
-        except TimeoutError:
-            logger.warning("[%s] image capture timed out for umo=%s", PLUGIN_ID, umo)
-        except Exception as exc:
-            logger.warning("[%s] image capture failed for umo=%s error=%s", PLUGIN_ID, umo, exc)
+        await vision_prepare_images_for_session(
+            self, umo, generation=generation, active_at=active_at, images=images
+        )
 
     def _cancel_delay_task(self, umo: str, *, force: bool = False) -> None:
         self._scheduler.cancel_delay(umo, force=force)
@@ -937,43 +687,8 @@ class SelfInitiatedReplyPlugin(Star):
         return await self._delivery.send_reply(umo, reply, expected_generation=expected_generation)
 
     def _get_image_parser(self, provider_id: str = "") -> ImageParser | None:
-        """Return a cached Vision parser for one provider, if Vision is enabled.
-
-        Parsers are cached per resolved provider ID so that the judge and main
-        paths can use different Vision models. When both paths resolve to the
-        same provider they share one instance, and therefore one description
-        cache, so an image is only described once.
-
-        Args:
-            provider_id: Resolved Vision provider ID. Empty means the adapter
-                falls back to the current session model.
-
-        Returns:
-            A parser instance, or ``None`` when no Vision path is enabled.
-        """
-        if not self.settings.vision_enabled:
-            return None
-        timeout = float(self.settings.vision_timeout_sec)
-        # 超时值变化时整体重建，避免旧实例带着过期的超时设置
-        if self._image_parser_timeout != timeout:
-            self._image_parsers.clear()
-            self._image_parser_timeout = timeout
-        key = str(provider_id or "").strip()
-        parser = self._image_parsers.get(key)
-        if parser is None:
-            parser = ImageParser(
-                self.bridge,
-                provider_id=key,
-                recorder_bridge=get_recorder_bridge(self.context),
-                timeout_sec=timeout,
-                source_cache_dir=self._image_cache_dir,
-                # 宿主 <data> 根：合法适配器写的裸绝对路径图片都在它下面
-                # （wecom <data>/temp、webchat <data>/webchat）。阶段 1.1 起
-                # 本地读取只认 allowlist，不再信提取层的可信推断。
-                data_root=self._data_path,
-            )
-            self._image_parsers[key] = parser
-        return parser
+        """Return a cached Vision parser for one provider, if Vision is enabled."""
+        return vision_get_image_parser(self, provider_id)
 
     def _recent_images_for(self, umo: str) -> list[ImageInfo]:
         """Return distinct, recent image references for one session.
@@ -989,31 +704,10 @@ class SelfInitiatedReplyPlugin(Star):
         )
 
     async def _build_image_context(self, umo: str, *, enabled: bool, provider_id: str = "") -> str:
-        """Describe recent images for prompt context without persisting the result.
-
-        Args:
-            umo: Session UMO.
-            enabled: Whether this path's Vision is enabled.
-            provider_id: Vision provider for this path. Empty lets the adapter
-                fall back to the current session model.
-
-        Returns:
-            Formatted image context string or empty.
-        """
-        if not enabled:
-            return ""
-        parser = self._get_image_parser(provider_id)
-        if parser is None:
-            return ""
-        images = self._recent_images_for(umo)
-        if not images:
-            return ""
-        descriptions = await parser.parse_batch(
-            images,
-            umo=umo,
-            max_concurrent=min(2, self.settings.vision_max_images),
+        """Describe recent images for prompt context without persisting the result."""
+        return await vision_build_image_context(
+            self, umo, enabled=enabled, provider_id=provider_id
         )
-        return format_image_context(descriptions)
 
     def _replace_whitelist(self, whitelist: set[str]) -> None:
         """整表替换白名单，并回收被移出会话的内存状态。（委托壳，逻辑在 whitelist.py）"""
@@ -1046,81 +740,7 @@ class SelfInitiatedReplyPlugin(Star):
 
     async def _command_text(self, event: AstrMessageEvent, action: str, arg: str = "") -> str:
         """指令动作 → 回显文本。check 在 finally 回收缓存；未知 action 回落 help。"""
-        umo = event_umo(event)
-        if action == "help":
-            return help_text()
-        if action == "status":
-            state = self._state_for(whitelist_storage_key(umo)) if umo else SessionState()
-            return status_text(self.settings, event, state, self.runtime_enabled)
-        if action == "list":
-            return list_text(self.settings)
-        if not umo:
-            return "无法识别当前会话。"
-        if action == "add":
-            added = await self._add_whitelist_session(umo)
-            return (
-                f"已将当前会话加入主动回复白名单：{umo}"
-                if added
-                else f"当前会话已在主动回复白名单中：{umo}"
-            )
-        if action == "remove":
-            removed = await self._remove_whitelist_session(umo)
-            return (
-                f"已移出主动回复白名单：{umo}"
-                if removed
-                else f"当前会话本不在主动回复白名单：{umo}"
-            )
-        if action == "check":
-            # 立即强制检查：取消待执行的延迟检查并清空旧缓存（写操作语义）。
-            generation = self._invalidate_session(umo)
-            self._coordinator.record_event(umo, event, now_ts())
-            state = self._state_for(whitelist_storage_key(umo))
-            text = clean_chat_text(arg or strip_command_prefix(event_text(event)))
-            if text:
-                state.last_active_at = now_ts()
-                state.last_active_sender_id = event_sender_id(event)
-                state.recent.append(
-                    MessageRecord(
-                        role="user",
-                        name=event_sender_name(event),
-                        text=text,
-                        at=state.last_active_at,
-                    )
-                )
-            try:
-                result = await self._check_session(
-                    umo,
-                    trigger="manual",
-                    force=True,
-                    expected_generation=generation,
-                )
-            finally:
-                if self._last_events.get(umo) is event:
-                    self._clear_cached_event(umo)
-                # force 检查可能发生在非白名单会话：结束后统一回收
-                # 代次/锁/运行标记与 release 事件
-                if not session_whitelisted(umo, self.settings.whitelist):
-                    self._prune_session(umo)
-            return f"主动回复检查结果：{result}"
-        if action == "on":
-            async with self._config_lock:
-                await self._persist_enabled(True)
-                self._ensure_patrol_task()
-                self._ensure_image_cleanup_task()
-            return "主动回复插件已启用（重启后保持）。"
-        if action == "off":
-            async with self._config_lock:
-                await self._persist_enabled(False)
-                self._cancel_delay_tasks()
-                await self._stop_patrol_task()
-            return "主动回复插件已暂停（重启后保持）。"
-        if action == "debug":
-            return debug_text(
-                self.settings,
-                event,
-                ignored_sender=event_sender_id(event) in self.settings.ignored_sender_ids,
-            )
-        return help_text()
+        return await dispatch_command_action(self, event, action, arg)
 
     async def _send_command_text(self, event: AstrMessageEvent, text: str) -> None:
         try:

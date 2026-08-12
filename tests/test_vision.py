@@ -329,13 +329,13 @@ def test_normalized_image_falls_back_to_raw_onebot_subtype() -> None:
 
 def test_on_message_keeps_image_eligibility_out_of_generic_ignore_gate() -> None:
     """图片资格只在 on_message 算一次，通用忽略门不得重复解析。"""
-    handler = method_source("main.py", "on_message")
+    handler = method_source("message_ingress.py", "handle_incoming_message")
 
     # 资格判断与提取必须引用同一 settings 字段，否则两处可能用不同设置
-    assert "skip_stickers=self.settings.vision_skip_stickers" in handler, (
+    assert "skip_stickers=plugin.settings.vision_skip_stickers" in handler, (
         "on_message 必须在 Vision 资格判断和实际提取处使用同一表情包过滤设置"
     )
-    assert "ImageExtractor.has_images" in calls_in("main.py", "on_message")
+    assert "ImageExtractor.has_images" in calls_in("message_ingress.py", "handle_incoming_message")
     assert "ImageExtractor.has_images" not in calls_in(
         "main.py", "SelfInitiatedReplyPlugin._should_ignore_event"
     ), "通用忽略门不应再次解析图片；图片资格应由 on_message 统一计算"
@@ -343,7 +343,7 @@ def test_on_message_keeps_image_eligibility_out_of_generic_ignore_gate() -> None
 
 def test_on_message_snapshots_host_files_before_background_freeze() -> None:
     """宿主临时文件必须先快照，不能只依赖 handler 返回后的后台任务。"""
-    assert "parser.snapshot_local_sources" in calls_in("main.py", "on_message"), (
+    assert "parser.snapshot_local_sources" in calls_in("message_ingress.py", "handle_incoming_message"), (
         "on_message 未在返回前快照宿主临时文件：handler 返回后宿主会删掉原文件，"
         "后台冻结任务只能拿到已消失的路径"
     )
