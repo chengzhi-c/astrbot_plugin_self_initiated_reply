@@ -16,17 +16,15 @@ import importlib
 import inspect
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Any, NamedTuple, TypeVar
+from typing import Any, NamedTuple
 
 from astrbot.api import logger
 
 from .models import PLUGIN_ID
 from .utils import maybe_await
 
-_T = TypeVar("_T")
 
-
-def _require(value: _T | None, name: str) -> _T:
+def _require[T](value: T | None, name: str) -> T:
     """探测值兜底解包：缺失即 raise，兼作 mypy 的 Optional 收窄。
 
     不用 assert：`python -O` 下 assert 语句被整体剥除，None 会漏进宿主
@@ -88,7 +86,7 @@ _MISSING = object()
 # 删掉它会让那条分支复活成真实 fail-open，故由
 # tests/test_runtime_adapter_blindspots.py::
 # test_func_tool_stays_in_load_time_contract_assertion 把这层耦合钉死
-#。
+# 。
 _PROVIDER_REQUEST_FIELDS = frozenset(
     {
         "prompt",

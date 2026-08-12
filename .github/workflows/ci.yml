@@ -47,8 +47,11 @@ jobs:
           node-version: "22"
       - name: Frontend syntax
         run: |
-          node --check "pages/主动回复设置/app.js"
-          node --check "pages/主动回复设置/frontend-core.mjs"
+          shopt -s nullglob
+          for f in pages/主动回复设置/*.{js,mjs}; do
+            echo "node --check $f"
+            node --check "$f"
+          done
       - name: Frontend contract
         run: node --test tests/frontend_contract.test.mjs
 

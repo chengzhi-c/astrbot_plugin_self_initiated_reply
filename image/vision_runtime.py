@@ -11,10 +11,10 @@ from typing import Any
 from astrbot.api import logger
 
 from ..models import PLUGIN_ID
+from . import format_image_context
 from .models import ImageInfo
 from .parser import ImageParser
 from .recorder_bridge import get_recorder_bridge
-from . import format_image_context
 
 
 def get_image_parser(plugin: Any, provider_id: str = "") -> ImageParser | None:

@@ -220,7 +220,7 @@ async def until(predicate: Any, timeout: float = 2.0) -> None:
 
     try:
         await asyncio.wait_for(_loop(), timeout=timeout)
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise AssertionError(f"等待条件超时（{timeout}s）") from exc
 
 

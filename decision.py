@@ -229,7 +229,7 @@ class DecisionMaker:
                 self._llm_generate(provider_id, prompt),
                 timeout=self.settings.decision_timeout_sec,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {
                 "should_reply": False,
                 "reason": "判断模型超时",

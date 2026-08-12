@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from .host_stubs import ROOT
+from .host_stubs import ROOT, production_py_files
 
 PACKAGE = "selfreply_main_test_package"
 
@@ -622,3 +622,39 @@ def test_panel_post_payload_keys_are_all_writable() -> None:
         f"面板提交了不可写的键 {unknown}：_parse_config_updates 会对未知键抛"
         f"「未知配置键」，导致整次保存失败（不只是这一项）。"
     )
+
+
+def _mypy_files_entries() -> list[str]:
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover
+        import tomli as tomllib  # type: ignore[no-redef]
+
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    files = data["tool"]["mypy"]["files"]
+    assert isinstance(files, list) and files, "[tool.mypy].files empty"
+    return [str(item).replace("\\", "/") for item in files]
+
+
+def test_mypy_files_cover_production_modules() -> None:
+    """mypy files 清单必须覆盖全部生产模块（image 包条目覆盖 image/*）。"""
+    entries = set(_mypy_files_entries())
+    missing: list[str] = []
+    for path in production_py_files():
+        rel = path.relative_to(ROOT).as_posix()
+        if rel == "__init__.py":
+            continue
+        if rel in entries:
+            continue
+        if rel.startswith("image/") and "image" in entries:
+            continue
+        missing.append(rel)
+    assert not missing, f"[tool.mypy].files missing production modules: {missing}"
+
+
+def test_plugin_state_has_no_main_import_cycle() -> None:
+    """plugin_state 不得再经 main 绕圈读 storage 写入器。"""
+    text = (ROOT / "plugin_state.py").read_text(encoding="utf-8")
+    assert "_main_storage_ops" not in text
+    assert "from . import main" not in text
+    assert "import main as" not in text

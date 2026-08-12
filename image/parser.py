@@ -328,7 +328,7 @@ class ImageParser:
                     pending.set_result(result)
                 self._inflight.pop(cache_key, None)
             return result
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.info("[%s] image parsing timed out", PLUGIN_ID)
             return None
         except Exception as exc:

@@ -360,9 +360,7 @@ class GenerationRunner:
 
         run.tracked_send = tracked_send
         if not callable(original_send):
-            logger.warning(
-                "[%s] event send tracker unavailable session=%s", PLUGIN_ID, run.umo
-            )
+            logger.warning("[%s] event send tracker unavailable session=%s", PLUGIN_ID, run.umo)
             return PipelineReply()
         try:
             last_event.send = tracked_send
@@ -377,9 +375,7 @@ class GenerationRunner:
             return PipelineReply()
         return None
 
-    async def _build_and_bound_tools(
-        self, run: _GenerateRun
-    ) -> PipelineReply | None:
+    async def _build_and_bound_tools(self, run: _GenerateRun) -> PipelineReply | None:
         """build + 双 enforce + hook + reset；早退返回 partial PipelineReply。"""
         last_event = run.last_event
         inherit_tools = run.inherit_tools
@@ -390,9 +386,7 @@ class GenerationRunner:
         req.func_tool = self._runtime().new_tool_set()
         req.session_id = run.umo
         run.req = req
-        run.tool_boundary_state = self.install_agent_tool_boundary(
-            last_event, inherit_tools
-        )
+        run.tool_boundary_state = self.install_agent_tool_boundary(last_event, inherit_tools)
         await self._load_conversation_into(req, last_event, run.umo)
         last_event.set_extra("provider_request", req)
         last_event.set_extra("self_initiated_reply", True)
@@ -448,14 +442,10 @@ class GenerationRunner:
             # 调用方取消（force cancel / terminate）时，shield 保住的
             # run_task 不会自动停止：必须显式收敛，否则成为孤儿任务
             # 继续在后台运行，其工具直发还会绕过预算与代次闸门。
-            await self._graceful_stop(
-                run_task, build_result.agent_runner, cancel_first=True
-            )
+            await self._graceful_stop(run_task, build_result.agent_runner, cancel_first=True)
             raise
         except TimeoutError:
-            await self._graceful_stop(
-                run_task, build_result.agent_runner, cancel_first=False
-            )
+            await self._graceful_stop(run_task, build_result.agent_runner, cancel_first=False)
             raise
 
     def _finalize_text(self, run: _GenerateRun) -> PipelineReply:

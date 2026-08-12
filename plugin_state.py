@@ -80,22 +80,15 @@ def state_for(plugin: Any, umo: str) -> SessionState:
     return state
 
 
-def _main_storage_ops() -> tuple[Any, Any]:
-    """经 main 再导出，保留测试对 ``main.write_sessions_payload`` 等的补丁缝。"""
-    from . import main as main_mod
-
-    return main_mod.write_sessions_payload, main_mod.sync_config_whitelist
-
-
 def save_storage_snapshot(plugin: Any) -> bool:
-    write_payload, _ = _main_storage_ops()
+    # 直接使用本模块全局名：测试 patch ``plugin_state.write_sessions_payload`` 即可生效。
     try:
         payload = build_sessions_payload(
             plugin.sessions,
             plugin.settings.whitelist,
             plugin.settings.recent_message_limit,
         )
-        return write_payload(plugin._storage_path, payload)
+        return write_sessions_payload(plugin._storage_path, payload)
     except Exception as exc:
         logger.error("[%s] failed to prepare state snapshot: %s", PLUGIN_ID, exc, exc_info=True)
         return False
@@ -107,7 +100,6 @@ def save_storage_sync(plugin: Any) -> None:
 
 
 async def save_storage(plugin: Any) -> None:
-    write_payload, _ = _main_storage_ops()
     async with plugin._save_lock:
         payload = build_sessions_payload(
             plugin.sessions,
@@ -115,7 +107,7 @@ async def save_storage(plugin: Any) -> None:
             plugin.settings.recent_message_limit,
         )
         write_task = asyncio.create_task(
-            asyncio.to_thread(write_payload, plugin._storage_path, payload)
+            asyncio.to_thread(write_sessions_payload, plugin._storage_path, payload)
         )
         try:
             success = await asyncio.shield(write_task)
@@ -129,8 +121,7 @@ async def save_storage(plugin: Any) -> None:
 
 
 def sync_whitelist(plugin: Any) -> None:
-    _, sync_cfg = _main_storage_ops()
-    if not sync_cfg(plugin._config_path, plugin.config, plugin.settings):
+    if not sync_config_whitelist(plugin._config_path, plugin.config, plugin.settings):
         raise OSError(f"配置文件写入失败：{plugin._config_path}")
 
 

@@ -20,12 +20,6 @@ export function parseWhitelist(text) {
     .map((item) => item.trim())
     .filter(Boolean);
 }
-export function whitelistLineOk(line) {
-  const s = String(line || "").trim();
-  if (!s) return true;
-  if (/^\d+$/.test(s)) return true;
-  return /^[\w.-]+:[\w.-]+:[\w.-]+$/.test(s);
-}
 export const PROMPT_PREVIEW_VALUES = {
   session: "aiocqhttp:GroupMessage:123456789",
   trigger: "message_delay",

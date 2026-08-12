@@ -172,7 +172,7 @@ fail_under = 89
 [tool.mypy]
 # 仓库目录名含连字符，mypy 无法按包发现；显式列出源码文件 + 忽略宿主
 # astrbot/quart 缺失 stub（宿主兼容层，不设 strict 门槛）。
-# 0.9.0 D2：全源码显式入清单（原 6 模块仅经 main.py 传递检查）。
+# 全生产源码显式入清单（仓库目录名含连字符，无法按包发现）。
 explicit_package_bases = true
 ignore_missing_imports = true
 # 无注解函数的函数体默认被 mypy 跳过。打开后这些函数体也进检查，作用面是
@@ -200,5 +200,8 @@ files = [
   "session_coordinator.py",
   "session_pipeline.py",
   "whitelist.py",
+  "plugin_state.py",
+  "assembly.py",
+  "message_ingress.py",
   "image",
 ]

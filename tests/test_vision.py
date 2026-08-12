@@ -343,7 +343,9 @@ def test_on_message_keeps_image_eligibility_out_of_generic_ignore_gate() -> None
 
 def test_on_message_snapshots_host_files_before_background_freeze() -> None:
     """宿主临时文件必须先快照，不能只依赖 handler 返回后的后台任务。"""
-    assert "parser.snapshot_local_sources" in calls_in("message_ingress.py", "handle_incoming_message"), (
+    assert "parser.snapshot_local_sources" in calls_in(
+        "message_ingress.py", "handle_incoming_message"
+    ), (
         "on_message 未在返回前快照宿主临时文件：handler 返回后宿主会删掉原文件，"
         "后台冻结任务只能拿到已消失的路径"
     )
@@ -775,8 +777,7 @@ def test_web_page_exposes_manual_image_cache_cleanup_control() -> None:
     page = ROOT / "pages" / "主动回复设置"
     html = (page / "index.html").read_text(encoding="utf-8")
     scripts = "\n".join(
-        p.read_text(encoding="utf-8")
-        for p in list(page.glob("*.js")) + list(page.glob("*.mjs"))
+        p.read_text(encoding="utf-8") for p in list(page.glob("*.js")) + list(page.glob("*.mjs"))
     )
     assert "cleanupImageCacheBtn" in html
     assert 'apiPost("image-cache/cleanup"' in scripts

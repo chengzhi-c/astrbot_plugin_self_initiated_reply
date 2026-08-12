@@ -198,7 +198,7 @@ def test_prepare_images_stale_generation_skips_capture(tmp_path: Path) -> None:
 
 def test_prepare_images_timeout_warns_without_capture(tmp_path: Path) -> None:
     async def scenario(plugin, main):
-        parser = _FakeParser(batch=[True], exc=asyncio.TimeoutError())
+        parser = _FakeParser(batch=[True], exc=TimeoutError())
         plugin._get_image_parser = lambda *a, **k: parser
         token = plugin._gate.advance(UMO)
         await plugin._prepare_images_for_session(
@@ -866,13 +866,18 @@ def test_save_storage_raises_when_writer_reports_failure(tmp_path: Path) -> None
     """``write_sessions_payload`` 返回 False 时 ``_save_storage`` 必须抛 OSError。"""
 
     async def scenario(plugin, main):
-        original = main.write_sessions_payload
-        main.write_sessions_payload = lambda *_args, **_kwargs: False
+        import importlib
+
+        from .host_stubs import MAIN_PACKAGE_NAME
+
+        plugin_state = importlib.import_module(f"{MAIN_PACKAGE_NAME}.plugin_state")
+        original = plugin_state.write_sessions_payload
+        plugin_state.write_sessions_payload = lambda *_args, **_kwargs: False
         try:
             with pytest.raises(OSError) as excinfo:
                 await plugin._save_storage()
         finally:
-            main.write_sessions_payload = original
+            plugin_state.write_sessions_payload = original
         assert "状态文件写入失败" in str(excinfo.value)
 
     with_plugin(tmp_path, scenario)
@@ -886,13 +891,18 @@ def test_sync_whitelist_raises_when_config_write_reports_failure(tmp_path: Path)
     """
 
     async def scenario(plugin, main):
-        original = main.sync_config_whitelist
-        main.sync_config_whitelist = lambda *_args, **_kwargs: False
+        import importlib
+
+        from .host_stubs import MAIN_PACKAGE_NAME
+
+        plugin_state = importlib.import_module(f"{MAIN_PACKAGE_NAME}.plugin_state")
+        original = plugin_state.sync_config_whitelist
+        plugin_state.sync_config_whitelist = lambda *_args, **_kwargs: False
         try:
             with pytest.raises(OSError) as excinfo:
                 plugin._sync_whitelist()
         finally:
-            main.sync_config_whitelist = original
+            plugin_state.sync_config_whitelist = original
         assert "配置文件写入失败" in str(excinfo.value)
 
     with_plugin(tmp_path, scenario)

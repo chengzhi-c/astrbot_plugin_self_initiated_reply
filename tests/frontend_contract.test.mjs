@@ -177,6 +177,8 @@ test("CI runs the dependency-free frontend gate", async () => {
   const workflow = await readFile(join(root, ".github", "workflows", "ci.yml"), "utf8");
   assert.match(workflow, /^  frontend:\n/m);
   assert.match(workflow, /actions\/setup-node@v4/);
-  assert.match(workflow, /node --check "pages\/主动回复设置\/app\.js"/);
+  // 覆盖全部设置页 JS/MJS，而不是只检查入口两文件。
+  assert.match(workflow, /pages\/主动回复设置\/\*\.\{js,mjs\}/);
+  assert.match(workflow, /node --check/);
   assert.match(workflow, /node --test tests\/frontend_contract\.test\.mjs/);
 });

@@ -61,9 +61,7 @@ class SessionPipeline:
         expected_generation: int | None = None,
     ) -> str:
         """单会话检查主链；调用方已持有该会话检查锁。"""
-        guard = self.session_check_guard(
-            umo, force=force, expected_generation=expected_generation
-        )
+        guard = self.session_check_guard(umo, force=force, expected_generation=expected_generation)
         if guard is not None:
             return guard
         if expected_generation is None:

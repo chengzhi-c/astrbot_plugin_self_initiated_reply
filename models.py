@@ -16,7 +16,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Protocol
 
 from astrbot.api import logger
@@ -349,7 +349,7 @@ class PipelineReply:
     direct_texts: tuple[str, ...] = ()
 
 
-class SendStatus(str, Enum):
+class SendStatus(StrEnum):
     """Outcome of one outbound attempt.
 
     UNKNOWN means the platform call may have reached the adapter, so callers

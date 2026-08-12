@@ -668,7 +668,7 @@ async def test_generate_closes_reset_coro_when_hook_raises_timeout(tmp_path: Pat
     import inspect
 
     async def timeout_hook(event_obj, event_type, req):
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     runtime = RealResetRuntime()
     _, models, runner, runtime, _, _ = _make_runner(tmp_path, runtime=runtime, hook=timeout_hook)

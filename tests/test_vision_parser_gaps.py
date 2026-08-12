@@ -431,7 +431,7 @@ def test_parse_timeout_returns_none(tmp_path: Path) -> None:
             return preferred
 
         async def llm_generate_direct(self, **_kwargs):
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
 
     info = image.ImageInfo(url="https://x/y.png")
     assert _parse_with_bridge(image, Bridge(), info) is None

@@ -229,7 +229,7 @@ class SessionScheduler:
                     # 事件化等待：新消息到达（notify_activity）立即醒来复查；
                     # 超时兜底保留原 sleep 语义，保证无通知时照常推进。
                     await asyncio.wait_for(silence_event.wait(), timeout=silence_left + 0.1)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
                 if not self._should_run() or not self._gate.is_current(umo, generation):
                     return
@@ -249,7 +249,7 @@ class SessionScheduler:
                     await asyncio.wait_for(
                         self._gate.release_event(umo).wait(), timeout=RELEASE_WAIT_TIMEOUT_SEC
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
                 if not self._should_run() or not self._gate.is_current(umo, generation):
                     return

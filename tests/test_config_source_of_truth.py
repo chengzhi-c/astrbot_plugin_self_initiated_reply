@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -33,15 +34,33 @@ _FE_WRITABLE = {
 }
 
 
-def _config_spec_keys() -> set[str]:
+def _config_specs_block() -> str:
     models = (ROOT / "models.py").read_text(encoding="utf-8")
     start = models.find("CONFIG_SPECS")
     assert start >= 0
     end = models.find("\nDEFAULT_", start)
     if end < 0:
         end = models.find("\nclass ", start)
-    block = models[start:end]
-    return set(re.findall(r'ConfigSpec\(\s*"([a-z0-9_]+)"', block))
+    return models[start:end]
+
+
+def _config_spec_keys() -> set[str]:
+    return set(re.findall(r'ConfigSpec\(\s*"([a-z0-9_]+)"', _config_specs_block()))
+
+
+def _config_spec_defaults() -> dict[str, object]:
+    """Parse CONFIG_SPECS positional defaults: ConfigSpec("key", "type", default, ...)."""
+    out: dict[str, object] = {}
+    for m in re.finditer(
+        r'ConfigSpec\(\s*"([a-z0-9_]+)"\s*,\s*"[a-z]+"\s*,\s*([^,\n]+)',
+        _config_specs_block(),
+    ):
+        key, raw = m.group(1), m.group(2).strip()
+        try:
+            out[key] = ast.literal_eval(raw)
+        except Exception:
+            continue
+    return out
 
 
 def _schema_keys() -> set[str]:
@@ -59,13 +78,26 @@ def _webapi_get_keys() -> set[str]:
     return set(re.findall(r'"([a-z0-9_]+)"\s*:', m.group("body")))
 
 
-def _fe_default_keys() -> set[str]:
-    text = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(
-        encoding="utf-8"
-    )
+def _fe_default_block() -> str:
+    text = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
     m = re.search(r"export const DEFAULT_CONFIG = \{([\s\S]*?)\};", text)
     assert m, "DEFAULT_CONFIG not found"
-    return set(re.findall(r"([a-z0-9_]+)\s*:", m.group(1)))
+    return m.group(1)
+
+
+def _fe_default_keys() -> set[str]:
+    return set(re.findall(r"([a-z0-9_]+)\s*:", _fe_default_block()))
+
+
+def _fe_default_values() -> dict[str, object]:
+    out: dict[str, object] = {}
+    for km in re.finditer(r"([a-z0-9_]+)\s*:\s*([^,\n]+)", _fe_default_block()):
+        key, raw = km.group(1), km.group(2).strip().rstrip(",")
+        try:
+            out[key] = ast.literal_eval(raw)
+        except Exception:
+            continue
+    return out
 
 
 def test_config_specs_match_schema_keys() -> None:
@@ -94,3 +126,21 @@ def test_fe_default_config_keys_subset_of_specs() -> None:
     assert defaults, "FE DEFAULT_CONFIG empty"
     orphan = defaults - specs
     assert not orphan, f"FE DEFAULT_CONFIG keys not in CONFIG_SPECS: {sorted(orphan)}"
+
+
+def test_fe_default_config_values_match_specs() -> None:
+    """FE DEFAULT_CONFIG values must match CONFIG_SPECS defaults (numeric equality)."""
+    fe = _fe_default_values()
+    specs = _config_spec_defaults()
+    assert fe, "FE DEFAULT_CONFIG values empty"
+    for key, fe_val in fe.items():
+        assert key in specs, f"FE key {key} missing from CONFIG_SPECS defaults"
+        spec_val = specs[key]
+        if isinstance(fe_val, (int, float)) and isinstance(spec_val, (int, float)):
+            assert float(fe_val) == float(spec_val), (
+                f"DEFAULT_CONFIG[{key}]={fe_val!r} != CONFIG_SPECS default {spec_val!r}"
+            )
+        else:
+            assert fe_val == spec_val, (
+                f"DEFAULT_CONFIG[{key}]={fe_val!r} != CONFIG_SPECS default {spec_val!r}"
+            )

@@ -27,15 +27,19 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.event.filter import PermissionType, permission_type
 from astrbot.api.star import Context, Star, register
 
-from .runtime_adapter import AstrBotRuntimeAdapter
-from .session_gate import SessionGate
 from .assembly import assemble_plugin_components
-from .message_ingress import handle_incoming_message
 from .image.vision_runtime import (
     build_image_context as vision_build_image_context,
+)
+from .image.vision_runtime import (
     get_image_parser as vision_get_image_parser,
+)
+from .image.vision_runtime import (
     prepare_images_for_session as vision_prepare_images_for_session,
 )
+from .message_ingress import handle_incoming_message
+from .runtime_adapter import AstrBotRuntimeAdapter
+from .session_gate import SessionGate
 
 # 指令处理器的产出类型：每个 @selfreply.command 处理器都是 async generator，
 # 逐条 yield event.plain_result(...)。宿主侧契约是
@@ -94,23 +98,41 @@ from .models import (
 )
 from .plugin_state import (
     decide_session_reply as state_decide_session_reply,
+)
+from .plugin_state import (
     persist_enabled as state_persist_enabled,
+)
+from .plugin_state import (
     record_decision as state_record_decision,
+)
+from .plugin_state import (
     refresh_admin_ids as state_refresh_admin_ids,
+)
+from .plugin_state import (
     resolve_paths as state_resolve_paths,
+)
+from .plugin_state import (
     save_storage as state_save_storage,
+)
+from .plugin_state import (
     save_storage_snapshot as state_save_storage_snapshot,
+)
+from .plugin_state import (
     save_storage_sync as state_save_storage_sync,
+)
+from .plugin_state import (
     state_for as state_state_for,
+)
+from .plugin_state import (
     sync_whitelist as state_sync_whitelist,
+)
+from .plugin_state import (
     track_background_task as state_track_background_task,
 )
 from .storage import (
     load_config_data,
     load_sessions,
     migrate_config_file,
-    sync_config_whitelist,
-    write_sessions_payload,
 )
 from .utils import (
     event_sender_id,
@@ -133,7 +155,8 @@ from .webapi import UnifiedManagerApi, bind_api_handlers, load_ui_theme, registe
     PLUGIN_VERSION,
 )
 class SelfInitiatedReplyPlugin(Star):
-    # Web API 由 bind_api_handlers 挂 partial；裸注解仅导航（test_bound_api_handlers_match_class_declarations）。
+    # Web API 由 bind_api_handlers 挂 partial；裸注解仅导航
+    # （test_bound_api_handlers_match_class_declarations）。
     _api_get_config: Callable[[], Awaitable[dict[str, Any]]]
     _api_post_config: Callable[[], Awaitable[dict[str, Any]]]
     _api_get_ui_theme: Callable[[], Awaitable[dict[str, Any]]]
@@ -148,7 +171,9 @@ class SelfInitiatedReplyPlugin(Star):
         self.context = context
         self.config = config if config is not None else {}
         self._config_path, self._storage_path = self._resolve_paths(self.config)
-        self._data_path = self._storage_path.parents[2]
+        # state.json 位于 <data>/plugin_data/<plugin_id>/state.json
+        _STATE_DEPTH_FROM_DATA = 2
+        self._data_path = self._storage_path.parents[_STATE_DEPTH_FROM_DATA]
 
         config_data = load_config_data(self._config_path, self.config)
         self.settings = Settings.from_config(config_data)
@@ -548,9 +573,7 @@ class SelfInitiatedReplyPlugin(Star):
 
     async def _build_image_context(self, umo: str, *, enabled: bool, provider_id: str = "") -> str:
         """Describe recent images for prompt context without persisting the result."""
-        return await vision_build_image_context(
-            self, umo, enabled=enabled, provider_id=provider_id
-        )
+        return await vision_build_image_context(self, umo, enabled=enabled, provider_id=provider_id)
 
     def _replace_whitelist(self, whitelist: set[str]) -> None:
         """整表替换白名单，并回收被移出会话的内存状态。（委托壳，逻辑在 whitelist.py）"""
