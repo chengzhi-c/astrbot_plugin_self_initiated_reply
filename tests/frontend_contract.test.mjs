@@ -42,6 +42,60 @@ test("bridge rejection is normalized by the shared API request", async () => {
   );
 });
 
+test("bridge discovery and calls share the request deadline", async () => {
+  const pending = () => new Promise(() => {});
+  const cases = [
+    { method: "GET", getBridge: pending },
+    { method: "GET", getBridge: async () => ({ apiGet: pending }) },
+    { method: "POST", getBridge: async () => ({ apiPost: pending }) },
+  ];
+
+  for (const testCase of cases) {
+    const request = requestPluginApi({
+      ...testCase,
+      endpoint: "config",
+      fetchImpl: async () => {
+        throw new Error("fetch fallback must not run");
+      },
+      pageUrl: "http://localhost/",
+      timeoutMs: 20,
+    });
+    const observed = Promise.race([
+      request,
+      new Promise((resolve) => setTimeout(() => resolve("outer-timeout"), 250)),
+    ]);
+    await assert.rejects(
+      observed,
+      (error) => error instanceof Error && error.message === "请求超时，请稍后重试"
+    );
+  }
+});
+
+test("fetch response parsing is covered by the same deadline", async () => {
+  const request = requestPluginApi({
+    getBridge: async () => null,
+    pluginId: "plugin-id",
+    endpoint: "config",
+    method: "GET",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: () => new Promise(() => {}),
+    }),
+    pageUrl: "http://localhost/",
+    timeoutMs: 20,
+  });
+  const observed = Promise.race([
+    request,
+    new Promise((resolve) => setTimeout(() => resolve("outer-timeout"), 250)),
+  ]);
+
+  await assert.rejects(
+    observed,
+    (error) => error instanceof Error && error.message === "请求超时，请稍后重试"
+  );
+});
+
 test("fetch fallback keeps the established GET and POST request shapes", async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {

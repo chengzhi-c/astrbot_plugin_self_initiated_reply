@@ -12,6 +12,7 @@ import importlib
 import inspect
 import types
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -142,12 +143,30 @@ def test_ensure_api_caches_result(bridge_mod) -> None:
     assert bridge._ensure_api() is True
     assert bridge._api is api
 
-    # 缓存命中证明：破坏探测源后二次调用仍成功（_checked 短路，不重新探测）
+    # 成功 API 仍正缓存：破坏探测源后二次调用不重新探测。
     def boom(name):
         raise OSError("probe must not rerun")
 
     ctx.get_registered_star = boom
     assert bridge._ensure_api() is True
+
+
+def test_ensure_api_retries_after_initial_miss(bridge_mod) -> None:
+    api = _api_with(record=None)
+
+    class Context:
+        available = False
+
+        def get_registered_star(self, name):
+            return _context_with(api).get_registered_star(name) if self.available else None
+
+    context = Context()
+    bridge = bridge_mod.MessageRecorderBridge(context)
+
+    assert bridge._ensure_api() is False
+    context.available = True
+    assert bridge._ensure_api() is True
+    assert bridge._api is api
 
 
 # ============================================================================
@@ -365,15 +384,26 @@ async def test_maybe_await_handles_generator_based_coroutines(bridge_mod) -> Non
     assert await utils_mod.maybe_await(gen_coro()) == 42
 
 
-def test_get_recorder_bridge_caches_instance(bridge_mod) -> None:
-    """工厂函数：首次构造、后续缓存复用、context 仅在首次构造使用。"""
-    mod = bridge_mod
-    saved = mod._default_bridge
-    mod._default_bridge = None
-    try:
-        first = mod.get_recorder_bridge("ctx-a")
-        assert isinstance(first, mod.MessageRecorderBridge)
-        second = mod.get_recorder_bridge("ctx-b")
-        assert second is first  # 缓存复用，context 变更不影响已缓存实例
-    finally:
-        mod._default_bridge = saved  # 复原全局单例，避免污染其他测试
+def test_image_parser_recorder_bridge_is_scoped_to_plugin_context(bridge_mod, tmp_path) -> None:
+    vision_runtime = importlib.import_module(f"{PACKAGE_NAME}.image.vision_runtime")
+
+    def plugin(context, cache_name):
+        return SimpleNamespace(
+            settings=SimpleNamespace(vision_enabled=True, vision_timeout_sec=20),
+            _image_parser_timeout=None,
+            _image_parsers={},
+            bridge=object(),
+            context=context,
+            _image_cache_dir=tmp_path / cache_name,
+            _data_path=tmp_path,
+        )
+
+    first_context = object()
+    second_context = object()
+    first = vision_runtime.get_image_parser(plugin(first_context, "a"))
+    second = vision_runtime.get_image_parser(plugin(second_context, "b"))
+
+    assert first is not None and second is not None
+    assert first._recorder_bridge is not second._recorder_bridge
+    assert first._recorder_bridge._context is first_context
+    assert second._recorder_bridge._context is second_context

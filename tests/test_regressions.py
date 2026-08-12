@@ -1135,32 +1135,6 @@ def test_r16_unknown_config_key_is_rejected(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# R17：bridge 缓存复用（MP1-8）
-# ============================================================================
-
-
-def test_r17_recorder_bridge_is_cached(tmp_path: Path) -> None:
-    """get_recorder_bridge 第二次调用必须复用首个实例。
-
-    修复前条件 `_default_bridge is None or context is not None` 恒真
-    （唯一调用点恒传 context）→ 每次新建实例（红灯）。
-    """
-
-    async def scenario(plugin, main):
-        from .host_stubs import MAIN_PACKAGE_NAME
-
-        rb = sys.modules[f"{MAIN_PACKAGE_NAME}.image.recorder_bridge"]
-        rb._default_bridge = None
-        first = rb.get_recorder_bridge(plugin.context)
-        # 唯一调用点恒传 context：修复前每次调用都重建 → 非同一实例（红灯）
-        second = rb.get_recorder_bridge(plugin.context)
-        assert second is first, "bridge 必须复用缓存实例"
-        rb._default_bridge = None
-
-    with_plugin(tmp_path, scenario)
-
-
-# ============================================================================
 # round8 r18-r20：会话状态显式化（ticket 07）
 # ============================================================================
 

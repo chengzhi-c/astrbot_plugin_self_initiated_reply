@@ -14,7 +14,7 @@ from ..models import PLUGIN_ID
 from . import format_image_context
 from .models import ImageInfo
 from .parser import ImageParser
-from .recorder_bridge import get_recorder_bridge
+from .recorder_bridge import MessageRecorderBridge
 
 
 def get_image_parser(plugin: Any, provider_id: str = "") -> ImageParser | None:
@@ -30,7 +30,7 @@ def get_image_parser(plugin: Any, provider_id: str = "") -> ImageParser | None:
         parser = ImageParser(
             plugin.bridge,
             provider_id=key,
-            recorder_bridge=get_recorder_bridge(plugin.context),
+            recorder_bridge=MessageRecorderBridge(plugin.context),
             timeout_sec=timeout,
             source_cache_dir=plugin._image_cache_dir,
             data_root=plugin._data_path,

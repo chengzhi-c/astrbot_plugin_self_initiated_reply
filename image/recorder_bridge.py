@@ -22,12 +22,10 @@ class MessageRecorderBridge:
     def __init__(self, context: Any | None = None) -> None:
         self._context = context
         self._api: Any = None
-        self._checked = False
 
     def _ensure_api(self) -> bool:
-        if self._checked:
-            return self._api is not None
-        self._checked = True
+        if self._api is not None:
+            return True
         if self._context is None:
             return False
         try:
@@ -116,20 +114,3 @@ class MessageRecorderBridge:
             return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
         except (OSError, ValueError):
             return None
-
-
-_default_bridge: MessageRecorderBridge | None = None
-
-
-def get_recorder_bridge(context: Any | None = None) -> MessageRecorderBridge:
-    """Return the process-wide recorder bridge, creating it once.
-
-    ``context`` is only used on first construction; later calls return the
-    cached instance. The sole caller (``main.py``) passes ``self.context``,
-    which is stable for the lifetime of the plugin instance, so a
-    per-context registry would be complexity without a current consumer.
-    """
-    global _default_bridge
-    if _default_bridge is None:
-        _default_bridge = MessageRecorderBridge(context)
-    return _default_bridge
