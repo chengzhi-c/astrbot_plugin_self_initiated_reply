@@ -10,6 +10,7 @@
 规则（0.9.3 B4 引入，0.9.3 复审修正 CC 阈值）：
   行数 > 50 或 圈复杂度 >= 12 的函数必须有 docstring，
   说明「做什么 + 失败时怎样」。
+  所有生产函数的圈复杂度必须 <= 21，不能靠补 docstring 合法化继续增长。
 
 阈值口径与既有门槛一致：**行数阈值**只升不降。放宽等于让新增的长函数免检，
 属回归——若某函数确实无需 docstring，正确做法是把它拆短，而不是调阈值。
@@ -39,6 +40,9 @@ MAX_LINES_WITHOUT_DOC = 50
 # 圈复杂度达到此值必须有 docstring（粗估口径见 _complexity）
 # 12 是复审修正值，理由见模块 docstring —— 初版 16 是死规则，勿改回。
 MIN_CC_REQUIRING_DOC = 12
+# 三个历史热点拆分后，剩余生产函数实测最大值为 21。统一拒绝更高复杂度；
+# 不按文件或函数名豁免，也不为降低数字顺手拆解职责仍集中的函数。
+MAX_CC = 21
 
 # 生产代码口径：与 coverage_gates.py 一致，排除测试与脚本自身。
 # .scratch/ 是 git 忽略的本地草稿区（报告、临时探针），不是交付物：
@@ -84,7 +88,8 @@ def _iter_production_files() -> list[Path]:
 
 
 def main() -> int:
-    violations: list[str] = []
+    docstring_violations: list[str] = []
+    complexity_violations: list[str] = []
     checked = 0
 
     for path in _iter_production_files():
@@ -100,6 +105,10 @@ def main() -> int:
                 continue
             lines = (node.end_lineno or node.lineno) - node.lineno + 1
             cc = _complexity(node)
+            if cc > MAX_CC:
+                complexity_violations.append(
+                    f"{relative}:{node.lineno} {node.name}（CC≈{cc} > {MAX_CC}）"
+                )
             long_enough = lines > MAX_LINES_WITHOUT_DOC
             complex_enough = cc >= MIN_CC_REQUIRING_DOC
             if not (long_enough or complex_enough):
@@ -112,20 +121,27 @@ def main() -> int:
                 reasons.append(f"{lines} 行 > {MAX_LINES_WITHOUT_DOC}")
             if complex_enough:
                 reasons.append(f"CC≈{cc} >= {MIN_CC_REQUIRING_DOC}")
-            violations.append(f"{relative}:{node.lineno} {node.name}（{' 且 '.join(reasons)}）")
+            docstring_violations.append(
+                f"{relative}:{node.lineno} {node.name}（{' 且 '.join(reasons)}）"
+            )
 
-    if violations:
-        print(f"FAIL: {len(violations)}/{checked} 个命中规则的函数缺少 docstring：")
-        for item in violations:
+    if complexity_violations:
+        print(f"FAIL: {len(complexity_violations)} 个生产函数超过统一复杂度上限：")
+        for item in complexity_violations:
             print(f"  - {item}")
+    if docstring_violations:
+        print(f"FAIL: {len(docstring_violations)}/{checked} 个命中规则的函数缺少 docstring：")
+        for item in docstring_violations:
+            print(f"  - {item}")
+    if complexity_violations or docstring_violations:
         print()
-        print("请补 docstring 说明「做什么 + 失败时怎样」，或把函数拆短到阈值以下。")
-        print("不要为了通过而调高本脚本的阈值——阈值只升不降。")
+        print("请拆分真实职责，或补 docstring 说明「做什么 + 失败时怎样」。")
+        print("不要为了通过而调高本脚本的阈值。")
         return 1
 
     print(
         f"OK: {checked} 个命中规则的函数（>{MAX_LINES_WITHOUT_DOC} 行 或 "
-        f"CC>={MIN_CC_REQUIRING_DOC}）全部有 docstring"
+        f"CC>={MIN_CC_REQUIRING_DOC}）全部有 docstring；生产函数 CC<={MAX_CC}"
     )
     return 0
 

@@ -32,9 +32,9 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
       - name: Docstring gates
-        # 长函数（>50 行）与高复杂度函数（CC>=12）必须有 docstring；
+        # 长函数（>50 行）与高复杂度函数（CC>=12）必须有 docstring，且 CC<=21；
         # 阈值单源在 scripts/docstring_gates.py 的 MAX_LINES_WITHOUT_DOC /
-        # MIN_CC_REQUIRING_DOC，tests/ 与 scripts/ 不在扫描范围内。
+        # MIN_CC_REQUIRING_DOC / MAX_CC，tests/ 与 scripts/ 不在扫描范围内。
         # 纯 stdlib，无需装项目依赖，故挂在 lint 作业而非 test 作业。
         run: python scripts/docstring_gates.py
 

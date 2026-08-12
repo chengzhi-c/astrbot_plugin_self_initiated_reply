@@ -851,14 +851,22 @@ def test_ci_docstring_gate_comment_matches_real_thresholds() -> None:
 
     lines_match = re.search(r"^MAX_LINES_WITHOUT_DOC\s*=\s*(\d+)", gates, re.MULTILINE)
     cc_match = re.search(r"^MIN_CC_REQUIRING_DOC\s*=\s*(\d+)", gates, re.MULTILINE)
-    assert lines_match and cc_match, "docstring_gates.py 的阈值常量名已变，本守卫需同步"
-    max_lines, min_cc = lines_match.group(1), cc_match.group(1)
+    max_cc_match = re.search(r"^MAX_CC\s*=\s*(\d+)", gates, re.MULTILINE)
+    assert lines_match and cc_match and max_cc_match, (
+        "docstring_gates.py 的阈值常量名已变，本守卫需同步"
+    )
+    max_lines, min_cc, max_cc = (
+        lines_match.group(1),
+        cc_match.group(1),
+        max_cc_match.group(1),
+    )
 
     # 注释里同时出现行数与 CC 两个口径，二者都必须等于常量真值
     assert f">{max_lines} 行" in ci, (
         f"ci.yml 注释的行数阈值与 MAX_LINES_WITHOUT_DOC={max_lines} 不一致"
     )
     assert f"CC>={min_cc}" in ci, f"ci.yml 注释的复杂度阈值与 MIN_CC_REQUIRING_DOC={min_cc} 不一致"
+    assert f"CC<={max_cc}" in ci, f"ci.yml 注释的复杂度上限与 MAX_CC={max_cc} 不一致"
 
 
 # ============================================================================
