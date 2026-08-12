@@ -1155,3 +1155,27 @@ def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplo
         assert "script" not in str(theme_result.get("error", "")), "回显了客户端可控原值"
 
     with_plugin(tmp_path, scenario)
+
+
+def test_host_dangerous_tool_denylist_has_drift_net() -> None:
+    """Exact denylist stays authoritative; name heuristic covers known + sibling IDs."""
+    install_astrbot_stubs()
+    package_name = "selfreply_dangerous_tool_drift_pkg"
+    models = load_package(package_name, "models")
+
+    assert models.HOST_DANGEROUS_TOOL_IDS, "denylist must not be empty"
+    for tool_id in models.HOST_DANGEROUS_TOOL_IDS:
+        assert models.looks_like_host_dangerous_tool(tool_id), tool_id
+
+    # Sibling names a host version bump might introduce should still trip the net.
+    for tool_id in (
+        "astrbot_execute_shell_v2",
+        "astrbot_execute_browser_new",
+        "astrbot_file_read_tool_v3",
+        "future_task_v2",
+    ):
+        assert models.looks_like_host_dangerous_tool(tool_id), tool_id
+
+    # Benign tools must not be flagged by the heuristic alone.
+    for tool_id in ("web_search", "memory_search", "send_message", ""):
+        assert not models.looks_like_host_dangerous_tool(tool_id), tool_id

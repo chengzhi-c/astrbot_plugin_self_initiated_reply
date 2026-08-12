@@ -7,9 +7,8 @@
   --border-strong: light-dark(rgba(48, 48, 64, .36), rgba(224, 160, 64, .42));
   --border-w:        2px; --text:      light-dark(#22222e, #f4ece0);
   --text-soft: light-dark(#3a3a4a, #ddcdb8); --muted:     light-dark(#5c5c70, #b09a80);
-  --faint:     light-dark(#63697c, #9c876a); --accent:        #4a5580; --accent-strong: #3a4468;
-  --accent-text:   #414c76; --accent-soft:   rgba(74, 85, 128, .11);
-  --ring:          rgba(74, 85, 128, .30); --focus-color:        #3a4468;
+  --faint:     light-dark(#63697c, #9c876a); --accent:        #4a5580; --accent-text:   #414c76; --accent-soft:   rgba(74, 85, 128, .11);
+  --focus-color:        #3a4468;
   --focus-offset-color: var(--surface);
   --focus-ring: 0 0 0 2px var(--focus-offset-color), 0 0 0 4px var(--focus-color);
   --ornament:      #5f6b8e; --ornament-soft: rgba(110, 122, 158, .15);
@@ -33,7 +32,7 @@
   --ease: cubic-bezier(.2, .7, .3, 1); --fs-100: 11px; --fs-200: 12px; --fs-300: 13px;
   --fs-400: 14px; --fs-500: 16px; --fs-600: 20px; --fs-700: 24px; --sp-1:  2px; --sp-2:  4px;
   --sp-3:  6px; --sp-4:  8px; --sp-5:  12px; --sp-6:  16px; --sp-7:  20px; --sp-8:  24px;
-  --sp-9:  32px; --sp-10: 40px; --sp-11: 48px; --sp-12: 64px; --topbar-h: 100px;
+  --sp-9:  32px; --topbar-h: 100px;
 }
 @supports not (color: light-dark(#000, #fff)) {
   :root {
@@ -65,9 +64,8 @@
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"]  { color-scheme: dark; }
 :root[data-theme="dark"] {
-  --accent:        #e0a040; --accent-strong: #eeb45c; --accent-text:   #e8ae52;
-  --accent-soft:   rgba(224, 160, 64, .15); --ring:          rgba(224, 160, 64, .34);
-  --focus-color:   #eeb45c; --ornament:      #b4762e; --ornament-soft: rgba(180, 118, 46, .20);
+  --accent:        #e0a040; --accent-text:   #e8ae52;
+  --accent-soft:   rgba(224, 160, 64, .15); --focus-color:   #eeb45c; --ornament:      #b4762e; --ornament-soft: rgba(180, 118, 46, .20);
   --shadow-btn:    inset 0 1px 0 rgba(244, 236, 224, .08), 0 1px 2px rgba(0, 0, 0, .55);
   --shadow-drop:   0 1px 2px rgba(0, 0, 0, .55);
 }
@@ -77,9 +75,8 @@
 :root[data-theme="dark"] .theme-toggle .icon-dark { color: var(--spirit); }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --accent:        #e0a040; --accent-strong: #eeb45c; --accent-text:   #e8ae52;
-    --accent-soft:   rgba(224, 160, 64, .15); --ring:          rgba(224, 160, 64, .34);
-    --focus-color:   #eeb45c; --ornament:      #b4762e; --ornament-soft: rgba(180, 118, 46, .20);
+    --accent:        #e0a040; --accent-text:   #e8ae52;
+    --accent-soft:   rgba(224, 160, 64, .15); --focus-color:   #eeb45c; --ornament:      #b4762e; --ornament-soft: rgba(180, 118, 46, .20);
     --shadow-btn:    inset 0 1px 0 rgba(244, 236, 224, .08), 0 1px 2px rgba(0, 0, 0, .55);
     --shadow-drop:   0 1px 2px rgba(0, 0, 0, .55);
   }
@@ -777,10 +774,7 @@ textarea {
 .toast.show {
   opacity: 1; transform: translateY(0) scale(1);
 }
-.master,
-.panel,
-.form-actions,
-.form > *:nth-child(2) { animation-delay: .04s; }
+.master, .panel, .form-actions, .form > *:nth-child(2) { animation-delay: .04s; }
 .form > *:nth-child(3) { animation-delay: .08s; }
 .form > *:nth-child(4) { animation-delay: .12s; }
 .form > *:nth-child(5) { animation-delay: .16s; }

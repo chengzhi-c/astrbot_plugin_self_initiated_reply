@@ -104,6 +104,26 @@ HOST_DANGEROUS_TOOL_IDS: frozenset[str] = frozenset(
         "astr_kb_search",
     }
 )
+# 危险工具名启发式：仅用于清单漂移检测（测试 / compat），不替代 HOST_DANGEROUS_TOOL_IDS。
+# 运行路径仍以精确 denylist + 空 allowlist 为准，避免启发式误伤无害工具。
+_HOST_DANGEROUS_TOOL_NAME_RE = re.compile(
+    r"(future_task|shell_session|execute_(shell|ipython|python|browser)|"
+    r"run_browser_skill|upload_file|download_file|file_(read|write|edit)_tool|"
+    r"grep_tool|kb_search)",
+    re.IGNORECASE,
+)
+
+
+def looks_like_host_dangerous_tool(tool_id: str) -> bool:
+    """Return whether a tool id looks host-dangerous (denylist membership or name hint)."""
+    name = str(tool_id or "").strip()
+    if not name:
+        return False
+    if name in HOST_DANGEROUS_TOOL_IDS:
+        return True
+    return _HOST_DANGEROUS_TOOL_NAME_RE.search(name) is not None
+
+
 REPLY_REQUEST_WINDOW_SEC = 180  # 明确请求窗口：3分钟内的接话请求视为有效
 EVENT_CLEANUP_INTERVAL_SEC = 3600  # 事件清理间隔：1小时清理一次陈旧事件
 MAX_CACHED_EVENTS = 100  # 最大缓存事件数：防止内存无限增长

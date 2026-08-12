@@ -10,9 +10,12 @@ import {
   providerNeedsManualInput,
   requestPluginApi,
 } from "../pages/主动回复设置/frontend-core.mjs";
+import { CONFIG_SAVE_KEYS } from "../pages/主动回复设置/config-io.mjs";
+import { THEME_KEY } from "../pages/主动回复设置/theme.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pageDir = join(root, "pages", "主动回复设置");
+const MAX_SOURCE_LINE = 200;
 
 test("bridge rejection is normalized by the shared API request", async () => {
   const bridge = {
@@ -181,4 +184,64 @@ test("CI runs the dependency-free frontend gate", async () => {
   assert.match(workflow, /pages\/主动回复设置\/\*\.\{js,mjs\}/);
   assert.match(workflow, /node --check/);
   assert.match(workflow, /node --test tests\/frontend_contract\.test\.mjs/);
+});
+
+test("theme localStorage key stays single-sourced with the HTML bootstrap", async () => {
+  const html = await readFile(join(pageDir, "index.html"), "utf8");
+  assert.equal(THEME_KEY, "selfreply-theme");
+  assert.match(html, new RegExp(`localStorage\\.getItem\\("${THEME_KEY}"\\)`));
+  assert.equal((html.match(/selfreply-theme/g) || []).length, 1);
+});
+
+test("config save key list is complete and used by save path", async () => {
+  const source = await readFile(join(pageDir, "config-io.mjs"), "utf8");
+  assert.deepEqual([...CONFIG_SAVE_KEYS].sort(), [
+    "cooldown_sec",
+    "decision_history_min_messages",
+    "decision_model_enabled",
+    "decision_prompt_template",
+    "decision_temperature",
+    "decision_timeout_sec",
+    "enabled",
+    "judge_provider_id",
+    "message_delay_sec",
+    "min_silence_sec",
+    "proactive_inherit_tools",
+    "vision_image_age_sec",
+    "vision_judge_enabled",
+    "vision_judge_provider_id",
+    "vision_main_enabled",
+    "vision_max_images",
+    "vision_provider_id",
+    "vision_skip_stickers",
+    "vision_timeout_sec",
+    "whitelist_sessions",
+  ]);
+  assert.match(source, /buildConfigSaveBody\(/);
+  assert.match(source, /apiPost\("config", body\)/);
+  for (const key of CONFIG_SAVE_KEYS) {
+    assert.match(source, new RegExp(`${key}\\s*:`));
+  }
+});
+
+test("settings page JS sources keep lines under the maintainability cap", async () => {
+  const names = [
+    "app.js",
+    "chrome.mjs",
+    "config-form.mjs",
+    "config-io.mjs",
+    "frontend-core.mjs",
+    "providers.mjs",
+    "theme.mjs",
+  ];
+  for (const name of names) {
+    const text = await readFile(join(pageDir, name), "utf8");
+    const lines = text.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      assert.ok(
+        lines[i].length <= MAX_SOURCE_LINE,
+        `${name}:${i + 1} length ${lines[i].length} > ${MAX_SOURCE_LINE}`
+      );
+    }
+  }
 });

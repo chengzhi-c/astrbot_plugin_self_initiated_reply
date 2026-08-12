@@ -2,6 +2,60 @@ import { DEFAULT_CONFIG, num, parseWhitelist } from "./config-form.mjs";
 import { isSuccessfulConfigPayload } from "./frontend-core.mjs";
 const WHITELIST_ITEM_MAX_LEN = 200;
 const WHITELIST_ILLEGAL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f]/;
+
+/** POST /config 写回字段全集（与 tests/test_config_source_of_truth._FE_WRITABLE 对齐）。 */
+export const CONFIG_SAVE_KEYS = Object.freeze([
+  "enabled",
+  "decision_model_enabled",
+  "judge_provider_id",
+  "decision_temperature",
+  "decision_timeout_sec",
+  "decision_prompt_template",
+  "decision_history_min_messages",
+  "message_delay_sec",
+  "min_silence_sec",
+  "cooldown_sec",
+  "vision_judge_enabled",
+  "vision_main_enabled",
+  "vision_skip_stickers",
+  "vision_provider_id",
+  "vision_judge_provider_id",
+  "vision_max_images",
+  "vision_image_age_sec",
+  "vision_timeout_sec",
+  "proactive_inherit_tools",
+  "whitelist_sessions",
+]);
+
+export function buildConfigSaveBody(e, controls) {
+  const { judgeProviderControl, visionProviderControl, visionJudgeProviderControl } = controls;
+  return {
+    enabled: e.enabledInput.checked,
+    decision_model_enabled: e.decisionModelInput.checked,
+    judge_provider_id: judgeProviderControl.value(),
+    decision_temperature: num(e.decisionTempInput.value, DEFAULT_CONFIG.decision_temperature),
+    decision_timeout_sec: num(e.decisionTimeoutInput.value, DEFAULT_CONFIG.decision_timeout_sec),
+    decision_prompt_template: e.decisionPromptInput.value.trim(),
+    decision_history_min_messages: num(
+      e.minContextInput.value,
+      DEFAULT_CONFIG.decision_history_min_messages
+    ),
+    message_delay_sec: num(e.messageDelayInput.value, DEFAULT_CONFIG.message_delay_sec),
+    min_silence_sec: num(e.minSilenceInput.value, DEFAULT_CONFIG.min_silence_sec),
+    cooldown_sec: num(e.cooldownInput.value, DEFAULT_CONFIG.cooldown_sec),
+    vision_judge_enabled: e.visionJudgeEnabledInput.checked,
+    vision_main_enabled: e.visionMainEnabledInput.checked,
+    vision_skip_stickers: e.visionSkipStickersInput.checked,
+    vision_provider_id: visionProviderControl.value(),
+    vision_judge_provider_id: visionJudgeProviderControl.value(),
+    vision_max_images: num(e.visionMaxImagesInput.value, DEFAULT_CONFIG.vision_max_images),
+    vision_image_age_sec: num(e.visionImageAgeInput.value, DEFAULT_CONFIG.vision_image_age_sec),
+    vision_timeout_sec: num(e.visionTimeoutInput.value, DEFAULT_CONFIG.vision_timeout_sec),
+    proactive_inherit_tools: e.proactiveInheritToolsInput.checked,
+    whitelist_sessions: parseWhitelist(e.whitelistInput.value),
+  };
+}
+
 export function createConfigIo(deps) {
   const {
     getEls, getState, setState, apiGet, apiPost, showToast, setStatState, renderPromptPreview, judgeProviderControl, visionProviderControl, visionJudgeProviderControl, fmtBool, } = deps;
@@ -230,9 +284,12 @@ export function createConfigIo(deps) {
     e.configForm.classList.add("is-saving");
     setSaveState("保存中", "saving");
     try {
-      const whitelist = parseWhitelist(e.whitelistInput.value);
-      const result = await apiPost("config", {
-        enabled: e.enabledInput.checked, decision_model_enabled: e.decisionModelInput.checked, judge_provider_id: judgeProviderControl.value(), decision_temperature: num(e.decisionTempInput.value, DEFAULT_CONFIG.decision_temperature), decision_timeout_sec: num(e.decisionTimeoutInput.value, DEFAULT_CONFIG.decision_timeout_sec), decision_prompt_template: e.decisionPromptInput.value.trim(), decision_history_min_messages: num(e.minContextInput.value, DEFAULT_CONFIG.decision_history_min_messages), message_delay_sec: num(e.messageDelayInput.value, DEFAULT_CONFIG.message_delay_sec), min_silence_sec: num(e.minSilenceInput.value, DEFAULT_CONFIG.min_silence_sec), cooldown_sec: num(e.cooldownInput.value, DEFAULT_CONFIG.cooldown_sec), vision_judge_enabled: e.visionJudgeEnabledInput.checked, vision_main_enabled: e.visionMainEnabledInput.checked, vision_skip_stickers: e.visionSkipStickersInput.checked, vision_provider_id: visionProviderControl.value(), vision_judge_provider_id: visionJudgeProviderControl.value(), vision_max_images: num(e.visionMaxImagesInput.value, DEFAULT_CONFIG.vision_max_images), vision_image_age_sec: num(e.visionImageAgeInput.value, DEFAULT_CONFIG.vision_image_age_sec), vision_timeout_sec: num(e.visionTimeoutInput.value, DEFAULT_CONFIG.vision_timeout_sec), proactive_inherit_tools: e.proactiveInheritToolsInput.checked, whitelist_sessions: whitelist, });
+      const body = buildConfigSaveBody(e, {
+        judgeProviderControl,
+        visionProviderControl,
+        visionJudgeProviderControl,
+      });
+      const result = await apiPost("config", body);
       if (!result || result.ok !== true) {
         setSaveState("保存失败", "error");
         showToast(result?.error || "保存失败");
@@ -240,7 +297,7 @@ export function createConfigIo(deps) {
       }
       setSaveState("已保存", "ok");
       setDirty(false);
-      e.whitelistCount.textContent = String(whitelist.length);
+      e.whitelistCount.textContent = String(body.whitelist_sessions.length);
       showToast("配置已保存");
       try {
         await loadOverview();
