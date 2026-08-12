@@ -228,7 +228,7 @@ def session_whitelisted(umo: str, whitelist: set[str]) -> bool:
 def whitelist_storage_key(umo: str) -> str:
     """状态键就是完整 UMO 本身——本函数刻意是个恒等式（仅去空白）。
 
-    诚实说明（0.9.4 阶段 1.7）：原文写「Return a platform-aware state key」，
+    诚实说明：原文写「Return a platform-aware state key」，
     并称"裸群号仍作为遗留通配白名单项被接受"。两句都不是本函数做的事——
     它没有任何平台感知逻辑，裸群号通配是**邻居** ``session_whitelisted``
     的行为（见上方 ``session_group_id`` 回退分支）。文档描述了邻居的职责，

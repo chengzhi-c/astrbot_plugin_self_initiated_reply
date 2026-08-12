@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrbot_plugin_self_initiated_reply"
-# 版本号不在此处写死（0.9.4 阶段 2.3）：改由 [tool.hatch.version] 从
+# 版本号不在此处写死：改由 [tool.hatch.version] 从
 # models.PLUGIN_VERSION 读取，见该节的说明。
 dynamic = ["version"]
 requires-python = ">=3.12"
 # 运行时零第三方依赖：全部复用宿主 AstrBot API
 
 [project.optional-dependencies]
-# 开发依赖钉版（0.9.4 阶段 2.4）。实测动机：CI 的 mypy / test / compat 三个作业都跑
+# 开发依赖钉版。实测动机：CI 的 mypy / test / compat 三个作业都跑
 # `pip install -e ".[dev]"`，而本节此前**一条上界都没有**，等于每次 CI 都装当日最新版。
 # 门禁因上游发版而变红时，改动本身是无辜的，排查成本却全落在改动者身上（ruff
 # 0.15→0.16 新增 Markdown 围栏检查就这样红过一次，见 scripts/version_gates.py 开头）。
@@ -25,7 +25,7 @@ requires-python = ">=3.12"
 # - mypy 下界 1.19：与 .pre-commit-config.yaml 的 mirrors-mypy rev 对齐。实测
 #   1.19.0 与 2.3.0 对本仓库均为 Success，故两版共存是无害的，不必强求字面同版。
 # - pytest-asyncio 上界 <2：asyncio_mode = "auto" 的语义历史上随大版本变过。
-# - pathspec（阶段 2.3 加入）：仅 tests/test_config_schema.py 的打包守卫用它复现
+# - pathspec：仅 tests/test_config_schema.py 的打包守卫用它复现
 #   hatchling 的 exclude 匹配语义。它本是 hatchling 与 mypy 的传递依赖，装 .[dev]
 #   时恰好在，但依赖别人的依赖会在上游删依赖时静默变红，故显式声明。
 #   下限对齐 hatchling 的 pathspec>=0.10.1（GitIgnoreSpec 自 0.10.0 起提供）。
@@ -43,7 +43,7 @@ dev = [
 ]
 
 [tool.hatch.version]
-# 版本号单源（0.9.4 阶段 2.3）：wheel 文件名与 dist-info 从 models.PLUGIN_VERSION
+# 版本号单源：wheel 文件名与 dist-info 从 models.PLUGIN_VERSION
 # 派生，不再在此重抄一遍。0.8.7 曾因 pyproject 漏在守卫之外，导致面板显示 0.8.7
 # 而 pip 记录 0.8.3——那类"两处字面量不同步"在这里已无法发生（结构上只有一处）。
 #
@@ -106,19 +106,19 @@ exclude = [
   # 具名条目排不掉；实测它会被整目录打包收进 wheel。
   ".coverage",
   ".coverage.*",
-  # 不带点前缀的覆盖率产物（0.9.4 阶段 2.3）：`coverage json` / `--cov-report=xml`
+  # 不带点前缀的覆盖率产物：`coverage json` / `--cov-report=xml`
   # 分别写 coverage.json / coverage.xml 到仓库根，上面的 .coverage* 认不出它们。
-  # 实测本批次遗留的 coverage.json（220KB）被打进 wheel。用通配而非具名两条，
+  # 实测此前遗留的 coverage.json（220KB）被打进 wheel。用通配而非具名两条，
   # 与 check_wheel.py 的 FORBIDDEN_GLOBS 同宽——两侧的一致性由
   # tests/test_config_schema.py::test_wheel_forbidden_patterns_are_excluded_by_pyproject
   # 逐条核验（该用例用 pathspec 真跑匹配，不比字符串）。
   "coverage.*",
   "*.pyc",
-  # setuptools 遗留物（0.9.4 阶段 2.3）：本仓库用 hatchling 不生成 egg-info，
-  # 但开发机上一次 `pip install -e .` 留下的 *.egg-info/ 会被整目录打包收进 wheel。
+  # setuptools 遗留物：本仓库用 hatchling 不生成 egg-info，
+  # 但本地环境上一次 `pip install -e .` 留下的 *.egg-info/ 会被整目录打包收进 wheel。
   # check_wheel 早已禁它，这里此前漏排——正是上述反向断言首次抓到的缺口。
   "*.egg-info/**",
-  # 任意深度的 __pycache__（0.9.4 阶段 2.3）：原文只写 `__pycache__/**`，它带根锚，
+  # 任意深度的 __pycache__：原文只写 `__pycache__/**`，它带根锚，
   # 只排仓库根那一个目录，image/__pycache__/ 排不掉。改成 `**/__pycache__/**` 一并
   # 覆盖根层与嵌套层（实测两者都匹配），对应 check_wheel 的
   # `__pycache__/*` 与 `*/__pycache__/*` 两条。

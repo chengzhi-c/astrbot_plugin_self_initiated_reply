@@ -141,7 +141,7 @@ class ImageParser:
                 self._source_cache_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
                 logger.warning("[%s] image cache directory unavailable: %s", PLUGIN_ID, exc)
-        # 本地读取的唯一判据（0.9.3 阶段 1.1）：路径必须落在允许根下。
+        # 本地读取的唯一判据：路径必须落在允许根下。
         #
         # 为什么不能沿用「提取层推断可信」：宿主 aiocqhttp 适配器走通用
         # ComponentTypes[t](**m["data"]) 分支装配 Image，其 file 是对端可控的
@@ -242,7 +242,7 @@ class ImageParser:
         if not path.is_absolute():
             return False
         try:
-            # 不再传 trusted=True（阶段 1.1）：这条路径的 file 值来自对端可控的
+            # 不再传 trusted=True：这条路径的 file 值来自对端可控的
             # OneBot 原始值，可信度判定统一交给 _file_to_data_url 的 allowlist。
             data_url = await asyncio.to_thread(
                 self._file_to_data_url,
@@ -482,7 +482,7 @@ class ImageParser:
                 image_info.url,
             )
             if local_path:
-                # 也走 allowlist（阶段 1.1 复审补漏）：这条路径不是宿主自有产物。
+                # 也走 allowlist：这条路径不是宿主自有产物。
                 # get_local_image_path 取的是记录里的 local_path，最终交给第三方
                 # recorder 插件的 get_media_absolute_path 解析（recorder_bridge.py:74,86），
                 # 而 local_path 源头是对端可控的 OneBot 字段。若 resolver 是朴素
@@ -507,7 +507,7 @@ class ImageParser:
                 )
                 return None
             path = Path(file_value)
-            # 本地路径一律走 allowlist（阶段 1.1）：image_info.trusted_local_path
+            # 本地路径一律走 allowlist：image_info.trusted_local_path
             # 由提取层从「组件不是 Mapping」推断，而对端可控的 OneBot file 值
             # 恰好装配成非 Mapping 的 pydantic Image，该推断可被伪造。
             # 相对路径经录制桥解析后同样不升 trusted（复审补漏）：resolver 的入参

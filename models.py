@@ -108,7 +108,7 @@ REPLY_REQUEST_WINDOW_SEC = 180  # 明确请求窗口：3分钟内的接话请求
 EVENT_CLEANUP_INTERVAL_SEC = 3600  # 事件清理间隔：1小时清理一次陈旧事件
 MAX_CACHED_EVENTS = 100  # 最大缓存事件数：防止内存无限增长
 PATROL_BACKOFF_DELAY_SEC = 60  # 巡检失败退避延迟：避免错误循环
-# release 闸门等待兜底（0.9.4 阶段 1.1）：配置回滚会把运行标记恢复成快照态，
+# release 闸门等待兜底：配置回滚会把运行标记恢复成快照态，
 # 而支撑它的检查任务可能已在回滚窗口内结束。此时 release 事件永远不会
 # 再被 set，裸 wait() 将永久挂起。超时 + 轮次上限把闸门失同步降级为
 # 一次延迟或一次丢弃，而不是让该会话静默死亡或空转独占事件循环。
@@ -118,7 +118,7 @@ MAX_RELEASE_WAIT_ROUNDS = 20
 # （mtime 缓存只省读文件不省系统调用）；运行期改管理员下个窗口生效，
 # 最大延迟 = 窗口长，探测失败不变更缓存、窗口后重试。
 ADMIN_REFRESH_WINDOW_SEC = 30.0
-# 外部时间戳的容许时钟偏移（0.9.4 阶段 1.4）：状态文件是可被手工编辑的外部输入，
+# 外部时间戳的容许时钟偏移：状态文件是可被手工编辑的外部输入，
 # 而 _finite_float 只挡 NaN/inf，负值与远未来原样穿透（实测）。两个方向危害不同：
 #
 # - 远未来（now+1e9）：remaining_silence_sec 实测 1000000045 秒 ≈ 31.69 年，
@@ -239,7 +239,7 @@ def as_float(value: Any, default: float, minimum: float = 0.0, maximum: float = 
 
 
 def as_timestamp(value: Any, *, now: float | None = None) -> float:
-    """把外部来源的 epoch 秒钳到 ``[0, now + MAX_CLOCK_SKEW_SEC]``（0.9.4 阶段 1.4）。
+    """把外部来源的 epoch 秒钳到 ``[0, now + MAX_CLOCK_SKEW_SEC]``。
 
     与 ``as_float`` 的区别只在上界是动态的：时间戳的合法上界随时钟走，写死一个
     绝对值会随时间失效。NaN/inf/不可解析一律归 0.0（等价「从未活跃」），与
@@ -421,7 +421,7 @@ class SessionState:
 
 @dataclass(frozen=True)
 class ConfigSpec:
-    """单个配置键的完整规格（0.9.3 阶段 2：配置六重镜像的单一事实源）。
+    """单个配置键的完整规格。
 
     此前同一个键要在六处重复声明：``_conf_schema.json``、``Settings`` 字段表、
     ``from_config``、``to_config_dict``、``CONFIG_SCHEMA_KEYS``、
@@ -716,7 +716,7 @@ class Settings:
     def from_config(cls, config: Any) -> Settings:
         """把宿主配置对象归一化为 ``Settings``：缺键取默认，超限截断，别名回退。
 
-        表驱动（0.9.3 阶段 2）：逐字段手写的 118 行归一化已由 ``CONFIG_SPECS``
+        表驱动：逐字段手写的 118 行归一化已由 ``CONFIG_SPECS``
         取代。每个键的类型/边界/旧键/上限都只在规格表里声明一次，此处只做遍历。
 
         输入不可信（用户手改 JSON、旧版本遗留键），因此每个字段都走类型强制 +
@@ -733,7 +733,7 @@ class Settings:
     def to_config_dict(self) -> dict[str, Any]:
         """Return only currently active configuration keys.
 
-        表驱动（0.9.3 阶段 2）：键名与顺序都取自 ``CONFIG_SPECS``，不再手抄。
+        表驱动：键名与顺序都取自 ``CONFIG_SPECS``，不再手抄。
 
         Deprecated direct-model/direct-plugin settings are ignored and no longer
         written back because proactive replies now use AstrBot's main Agent

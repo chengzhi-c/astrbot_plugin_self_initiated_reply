@@ -73,7 +73,7 @@ EVENT_TYPE_MEMBERS = (
 # 事件结果契约：实例必须可用且具备这两个链式方法（缺失参数即红）
 _EVENT_RESULT_METHODS = ("message", "set_result_content_type")
 
-# 「属性不存在」的哨兵（0.9.4 阶段 1.5）：不能用 None 当 getattr 默认值，因为
+# 「属性不存在」的哨兵：不能用 None 当 getattr 默认值，因为
 # 宿主 ProviderRequest.func_tool 的合法默认值**就是 None**（实测 AstrBot 4.23.3：
 # 字段存在、默认 None）。用 None 兜底会把「宿主没有这个字段」与「宿主声明本次无
 # 工具」压成同一出口，而两者该走反方向：前者读不到工具边界必须 fail closed，
@@ -88,7 +88,7 @@ _MISSING = object()
 # 删掉它会让那条分支复活成真实 fail-open，故由
 # tests/test_runtime_adapter_blindspots.py::
 # test_func_tool_stays_in_load_time_contract_assertion 把这层耦合钉死
-# （0.9.4 阶段 1.5 前删除它不会让任何用例变红，正是该哨兵要补的缺口）。
+#。
 _PROVIDER_REQUEST_FIELDS = frozenset(
     {
         "prompt",
@@ -411,7 +411,7 @@ class AstrBotRuntimeAdapter:
         ``None`` when the tool set cannot be enumerated (callers must fail
         closed).
 
-        ``func_tool`` 属性缺失与显式 ``None`` 分开处理（0.9.4 阶段 1.5）：后者是
+        ``func_tool`` 属性缺失与显式 ``None`` 分开处理：后者是
         宿主声明「本次无工具」，枚举结果就是空列表；前者是读不到该字段本身，
         返回 ``[]`` 会把"查不到"谎报成"查过了、是空的"，故归入枚举失败返回
         ``None``。
@@ -468,7 +468,7 @@ class AstrBotRuntimeAdapter:
         set cannot be enumerated or a removal fails; callers must then abort
         the proactive run (fail closed).
 
-        「``func_tool`` 属性缺失」与「显式 ``None``」走反方向（0.9.4 阶段 1.5）：
+        「``func_tool`` 属性缺失」与「显式 ``None``」走反方向：
 
         - 显式 ``None``：宿主声明本次无工具集，天然无工具可调用，放行；
         - 属性缺失：读不到工具边界本身，无法枚举、无法移除、也无法事后核验，
@@ -488,7 +488,7 @@ class AstrBotRuntimeAdapter:
         ``test_func_tool_stays_in_load_time_contract_assertion`` 守护：一旦
         ``func_tool`` 被移出该清单，加载期防线消失，本分支即恢复可达。
         """
-        # 显式 ``Any``（0.9.4 阶段 1.5）：三参 getattr 的类型是 ``Any | _T``，
+        # 显式 ``Any``：三参 getattr 的类型是 ``Any | _T``，
         # 默认值换成哨兵后 ``_T`` 是 ``object``，联合坍缩成 ``object``，下面的
         # ``tool_set.remove_tool`` 会被 mypy 判成 attr-defined 错误。宿主工具集本就
         # 是鸭子类型（能力由 validate 在加载期核验），这里保持 ``Any``。

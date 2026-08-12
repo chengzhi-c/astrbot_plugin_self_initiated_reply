@@ -165,7 +165,7 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
     3. 字段级异常值（NaN/负数/远未来/未知 role）—— 由 ``as_timestamp`` /
        ``as_int`` 归一，不让脏值进入运行期计算。时间戳钳到
        ``[0, now + MAX_CLOCK_SKEW_SEC]``：状态文件可被手工编辑，远未来值会让
-       ``remaining_silence_sec`` 变成数十年、该会话永久锁死（0.9.4 阶段 1.4，
+       ``remaining_silence_sec`` 变成数十年、该会话永久锁死（，
        危害与实测见 ``models.MAX_CLOCK_SKEW_SEC`` 的注释）。
        ``daily_count`` 经 ``as_int`` 后带上界，不再接受任意大整数。
 

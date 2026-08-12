@@ -14,7 +14,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    # 只在类型检查期导入（0.9.4 阶段 2.2）：运行时 main.py 先 import 本模块
+    # 只在类型检查期导入：运行时 main.py 先 import 本模块
     # （main.py:115），反向真导入会成环。`from __future__ import annotations` 已让
     # 注解全为字符串，故无需 quote、无加载期开销。
     #
@@ -63,7 +63,7 @@ from .models import (
 # 切正式键，存量配置由 Settings.from_config 回退读取迁移，一致性守卫见
 # tests/test_config_schema.py。
 #
-# 0.9.3 阶段 2：改为从 models.CONFIG_SPECS 派生，不再手抄 34 行。此前新增一个
+# 改为从 models.CONFIG_SPECS 派生，不再手抄 34 行。此前新增一个
 # 键要同时改 schema / Settings 字段 / from_config / to_config_dict / 本名单 /
 # _parse_config_updates 六处，漏一处即静默失效（漏本名单 → 面板提交被 400 拒）。
 CONFIG_SCHEMA_KEYS = frozenset(spec.key for spec in CONFIG_SPECS)
@@ -193,7 +193,7 @@ async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
             "vision_timeout_sec": plugin.settings.vision_timeout_sec,
         }
     except Exception as exc:
-        # 详情只进服务端日志（阶段 1.2）：异常文本可能带绝对路径、内部键名或
+        # 详情只进服务端日志：异常文本可能带绝对路径、内部键名或
         # 上游 provider 报错原文，回显给客户端等于把内部结构透给调用方。
         logger.warning("[%s] api get config failed: %s", PLUGIN_ID, exc)
         return {"ok": False, "error": "配置读取失败"}
@@ -204,7 +204,7 @@ async def _api_providers(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     try:
         return {"ok": True, "providers": _collect_provider_options(plugin)}
     except Exception as exc:
-        # 同上：provider 枚举失败常带上游 SDK 的内部异常原文，不回显（阶段 1.2）
+        # 同上：provider 枚举失败常带上游 SDK 的内部异常原文，不回显
         logger.warning("[%s] api providers failed: %s", PLUGIN_ID, exc)
         return {"ok": False, "providers": [], "error": "Provider 列表读取失败"}
 
@@ -272,7 +272,7 @@ async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]
         return {"ok": False, "error": "请求体必须是 JSON 对象"}
     theme = str(data.get("theme", "")).strip()
     if theme not in {"auto", "light", "dark"}:
-        # 不回显 theme 原值（阶段 1.2）：那是客户端可控输入，回显等于把请求体
+        # 不回显 theme 原值：那是客户端可控输入，回显等于把请求体
         # 原文反射回响应。合法取值是固定枚举，直接告知即可，无需回放输入。
         return {"ok": False, "error": "无效主题，可选值：auto / light / dark"}
     if theme != plugin._ui_theme:
@@ -301,7 +301,7 @@ def _string_list(data: dict[str, Any], key: str) -> list[str]:
         text = str(item).strip()
         if not text:
             continue
-        # 先查非法字符再查长度（阶段 1.2 复审）：过长文案会把 text[:20] 带进
+        # 先查非法字符再查长度：过长文案会把 text[:20] 带进
         # logger.warning，若其中含 \n / 控制字符即可伪造日志行。收窄顺序后，
         # 能进日志的片段必然已通过控制字符过滤。
         if re.search(r"[\x00-\x1f\"'\\]", text):
@@ -360,7 +360,7 @@ async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str,
         updates = _parse_config_updates(data)
         return await _apply_config_updates(plugin, updates)
     except ValueError as exc:
-        # 校验失败的文案要回显（阶段 1.2）：它由本模块自己构造，只含字段名与
+        # 校验失败的文案要回显：它由本模块自己构造，只含字段名与
         # 规则（"cooldown_sec 必须是整数"），不含内部路径/栈信息，且前端表单
         # 依赖它定位出错字段。
         logger.warning("[%s] api post config rejected: %s", PLUGIN_ID, exc)
@@ -375,7 +375,7 @@ async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str,
 def _parse_config_updates(data: Any) -> dict[str, Any]:
     """从请求体提取合法配置变更并做严格类型校验；非法字段抛 ValueError。
 
-    表驱动（0.9.3 阶段 2）：此前 34 个键各写一段 ``if key in data``，119 行、
+    表驱动：此前 34 个键各写一段 ``if key in data``，119 行、
     圈复杂度 38（全仓最差）。真正的问题不是长度而是「新增键要记得同时改这里」，
     漏一处该键就被静默丢弃——面板上能改、保存返回成功、值不生效。
 
@@ -429,7 +429,7 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
 # 安全敏感配置键：变更记 INFO 审计日志。webapi 无独立鉴权，
 # 访问控制依赖宿主 Dashboard；留痕便于事后追溯。
 #
-# 由规格表的 audited 标记派生（阶段 2）：此前是手工名单，与
+# 由规格表的 audited 标记派生：此前是手工名单，与
 # `_parse_config_updates` 分处两地，漏一处审计就静默失效——注释里那两条
 # 「新增键的前提」正是在手工维护这个约束。现在两者同源于 CONFIG_SPECS，
 # 前提由 tests/test_config_schema.py 的守卫强制。
@@ -621,7 +621,7 @@ async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     覆盖：代次快照、运行中集合、任务数（延迟/运行中检查/后台）、缓存规模
     （事件/图片事件/会话）、每会话最近裁决原因。
 
-    包 try/except 的诚实理由（0.9.4 阶段 1.7）：**今天没有可达异常**。逐项核过
+    包 try/except 的诚实理由：**今天没有可达异常**。逐项核过
     ——全是普通属性或平凡 property（``generation_view`` / ``running_sessions_view``
     只做 ``MappingProxyType`` / ``frozenset`` 包装），且全部在 ``__init__``
     早于 ``register_web_apis`` 完成初始化，仓内也无线程（故 ``dict()`` 复制期间

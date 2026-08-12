@@ -193,7 +193,7 @@ class DeliveryRunner:
     ) -> SendOutcome:
         """Send one proactive reply without retrying an unknown submission.
 
-        本方法只做「复核点 1/4 + 选路」，两条投递路径各自成方法（0.9.4 阶段 3 拆分）：
+        本方法只做「复核点 1/4 + 选路」，两条投递路径各自成方法：
         事件仍在手边走 ``_send_via_event``（复核点 2/4、3/4，可触发装饰与发送后钩子），
         否则走 ``_send_via_context``（复核点 4/4，经宿主 context 兜底发送）。
         拆分不改语义：四个复核点的相对位置、UNKNOWN 归类方向、``_clear_result``
@@ -250,7 +250,7 @@ class DeliveryRunner:
             # 复核点 3/4（结构防线）：与复核点 2 之间零 await（get_result 同步），
             # 当前代码下代次不可能在此变化，覆盖靠 test_delivery_blindspots 的
             # _FlipGate(true_times=2) 数调用次数翻转。保留理由是结构性：
-            # test_storage_and_umo 锁「钩子后、send 前必须有复核」（0.9.4 阶段 3 拆分后
+            # test_storage_and_umo 锁「钩子后、send 前必须有复核」（ 拆分后
             # 该断言指向本方法），此处紧贴 outbound.send；上方一旦插入任何 await，
             # 这道防线立即变实。
             if not self._gate.is_current(umo, expected_generation):
@@ -328,7 +328,7 @@ class DeliveryRunner:
         """
         # 复核点 4/4（结构防线）：与复核点 1 之间没有真实挂起点——
         # ``await self._send_via_context(...)`` 只是进入协程，不向事件循环让出，
-        # 故 0.9.4 阶段 3 的拆分没有新开竞态窗口。性质同复核点 3：
+        # 故 的拆分没有新开竞态窗口。性质同复核点 3：
         # 为日后此路径插入异步查询预留拦截位。此路径未 set_result，无需 _clear_result。
         if not self._gate.is_current(umo, expected_generation):
             logger.info("[%s] suppress stale reply before context send session=%s", PLUGIN_ID, umo)

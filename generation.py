@@ -58,7 +58,7 @@ _TOOL_HINT_RESTRICTED = (
     "读写文件、访问浏览器、创建定时任务、管理技能、写入记忆或向其他会话发消息。"
 )
 
-# 信封标签名只在这里出现一次（0.9.4 阶段 1.2）：中和用的正则由它拼出，
+# 信封标签名只在这里出现一次：中和用的正则由它拼出，
 # 信封本身也由它拼出。若只改一处、另一处仍写死旧名，中和会静默失效——
 # 这是本类修复最典型的腐化方式，故从源头上让二者不可能不一致。
 _ENVELOPE_TAG = "recent_chat"
@@ -70,7 +70,7 @@ _ENVELOPE_TAG_RE = re.compile(rf"<\s*/?\s*{_ENVELOPE_TAG}\s*>", re.IGNORECASE)
 
 
 def neutralize_envelope_tags(text: str) -> str:
-    """把用户内容里伪造的 ``<recent_chat>`` 标签换成全角尖括号（0.9.4 阶段 1.2）。
+    """把用户内容里伪造的 ``<recent_chat>`` 标签换成全角尖括号。
 
     实测的攻击面：``format_message_records`` 原样拼接 ``MessageRecord.text``，
     该文本直接被插进 ``<recent_chat>`` 信封。用户只要发一条含 ``</recent_chat>``
@@ -111,7 +111,7 @@ def build_proactive_prompt(
     2. 工具边界措辞必须随 ``inherit_tools`` 切换，继承态也要点明宿主级危险能力不可用；
     3. 无可用工具时要求直接输出文本，避免模型臆造工具调用；
     4. 信封必须不可被内容闭合——``context_text`` 一律先过
-       ``neutralize_envelope_tags``（0.9.4 阶段 1.2）。中和放在本函数内而非调用方，
+       ``neutralize_envelope_tags``。中和放在本函数内而非调用方，
        是为了让"信封闭合不了"成为本函数的内在性质：任何新调用方都自动获得该保证，
        不依赖各自记得先净化。
     """
