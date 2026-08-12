@@ -134,6 +134,76 @@ def build_proactive_prompt(
     )
 
 
+class _GenerateRun:
+    """单次 generate 运行态（阶段函数共享，非对外 API）。"""
+
+    __slots__ = (
+        "umo",
+        "state",
+        "last_event",
+        "inherit_tools",
+        "prompt",
+        "expected_generation",
+        "force",
+        "direct_send_count",
+        "direct_send_texts",
+        "tool_boundary_state",
+        "reset_coro",
+        "original_send",
+        "had_instance_send",
+        "original_instance_send",
+        "tracker_installed",
+        "tracked_send",
+        "outbound",
+        "req",
+        "build_result",
+    )
+
+    def __init__(
+        self,
+        *,
+        umo: str,
+        state: SessionState,
+        last_event: Any,
+        inherit_tools: bool,
+        prompt: str,
+        expected_generation: int | None,
+        force: bool,
+    ) -> None:
+        self.umo = umo
+        self.state = state
+        self.last_event = last_event
+        self.inherit_tools = inherit_tools
+        self.prompt = prompt
+        self.expected_generation = expected_generation
+        self.force = force
+        self.direct_send_count = 0
+        self.direct_send_texts: list[str] = []
+        self.tool_boundary_state: dict[str, Any] | None = None
+        # finally 是唯一回收点；build 前必须占位，避免 UnboundLocalError。
+        self.reset_coro: Any = None
+        self.original_send: Any = None
+        self.had_instance_send = False
+        self.original_instance_send: Any = None
+        self.tracker_installed = False
+        self.tracked_send: Any = None
+        self.outbound: OutboundGateway | None = None
+        self.req: Any = None
+        self.build_result: Any = None
+
+    def partial_reply(self) -> PipelineReply:
+        return PipelineReply(
+            direct_send_count=self.direct_send_count,
+            direct_texts=tuple(self.direct_send_texts),
+        )
+
+    def abort(self, pending: Any = None) -> PipelineReply:
+        """中止生成：eager close reset，带回已发生直发计数（finally 仍会兜底）。"""
+        if pending is not None:
+            pending.close()
+        return self.partial_reply()
+
+
 class GenerationRunner:
     """一次主动回复生成的编排：工具边界、策略强制与超时/孤儿收敛。"""
 
@@ -160,7 +230,7 @@ class GenerationRunner:
             run_task.cancel()
         try:
             await asyncio.wait_for(run_task, timeout=self._grace_stop_sec())
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             run_task.cancel()
 
     def __init__(
@@ -211,167 +281,36 @@ class GenerationRunner:
         # 一次运行一个工具语义：入口快照，避免运行中改配置导致 install 与
         # enforce 读到不同开关值（False→True 方向会留下未清理的工具集）。
         inherit_tools = self.settings.proactive_inherit_tools
-
         context_text = await self.build_context_text(umo, state)
         prompt = build_proactive_prompt(
             self.settings.reply_length_mode, context_text, inherit_tools=inherit_tools
         )
-        direct_send_count = 0
-        direct_send_texts: list[str] = []
-        tool_boundary_state: dict[str, Any] | None = None
-        # 与 tool_boundary_state 同理（0.9.4 阶段 1.3）：finally 是唯一回收点，而
-        # build 在 try 体内，所以 reset 协程必须先在 try 之外占位，否则 build 之前
-        # 抛异常会让 finally 撞上 UnboundLocalError，反而吃掉真正的异常。
-        reset_coro: Any = None
-        original_send = getattr(last_event, "send", None)
-        event_dict = getattr(last_event, "__dict__", {})
-        had_instance_send = isinstance(event_dict, dict) and "send" in event_dict
-        original_instance_send = event_dict.get("send") if had_instance_send else None
-        tracker_installed = False
-        outbound = OutboundGateway(
-            original_send,
-            max_direct_sends=MAX_DIRECT_TOOL_SENDS,
-            allow_direct=lambda: (
-                self._gate.is_current(umo, expected_generation)
-                and not self._local_gate(state, force=force)
-            ),
+        run = _GenerateRun(
+            umo=umo,
+            state=state,
+            last_event=last_event,
+            inherit_tools=inherit_tools,
+            prompt=prompt,
+            expected_generation=expected_generation,
+            force=force,
         )
-
-        async def tracked_send(message: MessageChain) -> Any:
-            nonlocal direct_send_count
-            is_tool_direct = getattr(message, "type", "") == "tool_direct_result"
-            if not is_tool_direct:
-                assert original_send is not None  # 外层 callable 检查已保证
-                return await original_send(message)
-            result = await outbound.send(message, kind="tool_direct")
-            direct_send_count = outbound.direct_send_count
-            direct_send_texts[:] = outbound.direct_texts
-            if not result.submitted:
-                logger.info(
-                    "[%s] suppress tool direct send session=%s reason=%s",
-                    PLUGIN_ID,
-                    umo,
-                    result.outcome.detail,
-                )
-            return result.raw_result
-
         try:
-            if not callable(original_send):
-                logger.warning("[%s] event send tracker unavailable session=%s", PLUGIN_ID, umo)
-                return PipelineReply()
-            try:
-                last_event.send = tracked_send
-                tracker_installed = True
-            except Exception as exc:
-                logger.warning(
-                    "[%s] event send tracker unavailable session=%s error=%s", PLUGIN_ID, umo, exc
-                )
-                return PipelineReply()
-
-            req = self._runtime().new_provider_request()
-            req.prompt = prompt
-            req.image_urls = []
-            req.audio_urls = []
-            req.func_tool = self._runtime().new_tool_set()
-            req.session_id = umo
-            tool_boundary_state = self.install_agent_tool_boundary(last_event, inherit_tools)
-            await self._load_conversation_into(req, last_event, umo)
-            last_event.set_extra("provider_request", req)
-            last_event.set_extra("self_initiated_reply", True)
-
-            def _abort(pending: Any = None) -> PipelineReply:
-                """中止生成：回收未 await 的 reset 协程，如实带回已发生的直发计数。
-
-                四个早退点语义相同——不产出文本，但工具直发的消息已经发出去了，
-                调用方要靠这个计数记冷却与日配额，返回空 PipelineReply 会漏账。
-
-                ``pending`` 的 close 自 0.9.4 阶段 1.3 起**已不是唯一防线**：
-                finally 新增的第四段会兜底关闭任何未结算的 reset 协程。保留这里的
-                eager close 是为了让早退点自身语义完整（不依赖远处的 finally），
-                代价是二者观测等价、无法被测试区分——把 ``_abort(reset_coro)``
-                变异成 ``_abort()`` 不会变红。这是已知且有意保留的冗余。
-                """
-                if pending is not None:
-                    pending.close()
-                return PipelineReply(
-                    direct_send_count=direct_send_count,
-                    direct_texts=tuple(direct_send_texts),
-                )
-
-            build_result = await self._runtime().build(
-                event=last_event,
-                plugin_context=self._context,
-                config=self.main_agent_build_config(umo),
-                req=req,
-                apply_reset=False,
-            )
-            if build_result is None:
-                return _abort()
-            reset_coro = build_result.reset_coro
-
-            if not self._enforce_policy(req, inherit_tools):
-                return _abort(reset_coro)
-
-            if await self._call_hook(
-                last_event,
-                self._runtime().event_type.OnLLMRequestEvent,
-                build_result.provider_request,
-            ):
-                return _abort(reset_coro)
-
-            # Second enforcement point: a hook may have injected tools into the
-            # request between build and reset. Enforce BEFORE reset so that any
-            # tool set the host copies into the runner during reset is already
-            # clean; the runner only ever sees the allowlisted set.
-            if not self._enforce_policy(req, inherit_tools):
-                return _abort(reset_coro)
-            if reset_coro:
-                await reset_coro
-
-            run_task = asyncio.ensure_future(self._drain(build_result.agent_runner))
-            self._background_tasks.add(run_task)
-            run_task.add_done_callback(self._discard_background)
-            try:
-                # shield：超时不硬取消 run_agent，先走优雅停止，让宿主
-                # run_agent 正常清理内部任务（如 stop_watcher），避免
-                # CancelledError 注入 yield 点导致常驻轮询任务泄漏。
-                await asyncio.wait_for(
-                    asyncio.shield(run_task),
-                    timeout=self.settings.generation_timeout_sec,
-                )
-            except asyncio.CancelledError:
-                # 调用方取消（force cancel / terminate）时，shield 保住的
-                # run_task 不会自动停止：必须显式收敛，否则成为孤儿任务
-                # 继续在后台运行，其工具直发还会绕过预算与代次闸门。
-                await self._graceful_stop(run_task, build_result.agent_runner, cancel_first=True)
-                raise
-            except asyncio.TimeoutError:
-                await self._graceful_stop(run_task, build_result.agent_runner, cancel_first=False)
-                raise
-            response = build_result.agent_runner.get_final_llm_resp()
-            reply_text = response_text(response)
-            if reply_text:
-                reply_text = clean_reply(
-                    reply_text,
-                    allow_multiline=self.settings.allow_multiline_reply,
-                    max_chars=self.settings.max_reply_chars,
-                )
-            return PipelineReply(
-                text=reply_text,
-                direct_send_count=direct_send_count,
-                direct_texts=tuple(direct_send_texts),
-            )
-        except asyncio.TimeoutError:
+            early = self._prepare_outbound_tracker(run)
+            if early is not None:
+                return early
+            built = await self._build_and_bound_tools(run)
+            if isinstance(built, PipelineReply):
+                return built
+            await self._run_agent_with_grace(run)
+            return self._finalize_text(run)
+        except TimeoutError:
             logger.warning(
                 "[%s] main-agent generation timeout session=%s timeout=%.1fs",
                 PLUGIN_ID,
                 umo,
                 self.settings.generation_timeout_sec,
             )
-            return PipelineReply(
-                direct_send_count=direct_send_count,
-                direct_texts=tuple(direct_send_texts),
-            )
+            return run.partial_reply()
         except Exception as exc:
             logger.warning(
                 "[%s] main-agent generation failed session=%s error=%s",
@@ -380,65 +319,192 @@ class GenerationRunner:
                 exc,
                 exc_info=True,
             )
-            return PipelineReply(
-                direct_send_count=direct_send_count,
-                direct_texts=tuple(direct_send_texts),
-            )
+            return run.partial_reply()
         finally:
-            # 以下四段清理各自独立静默兜底：finally 是唯一的回滚点，任一段失败都
-            # 不能中断其余段，否则会留下本函数正要防止的泄漏（reset 协程悬挂、
-            # send 劫持未摘除、工具边界未复原、provider_request 悬挂）。此处不加
-            # 日志：清理链上引入 I/O 会带来二次异常面，且失败信息对调用方无可行动性。
-            # 第一段必须排在摘除 send 之前：close() 会向挂起的协程抛 GeneratorExit，
-            # 其 finally 若回发消息，只有 tracker 仍在位才会**受门控拦截**（代次闸门与
-            # 直发预算）——这与三个早退点经 _abort 关闭时的时序一致（那时本 finally
-            # 尚未执行）。注意此处只保住门控、保不住账：Python 先求值 return 的
-            # PipelineReply 再跑 finally，此刻的直发增量已无法进入返回值。故本段的
-            # 收益是"不让清理期的发送绕过闸门"，不是"计数准确"。
+            self._cleanup_generation_state(run)
+
+    def _prepare_outbound_tracker(self, run: _GenerateRun) -> PipelineReply | None:
+        """安装工具直发 tracker；不可用时返回空回复（非异常路径）。"""
+        last_event = run.last_event
+        original_send = getattr(last_event, "send", None)
+        event_dict = getattr(last_event, "__dict__", {})
+        run.had_instance_send = isinstance(event_dict, dict) and "send" in event_dict
+        run.original_instance_send = event_dict.get("send") if run.had_instance_send else None
+        run.original_send = original_send
+        outbound = OutboundGateway(
+            original_send,
+            max_direct_sends=MAX_DIRECT_TOOL_SENDS,
+            allow_direct=lambda: (
+                self._gate.is_current(run.umo, run.expected_generation)
+                and not self._local_gate(run.state, force=run.force)
+            ),
+        )
+        run.outbound = outbound
+
+        async def tracked_send(message: MessageChain) -> Any:
+            is_tool_direct = getattr(message, "type", "") == "tool_direct_result"
+            if not is_tool_direct:
+                assert original_send is not None
+                return await original_send(message)
+            result = await outbound.send(message, kind="tool_direct")
+            run.direct_send_count = outbound.direct_send_count
+            run.direct_send_texts[:] = outbound.direct_texts
+            if not result.submitted:
+                logger.info(
+                    "[%s] suppress tool direct send session=%s reason=%s",
+                    PLUGIN_ID,
+                    run.umo,
+                    result.outcome.detail,
+                )
+            return result.raw_result
+
+        run.tracked_send = tracked_send
+        if not callable(original_send):
+            logger.warning(
+                "[%s] event send tracker unavailable session=%s", PLUGIN_ID, run.umo
+            )
+            return PipelineReply()
+        try:
+            last_event.send = tracked_send
+            run.tracker_installed = True
+        except Exception as exc:
+            logger.warning(
+                "[%s] event send tracker unavailable session=%s error=%s",
+                PLUGIN_ID,
+                run.umo,
+                exc,
+            )
+            return PipelineReply()
+        return None
+
+    async def _build_and_bound_tools(
+        self, run: _GenerateRun
+    ) -> PipelineReply | None:
+        """build + 双 enforce + hook + reset；早退返回 partial PipelineReply。"""
+        last_event = run.last_event
+        inherit_tools = run.inherit_tools
+        req = self._runtime().new_provider_request()
+        req.prompt = run.prompt
+        req.image_urls = []
+        req.audio_urls = []
+        req.func_tool = self._runtime().new_tool_set()
+        req.session_id = run.umo
+        run.req = req
+        run.tool_boundary_state = self.install_agent_tool_boundary(
+            last_event, inherit_tools
+        )
+        await self._load_conversation_into(req, last_event, run.umo)
+        last_event.set_extra("provider_request", req)
+        last_event.set_extra("self_initiated_reply", True)
+
+        build_result = await self._runtime().build(
+            event=last_event,
+            plugin_context=self._context,
+            config=self.main_agent_build_config(run.umo),
+            req=req,
+            apply_reset=False,
+        )
+        if build_result is None:
+            return run.abort()
+        run.build_result = build_result
+        run.reset_coro = build_result.reset_coro
+
+        if not self._enforce_policy(req, inherit_tools):
+            return run.abort(run.reset_coro)
+
+        if await self._call_hook(
+            last_event,
+            self._runtime().event_type.OnLLMRequestEvent,
+            build_result.provider_request,
+        ):
+            return run.abort(run.reset_coro)
+
+        # Second enforcement point: a hook may have injected tools into the
+        # request between build and reset. Enforce BEFORE reset so that any
+        # tool set the host copies into the runner during reset is already
+        # clean; the runner only ever sees the allowlisted set.
+        if not self._enforce_policy(req, inherit_tools):
+            return run.abort(run.reset_coro)
+        if run.reset_coro:
+            await run.reset_coro
+        return None
+
+    async def _run_agent_with_grace(self, run: _GenerateRun) -> None:
+        """shield + 超时/取消优雅停止。"""
+        build_result = run.build_result
+        assert build_result is not None
+        run_task = asyncio.ensure_future(self._drain(build_result.agent_runner))
+        self._background_tasks.add(run_task)
+        run_task.add_done_callback(self._discard_background)
+        try:
+            # shield：超时不硬取消 run_agent，先走优雅停止，让宿主
+            # run_agent 正常清理内部任务（如 stop_watcher），避免
+            # CancelledError 注入 yield 点导致常驻轮询任务泄漏。
+            await asyncio.wait_for(
+                asyncio.shield(run_task),
+                timeout=self.settings.generation_timeout_sec,
+            )
+        except asyncio.CancelledError:
+            # 调用方取消（force cancel / terminate）时，shield 保住的
+            # run_task 不会自动停止：必须显式收敛，否则成为孤儿任务
+            # 继续在后台运行，其工具直发还会绕过预算与代次闸门。
+            await self._graceful_stop(
+                run_task, build_result.agent_runner, cancel_first=True
+            )
+            raise
+        except TimeoutError:
+            await self._graceful_stop(
+                run_task, build_result.agent_runner, cancel_first=False
+            )
+            raise
+
+    def _finalize_text(self, run: _GenerateRun) -> PipelineReply:
+        build_result = run.build_result
+        assert build_result is not None
+        response = build_result.agent_runner.get_final_llm_resp()
+        reply_text = response_text(response)
+        if reply_text:
+            reply_text = clean_reply(
+                reply_text,
+                allow_multiline=self.settings.allow_multiline_reply,
+                max_chars=self.settings.max_reply_chars,
+            )
+        return PipelineReply(
+            text=reply_text,
+            direct_send_count=run.direct_send_count,
+            direct_texts=tuple(run.direct_send_texts),
+        )
+
+    def _cleanup_generation_state(self, run: _GenerateRun) -> None:
+        """四段独立静默清理：reset → 摘 send → 工具边界 → provider_request。"""
+        # 以下四段清理各自独立静默兜底：finally 是唯一的回滚点，任一段失败都
+        # 不能中断其余段。第一段必须排在摘除 send 之前。
+        last_event = run.last_event
+        try:
+            if run.reset_coro is not None:
+                # close() 对「已 await 完成」「已 close」「未启动」三态安全。
+                run.reset_coro.close()
+        except Exception:
+            pass
+        if run.tracker_installed and run.tracked_send is not None:
             try:
-                if reset_coro is not None:
-                    # 正常路径已在成功分支 await、三个早退点已由 _abort 关闭；但两处
-                    # _enforce_policy 与 _call_hook 抛异常时，控制流直奔 except，
-                    # 两个 return 都不碰它。close() 对「已 await 完成」「已 close」
-                    # 「未启动」三态均为安全空操作，故无需 reset_done 标志。
-                    reset_coro.close()
+                # identity 守卫：只摘自己装的 tracker，不覆盖第三方包装。
+                if getattr(last_event, "send", None) is run.tracked_send:
+                    if run.had_instance_send:
+                        last_event.send = run.original_instance_send
+                    else:
+                        delattr(last_event, "send")
             except Exception:
-                # 宿主 reset 协程的 GeneratorExit 处理可能自身抛错；回收失败只留一条
-                # never-awaited 告警，不能阻断后续三段回滚。
                 pass
-            if tracker_installed:
-                try:
-                    # identity 守卫（0.9.5）：只摘自己装的那一个。事件对象不是本插件
-                    # 独占的——同一条消息上可能有第三方插件（实测环境里有
-                    # astrbot_plugin_AstrNa）也在包装 send。若它在本次运行期间接管了
-                    # send，无条件回滚会**删掉/覆盖掉它的包装**：`delattr` 删的是它的
-                    # 属性，`= original_instance_send` 覆盖的是它的包装。两者都成功执行、
-                    # 不抛异常，因此原先的 except 兜不住——症状是那个插件在这条消息之后
-                    # 静默失效，且无任何日志。
-                    # 不是自己的就原样留下：本插件的 tracked_send 由那一层持有引用，
-                    # 它自己回滚时会连带解开，代价仅为本次直发统计可能不准（与原
-                    # except 分支同级的降级），远小于破坏另一个插件。
-                    if getattr(last_event, "send", None) is tracked_send:
-                        if had_instance_send:
-                            last_event.send = original_instance_send
-                        else:
-                            delattr(last_event, "send")
-                except Exception:
-                    # 宿主事件可能已被终结或 send 为只读属性，摘除失败仅影响
-                    # 本次直发统计，不能阻断后续两段回滚。
-                    pass
-            try:
-                if tool_boundary_state is not None:
-                    self.restore_agent_tool_boundary(last_event, tool_boundary_state)
-            except Exception:
-                # 同上：边界复原失败不得中断 provider_request 清理。
-                pass
-            try:
-                last_event.set_extra("provider_request", None)
-            except Exception:
-                # 老宿主可能无 set_extra 或事件已只读；此处是清理链末端，
-                # 无后续动作可保护，静默即最终态。
-                pass
+        try:
+            if run.tool_boundary_state is not None:
+                self.restore_agent_tool_boundary(last_event, run.tool_boundary_state)
+        except Exception:
+            pass
+        try:
+            last_event.set_extra("provider_request", None)
+        except Exception:
+            pass
 
     async def _load_conversation_into(self, req: Any, last_event: Any, umo: str) -> None:
         """把会话历史读进 ``req``，三种失败各自降级为「无上下文回复」而非中断。

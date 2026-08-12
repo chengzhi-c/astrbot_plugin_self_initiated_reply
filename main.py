@@ -351,7 +351,7 @@ class SelfInitiatedReplyPlugin(Star):
             call_hook=lambda event, event_type, req: call_event_hook(event, event_type, req),
             grace_stop_sec=lambda: GRACEFUL_STOP_GRACE_SEC,
             background_tasks=self._background_tasks,
-            discard_background=self._discard_background_task,
+            discard_background=self._background_tasks.discard,
             read_history=lambda umo, limit: self.bridge.read_astrbot_history(umo, limit=limit),
             build_image_context=lambda umo, enabled, provider_id: self._build_image_context(
                 umo, enabled=enabled, provider_id=provider_id
@@ -755,11 +755,8 @@ class SelfInitiatedReplyPlugin(Star):
             return None
         task = asyncio.create_task(coro)
         self._background_tasks.add(task)
-        task.add_done_callback(self._discard_background_task)
+        task.add_done_callback(self._background_tasks.discard)
         return task
-
-    def _discard_background_task(self, task: asyncio.Task[Any]) -> None:
-        self._background_tasks.discard(task)
 
     async def _prepare_images_for_session(
         self,
@@ -799,7 +796,7 @@ class SelfInitiatedReplyPlugin(Star):
             )
         except asyncio.CancelledError:
             raise
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("[%s] image capture timed out for umo=%s", PLUGIN_ID, umo)
         except Exception as exc:
             logger.warning("[%s] image capture failed for umo=%s error=%s", PLUGIN_ID, umo, exc)

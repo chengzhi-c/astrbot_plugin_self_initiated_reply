@@ -138,7 +138,11 @@ test("page exposes the accessibility and narrow-layout contracts", async () => {
   assert.match(app, /setAttribute\("aria-describedby",/);
   assert.match(app, /setAttribute\("aria-current", "location"\)/);
   assert.match(app, /requestPluginApi\(/);
-  assert.match(app, /providerNeedsManualInput\(next, providerOptions, providerListAvailable\)/);
+  assert.match(app, /createProviderControl\(/);
+  assert.match(
+    await readFile(join(pageDir, "providers.mjs"), "utf8"),
+    /providerNeedsManualInput\(next, getOptions\(\), isListAvailable\(\)\)/
+  );
   assert.match(
     app,
     /event\.key !== "Escape" \|\| !media\.matches \|\| els\.moreActionsMenu\.hidden/

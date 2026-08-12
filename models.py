@@ -704,7 +704,7 @@ class Settings:
     def apply(self, other: Settings) -> None:
         """原地写入另一实例的全部字段，保持对象身份不变。
 
-        五个运行组件（decision/generation/delivery/scheduler/whitelist）
+        运行组件（decision/generation/delivery/scheduler/whitelist/pipeline）
         构造时各存 self.settings 引用；配置热更新/回滚若整体替换
         plugin.settings，组件会读到过期配置（0.9.0 轴 A 修复的分裂缺陷）。
         本方法让全部持有者经既有引用即时可见新值。Settings 是普通

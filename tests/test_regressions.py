@@ -211,16 +211,22 @@ def test_config_mutations_share_one_lock_and_settings_normalizer() -> None:
 def test_proactive_agent_starts_with_restricted_tool_scope() -> None:
     """主动 Agent 默认不得继承全局插件、跨会话消息和高危工具。
 
-    实现随 04 拆分迁入 generation.py：锚定新文件，断言内容不变（捕获力保持）。
+    实现在 generation.py：generate 编排阶段函数；工具边界在
+    ``_build_and_bound_tools`` / ``_cleanup_generation_state``。
     """
-    method = method_source("generation.py", "generate")
-    calls = calls_in("generation.py", "generate")
+    generate = method_source("generation.py", "generate")
+    build = method_source("generation.py", "_build_and_bound_tools")
+    cleanup = method_source("generation.py", "_cleanup_generation_state")
+    build_calls = calls_in("generation.py", "_build_and_bound_tools")
 
-    assert "req.func_tool = self._runtime().new_tool_set()" in method
-    assert "self.install_agent_tool_boundary" in calls
-    assert "self._enforce_policy" in calls
-    assert "self._call_hook" in calls
-    assert "self.restore_agent_tool_boundary" in method
+    assert "_build_and_bound_tools" in generate
+    assert "req.func_tool = self._runtime().new_tool_set()" in build
+    assert "self.install_agent_tool_boundary" in build_calls
+    assert "self._enforce_policy" in build_calls
+    assert "self._call_hook" in build_calls
+    # 双 enforce：hook 前后各一次（fail-closed 红线）
+    assert build.count("_enforce_policy") >= 2
+    assert "restore_agent_tool_boundary" in cleanup
 
     boundary = method_source("generation.py", "install_agent_tool_boundary")
     assert "event.plugins_name = []" in boundary

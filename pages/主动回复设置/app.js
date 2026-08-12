@@ -1,10 +1,19 @@
-﻿const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
+const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
 
 import {
   isSuccessfulConfigPayload,
-  providerNeedsManualInput,
   requestPluginApi,
 } from "./frontend-core.mjs";
+import { DEFAULT_CONFIG, num } from "./config-form.mjs";
+import { createProviderControl } from "./providers.mjs";
+import {
+  THEME_KEY,
+  applyTheme,
+  currentTheme,
+  nextTheme,
+  persistTheme,
+  restoreTheme,
+} from "./theme.mjs";
 
 let els = null;
 
@@ -86,19 +95,6 @@ let providerListAvailable = false;
 let savingConfig = false;
 let configLoaded = false;
 
-// 数值字段默认值单表：加载回退与保存回退共用，防止两处漂移（复审 R2）
-const DEFAULT_CONFIG = {
-  decision_temperature: 0.2,
-  decision_timeout_sec: 20,
-  decision_history_min_messages: 5,
-  message_delay_sec: 60,
-  min_silence_sec: 45,
-  cooldown_sec: 900,
-  vision_max_images: 2,
-  vision_image_age_sec: 300,
-  vision_timeout_sec: 20,
-};
-
 const PROMPT_PREVIEW_VALUES = {
   session: "aiocqhttp:GroupMessage:123456789",
   trigger: "message_delay",
@@ -114,72 +110,12 @@ const PROMPT_PREVIEW_VALUES = {
   last_reply_age_sec: "900",
 };
 
-const THEME_KEY = "selfreply-theme";
-const THEME_CYCLE = ["auto", "light", "dark"];
-// 三态循环对读屏用户需可感知：按钮 aria-label 同步当前状态（复审：主题切换无状态语义）
-const THEME_LABELS = { auto: "跟随系统", light: "浅色 · 慈爱之惠", dark: "深色 · 审判之司" };
-
 // P2-7: 具名时间常量——同一事件只改一处，不用追漏
 const REFRESH_ARM_MS = 3000;    // 刷新按钮武装窗口（与下方 toast 文案「3 秒内」共享）
 const TOAST_MS = 2200;          // toast 自动隐藏延迟
 const SAVE_ANIM_MS = 1100;      // 保存按钮勾选动画清理
 const SAVE_DOT_MS = 700;        // 导航状态点脉冲清理
 const PREVIEW_DEBOUNCE_MS = 80; // 提示词预览防抖延迟
-
-function currentTheme() {
-  const value = document.documentElement.getAttribute("data-theme");
-  return value === "light" || value === "dark" ? value : "auto";
-}
-
-function applyTheme(theme) {
-  if (theme === "auto") {
-    document.documentElement.removeAttribute("data-theme");
-  } else {
-    document.documentElement.setAttribute("data-theme", theme);
-  }
-  cacheThemeLocally(theme);
-  if (els && els.themeToggle) {
-    els.themeToggle.setAttribute("aria-label", `切换主题，当前：${THEME_LABELS[theme] || THEME_LABELS.auto}`);
-  }
-}
-
-// AstrBot 插件页面以 iframe 嵌入 Dashboard，localStorage 不可用（访问即抛异常），
-// 持久化必须走后端 ui/theme API；localStorage 仅作为直接打开页面时的缓存。
-function cacheThemeLocally(theme) {
-  try {
-    if (theme === "auto") localStorage.removeItem(THEME_KEY);
-    else localStorage.setItem(THEME_KEY, theme);
-  } catch (error) {
-    /* iframe 环境 localStorage 不可用，忽略 */
-  }
-}
-
-async function persistTheme(theme) {
-  cacheThemeLocally(theme);
-  try {
-    await apiPost("ui/theme", { theme });
-  } catch (error) {
-    /* 后端持久化失败仅当次生效 */
-  }
-}
-
-async function restoreTheme() {
-  // 后端是 iframe 环境下的权威主题源；localStorage 缓存仅作首帧防闪
-  try {
-    const result = await apiGet("ui/theme");
-    const saved = result && result.ok !== false ? String(result.theme || "auto").trim() : "auto";
-    const next = saved === "light" || saved === "dark" ? saved : "auto";
-    if (next !== currentTheme()) applyTheme(next);
-  } catch (error) {
-    /* 后端不可用时保持当前（localStorage/系统）主题 */
-  }
-}
-
-function cycleTheme() {
-  const next = THEME_CYCLE[(THEME_CYCLE.indexOf(currentTheme()) + 1) % THEME_CYCLE.length];
-  applyTheme(next);
-  persistTheme(next);
-}
 
 function setStatState(element, state) {
   if (!element) return;
@@ -361,12 +297,6 @@ function fmtBool(value) {
   return value ? "启用" : "关闭";
 }
 
-function num(value, fallback) {
-  if (value === "" || value === undefined || value === null) return fallback;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
 function escapeHtml(str) {
   return String(str || "")
     .replace(/&/g, "&amp;")
@@ -393,100 +323,32 @@ function renderPromptPreview() {
   els.promptPreview.innerHTML = renderPromptTemplateHtml(template, PROMPT_PREVIEW_VALUES);
 }
 
-/**
- * 构造一个「下拉选择 + 手动输入」的 Provider 控件。
- *
- * 判断模型与两个识图 Provider 的控件结构完全一致，用同一工厂避免重复实现。
- * 控件自己持有 manual 状态，对外只暴露 value / render / sync / setManual；
- * onModeChange 回调用于联动周边 UI（如判断模型的提示文案与容器样式）。
- *
- * @param {{select: HTMLSelectElement|null, input: HTMLInputElement|null,
- *          button: HTMLButtonElement|null, placeholder: string}} refs
- * @param {(manual: boolean) => void} [onModeChange]
- */
-function createProviderControl(refs, onModeChange) {
-  let manual = false;
+const providerDeps = {
+  getOptions: () => providerOptions,
+  isListAvailable: () => providerListAvailable,
+  showToast: (msg) => showToast(msg),
+};
 
-  function setManual(enabled, focusInput = false) {
-    manual = Boolean(enabled);
-    if (refs.button) {
-      refs.button.textContent = manual ? "使用列表" : "手动输入";
-      refs.button.setAttribute("aria-expanded", String(manual));
-    }
-    if (refs.select) refs.select.hidden = manual;
-    if (refs.input) refs.input.hidden = !manual;
-    if (onModeChange) onModeChange(manual);
-    if (manual && focusInput && refs.input) refs.input.focus();
-  }
-
-  function value() {
-    if (manual) return refs.input ? refs.input.value.trim() : "";
-    return refs.select ? refs.select.value.trim() : "";
-  }
-
-  function render() {
-    if (!refs.select) return;
-    const current = refs.select.value;
-    refs.select.innerHTML = "";
-    const fallback = document.createElement("option");
-    fallback.value = "";
-    fallback.textContent = refs.placeholder;
-    refs.select.appendChild(fallback);
-    providerOptions.forEach((provider) => {
-      const option = document.createElement("option");
-      option.value = provider.id;
-      option.textContent = provider.label || provider.id;
-      refs.select.appendChild(option);
-    });
-    refs.select.value = current;
-  }
-
-  function sync(providerId) {
-    const next = String(providerId || "").trim();
-    if (!providerNeedsManualInput(next, providerOptions, providerListAvailable) && refs.select) {
-      refs.select.value = next;
-      if (refs.input) refs.input.value = "";
-      setManual(false);
-      return;
-    }
-    if (refs.input) refs.input.value = next;
-    setManual(true);
-  }
-
-  if (refs.button) {
-    refs.button.addEventListener("click", () => {
-      if (manual) {
-        sync(refs.input ? refs.input.value.trim() : "");
-        if (manual) showToast("当前 Provider 不在列表中，继续保留手动输入");
-        return;
-      }
-      if (refs.input) refs.input.value = refs.select ? refs.select.value || "" : "";
-      setManual(true, true);
-    });
-  }
-  if (refs.select) {
-    refs.select.addEventListener("change", () => {
-      if (refs.input) refs.input.value = "";
-    });
-  }
-
-  return { value, render, sync, setManual };
-}
-
-const visionProviderControl = createProviderControl({
-  select: els.visionProviderSelect,
-  input: els.visionProviderInput,
-  button: els.visionProviderManualBtn,
-  placeholder: "使用当前会话模型",
-});
+const visionProviderControl = createProviderControl(
+  {
+    select: els.visionProviderSelect,
+    input: els.visionProviderInput,
+    button: els.visionProviderManualBtn,
+    placeholder: "使用当前会话模型",
+  },
+  providerDeps
+);
 
 // 留空 = 与主识图 Provider 一致，回落逻辑由后端 Settings 统一处理
-const visionJudgeProviderControl = createProviderControl({
-  select: els.visionJudgeProviderSelect,
-  input: els.visionJudgeProviderInput,
-  button: els.visionJudgeProviderManualBtn,
-  placeholder: "与识图模型一致",
-});
+const visionJudgeProviderControl = createProviderControl(
+  {
+    select: els.visionJudgeProviderSelect,
+    input: els.visionJudgeProviderInput,
+    button: els.visionJudgeProviderManualBtn,
+    placeholder: "与识图模型一致",
+  },
+  providerDeps
+);
 
 // 判断模型 Provider：与识图控件同工厂（复审 R1），onModeChange 联动周边提示
 const judgeProviderControl = createProviderControl(
@@ -496,13 +358,16 @@ const judgeProviderControl = createProviderControl(
     button: els.providerManualBtn,
     placeholder: "使用当前会话默认模型",
   },
-  (manual) => {
-    if (els.providerField) els.providerField.classList.toggle("manual", manual);
-    if (els.providerHint) {
-      els.providerHint.textContent = manual
-        ? "手动输入为空时使用当前会话默认模型"
-        : "留空表示使用当前会话默认模型";
-    }
+  {
+    ...providerDeps,
+    onModeChange: (manual) => {
+      if (els.providerField) els.providerField.classList.toggle("manual", manual);
+      if (els.providerHint) {
+        els.providerHint.textContent = manual
+          ? "手动输入为空时使用当前会话默认模型"
+          : "留空表示使用当前会话默认模型";
+      }
+    },
   }
 );
 
@@ -1044,7 +909,11 @@ if (els.configForm) {
 
 // 主题切换：跟随系统 → 浅色 → 深色
 if (els.themeToggle) {
-  els.themeToggle.addEventListener("click", cycleTheme);
+  els.themeToggle.addEventListener("click", () => {
+    const next = nextTheme();
+    applyTheme(next, els.themeToggle);
+    persistTheme(next, apiPost);
+  });
 }
 
 // 亮度压暗 / 粗体切换
@@ -1080,7 +949,7 @@ try {
 try {
   const saved = localStorage.getItem(THEME_KEY);
   if (saved === "light" || saved === "dark") {
-    applyTheme(saved);
+    applyTheme(saved, els.themeToggle);
   }
 } catch (error) {
   /* localStorage 不可用时使用默认 */
@@ -1167,4 +1036,6 @@ loadAll()
     showToast(err.message || "加载失败");
   });
 // 主题权威源在后端（iframe 下 localStorage 不可用），加载完成后异步恢复
-restoreTheme();
+restoreTheme(apiGet).then((theme) => {
+  if (theme !== currentTheme()) applyTheme(theme, els.themeToggle);
+});
