@@ -176,6 +176,41 @@ async def test_delayed_check_waits_for_running_release_event(tmp_path: Path) -> 
         scheduler._gate.unmark_running(umo)
 
 
+async def test_delayed_check_drops_desynced_release_after_bounded_wait(
+    tmp_path: Path, monkeypatch
+) -> None:
+    scheduler_mod, _, scheduler, _, checks = _make_scheduler(tmp_path)
+    umo = "s1"
+    generation = scheduler._gate.advance(umo)
+    scheduler._gate.mark_running(umo)
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(scheduler_mod, "RELEASE_WAIT_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(scheduler_mod, "MAX_RELEASE_WAIT_ROUNDS", 2)
+    monkeypatch.setattr(scheduler_mod.logger, "warning", lambda *args: warnings.append(args))
+
+    task = asyncio.create_task(
+        scheduler.delayed_check(
+            umo,
+            delay_sec=0,
+            trigger="patrol",
+            force=True,
+            generation=generation,
+        )
+    )
+    try:
+        deadline = asyncio.get_event_loop().time() + 0.2
+        while not task.done() and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        assert task.done(), "失同步 release 闸门必须在有限轮次后主动结束"
+        assert not checks, "失同步时不得越过互斥闸门执行检查"
+        assert any(args and "release gate desynced" in str(args[0]) for args in warnings)
+    finally:
+        scheduler._gate.unmark_running(umo)
+        if not task.done():
+            task.cancel()
+        await task
+
+
 async def test_delayed_check_registers_and_cleans_running_table(tmp_path: Path) -> None:
     _, _, scheduler, _, _ = _make_scheduler(tmp_path)
     umo = "s1"

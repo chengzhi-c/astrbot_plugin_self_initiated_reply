@@ -183,6 +183,95 @@ class SessionScheduler:
         if event is not None:
             event.set()
 
+    async def _wait_initial_delay_and_validate(
+        self, umo: str, delay_sec: int | None, generation: int | None
+    ) -> bool:
+        delay = self.settings.message_delay_sec if delay_sec is None else max(0, delay_sec)
+        if delay > 0:
+            await asyncio.sleep(delay)
+        return self._should_run() and self._gate.is_current(umo, generation)
+
+    async def _wait_for_minimum_silence(
+        self,
+        umo: str,
+        *,
+        trigger: str,
+        force: bool,
+        generation: int | None,
+    ) -> bool:
+        state = self._state_for(whitelist_storage_key(umo))
+        silence_left = self.remaining_silence_sec(state)
+        silence_event: asyncio.Event | None = None
+        try:
+            while not force and silence_left > 0:
+                logger.debug(
+                    "[%s] wait for minimum silence session=%s trigger=%s remaining=%.2fs",
+                    PLUGIN_ID,
+                    umo,
+                    trigger,
+                    silence_left,
+                )
+                silence_event = self._silence_events.setdefault(umo, asyncio.Event())
+                try:
+                    await asyncio.wait_for(silence_event.wait(), timeout=silence_left + 0.1)
+                except TimeoutError:
+                    pass
+                if not self._should_run() or not self._gate.is_current(umo, generation):
+                    return False
+                silence_left = self.remaining_silence_sec(state)
+            return True
+        finally:
+            if silence_event is not None and self._silence_events.get(umo) is silence_event:
+                self._silence_events.pop(umo, None)
+
+    async def _wait_for_previous_check_release(
+        self, umo: str, trigger: str, generation: int | None
+    ) -> bool:
+        release_rounds = 0
+        while self._gate.is_running(umo):
+            logger.debug(
+                "[%s] wait for previous check to finish session=%s trigger=%s",
+                PLUGIN_ID,
+                umo,
+                trigger,
+            )
+            try:
+                await asyncio.wait_for(
+                    self._gate.release_event(umo).wait(), timeout=RELEASE_WAIT_TIMEOUT_SEC
+                )
+            except TimeoutError:
+                pass
+            if not self._should_run() or not self._gate.is_current(umo, generation):
+                return False
+            release_rounds += 1
+            if release_rounds >= MAX_RELEASE_WAIT_ROUNDS:
+                logger.warning(
+                    "[%s] release gate desynced, drop check session=%s trigger=%s rounds=%d",
+                    PLUGIN_ID,
+                    umo,
+                    trigger,
+                    release_rounds,
+                )
+                return False
+        return True
+
+    async def _run_registered_check(
+        self, umo: str, *, trigger: str, force: bool, generation: int | None
+    ) -> str:
+        running_task = asyncio.current_task()
+        if running_task is not None:
+            self._running_check_tasks[umo] = running_task
+        try:
+            return await self._check_session(
+                umo,
+                trigger=trigger,
+                force=force,
+                expected_generation=generation,
+            )
+        finally:
+            if running_task is not None and self._running_check_tasks.get(umo) is running_task:
+                self._running_check_tasks.pop(umo, None)
+
     async def delayed_check(
         self,
         umo: str,
@@ -201,81 +290,21 @@ class SessionScheduler:
 
         失败时：``CancelledError`` 静默返回（停止/失效路径的正常收敛）；其余异常
         记 warning 后吞掉，不向调用方冒泡——它由 ``asyncio.Task`` 驱动，抛出只会
-        变成无人接管的任务异常。``finally`` 必定回收本任务创建的静默事件，且仅在
-        表中仍是自己时才删（交错重建时误删会让新任务丢失通知）。
+        变成无人接管的任务异常。静默等待步骤的 ``finally`` 必定回收本任务创建的
+        事件，且仅在表中仍是自己时才删（交错重建时误删会让新任务丢失通知）。
         """
         try:
-            # 早退路径（延迟后插件停用/代次失效）不会到达静默等待段，
-            # 但 finally 会回收静默事件：必须先绑定，否则 UnboundLocalError
-            # （0.9.0 D1 补盲测试实测捕获的潜伏缺陷）。
-            silence_event: asyncio.Event | None = None
-            delay = self.settings.message_delay_sec if delay_sec is None else max(0, delay_sec)
-            if delay > 0:
-                await asyncio.sleep(delay)
-            if not self._should_run() or not self._gate.is_current(umo, generation):
+            if not await self._wait_initial_delay_and_validate(umo, delay_sec, generation):
                 return
-            state = self._state_for(whitelist_storage_key(umo))
-            silence_left = self.remaining_silence_sec(state)
-            while not force and silence_left > 0:
-                logger.debug(
-                    "[%s] wait for minimum silence session=%s trigger=%s remaining=%.2fs",
-                    PLUGIN_ID,
-                    umo,
-                    trigger,
-                    silence_left,
-                )
-                silence_event = self._silence_events.setdefault(umo, asyncio.Event())
-                try:
-                    # 事件化等待：新消息到达（notify_activity）立即醒来复查；
-                    # 超时兜底保留原 sleep 语义，保证无通知时照常推进。
-                    await asyncio.wait_for(silence_event.wait(), timeout=silence_left + 0.1)
-                except TimeoutError:
-                    pass
-                if not self._should_run() or not self._gate.is_current(umo, generation):
-                    return
-                silence_left = self.remaining_silence_sec(state)
-            release_rounds = 0
-            while self._gate.is_running(umo):
-                logger.debug(
-                    "[%s] wait for previous check to finish session=%s trigger=%s",
-                    PLUGIN_ID,
-                    umo,
-                    trigger,
-                )
-                # 超时兜底 + 轮次上限：配置回滚可能把运行标记恢复成
-                # 快照态，而支撑它的任务已结束、不会再 set release 事件。裸 wait()
-                # 在这种失同步下永久挂起（该会话静默死亡）。
-                try:
-                    await asyncio.wait_for(
-                        self._gate.release_event(umo).wait(), timeout=RELEASE_WAIT_TIMEOUT_SEC
-                    )
-                except TimeoutError:
-                    pass
-                if not self._should_run() or not self._gate.is_current(umo, generation):
-                    return
-                release_rounds += 1
-                if release_rounds >= MAX_RELEASE_WAIT_ROUNDS:
-                    logger.warning(
-                        "[%s] release gate desynced, drop check session=%s trigger=%s rounds=%d",
-                        PLUGIN_ID,
-                        umo,
-                        trigger,
-                        release_rounds,
-                    )
-                    return
-            running_task = asyncio.current_task()
-            if running_task is not None:
-                self._running_check_tasks[umo] = running_task
-            try:
-                result = await self._check_session(
-                    umo,
-                    trigger=trigger,
-                    force=force,
-                    expected_generation=generation,
-                )
-            finally:
-                if running_task is not None and self._running_check_tasks.get(umo) is running_task:
-                    self._running_check_tasks.pop(umo, None)
+            if not await self._wait_for_minimum_silence(
+                umo, trigger=trigger, force=force, generation=generation
+            ):
+                return
+            if not await self._wait_for_previous_check_release(umo, trigger, generation):
+                return
+            result = await self._run_registered_check(
+                umo, trigger=trigger, force=force, generation=generation
+            )
             logger.info(
                 "[%s] check result session=%s trigger=%s result=%s", PLUGIN_ID, umo, trigger, result
             )
@@ -283,11 +312,6 @@ class SessionScheduler:
             return
         except Exception as exc:
             logger.warning("[%s] delayed check failed session=%s error=%s", PLUGIN_ID, umo, exc)
-        finally:
-            # 回收本任务创建的静默事件（仅当表中仍是它时——取消/新任务
-            # 交错时新任务可能已 setdefault 重建，误删会导致其通知丢失）。
-            if silence_event is not None and self._silence_events.get(umo) is silence_event:
-                self._silence_events.pop(umo, None)
 
     # ------------------------------------------------------------------
     # 图片与事件清理
