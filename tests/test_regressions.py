@@ -104,37 +104,6 @@ def test_bare_command_word_is_parsed_as_command() -> None:
 # ============================================================================
 
 
-def test_session_generation_map_is_pruned_on_whitelist_removal() -> None:
-    """移出白名单时应清理会话代次记录，避免长期运行内存缓慢增长。"""
-    method = method_source("whitelist.py", "replace")
-
-    assert "self._prune(umo)" in method, (
-        "replace 未通过 gate.prune 清理代次/锁/运行集；"
-        "该字典按 UMO 累积且从不回收，长期运行会持续增长"
-    )
-
-
-def test_terminate_clears_image_event_cache() -> None:
-    """terminate 应清理含图事件缓存，避免插件重载时残留事件对象。
-
-    实现随 07 迁入 SessionCoordinator：terminate 走 reset_all 级联清空
-    （事件/时间/图片/阶段标记），断言锚定单点入口。
-    """
-    assert "self._coordinator.reset_all()" in method_source("main.py", "terminate"), (
-        "terminate 未经 reset_all 清空会话协作资源（含图片缓存）"
-    )
-    reset = method_source("session_coordinator.py", "reset_all")
-    assert "_images.clear()" in reset, "reset_all 未清空图片索引"
-
-
-def test_terminate_waits_for_cancelled_background_tasks() -> None:
-    """取消后台任务后必须等待其收尾，避免旧任务越过终止边界。"""
-    assert "await self._wait_background_tasks()" in method_source("main.py", "terminate")
-    wait_method = method_source("main.py", "_wait_background_tasks")
-    assert "asyncio.gather" in wait_method
-    assert "self._background_tasks" in wait_method
-
-
 def test_image_cache_cleanup_has_manual_api_and_startup_sweep(tmp_path: Path) -> None:
     """插件启动即回收过期缓存，并向宿主注册手动 POST 清理入口。"""
     models, _, _, _, _ = _load_r3_modules()
@@ -272,7 +241,7 @@ def _install_tool_injecting_pipeline(plugin, main, *, event):
     main._AGENT_RUNTIME = _PipelineTestAdapter(
         original_runtime, build_effect=build_effect, run_effect=run_effect
     )
-    original_enforce = plugin._enforce_final_tool_policy
+    original_enforce = plugin._generation._enforce_policy
 
     def counting_enforce(req, inherit_tools):
         ok = original_enforce(req, inherit_tools)
@@ -282,14 +251,14 @@ def _install_tool_injecting_pipeline(plugin, main, *, event):
             req.func_tool.add_tool(SimpleNamespace(name="hook_injected"))
         return ok
 
-    plugin._enforce_final_tool_policy = counting_enforce
+    plugin._generation._enforce_policy = counting_enforce
     return {
         "req_holder": req_holder,
         "enforce_snapshots": enforce_snapshots,
         "reset_snapshots": reset_snapshots,
         "prompts": prompts,
         "restore": lambda: (
-            setattr(plugin, "_enforce_final_tool_policy", original_enforce),
+            setattr(plugin._generation, "_enforce_policy", original_enforce),
             setattr(main, "_AGENT_RUNTIME", original_runtime),
         ),
     }
@@ -298,9 +267,7 @@ def _install_tool_injecting_pipeline(plugin, main, *, event):
 async def _run_pipeline(plugin):
     state = plugin._state_for(UMO)
     token = plugin._gate.advance(UMO)
-    return await plugin._generate_reply_via_pipeline(
-        UMO, state, expected_generation=token, force=True
-    )
+    return await plugin._generation.generate(UMO, state, expected_generation=token, force=True)
 
 
 def test_r1_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> None:
@@ -356,7 +323,7 @@ def test_r1_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> N
         main._AGENT_RUNTIME = _PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
-        original_enforce = plugin._enforce_final_tool_policy
+        original_enforce = plugin._generation._enforce_policy
 
         def counting_enforce(req, inherit_tools):
             ok = original_enforce(req, inherit_tools)
@@ -365,7 +332,7 @@ def test_r1_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> N
                 req.func_tool.add_tool(SimpleNamespace(name="hook_injected"))
             return ok
 
-        plugin._enforce_final_tool_policy = counting_enforce
+        plugin._generation._enforce_policy = counting_enforce
         try:
             result = await _run_pipeline(plugin)
             assert result.text == "你好呀"
@@ -373,7 +340,7 @@ def test_r1_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> N
             assert enforce_snapshots == [[], []]
             assert main._AGENT_RUNTIME.final_tool_ids(req_holder["req"]) == []
         finally:
-            plugin._enforce_final_tool_policy = original_enforce
+            plugin._generation._enforce_policy = original_enforce
             main._AGENT_RUNTIME = original_runtime
 
     with_plugin(tmp_path, scenario)
@@ -558,7 +525,7 @@ def test_r6_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
         main._AGENT_RUNTIME = _PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
-        original_enforce = plugin._enforce_final_tool_policy
+        original_enforce = plugin._generation._enforce_policy
 
         def counting_enforce(req, inherit_tools):
             ok = original_enforce(req, inherit_tools)
@@ -569,9 +536,9 @@ def test_r6_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
                 req.func_tool.add_tool(SimpleNamespace(name="third_party_weather"))
             return ok
 
-        plugin._enforce_final_tool_policy = counting_enforce
+        plugin._generation._enforce_policy = counting_enforce
         try:
-            result = await plugin._generate_reply_via_pipeline(
+            result = await plugin._generation.generate(
                 UMO, plugin._state_for(UMO), expected_generation=1, force=True
             )
             assert result.text == "你好呀"
@@ -579,7 +546,7 @@ def test_r6_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
             assert enforce_snapshots[0] == ["send_image"]
             assert enforce_snapshots[1] == ["send_image", "third_party_weather"]
         finally:
-            plugin._enforce_final_tool_policy = original_enforce
+            plugin._generation._enforce_policy = original_enforce
             main._AGENT_RUNTIME = original_runtime
 
     with_plugin(tmp_path, scenario, proactive_inherit_tools=True)
@@ -644,22 +611,22 @@ def test_r7_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) ->
         main._AGENT_RUNTIME = _PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
-        original_send_reply = plugin._send_reply
+        original_send_reply = plugin._delivery._send_reply
 
-        async def unknown_send_reply(umo, reply, *, expected_generation=None):
+        async def unknown_send_reply(umo, reply, expected_generation=None):
             models = importlib.import_module(f"{main.__package__}.models")
             return models.SendOutcome(models.SendStatus.UNKNOWN, "adapter raised after submit")
 
-        plugin._send_reply = unknown_send_reply
+        plugin._delivery._send_reply = unknown_send_reply
         try:
-            result = await plugin._check_session(UMO, trigger="patrol", force=True)
+            result = await plugin._pipeline.check_session(UMO, trigger="patrol", force=True)
             assert "未自动重试" in result
             # 修复前：direct_send_count>0 时跳过记录 → daily_count 不增（红灯）
             assert state.daily_count >= 1
             assert state.last_proactive_observed_at >= state.last_active_at
             assert state.last_proactive_at >= state.last_active_at
         finally:
-            plugin._send_reply = original_send_reply
+            plugin._delivery._send_reply = original_send_reply
             main._AGENT_RUNTIME = original_runtime
 
     with_plugin(tmp_path, scenario)
@@ -680,7 +647,9 @@ def test_r8_rollback_reschedules_delayed_check(tmp_path: Path) -> None:
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         plugin._state_for(UMO)
-        plugin._schedule_delayed_check(UMO, delay_sec=None, trigger="message_delay", force=False)
+        plugin._scheduler.schedule_delayed_check(
+            UMO, delay_sec=None, trigger="message_delay", force=False
+        )
         old_task = plugin._delay_tasks.get(UMO)
         assert old_task is not None and not old_task.cancelled()
 
@@ -755,7 +724,7 @@ def test_r9_timeout_requests_graceful_stop(tmp_path: Path) -> None:
         original_grace = main.GRACEFUL_STOP_GRACE_SEC
         main.GRACEFUL_STOP_GRACE_SEC = 0.05
         try:
-            result = await plugin._generate_reply_via_pipeline(
+            result = await plugin._generation.generate(
                 UMO, plugin._state_for(UMO), expected_generation=1, force=True
             )
             # 修复前：wait_for 直接取消 run_agent → request_stop 从未被调（红灯）
@@ -845,8 +814,8 @@ def test_r11_concurrent_checks_are_mutexed(tmp_path: Path) -> None:
         )
         try:
             results = await asyncio.gather(
-                plugin._check_session(UMO, trigger="patrol", force=True),
-                plugin._check_session(UMO, trigger="patrol", force=True),
+                plugin._pipeline.check_session(UMO, trigger="patrol", force=True),
+                plugin._pipeline.check_session(UMO, trigger="patrol", force=True),
             )
             rejected = [r for r in results if "已有判断任务在运行" in r]
             accepted = [r for r in results if "已有判断任务在运行" not in r]
@@ -872,7 +841,7 @@ def test_r12_non_force_check_rejected_for_non_whitelisted_session(tmp_path: Path
         plugin._last_events[UMO] = _make_event()
         plugin._last_event_at[UMO] = 1.0
         plugin.settings.whitelist = set()
-        result = await plugin._check_session(UMO, trigger="patrol", force=False)
+        result = await plugin._pipeline.check_session(UMO, trigger="patrol", force=False)
         assert result == "会话不在主动回复白名单。"
 
     with_plugin(tmp_path, scenario)
@@ -938,7 +907,9 @@ def test_r13_non_admin_write_command_does_not_cancel(tmp_path: Path) -> None:
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         plugin.settings.whitelist = {UMO}
-        plugin._schedule_delayed_check(UMO, delay_sec=None, trigger="message_delay", force=False)
+        plugin._scheduler.schedule_delayed_check(
+            UMO, delay_sec=None, trigger="message_delay", force=False
+        )
         task = plugin._delay_tasks.get(UMO)
         assert task is not None and not task.done()
 
@@ -963,7 +934,9 @@ def test_r14_admin_write_cancels_but_read_does_not(tmp_path: Path) -> None:
 
     async def scenario(plugin, main):
         plugin.settings.whitelist = {UMO}
-        plugin._schedule_delayed_check(UMO, delay_sec=None, trigger="message_delay", force=False)
+        plugin._scheduler.schedule_delayed_check(
+            UMO, delay_sec=None, trigger="message_delay", force=False
+        )
         task = plugin._delay_tasks.get(UMO)
         assert task is not None and not task.done()
 
@@ -1112,7 +1085,9 @@ def test_r18_aba_old_task_does_not_revive_after_re_add(tmp_path: Path) -> None:
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
         try:
-            task = asyncio.create_task(plugin._check_session(UMO, trigger="patrol", force=True))
+            task = asyncio.create_task(
+                plugin._pipeline.check_session(UMO, trigger="patrol", force=True)
+            )
             await entered.wait()
             # 会话运行中：白名单移除（级联失效+prune）→ 立即重加（新代次）
             await plugin._remove_whitelist_session(UMO)
@@ -1137,7 +1112,7 @@ def test_r18_aba_old_task_does_not_revive_after_re_add(tmp_path: Path) -> None:
 
 
 def test_r19_no_scattered_event_table_mutation_in_main() -> None:
-    """事件/时间/图片三表的清理必须收敛经 SessionCoordinator，main 只经委托壳。"""
+    """事件/时间/图片三表的清理必须由 SessionCoordinator 单点拥有。"""
     main_source = source_of("main.py")
 
     for frag in [

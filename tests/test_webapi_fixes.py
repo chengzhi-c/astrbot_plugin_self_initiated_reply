@@ -369,7 +369,7 @@ def test_api_cleanup_image_cache_paths(tmp_path) -> None:
         async def fake_cleanup():
             return 3
 
-        plugin._run_image_cleanup = fake_cleanup
+        plugin._scheduler.run_image_cleanup = fake_cleanup
         result = await webapi._api_cleanup_image_cache(plugin)
         assert result["ok"] is True
         assert result["removed"] == 3
@@ -379,7 +379,7 @@ def test_api_cleanup_image_cache_paths(tmp_path) -> None:
         async def boom():
             raise RuntimeError("disk")
 
-        plugin._run_image_cleanup = boom
+        plugin._scheduler.run_image_cleanup = boom
         result = await webapi._api_cleanup_image_cache(plugin)
         assert result["ok"] is False
 
@@ -387,7 +387,7 @@ def test_api_cleanup_image_cache_paths(tmp_path) -> None:
         async def cancelled():
             raise asyncio.CancelledError()
 
-        plugin._run_image_cleanup = cancelled
+        plugin._scheduler.run_image_cleanup = cancelled
         with pytest.raises(asyncio.CancelledError):
             await webapi._api_cleanup_image_cache(plugin)
 
@@ -642,7 +642,7 @@ def test_rollback_reschedule_failure_is_logged(tmp_path) -> None:
             raise OSError("disk full")
 
         plugin._save_storage = boom
-        plugin._schedule_delayed_check = lambda *a, **k: (_ for _ in ()).throw(
+        plugin._scheduler.schedule_delayed_check = lambda *a, **k: (_ for _ in ()).throw(
             RuntimeError("reschedule failed")
         )
         web = sys.modules["astrbot.api.web"]

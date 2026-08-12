@@ -100,7 +100,7 @@ def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
         main.GRACEFUL_STOP_GRACE_SEC = 0.05
         try:
             task = asyncio.create_task(
-                plugin._generate_reply_via_pipeline(
+                plugin._generation.generate(
                     UMO, plugin._state_for(UMO), expected_generation=1, force=True
                 )
             )
@@ -140,7 +140,7 @@ def test_force_cancel_kills_running_check_task(tmp_path: Path) -> None:
         delay_task = asyncio.create_task(asyncio.sleep(3600))
         plugin._delay_tasks[UMO] = delay_task
 
-        plugin._cancel_delay_task(UMO, force=True)
+        plugin._scheduler.cancel_delay(UMO, force=True)
         # 事件驱动等待 cancel 生效，替代单次 sleep(0)（flaky 修复）
         await until(lambda: running.done() and delay_task.done())
 
@@ -218,7 +218,7 @@ def test_prune_wakes_waiting_delayed_check(tmp_path: Path) -> None:
             )
             await asyncio.wait_for(entered_wait.wait(), timeout=2)
             assert not task.done(), "白名单移除前延迟检查应等待"
-            plugin._replace_whitelist(set())  # 移出全部会话
+            plugin._whitelist.replace(set())  # 移出全部会话
             done, _pending = await asyncio.wait({task}, timeout=2)
             assert task in done, "白名单移除后挂起的延迟检查应被唤醒退出"
         finally:
@@ -236,7 +236,7 @@ def test_stale_generation_rejected_at_session_entry(tmp_path: Path) -> None:
         plugin._last_event_at[UMO] = 1.0
         token = plugin._gate.advance(UMO)
         plugin._gate.advance(UMO)  # 抬代次使 token 过期
-        result = await plugin._check_session(
+        result = await plugin._pipeline.check_session(
             UMO, trigger="patrol", force=True, expected_generation=token
         )
         assert result == "会话已经更新，放弃旧任务。"
@@ -300,7 +300,7 @@ def test_force_cancel_converges_before_grace_timeout(tmp_path: Path) -> None:
         main.GRACEFUL_STOP_GRACE_SEC = 30
         try:
             task = asyncio.create_task(
-                plugin._generate_reply_via_pipeline(
+                plugin._generation.generate(
                     UMO, plugin._state_for(UMO), expected_generation=1, force=True
                 )
             )
@@ -377,7 +377,7 @@ def test_context_send_none_is_delivered_and_writes_history(tmp_path: Path) -> No
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
         try:
-            result = await plugin._check_session(UMO, trigger="patrol", force=True)
+            result = await plugin._pipeline.check_session(UMO, trigger="patrol", force=True)
             # 修复前：None 被记 UNKNOWN → "主动发送状态未知，未自动重试。"（红灯）
             assert "已主动回复" in result
             assert sent_via_context
@@ -403,7 +403,9 @@ def test_readonly_commands_do_not_invalidate_session(tmp_path: Path) -> None:
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         plugin._state_for(UMO)
-        plugin._schedule_delayed_check(UMO, delay_sec=None, trigger="message_delay", force=False)
+        plugin._scheduler.schedule_delayed_check(
+            UMO, delay_sec=None, trigger="message_delay", force=False
+        )
         task = plugin._delay_tasks.get(UMO)
         assert task is not None and not task.done()
 
@@ -426,16 +428,16 @@ def test_config_rollback_restores_task_topology(tmp_path: Path) -> None:
     """禁用路径 _stop_patrol_task 失败回滚后，patrol 任务必须恢复运行。"""
 
     async def scenario(plugin, main):
-        plugin._ensure_patrol_task()
+        plugin._scheduler.ensure_patrol()
         assert plugin._patrol_task is not None and not plugin._patrol_task.done()
 
-        original_stop = plugin._stop_patrol_task
+        original_stop = plugin._scheduler.stop_patrol
 
         async def failing_stop():
             await original_stop()
             raise OSError("stop patrol failed")
 
-        plugin._stop_patrol_task = failing_stop
+        plugin._scheduler.stop_patrol = failing_stop
         try:
             web = sys.modules["astrbot.api.web"]
             web.request.payload = {"enabled": False}
@@ -446,7 +448,7 @@ def test_config_rollback_restores_task_topology(tmp_path: Path) -> None:
             assert plugin._patrol_task is not None
             assert not plugin._patrol_task.done()
         finally:
-            plugin._stop_patrol_task = original_stop
+            plugin._scheduler.stop_patrol = original_stop
 
     with_plugin(tmp_path, scenario, enabled_patrol_trigger=True)
 
@@ -456,17 +458,19 @@ def test_config_rollback_reschedules_cancelled_delayed_checks(tmp_path: Path) ->
 
     async def scenario(plugin, main):
         plugin._state_for(UMO)
-        plugin._schedule_delayed_check(UMO, delay_sec=None, trigger="message_delay", force=False)
+        plugin._scheduler.schedule_delayed_check(
+            UMO, delay_sec=None, trigger="message_delay", force=False
+        )
         original_task = plugin._delay_tasks.get(UMO)
         assert original_task is not None and not original_task.done()
 
-        original_stop = plugin._stop_patrol_task
+        original_stop = plugin._scheduler.stop_patrol
 
         async def failing_stop():
             await original_stop()
             raise OSError("stop patrol failed")
 
-        plugin._stop_patrol_task = failing_stop
+        plugin._scheduler.stop_patrol = failing_stop
         try:
             web = sys.modules["astrbot.api.web"]
             web.request.payload = {"enabled": False}
@@ -475,7 +479,7 @@ def test_config_rollback_reschedules_cancelled_delayed_checks(tmp_path: Path) ->
             new_task = plugin._delay_tasks.get(UMO)
             assert new_task is not None and not new_task.done(), "回滚后延迟检查未重建"
         finally:
-            plugin._stop_patrol_task = original_stop
+            plugin._scheduler.stop_patrol = original_stop
 
     with_plugin(tmp_path, scenario)
 

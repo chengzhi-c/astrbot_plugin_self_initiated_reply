@@ -20,7 +20,7 @@ from .test_main_runtime import UMO, _make_event
 def test_multi_session_cancel_converges_all_tables(tmp_path: Path) -> None:
     """5 个会话各调度一个慢检查后全部取消，五张表必须回到基线。
 
-    只取消会话级任务（_cancel_delay_task），常驻后台任务（image cleanup）
+        只取消会话级任务，常驻后台任务（image cleanup）
     不得被误杀。
     """
 
@@ -30,12 +30,14 @@ def test_multi_session_cancel_converges_all_tables(tmp_path: Path) -> None:
         umos = [f"leak{i}:group:g" for i in range(5)]
         for umo in umos:
             plugin._last_events[umo] = _make_event()
-            plugin._schedule_delayed_check(umo, delay_sec=1, trigger="message_delay", force=False)
+            plugin._scheduler.schedule_delayed_check(
+                umo, delay_sec=1, trigger="message_delay", force=False
+            )
         await asyncio.sleep(0.05)
         assert len(plugin._delay_tasks) == 5
 
         for umo in umos:
-            plugin._cancel_delay_task(umo, force=True)
+            plugin._scheduler.cancel_delay(umo, force=True)
         await asyncio.sleep(0.1)
 
         assert len(plugin._background_tasks) == baseline_tasks
@@ -54,7 +56,9 @@ def test_completed_checks_leave_no_running_check_residue(tmp_path: Path) -> None
         umos = [f"leak{i}:group:g" for i in range(5)]
         for umo in umos:
             plugin._last_events[umo] = _make_event()
-            plugin._schedule_delayed_check(umo, delay_sec=0, trigger="message_delay", force=False)
+            plugin._scheduler.schedule_delayed_check(
+                umo, delay_sec=0, trigger="message_delay", force=False
+            )
         # 事件驱动等待自清理完成，替代固定 50×0.05s 轮询（flaky 修复）
         await until(lambda: not plugin._delay_tasks and not plugin._running_check_tasks)
         assert not plugin._delay_tasks
@@ -64,11 +68,23 @@ def test_completed_checks_leave_no_running_check_residue(tmp_path: Path) -> None
 
 
 def test_terminate_is_idempotent(tmp_path: Path) -> None:
-    """连续两次 terminate：不抛、不卡（2s 超时包住防悬挂）。"""
+    """terminate 等待任务收尾、清空图片索引，且连续调用不抛不挂。"""
 
     async def scenario(plugin, main):
+        finished = asyncio.Event()
+
+        async def background() -> None:
+            try:
+                await asyncio.sleep(3600)
+            finally:
+                finished.set()
+
         plugin._last_events[UMO] = _make_event()
-        plugin._schedule_delayed_check(UMO, delay_sec=0, trigger="message_delay", force=False)
+        plugin._coordinator.capture_images(UMO, 1.0, [object()])
+        plugin._track_background_task(background())
+        plugin._scheduler.schedule_delayed_check(
+            UMO, delay_sec=0, trigger="message_delay", force=False
+        )
         await asyncio.sleep(0.05)
 
         await asyncio.wait_for(plugin.terminate(), timeout=2)
@@ -77,5 +93,7 @@ def test_terminate_is_idempotent(tmp_path: Path) -> None:
         assert plugin._stopping is True
         assert not plugin._delay_tasks
         assert not plugin._background_tasks
+        assert not plugin._recent_image_events
+        assert finished.is_set()
 
     with_plugin(tmp_path, scenario)

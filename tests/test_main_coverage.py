@@ -345,30 +345,35 @@ def test_build_image_context_empty_descriptions_yield_empty(tmp_path: Path) -> N
 def test_session_check_guard_reasons(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         assert (
-            plugin._session_check_guard(UMO, force=False, expected_generation=None)
+            plugin._pipeline.session_check_guard(UMO, force=False, expected_generation=None)
             == "没有可用的最近消息事件。"
         )
-        assert plugin._session_check_guard(UMO, force=True, expected_generation=None) is None
+        assert (
+            plugin._pipeline.session_check_guard(UMO, force=True, expected_generation=None) is None
+        )
         plugin._stopping = True
         assert (
-            plugin._session_check_guard(UMO, force=False, expected_generation=None)
+            plugin._pipeline.session_check_guard(UMO, force=False, expected_generation=None)
             == "插件未启用。"
         )
         plugin._stopping = False
         other = "fake:group:999"
         assert (
-            plugin._session_check_guard(other, force=False, expected_generation=None)
+            plugin._pipeline.session_check_guard(other, force=False, expected_generation=None)
             == "会话不在主动回复白名单。"
         )
-        assert plugin._session_check_guard(other, force=True, expected_generation=None) is None
+        assert (
+            plugin._pipeline.session_check_guard(other, force=True, expected_generation=None)
+            is None
+        )
         plugin._gate.mark_running(UMO)
         assert (
-            plugin._session_check_guard(UMO, force=True, expected_generation=None)
+            plugin._pipeline.session_check_guard(UMO, force=True, expected_generation=None)
             == "已有判断任务在运行。"
         )
         plugin._gate.unmark_running(UMO)
         assert (
-            plugin._session_check_guard(UMO, force=False, expected_generation=None)
+            plugin._pipeline.session_check_guard(UMO, force=False, expected_generation=None)
             == "没有可用的最近消息事件。"
         )
 
@@ -387,8 +392,9 @@ def test_decide_session_reply_early_reason_passthrough(tmp_path: Path) -> None:
         plugin._decision.decide = fake_decide
         try:
             state = plugin._state_for(UMO)
-            result = await plugin._decide_session_reply(
-                UMO, state, trigger="message_delay", force=False, expected_generation=None
+            plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
+            result = await plugin_state.decide_session_reply(
+                plugin, UMO, state, trigger="message_delay", force=False, expected_generation=None
             )
             assert result == "判断模型解析失败"
         finally:
@@ -402,8 +408,9 @@ def test_decide_session_reply_stale_generation_rejected(tmp_path: Path) -> None:
         token = plugin._gate.advance(UMO)
         plugin._gate.advance(UMO)
         state = plugin._state_for(UMO)
-        result = await plugin._decide_session_reply(
-            UMO, state, trigger="manual", force=True, expected_generation=token
+        plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
+        result = await plugin_state.decide_session_reply(
+            plugin, UMO, state, trigger="manual", force=True, expected_generation=token
         )
         assert result == "会话已经更新，放弃旧任务。"
 
@@ -415,8 +422,9 @@ def test_decide_session_reply_no_reply_returns_reason(tmp_path: Path) -> None:
 
     async def scenario(plugin, main):
         state = plugin._state_for(UMO)
-        result = await plugin._decide_session_reply(
-            UMO, state, trigger="message_delay", force=False, expected_generation=None
+        plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
+        result = await plugin_state.decide_session_reply(
+            plugin, UMO, state, trigger="message_delay", force=False, expected_generation=None
         )
         assert result.startswith("判断不回复：")
 
@@ -469,25 +477,25 @@ def test_check_suppresses_duplicate_direct_text(tmp_path: Path) -> None:
         )
         original_decide = plugin._decision.decide
         plugin._decision.decide = fake_decide
-        original_deliver = plugin._deliver_session_reply
+        original_deliver = plugin._delivery.deliver_reply
         delivered: list[str] = []
 
         async def fake_deliver(umo, state, reply, direct_send_count, **kwargs):
             delivered.append(reply)
             return "已投递"
 
-        plugin._deliver_session_reply = fake_deliver
+        plugin._delivery.deliver_reply = fake_deliver
         try:
             state = plugin._state_for(UMO)
             state.last_active_at = 1.0
             token = plugin._gate.advance(UMO)
-            result = await plugin._check_session_locked(
+            result = await plugin._pipeline.check_session_locked(
                 UMO, trigger="manual", force=True, expected_generation=token
             )
             assert result == "已投递"
             assert delivered == [""]  # 重复文本被抑制为空
         finally:
-            plugin._deliver_session_reply = original_deliver
+            plugin._delivery.deliver_reply = original_deliver
             plugin._decision.decide = original_decide
             main._AGENT_RUNTIME = original_runtime
 
@@ -495,20 +503,28 @@ def test_check_suppresses_duplicate_direct_text(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# 协作壳与只读视图（逻辑在子模块，主类保留转发）
+# 协作组件接口与只读视图
 # ============================================================================
 
 
-def test_delegate_shells_work(tmp_path: Path) -> None:
+def test_component_interfaces_work(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         state = plugin._state_for(UMO)
         assert isinstance(plugin._scheduler.last_cleanup_at, float)
-        assert plugin._patrol_task is None  # patrol 触发默认关闭，不启动任务
-        assert isinstance(await plugin._run_image_cleanup(), int)
+        assert plugin._scheduler.patrol_task is None  # patrol 触发默认关闭，不启动任务
+        assert isinstance(await plugin._scheduler.run_image_cleanup(), int)
         assert isinstance(plugin._scheduler.remaining_silence_sec(state), float)
         plugin._generation.main_agent_build_config("")
         assert isinstance(plugin._decision.recent_reply_request_reason(state), str)
-        assert plugin._recent_images_for(UMO) == []
+        assert (
+            plugin._coordinator.images_for(
+                UMO,
+                vision_age_sec=float(plugin.settings.vision_image_age_sec),
+                vision_skip_stickers=plugin.settings.vision_skip_stickers,
+                vision_max_images=plugin.settings.vision_max_images,
+            )
+            == []
+        )
         prompt = await plugin._decision.build_decision_prompt(UMO, state, "patrol")
         assert isinstance(prompt, str)
 
@@ -548,12 +564,12 @@ def test_command_text_remove_flow(tmp_path: Path) -> None:
 
 def test_command_text_check_flow_and_non_whitelist_recycle(tmp_path: Path) -> None:
     async def scenario(plugin, main):
-        original_check = plugin._check_session
+        original_check = plugin._pipeline.check_session
 
         async def fake_check(*args, **kwargs):
             return "完成"
 
-        plugin._check_session = fake_check
+        plugin._pipeline.check_session = fake_check
         try:
             event = _make_event(message_str="/selfreply check")
             text = await plugin._command_text(event, "check")
@@ -569,7 +585,7 @@ def test_command_text_check_flow_and_non_whitelist_recycle(tmp_path: Path) -> No
             assert text == "主动回复检查结果：完成"
             assert other not in plugin._session_generation  # 非白名单会话已回收
         finally:
-            plugin._check_session = original_check
+            plugin._pipeline.check_session = original_check
 
     with_plugin(tmp_path, scenario)
 
@@ -602,12 +618,12 @@ def test_whitelist_add_remove_raise_when_stopping(tmp_path: Path) -> None:
 
 def test_subcommand_handlers_run(tmp_path: Path) -> None:
     async def scenario(plugin, main):
-        original_check = plugin._check_session
+        original_check = plugin._pipeline.check_session
 
         async def fake_check(*args, **kwargs):
             return "完成"
 
-        plugin._check_session = fake_check
+        plugin._pipeline.check_session = fake_check
         try:
             event = _make_event()
             assert (await _consume(plugin.selfreply_help(event))).text
@@ -623,7 +639,7 @@ def test_subcommand_handlers_run(tmp_path: Path) -> None:
             assert "已暂停" in (await _consume(plugin.selfreply_off(event))).text
             assert (await _consume(plugin.selfreply_debug(event))).text
         finally:
-            plugin._check_session = original_check
+            plugin._pipeline.check_session = original_check
 
     with_plugin(tmp_path, scenario)
 
@@ -863,8 +879,9 @@ def test_decide_session_reply_dict_no_reply(tmp_path: Path) -> None:
         plugin._decision.decide = fake_decide
         try:
             state = plugin._state_for(UMO)
-            result = await plugin._decide_session_reply(
-                UMO, state, trigger="message_delay", force=False, expected_generation=None
+            plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
+            result = await plugin_state.decide_session_reply(
+                plugin, UMO, state, trigger="message_delay", force=False, expected_generation=None
             )
             assert result == "判断不回复：无意图"
         finally:

@@ -858,7 +858,7 @@ def test_whitelist_runtime_umos_reclaimed_when_inactive(tmp_path: Path) -> None:
         plugin._last_events["group:1:user:a"] = _make_event()
         plugin._last_event_at["group:1:user:a"] = stale_at
         plugin._scheduler.last_cleanup_at = 0  # 强制本次执行清理
-        plugin._cleanup_old_events_if_needed()
+        plugin._scheduler.cleanup_events_if_needed()
         # a 的活动事件已陈旧：两个 UMO 都离开活跃集 → 整组回收
         assert "group:1" not in plugin._whitelist_runtime_umos
 
@@ -868,7 +868,7 @@ def test_whitelist_runtime_umos_reclaimed_when_inactive(tmp_path: Path) -> None:
         plugin._last_events["group:2:user:c"] = _make_event()
         plugin._last_event_at["group:2:user:c"] = fresh_at
         plugin._scheduler.last_cleanup_at = 0
-        plugin._cleanup_old_events_if_needed()
+        plugin._scheduler.cleanup_events_if_needed()
         assert plugin._whitelist_runtime_umos.get("group:2") == {"group:2:user:c"}
 
     with_plugin(tmp_path, scenario)

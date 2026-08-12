@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import re
 from pathlib import Path
 from typing import Any
@@ -75,7 +76,9 @@ def test_skipped_decision_recorded_in_last_decisions(tmp_path: Path) -> None:
         umo = UMO
         state = plugin._state_for(umo)
         plugin._decision = _FakeDecision()
-        result = await plugin._decide_session_reply(
+        plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
+        result = await plugin_state.decide_session_reply(
+            plugin,
             umo,
             state,
             trigger="message",
@@ -99,11 +102,11 @@ def test_install_boundary_only_touches_event_plugins_name(tmp_path: Path) -> Non
         event.platform_meta.support_proactive_message = True
         event.plugins_name = list(original_plugins_name)
 
-        state = plugin._install_agent_tool_boundary(event, False)
+        state = plugin._generation.install_agent_tool_boundary(event, False)
         assert event.plugins_name == []
         assert event.platform_meta.support_proactive_message is True
 
-        plugin._restore_agent_tool_boundary(event, state)
+        plugin._generation.restore_agent_tool_boundary(event, state)
         assert event.plugins_name == original_plugins_name
 
     with_plugin(tmp_path, scenario)
@@ -116,14 +119,14 @@ def test_inherit_tools_mode_keeps_plugin_names_and_skips_policy(tmp_path: Path) 
         event = _make_event()
         event.plugins_name = ["stealer", "living_memory"]
 
-        state = plugin._install_agent_tool_boundary(event, True)
+        state = plugin._generation.install_agent_tool_boundary(event, True)
         assert state == {}
         assert event.plugins_name == ["stealer", "living_memory"]
 
         tool_set = FakeToolSet()
         tool_set.add_tool(type("T", (), {"name": "stealer_fetch"})())
         req = type("Req", (), {"func_tool": tool_set})()
-        assert plugin._enforce_final_tool_policy(req, True) is True
+        assert plugin._generation.enforce_final_tool_policy(req, True) is True
         assert [tool.name for tool in tool_set.tools] == ["stealer_fetch"]
 
     with_plugin(tmp_path, scenario, proactive_inherit_tools=True)
@@ -196,12 +199,12 @@ def test_enforce_final_tool_policy_fail_closed_aborts_run(tmp_path: Path) -> Non
 
     async def scenario(plugin, main):
         bad_req = type("Req", (), {"func_tool": type("Bad", (), {"tools": None})()})()
-        assert plugin._enforce_final_tool_policy(bad_req, False) is False
+        assert plugin._generation.enforce_final_tool_policy(bad_req, False) is False
 
         tool_set = FakeToolSet()
         tool_set.add_tool(type("T", (), {"name": "send_message_to_user"})())
         clean_req = type("Req", (), {"func_tool": tool_set})()
-        assert plugin._enforce_final_tool_policy(clean_req, False) is True
+        assert plugin._generation.enforce_final_tool_policy(clean_req, False) is True
         assert tool_set.tools == []
 
     with_plugin(tmp_path, scenario)
@@ -293,7 +296,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
         enforce_tool_snapshots: list[list[str]] = []
-        original_enforce = plugin._enforce_final_tool_policy
+        original_enforce = plugin._generation._enforce_policy
 
         def counting_enforce(req, inherit_tools):
             ok = original_enforce(req, inherit_tools)
@@ -303,11 +306,11 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
                 req.func_tool.add_tool(SimpleNamespace(name="hook_injected"))
             return ok
 
-        plugin._enforce_final_tool_policy = counting_enforce
+        plugin._generation._enforce_policy = counting_enforce
         try:
             state = plugin._state_for(UMO)
             token = plugin._gate.advance(UMO)
-            result = await plugin._generate_reply_via_pipeline(
+            result = await plugin._generation.generate(
                 UMO, state, expected_generation=token, force=True
             )
 
@@ -326,7 +329,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
             assert event.plugins_name == original_plugins_name
             assert event.get_extra("provider_request") is None
         finally:
-            plugin._enforce_final_tool_policy = original_enforce
+            plugin._generation._enforce_policy = original_enforce
             main._AGENT_RUNTIME = original_runtime
 
     with_plugin(tmp_path, scenario)
@@ -377,7 +380,7 @@ def test_pipeline_hook_early_exit_still_restores_event(tmp_path: Path) -> None:
         try:
             state = plugin._state_for(UMO)
             token = plugin._gate.advance(UMO)
-            result = await plugin._generate_reply_via_pipeline(
+            result = await plugin._generation.generate(
                 UMO, state, expected_generation=token, force=True
             )
             assert ran == [True]
@@ -404,9 +407,9 @@ def test_generation_is_monotonic_and_survives_whitelist_aba(tmp_path: Path) -> N
     async def scenario(plugin, main):
         first = plugin._gate.advance(UMO)
         # 移除白名单：invalidate 推进代次，旧任务 token 从此失效
-        plugin._replace_whitelist(set())
+        plugin._whitelist.replace(set())
         # 重新加入：会话 token 继续增大
-        plugin._replace_whitelist({UMO})
+        plugin._whitelist.replace({UMO})
         after_readd = plugin._gate.advance(UMO)
 
         assert after_readd > first
@@ -580,17 +583,23 @@ def test_track_background_task_barrier_after_stop(tmp_path: Path) -> None:
         task = plugin._track_background_task(innocent())
         assert task is None
         # 延迟调度在停止后不得注册
-        plugin._schedule_delayed_check(UMO, delay_sec=0, trigger="message_delay", force=False)
+        plugin._scheduler.schedule_delayed_check(
+            UMO, delay_sec=0, trigger="message_delay", force=False
+        )
         assert UMO not in plugin._delay_tasks
 
     with_plugin(tmp_path, scenario)
 
 
-def test_whitelist_remove_recycles_session_lock(tmp_path: Path) -> None:
+def test_whitelist_remove_recycles_gate_state(tmp_path: Path) -> None:
     async def scenario(plugin, main):
+        plugin._gate.advance(UMO)
         plugin._gate.lock_for(UMO)
-        plugin._replace_whitelist(set())
+        plugin._gate.mark_running(UMO)
+        plugin._whitelist.replace(set())
+        assert UMO not in plugin._session_generation
         assert UMO not in plugin._session_locks
+        assert UMO not in plugin._running_sessions
 
     with_plugin(tmp_path, scenario)
 
@@ -628,7 +637,7 @@ def test_whitelist_remove_recycles_session_state(tmp_path: Path) -> None:
         state.recent.append("历史消息")
         assert UMO in plugin.sessions
 
-        plugin._replace_whitelist(set())
+        plugin._whitelist.replace(set())
         assert UMO not in plugin.sessions
         assert plugin.sessions.get(UMO) is None
 
@@ -738,7 +747,7 @@ def test_whitelist_remove_recycles_legacy_group_key(tmp_path: Path) -> None:
         legacy_key = main.session_group_id(UMO)
         assert legacy_key
         plugin.sessions[legacy_key] = plugin._state_for(UMO)
-        plugin._replace_whitelist(set())
+        plugin._whitelist.replace(set())
         assert UMO not in plugin.sessions
         assert legacy_key not in plugin.sessions
 
@@ -753,12 +762,12 @@ def test_force_check_prunes_session_state(tmp_path: Path) -> None:
     """
 
     async def scenario(plugin, main):
-        original_check = plugin._check_session
+        original_check = plugin._pipeline.check_session
 
         async def fake_check(*args, **kwargs):
             return "完成"
 
-        plugin._check_session = fake_check
+        plugin._pipeline.check_session = fake_check
         try:
             other = "fake:group:999"
             plugin._state_for(other)  # 模拟 check 流程已建会话状态
@@ -768,7 +777,7 @@ def test_force_check_prunes_session_state(tmp_path: Path) -> None:
             assert other not in plugin.sessions
             assert plugin.sessions.get(other) is None
         finally:
-            plugin._check_session = original_check
+            plugin._pipeline.check_session = original_check
 
     with_plugin(tmp_path, scenario)
 
