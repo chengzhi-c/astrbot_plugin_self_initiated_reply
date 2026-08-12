@@ -1,14 +1,8 @@
-/** 导航 / 滚动 / 更多菜单 / 亮度粗体等壳层 UI。 */
 const MORE_ACTIONS_MEDIA = "(max-width: 460px)";
 const DIM_KEY = "selfreply-dim";
 const BOLD_KEY = "selfreply-bold";
 const TAB_GROUPS = {
-  selfStat: "selfStat",
-  "sec-scope": "sec-scope",
-  "sec-triggers": "sec-scope",
-  "sec-decision": "sec-decision",
-  "sec-runtime": "sec-runtime",
-  "sec-vision": "sec-runtime",
+  selfStat: "selfStat", "sec-scope": "sec-scope", "sec-triggers": "sec-scope", "sec-decision": "sec-decision", "sec-runtime": "sec-runtime", "sec-vision": "sec-runtime",
 };
 export function prefersReducedMotion() {
   return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -81,9 +75,7 @@ export function setCurrentNav(els, active) {
     if (linkRect.left < listRect.left + 2 || linkRect.right > listRect.right - 2) {
       const delta = linkRect.left - listRect.left - (listRect.width - linkRect.width) / 2;
       els.sidenavList.scrollTo({
-        left: els.sidenavList.scrollLeft + delta,
-        behavior: prefersReducedMotion() ? "auto" : "smooth",
-      });
+        left: els.sidenavList.scrollLeft + delta, behavior: prefersReducedMotion() ? "auto" : "smooth", });
     }
   }
   syncMobileTabs(els, active);
@@ -100,9 +92,7 @@ export function setupNav(els) {
       const details = target.closest("details");
       if (details && !details.open) details.open = true;
       target.scrollIntoView({
-        behavior: prefersReducedMotion() ? "auto" : "smooth",
-        block: "start",
-      });
+        behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start", });
       try {
         history.replaceState(null, "", "#" + link.dataset.target);
       } catch (_) {
@@ -113,17 +103,14 @@ export function setupNav(els) {
   });
   if ("IntersectionObserver" in window) {
     const sections = links.map((l) => document.getElementById(l.dataset.target)).filter(Boolean);
-    const observer = new IntersectionObserver(
-      (entries) => {
+    const observer = new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
             const link = byTarget.get(entry.target.id);
             if (link) setCurrentNav(els, link);
           }
         });
-      },
-      { rootMargin: "-28% 0px -62% 0px", threshold: 0 }
-    );
+      }, { rootMargin: "-28% 0px -62% 0px", threshold: 0 });
     sections.forEach((s) => observer.observe(s));
   }
   setCurrentNav(els, links[0]);
@@ -137,12 +124,8 @@ export function setupMobileTabs(els) {
       const details = target.closest("details");
       if (details && !details.open) details.open = true;
       target.scrollIntoView({
-        behavior: prefersReducedMotion() ? "auto" : "smooth",
-        block: "start",
-      });
-      const link = document.querySelector(
-        '.sidenav-link[data-target="' + tab.dataset.target + '"]'
-      );
+        behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start", });
+      const link = document.querySelector('.sidenav-link[data-target="' + tab.dataset.target + '"]');
       if (link) setCurrentNav(els, link);
     });
   });
@@ -196,13 +179,11 @@ export function bindDimBoldButtons() {
   const boldBtn = document.getElementById("boldBtn");
   if (dimBtn) {
     dimBtn.addEventListener("click", () =>
-      applyDim(!document.documentElement.classList.contains("dimmed"))
-    );
+      applyDim(!document.documentElement.classList.contains("dimmed")));
   }
   if (boldBtn) {
     boldBtn.addEventListener("click", () =>
-      applyBold(!document.documentElement.classList.contains("bold-text"))
-    );
+      applyBold(!document.documentElement.classList.contains("bold-text")));
   }
 }
 export function hideBoot(els) {

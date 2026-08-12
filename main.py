@@ -16,7 +16,6 @@ E402）：宿主私有符号必须先经适配层探测并绑到模块级名字�
 from __future__ import annotations
 
 import asyncio
-import json
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
@@ -82,24 +81,31 @@ from .generation import GenerationRunner
 from .image import ImageInfo, ImageParser
 from .models import (
     ADMIN_COMMAND_ACTIONS,
-    ADMIN_REFRESH_WINDOW_SEC,
     COMMAND_HANDLED_KEY,
     GRACEFUL_STOP_GRACE_SEC,
     PLUGIN_ID,
     PLUGIN_VERSION,
     SESSION_CANCEL_COMMAND_ACTIONS,
-    STALE_TASK_MESSAGE,
     PipelineReply,
     SendOutcome,
     SessionState,
     Settings,
     now_ts,
 )
-
-# 测试会替换 main.GRACEFUL_STOP_GRACE_SEC；装配 lambda 经 models 常量名解析时
-# 需保证本模块仍暴露同名绑定（grace_stop_sec 读 assembly 注入的 getter）。
+from .plugin_state import (
+    decide_session_reply as state_decide_session_reply,
+    persist_enabled as state_persist_enabled,
+    record_decision as state_record_decision,
+    refresh_admin_ids as state_refresh_admin_ids,
+    resolve_paths as state_resolve_paths,
+    save_storage as state_save_storage,
+    save_storage_snapshot as state_save_storage_snapshot,
+    save_storage_sync as state_save_storage_sync,
+    state_for as state_state_for,
+    sync_whitelist as state_sync_whitelist,
+    track_background_task as state_track_background_task,
+)
 from .storage import (
-    build_sessions_payload,
     load_config_data,
     load_sessions,
     migrate_config_file,
@@ -119,9 +125,6 @@ from .utils import (
 )
 from .webapi import UnifiedManagerApi, bind_api_handlers, load_ui_theme, register_web_apis
 
-# ADMIN_COMMAND_ACTIONS 与 GRACEFUL_STOP_GRACE_SEC 统一从 models 导入，
-# 避免同名常量在多处定义。
-
 
 @register(
     PLUGIN_ID,
@@ -130,21 +133,7 @@ from .webapi import UnifiedManagerApi, bind_api_handlers, load_ui_theme, registe
     PLUGIN_VERSION,
 )
 class SelfInitiatedReplyPlugin(Star):
-    # 运行时绑定的四个 Web API 处理器（0.9.4 阶段 2.2）。它们不在本类里 def，而是由
-    # webapi.bind_api_handlers 在 __init__ 末尾以 partial(...) 挂到实例上，保留历史
-    # 方法名供测试与外部以 plugin._api_* 调用（约 30 处调用点）。
-    #
-    # 这里只写**裸注解、不赋值**：裸注解不创建类属性，运行时行为与此前完全一致
-    # （既不会遮蔽 partial 绑定，也不会让 hasattr 提前为真），纯粹是给读者和编辑器
-    # 的声明。此前读者在本类里搜 `_api_post_config` 是搜不到的，只能反查 webapi。
-    #
-    # 刻意说明它**不是**为 mypy 加的：实测 mypy 对这四处赋值从不报错——
-    # ignore_missing_imports 让 Star 解析为 Any，整个子类坍缩成 Any，任何属性名都合法
-    # （详见 webapi.py 的 TYPE_CHECKING 块）。所以这组声明的价值是导航，不是检查。
-    #
-    # 与 bind_api_handlers 实际绑定集合的一致性由
-    # tests/test_webapi_fixes.py::test_bound_api_handlers_match_class_declarations 钉住：
-    # 那边新增一个 partial 绑定而这里忘了声明（或反之）就变红。
+    # Web API 由 bind_api_handlers 挂 partial；裸注解仅导航（test_bound_api_handlers_match_class_declarations）。
     _api_get_config: Callable[[], Awaitable[dict[str, Any]]]
     _api_post_config: Callable[[], Awaitable[dict[str, Any]]]
     _api_get_ui_theme: Callable[[], Awaitable[dict[str, Any]]]
@@ -267,137 +256,32 @@ class SelfInitiatedReplyPlugin(Star):
 
     @staticmethod
     def _resolve_paths(config_obj: Any) -> tuple[Path, Path]:
-        """Resolve paths from AstrBot's configured root, with a legacy fallback."""
-        configured_path = getattr(config_obj, "config_path", None)
-        if configured_path:
-            config_path = Path(str(configured_path)).expanduser()
-        elif callable(get_astrbot_config_path):
-            config_path = (
-                Path(str(get_astrbot_config_path())).expanduser() / f"{PLUGIN_ID}_config.json"
-            )
-        else:
-            config_path = Path.home() / ".astrbot" / "data" / "config" / f"{PLUGIN_ID}_config.json"
-
-        if callable(get_astrbot_plugin_data_path):
-            plugin_data_path = Path(str(get_astrbot_plugin_data_path())).expanduser() / PLUGIN_ID
-        else:
-            plugin_data_path = config_path.parent.parent / "plugin_data" / PLUGIN_ID
-        return config_path, plugin_data_path / "state.json"
+        return state_resolve_paths(
+            config_obj,
+            get_config_path=get_astrbot_config_path,
+            get_plugin_data_path=get_astrbot_plugin_data_path,
+        )
 
     def _refresh_admin_ids(self) -> set[str]:
-        """时间窗 + mtime 双缓存热读管理员列表，运行期改管理员窗口内生效。"""
-        now = now_ts()
-        if now - self._admin_probe_ts < ADMIN_REFRESH_WINDOW_SEC:
-            return self._admin_ids
-        self._admin_probe_ts = now
-        path = self._data_path / "cmd_config.json"
-        try:
-            if path.exists():
-                mtime = path.stat().st_mtime
-                if mtime == self._admin_file_mtime:
-                    return self._admin_ids
-                data = json.loads(path.read_text(encoding="utf-8-sig"))
-                admins = data.get("admins_id", []) if isinstance(data, dict) else []
-                self._admin_ids = {str(item).strip() for item in admins if str(item).strip()}
-                self._admin_file_mtime = mtime
-        except Exception as exc:
-            logger.debug("[%s] load admins failed path=%s error=%s", PLUGIN_ID, path, exc)
-        return self._admin_ids
+        return state_refresh_admin_ids(self)
 
     def _state_for(self, umo: str) -> SessionState:
-        state = self.sessions.get(umo)
-        if state is None:
-            legacy_key = session_group_id(umo)
-            if legacy_key:
-                state = self.sessions.pop(legacy_key, None)
-        if state is None:
-            state = SessionState(recent=deque(maxlen=self.settings.recent_message_limit))
-            self.sessions[umo] = state
-        else:
-            self.sessions[umo] = state
-            # deque 的 maxlen 是构造期常量：recent_message_limit 热更新（设置页
-            # 保存不重载插件）对存量会话不生效，调大后新上限永不兑现。此处按
-            # 读取路径惰性重建，无需 apply 侧显式遍历全部会话。
-            limit = self.settings.recent_message_limit
-            if state.recent.maxlen != limit:
-                state.recent = deque(state.recent, maxlen=limit)
-        # 所有读取路径统一刷新跨天计数（幂等），避免 status/持久化显示昨日数据
-        state.refresh_day()
-        return state
+        return state_state_for(self, umo)
 
     def _save_storage_sync(self) -> None:
-        if not self._save_storage_snapshot():
-            logger.warning("[%s] initial state save failed path=%s", PLUGIN_ID, self._storage_path)
+        state_save_storage_sync(self)
 
     def _save_storage_snapshot(self) -> bool:
-        try:
-            payload = build_sessions_payload(
-                self.sessions,
-                self.settings.whitelist,
-                self.settings.recent_message_limit,
-            )
-            return write_sessions_payload(self._storage_path, payload)
-        except Exception as exc:
-            logger.error("[%s] failed to prepare state snapshot: %s", PLUGIN_ID, exc, exc_info=True)
-            return False
+        return state_save_storage_snapshot(self)
 
     async def _save_storage(self) -> None:
-        async with self._save_lock:
-            payload = build_sessions_payload(
-                self.sessions,
-                self.settings.whitelist,
-                self.settings.recent_message_limit,
-            )
-            write_task = asyncio.create_task(
-                asyncio.to_thread(write_sessions_payload, self._storage_path, payload)
-            )
-            try:
-                success = await asyncio.shield(write_task)
-            except asyncio.CancelledError:
-                # Do not let a cancelled owner leave an old snapshot writing
-                # after terminate() has started its final save.
-                success = await write_task
-                if not success:
-                    raise OSError(f"状态文件写入失败：{self._storage_path}") from None
-                raise
-            if not success:
-                raise OSError(f"状态文件写入失败：{self._storage_path}")
+        await state_save_storage(self)
 
     def _sync_whitelist(self) -> None:
-        if not sync_config_whitelist(self._config_path, self.config, self.settings):
-            raise OSError(f"配置文件写入失败：{self._config_path}")
+        state_sync_whitelist(self)
 
     async def _persist_enabled(self, enabled: bool) -> None:
-        """把 ``/on`` ``/off`` 的开关落盘，使其跨宿主重启保持。
-
-        原先只改 ``runtime_enabled`` 这个纯内存量，重启后回落到持久 ``enabled``：
-        用户打完 ``/off`` 以为「别再主动说话了」，宿主一重启插件又开始发言，而
-        用户不会知道要再打一次。这是静默违背用户意图，故改为双写。
-
-        失败按 §6 白名单变更的同一套纪律处理：内存回滚 → 重写 → 仍失败告警并
-        上抛，不留下「内存已关、磁盘仍开」的中间态。``runtime_enabled`` 保留为
-        独立字段而非并进 ``settings.enabled``，因为 webapi 的 GET config 要能
-        区分两者（``test_off_keeps_persisted_enabled_in_config`` 看守该契约）。
-        """
-        old_enabled = self.settings.enabled
-        old_runtime = self.runtime_enabled
-        self.settings.enabled = enabled
-        self.runtime_enabled = enabled
-        try:
-            self._sync_whitelist()
-        except Exception:
-            self.settings.enabled = old_enabled
-            self.runtime_enabled = old_runtime
-            try:
-                self._sync_whitelist()
-            except Exception as rollback_exc:
-                logger.error(
-                    "[%s] enabled=%s rollback persistence failed: %s",
-                    PLUGIN_ID,
-                    enabled,
-                    rollback_exc,
-                )
-            raise
+        await state_persist_enabled(self, enabled)
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     @filter.platform_adapter_type(filter.PlatformAdapterType.ALL)
@@ -455,20 +339,7 @@ class SelfInitiatedReplyPlugin(Star):
         return self._scheduler.patrol_task
 
     def _track_background_task(self, coro: Any) -> asyncio.Task[Any] | None:
-        if self._stopping:
-            # Spawn barrier: once terminate() has begun, no new background
-            # work may start; the coroutine is closed instead of run.
-            try:
-                coro.close()
-            except Exception:
-                # close() 对已开始执行或已关闭的协程会抛 RuntimeError；此处目的仅是
-                # 避免 "coroutine was never awaited" 警告，关不掉也不影响停止语义。
-                pass
-            return None
-        task = asyncio.create_task(coro)
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-        return task
+        return state_track_background_task(self, coro)
 
     async def _prepare_images_for_session(
         self,
@@ -585,13 +456,7 @@ class SelfInitiatedReplyPlugin(Star):
         )
 
     def _record_decision(self, umo: str, trigger: str, *, should_reply: bool, reason: str) -> None:
-        """调试面板最近裁决记录（仅内存，随 _prune_session 回收）。"""
-        self._last_decisions[umo] = {
-            "at": round(now_ts(), 3),
-            "trigger": trigger,
-            "should_reply": should_reply,
-            "reason": reason,
-        }
+        state_record_decision(self, umo, trigger, should_reply=should_reply, reason=reason)
 
     async def _decide_session_reply(
         self,
@@ -602,36 +467,14 @@ class SelfInitiatedReplyPlugin(Star):
         force: bool,
         expected_generation: int | None,
     ) -> dict[str, Any] | str:
-        """产生一次判断：通过返回 decision dict，早退返回跳过原因。"""
-        decision = await self._decision.decide(umo, state, trigger=trigger, force=force)
-        if isinstance(decision, str):
-            self._record_decision(umo, trigger, should_reply=False, reason=decision)
-            return decision
-
-        if not self._gate.is_current(umo, expected_generation):
-            return STALE_TASK_MESSAGE
-        self._record_decision(
+        return await state_decide_session_reply(
+            self,
             umo,
-            trigger,
-            should_reply=bool(decision.get("should_reply")),
-            reason=str(decision.get("reason") or ""),
+            state,
+            trigger=trigger,
+            force=force,
+            expected_generation=expected_generation,
         )
-        # INFO 级（0.9.5，用户要求）：这是「判断模型最终决定回不回」的裁决行，是排查
-        # 「插件为什么没说话／为什么说话了」唯一需要的一行，DEBUG 下默认看不到。
-        # 同类的过程日志（skip/图片/inline 发送失败）保持 DEBUG，只升这一条。
-        logger.info(
-            "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
-            PLUGIN_ID,
-            umo,
-            trigger,
-            decision.get("should_reply"),
-            float(decision.get("elapsed_sec") or 0.0),
-            decision.get("reason") or "-",
-        )
-
-        if not decision.get("should_reply"):
-            return f"判断不回复：{decision.get('reason') or '未说明'}"
-        return decision
 
     async def _deliver_session_reply(
         self,

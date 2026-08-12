@@ -53,11 +53,16 @@ _INFO_WHITELIST = {
 
 _CHECKED_MODULES = [
     "adapters.py",
+    "assembly.py",
+    "commands.py",
     "decision.py",
     "delivery.py",
     "generation.py",
+    "image/vision_runtime.py",
     "main.py",
+    "message_ingress.py",
     "outbound.py",
+    "plugin_state.py",
     "scheduler.py",
     "session_coordinator.py",
     "session_gate.py",

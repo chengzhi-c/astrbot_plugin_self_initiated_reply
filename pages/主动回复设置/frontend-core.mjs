@@ -5,8 +5,6 @@ export function normalizeApiError(error) {
   }
   return error;
 }
-
-/** GET /config 成功体：ok 必须为 true，且含写回所需关键字段。 */
 export function isSuccessfulConfigPayload(config) {
   return (
     !!config &&
@@ -16,7 +14,6 @@ export function isSuccessfulConfigPayload(config) {
     Array.isArray(config.whitelist_sessions)
   );
 }
-
 export async function requestPluginApi({
   getBridge,
   pluginId,
@@ -35,12 +32,9 @@ export async function requestPluginApi({
         ? await bridge.apiPost(endpoint, body)
         : await bridge.apiGet(endpoint, params);
     }
-
     const url = new URL(`/api/plug/${pluginId}/${endpoint}`, pageUrl);
     Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined && value !== null && value !== "") {
-        url.searchParams.set(key, value);
-      }
+      if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
     });
     const response = await fetchImpl(url, {
       method: method === "POST" ? "POST" : undefined,
@@ -65,7 +59,6 @@ export async function requestPluginApi({
     throw normalizeApiError(error);
   }
 }
-
 export function providerNeedsManualInput(providerId, providers, listAvailable) {
   if (!listAvailable) return true;
   const value = String(providerId || "").trim();

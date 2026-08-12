@@ -1,5 +1,3 @@
-/** 主题：auto / light / dark，后端 ui/theme 为权威源。 */
-
 export const THEME_KEY = "selfreply-theme";
 export const THEME_CYCLE = ["auto", "light", "dark"];
 export const THEME_LABELS = {
@@ -7,12 +5,10 @@ export const THEME_LABELS = {
   light: "浅色 · 慈爱之惠",
   dark: "深色 · 审判之司",
 };
-
 export function currentTheme() {
   const value = document.documentElement.getAttribute("data-theme");
   return value === "light" || value === "dark" ? value : "auto";
 }
-
 export function cacheThemeLocally(theme) {
   try {
     if (theme === "auto") localStorage.removeItem(THEME_KEY);
@@ -21,13 +17,8 @@ export function cacheThemeLocally(theme) {
     /* iframe 环境 localStorage 不可用 */
   }
 }
-
 export function applyTheme(theme, themeToggle) {
-  if (theme === "auto") {
-    document.documentElement.removeAttribute("data-theme");
-  } else {
-    document.documentElement.setAttribute("data-theme", theme);
-  }
+  if (theme === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", theme);
   cacheThemeLocally(theme);
   if (themeToggle) {
     themeToggle.setAttribute(
@@ -36,7 +27,6 @@ export function applyTheme(theme, themeToggle) {
     );
   }
 }
-
 export async function persistTheme(theme, apiPost) {
   cacheThemeLocally(theme);
   try {
@@ -45,7 +35,6 @@ export async function persistTheme(theme, apiPost) {
     /* 后端持久化失败仅当次生效 */
   }
 }
-
 export async function restoreTheme(apiGet) {
   try {
     const result = await apiGet("ui/theme");
@@ -56,7 +45,6 @@ export async function restoreTheme(apiGet) {
     return currentTheme();
   }
 }
-
 export function nextTheme() {
   return THEME_CYCLE[(THEME_CYCLE.indexOf(currentTheme()) + 1) % THEME_CYCLE.length];
 }

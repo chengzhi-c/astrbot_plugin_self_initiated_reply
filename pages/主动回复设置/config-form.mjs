@@ -1,5 +1,3 @@
-/** 配置表单：默认值、形状校验、数值/白名单校验。 */
-
 export const DEFAULT_CONFIG = {
   decision_temperature: 0.2,
   decision_timeout_sec: 20,
@@ -11,29 +9,23 @@ export const DEFAULT_CONFIG = {
   vision_image_age_sec: 300,
   vision_timeout_sec: 20,
 };
-
 export function num(value, fallback) {
   if (value === "" || value === undefined || value === null) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
-
 export function parseWhitelist(text) {
   return String(text || "")
     .split(/[\n,，]+/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
-
-/** 白名单行：允许 UMO 或纯数字群号。 */
 export function whitelistLineOk(line) {
   const s = String(line || "").trim();
   if (!s) return true;
   if (/^\d+$/.test(s)) return true;
-  // platform:type:id
   return /^[\w.-]+:[\w.-]+:[\w.-]+$/.test(s);
 }
-
 export const PROMPT_PREVIEW_VALUES = {
   session: "aiocqhttp:GroupMessage:123456789",
   trigger: "message_delay",
@@ -48,7 +40,6 @@ export const PROMPT_PREVIEW_VALUES = {
   last_message_age_sec: "65",
   last_reply_age_sec: "900",
 };
-
 export function escapeHtml(str) {
   return String(str || "")
     .replace(/&/g, "&amp;")
@@ -57,7 +48,6 @@ export function escapeHtml(str) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
-
 export function renderPromptTemplateHtml(template, values = PROMPT_PREVIEW_VALUES) {
   const escapedTemplate = escapeHtml(template);
   return escapedTemplate.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, key) => {

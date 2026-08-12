@@ -1,7 +1,4 @@
-/** Provider 选择控件：列表 / 手动输入。 */
-
 import { providerNeedsManualInput } from "./frontend-core.mjs";
-
 /**
  * @param {{select: HTMLSelectElement|null, input: HTMLInputElement|null,
  *          button: HTMLButtonElement|null, placeholder: string}} refs
@@ -12,7 +9,6 @@ import { providerNeedsManualInput } from "./frontend-core.mjs";
 export function createProviderControl(refs, deps) {
   let manual = false;
   const { getOptions, isListAvailable, showToast, onModeChange } = deps;
-
   function setManual(enabled, focusInput = false) {
     manual = Boolean(enabled);
     if (refs.button) {
@@ -24,12 +20,10 @@ export function createProviderControl(refs, deps) {
     if (onModeChange) onModeChange(manual);
     if (manual && focusInput && refs.input) refs.input.focus();
   }
-
   function value() {
     if (manual) return refs.input ? refs.input.value.trim() : "";
     return refs.select ? refs.select.value.trim() : "";
   }
-
   function render() {
     if (!refs.select) return;
     const current = refs.select.value;
@@ -46,7 +40,6 @@ export function createProviderControl(refs, deps) {
     });
     refs.select.value = current;
   }
-
   function sync(providerId) {
     const next = String(providerId || "").trim();
     if (!providerNeedsManualInput(next, getOptions(), isListAvailable()) && refs.select) {
@@ -58,7 +51,6 @@ export function createProviderControl(refs, deps) {
     if (refs.input) refs.input.value = next;
     setManual(true);
   }
-
   if (refs.button) {
     refs.button.addEventListener("click", () => {
       if (manual) {
@@ -75,6 +67,5 @@ export function createProviderControl(refs, deps) {
       if (refs.input) refs.input.value = "";
     });
   }
-
   return { value, render, sync, setManual };
 }
