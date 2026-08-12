@@ -265,8 +265,7 @@ html.dimmed .boot {
   transition: opacity 0.18s var(--ease), transform 0.18s var(--ease), background 0.16s var(--ease);
 }
 html.bold-text body,
-html.bold-text .form,
-html.bold-text .card {
+html.bold-text .form {
   font-weight: 600;
 }
 #dimBtn.active,
@@ -880,7 +879,10 @@ textarea {
 }
 .top-actions #refreshBtn.is-armed .inline-icon { color: var(--warn); }
 @media (max-width: 720px) {
-  :root { --shell-pad: 16px; --topbar-h: 62px; --control-h: var(--tap); }
+  :root {
+    --shell-pad: 16px; --topbar-h: 62px; --control-h: var(--tap);
+    --mobile-savebar-h: 66px;
+  }
   .topbar {
     align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px var(--shell-pad);
   }
@@ -912,6 +914,7 @@ textarea {
   .form { padding-bottom: 152px; }
   .mobile-savebar {
     position: fixed; display: flex; align-items: center; gap: 12px; left: 0; right: 0; bottom: 0;
+    min-height: calc(var(--mobile-savebar-h) + env(safe-area-inset-bottom, 0px));
     z-index: 40; padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
     background: color-mix(in srgb, var(--bg) 88%, transparent);
     border-top: var(--border-w) solid var(--border);
@@ -926,7 +929,7 @@ textarea {
   }
   .mobile-tabbar {
     position: fixed; display: flex; left: 0; right: 0;
-    bottom: calc(64px + env(safe-area-inset-bottom, 0px)); z-index: 39; gap: 4px;
+    bottom: calc(var(--mobile-savebar-h) + env(safe-area-inset-bottom, 0px)); z-index: 39; gap: 4px;
     padding: 6px 10px calc(6px + env(safe-area-inset-bottom, 0px));
     background: color-mix(in srgb, var(--bg) 90%, transparent);
     border-top: var(--border-w) solid var(--border);

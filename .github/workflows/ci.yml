@@ -55,6 +55,21 @@ jobs:
       - name: Frontend contract
         run: node --test tests/frontend_contract.test.mjs
 
+  frontend-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install browser test dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Browser quality gate
+        run: npm run test:browser
+
   mypy:
     runs-on: ubuntu-latest
     steps:

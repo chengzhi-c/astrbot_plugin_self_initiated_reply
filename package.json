@@ -1,0 +1,12 @@
+{
+  "name": "astrbot-plugin-self-initiated-reply-dev",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:frontend": "node --test tests/frontend_contract.test.mjs",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}

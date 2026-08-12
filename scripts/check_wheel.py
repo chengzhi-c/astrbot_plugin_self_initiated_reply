@@ -30,6 +30,11 @@ FORBIDDEN_PREFIXES = (
     ".github/",
     ".gitignore",
     "assets/",
+    "node_modules/",
+    "output/",
+    "package.json",
+    "package-lock.json",
+    "playwright.config.mjs",
 )
 # 必须存在的运行时文件（相对 wheel 内路径）
 # README.md / CHANGELOG.md 自 0.9.5 起是必需项：exclude 的 `*.md` 曾把它们一起排掉，
