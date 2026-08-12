@@ -121,7 +121,7 @@ def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
 
 
 def test_force_cancel_kills_running_check_task(tmp_path: Path) -> None:
-    """_cancel_delay_task(force=True) 必须同时取消运行中的检查任务。
+    """scheduler.cancel_delay(force=True) 必须同时取消运行中的检查任务。
 
     变异锚定：cancel_delay_task 的 force 分支失效（不取消 running_task）
     后本测试必须变红。
@@ -367,7 +367,7 @@ def test_context_send_none_is_delivered_and_writes_history(tmp_path: Path) -> No
         def run_effect(_runner, **_kwargs):
             async def gen():
                 # 模拟生成期间事件被清理：_send_reply 走 context 兜底路径
-                plugin._clear_cached_event(UMO)
+                plugin._coordinator.clear(UMO)
                 yield None
 
             return gen()
@@ -425,11 +425,12 @@ def test_readonly_commands_do_not_invalidate_session(tmp_path: Path) -> None:
 
 
 def test_config_rollback_restores_task_topology(tmp_path: Path) -> None:
-    """禁用路径 _stop_patrol_task 失败回滚后，patrol 任务必须恢复运行。"""
+    """禁用路径 stop_patrol 失败回滚后，patrol 任务必须恢复运行。"""
 
     async def scenario(plugin, main):
         plugin._scheduler.ensure_patrol()
-        assert plugin._patrol_task is not None and not plugin._patrol_task.done()
+        assert plugin._scheduler.patrol_task is not None
+        assert not plugin._scheduler.patrol_task.done()
 
         original_stop = plugin._scheduler.stop_patrol
 
@@ -445,8 +446,8 @@ def test_config_rollback_restores_task_topology(tmp_path: Path) -> None:
             assert result.get("ok") is False
             # 修复前：回滚只恢复 settings/runtime_enabled，不重启 patrol（红灯）
             assert plugin.runtime_enabled is True
-            assert plugin._patrol_task is not None
-            assert not plugin._patrol_task.done()
+            assert plugin._scheduler.patrol_task is not None
+            assert not plugin._scheduler.patrol_task.done()
         finally:
             plugin._scheduler.stop_patrol = original_stop
 

@@ -28,15 +28,6 @@ from astrbot.api.event.filter import PermissionType, permission_type
 from astrbot.api.star import Context, Star, register
 
 from .assembly import assemble_plugin_components
-from .image.vision_runtime import (
-    build_image_context as vision_build_image_context,
-)
-from .image.vision_runtime import (
-    get_image_parser as vision_get_image_parser,
-)
-from .image.vision_runtime import (
-    prepare_images_for_session as vision_prepare_images_for_session,
-)
 from .message_ingress import handle_incoming_message
 from .runtime_adapter import AstrBotRuntimeAdapter
 from .session_gate import SessionGate
@@ -222,11 +213,11 @@ class SelfInitiatedReplyPlugin(Star):
         try:
             # Reload/startup is also a maintenance boundary: remove old orphaned
             # cache files immediately instead of waiting for the first interval.
-            self._cleanup_image_sources(now=now_ts())
+            self._scheduler.cleanup_image_sources(now=now_ts())
         except Exception as exc:
             logger.warning("[%s] startup image cache cleanup failed: %s", PLUGIN_ID, exc)
-        self._ensure_patrol_task()
-        self._ensure_image_cleanup_task()
+        self._scheduler.ensure_patrol()
+        self._scheduler.ensure_image_cleanup()
         logger.info(
             "[%s] v%s enabled=%s whitelist=%d message_trigger=%s patrol_trigger=%s"
             " pipeline_mode=true",
@@ -352,31 +343,8 @@ class SelfInitiatedReplyPlugin(Star):
     def _session_locks(self) -> MappingProxyType[str, asyncio.Lock]:
         return self._gate.locks_view
 
-    @property
-    def _patrol_task(self) -> asyncio.Task[Any] | None:
-        return self._scheduler.patrol_task
-
     def _track_background_task(self, coro: Any) -> asyncio.Task[Any] | None:
         return state_track_background_task(self, coro)
-
-    async def _prepare_images_for_session(
-        self,
-        umo: str,
-        *,
-        generation: int,
-        active_at: float,
-        images: list[ImageInfo],
-    ) -> None:
-        await vision_prepare_images_for_session(
-            self, umo, generation=generation, active_at=active_at, images=images
-        )
-
-    def _cancel_delay_task(self, umo: str, *, force: bool = False) -> None:
-        self._scheduler.cancel_delay(umo, force=force)
-
-    def _clear_cached_event(self, umo: str) -> None:
-        """清缓存事件（委托壳，逻辑在 session_coordinator.py）。"""
-        self._coordinator.clear(umo)
 
     def _invalidate_session(self, umo: str, *, force_cancel: bool = False) -> int:
         """会话失效单点入口：代次推进 + 延迟取消 + 协作资源级联清理。"""
@@ -399,41 +367,6 @@ class SelfInitiatedReplyPlugin(Star):
         if umo and session_whitelisted(umo, self.settings.whitelist):
             self._invalidate_session(umo, force_cancel=True)
 
-    def _schedule_delayed_check(
-        self,
-        umo: str,
-        *,
-        delay_sec: int | None,
-        trigger: str,
-        force: bool,
-        generation: int | None = None,
-    ) -> None:
-        self._scheduler.schedule_delayed_check(
-            umo,
-            delay_sec=delay_sec,
-            trigger=trigger,
-            force=force,
-            generation=generation,
-        )
-
-    def _cleanup_image_sources(self, *, now: float | None = None) -> int:
-        """清理过期图片索引和插件临时缓存，保护仍在有效窗口内的源。"""
-        return self._scheduler.cleanup_image_sources(now=now)
-
-    async def _run_image_cleanup(self) -> int:
-        """Serialize manual and periodic cleanup requests."""
-        return await self._scheduler.run_image_cleanup()
-
-    def _cleanup_old_events_if_needed(self) -> None:
-        """定期清理没有任务或运行中的陈旧事件。"""
-        self._scheduler.cleanup_events_if_needed()
-
-    def _ensure_image_cleanup_task(self) -> None:
-        self._scheduler.ensure_image_cleanup()
-
-    def _ensure_patrol_task(self) -> None:
-        self._scheduler.ensure_patrol()
-
     def _enforce_final_tool_policy(self, req: Any, inherit_tools: bool) -> bool:
         """Enforce the proactive tool allowlist; abort the run when unverifiable."""
         return self._generation.enforce_final_tool_policy(req, inherit_tools)
@@ -446,31 +379,6 @@ class SelfInitiatedReplyPlugin(Star):
         （委托壳，逻辑在 delivery.py）
         """
         return await self._delivery.send_reply(umo, reply, expected_generation=expected_generation)
-
-    def _get_image_parser(self, provider_id: str = "") -> ImageParser | None:
-        """Return a cached Vision parser for one provider, if Vision is enabled."""
-        return vision_get_image_parser(self, provider_id)
-
-    def _recent_images_for(self, umo: str) -> list[ImageInfo]:
-        """Return distinct, recent image references for one session.
-
-        Image event objects are intentionally short-lived and never persisted.
-        （委托壳，逻辑在 session_coordinator.py）
-        """
-        return self._coordinator.images_for(
-            umo,
-            vision_age_sec=float(self.settings.vision_image_age_sec),
-            vision_skip_stickers=self.settings.vision_skip_stickers,
-            vision_max_images=self.settings.vision_max_images,
-        )
-
-    async def _build_image_context(self, umo: str, *, enabled: bool, provider_id: str = "") -> str:
-        """Describe recent images for prompt context without persisting the result."""
-        return await vision_build_image_context(self, umo, enabled=enabled, provider_id=provider_id)
-
-    def _replace_whitelist(self, whitelist: set[str]) -> None:
-        """整表替换白名单，并回收被移出会话的内存状态。（委托壳，逻辑在 whitelist.py）"""
-        self._whitelist.replace(whitelist)
 
     async def _add_whitelist_session(self, umo: str) -> bool:
         async with self._config_lock:
@@ -634,9 +542,6 @@ class SelfInitiatedReplyPlugin(Star):
             await asyncio.gather(*tasks, return_exceptions=True)
         self._background_tasks.difference_update(tasks)
 
-    async def _stop_patrol_task(self) -> None:
-        await self._scheduler.stop_patrol()
-
     async def terminate(self) -> None:
         self._stopping = True
         # 最终落盘必须与任务收敛同处 _config_lock 内：Dashboard 的 POST /config
@@ -645,7 +550,7 @@ class SelfInitiatedReplyPlugin(Star):
         # 锁序恒为 _config_lock → _save_lock（两条路径一致），无反向持有。
         async with self._config_lock:
             self._cancel_delay_tasks()
-            await self._stop_patrol_task()
+            await self._scheduler.stop_patrol()
             await self._wait_background_tasks()
             self._coordinator.reset_all()
             try:

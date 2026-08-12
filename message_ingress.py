@@ -12,6 +12,7 @@ from astrbot.api.event import AstrMessageEvent
 
 from .commands import parse_command_text
 from .image import ImageExtractor
+from .image.vision_runtime import get_image_parser, prepare_images_for_session
 from .models import COMMAND_HANDLED_KEY, PLUGIN_ID, MessageRecord, now_ts
 from .utils import (
     clean_chat_text,
@@ -116,14 +117,15 @@ async def _capture_images(
             umo,
         )
         return
-    parser = plugin._get_image_parser()
+    parser = get_image_parser(plugin)
     if parser is not None:
         try:
             await parser.snapshot_local_sources(images, max_concurrent=2)
         except Exception as exc:
             logger.debug("[%s] local image snapshot stage failed: %s", PLUGIN_ID, exc)
     plugin._track_background_task(
-        plugin._prepare_images_for_session(
+        prepare_images_for_session(
+            plugin,
             umo,
             generation=generation,
             active_at=active_at,
@@ -140,7 +142,7 @@ def _schedule_message_check(plugin: Any, umo: str, clean_text: str, generation: 
         if looks_like_reply_request(clean_text, plugin.settings.bot_aliases)
         else "message_delay"
     )
-    plugin._schedule_delayed_check(
+    plugin._scheduler.schedule_delayed_check(
         umo,
         delay_sec=plugin._scheduler.message_trigger_delay(trigger),
         trigger=trigger,
@@ -182,5 +184,5 @@ async def handle_incoming_message(plugin: Any, event: AstrMessageEvent) -> None:
             generation=generation,
             active_at=active_at,
         )
-    plugin._cleanup_old_events_if_needed()
+    plugin._scheduler.cleanup_events_if_needed()
     _schedule_message_check(plugin, umo, clean_text, generation)

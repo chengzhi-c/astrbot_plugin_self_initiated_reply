@@ -48,7 +48,7 @@ async def prepare_images_for_session(
     images: list[ImageInfo],
 ) -> None:
     try:
-        parser = plugin._get_image_parser()
+        parser = get_image_parser(plugin)
         if parser is None:
             return
         prepared = await asyncio.wait_for(
@@ -87,10 +87,15 @@ async def build_image_context(
 ) -> str:
     if not enabled:
         return ""
-    parser = plugin._get_image_parser(provider_id)
+    parser = get_image_parser(plugin, provider_id)
     if parser is None:
         return ""
-    images = plugin._recent_images_for(umo)
+    images = plugin._coordinator.images_for(
+        umo,
+        vision_age_sec=float(plugin.settings.vision_image_age_sec),
+        vision_skip_stickers=plugin.settings.vision_skip_stickers,
+        vision_max_images=plugin.settings.vision_max_images,
+    )
     if not images:
         return ""
     descriptions = await parser.parse_batch(

@@ -1,18 +1,7 @@
 """Vision 描述 → 提示词上下文的纯函数拼装。
 
-从 ``main.py::_build_image_context`` 抽出（0.9.3 B1）。抽的只是拼装与净化，
-不含状态：parser 缓存、超时重建策略、会话图片索引都留在原处（详见下方"为什么
-不整体外迁"）。
-
-为什么不整体外迁 main.py 的图片组：
-  该组 7 个方法里 4 个已经是委托壳（``_recent_images_for`` → SessionCoordinator，
-  ``_cleanup_image_sources`` / ``_run_image_cleanup`` / ``_ensure_image_cleanup_task``
-  → SessionScheduler），搬走只是给委托再套一层委托。
-  剩下 3 个方法带着 ``_image_parsers`` / ``_image_parser_timeout`` 两个状态，
-  而 ``webapi.py`` 的配置应用与回滚路径直接对它们做失效（``clear()`` + 重绑 None）。
-  容器 ``clear()`` 会经共享引用传导，标量重绑**不会**——把超时基准搬进独立服务对象
-  后，改 Vision 超时将不再触发 parser 重建，旧超时静默残留。这类失效协议的隐式
-  耦合是外迁的真实阻力，不是行数问题。
+仅负责拼装与净化，不持有 parser 缓存或会话图片索引；运行时协调位于
+``vision_runtime.py``，缓存状态继续由插件实例持有以支持配置热更新失效。
 """
 
 from __future__ import annotations

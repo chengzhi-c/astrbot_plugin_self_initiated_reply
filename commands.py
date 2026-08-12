@@ -189,21 +189,21 @@ async def dispatch_command_action(
             )
         finally:
             if plugin._last_events.get(umo) is event:
-                plugin._clear_cached_event(umo)
+                plugin._coordinator.clear(umo)
             if not session_whitelisted(umo, plugin.settings.whitelist):
                 plugin._prune_session(umo)
         return f"主动回复检查结果：{result}"
     if action == "on":
         async with plugin._config_lock:
             await plugin._persist_enabled(True)
-            plugin._ensure_patrol_task()
-            plugin._ensure_image_cleanup_task()
+            plugin._scheduler.ensure_patrol()
+            plugin._scheduler.ensure_image_cleanup()
         return "主动回复插件已启用（重启后保持）。"
     if action == "off":
         async with plugin._config_lock:
             await plugin._persist_enabled(False)
             plugin._cancel_delay_tasks()
-            await plugin._stop_patrol_task()
+            await plugin._scheduler.stop_patrol()
         return "主动回复插件已暂停（重启后保持）。"
     if action == "debug":
         return debug_text(

@@ -11,6 +11,7 @@ from typing import Any
 from .decision import DECISION_MAX_TOKENS, DECISION_SYSTEM_PROMPT, DecisionMaker
 from .delivery import DeliveryRunner
 from .generation import GenerationRunner
+from .image.vision_runtime import build_image_context
 from .models import GRACEFUL_STOP_GRACE_SEC, now_ts
 from .scheduler import SessionScheduler
 from .session_coordinator import SessionCoordinator
@@ -45,7 +46,7 @@ def assemble_plugin_components(
                 expected_generation=expected_generation,
             )
         ),
-        clear_cached_event=lambda umo: plugin._clear_cached_event(umo),
+        clear_cached_event=lambda umo: plugin._coordinator.clear(umo),
         last_events=plugin._last_events,
         last_event_at=plugin._last_event_at,
         recent_image_events=plugin._recent_image_events,
@@ -69,8 +70,8 @@ def assemble_plugin_components(
             max_tokens=DECISION_MAX_TOKENS,
         ),
         read_history=lambda umo, limit: plugin.bridge.read_astrbot_history(umo, limit=limit),
-        build_image_context=lambda umo, enabled, provider_id: plugin._build_image_context(
-            umo, enabled=enabled, provider_id=provider_id
+        build_image_context=lambda umo, enabled, provider_id: build_image_context(
+            plugin, umo, enabled=enabled, provider_id=provider_id
         ),
     )
 
@@ -88,8 +89,8 @@ def assemble_plugin_components(
         background_tasks=plugin._background_tasks,
         discard_background=plugin._background_tasks.discard,
         read_history=lambda umo, limit: plugin.bridge.read_astrbot_history(umo, limit=limit),
-        build_image_context=lambda umo, enabled, provider_id: plugin._build_image_context(
-            umo, enabled=enabled, provider_id=provider_id
+        build_image_context=lambda umo, enabled, provider_id: build_image_context(
+            plugin, umo, enabled=enabled, provider_id=provider_id
         ),
         last_events=plugin._last_events,
     )
@@ -99,7 +100,7 @@ def assemble_plugin_components(
         event_at=plugin._last_event_at,
         images=plugin._recent_image_events,
         gate=plugin._gate,
-        cancel_delay=lambda umo, force: plugin._cancel_delay_task(umo, force=force),
+        cancel_delay=lambda umo, force: plugin._scheduler.cancel_delay(umo, force=force),
         notify_silence=lambda umo: plugin._scheduler.notify_activity(umo),
     )
 

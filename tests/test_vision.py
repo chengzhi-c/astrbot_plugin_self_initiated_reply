@@ -1125,7 +1125,7 @@ def test_image_context_returns_empty_without_valid_rows() -> None:
 def test_image_context_numbering_follows_original_position() -> None:
     """编号取描述在原列表中的位置，空描述留下编号空洞——0.9.3 抽离前的既有语义。
 
-    这不是笔误：编号对应本批图片的序号，与 ``_recent_images_for`` 返回的顺序一致，
+    这不是笔误：编号对应本批图片的序号，与会话图片读取顺序一致，
     描述失败（空串）时保留空洞比重新编号更能反映"第 2 张图有描述、第 1 张没有"。
     抽成纯函数时刻意保留该行为，避免重构顺手改语义。
     """

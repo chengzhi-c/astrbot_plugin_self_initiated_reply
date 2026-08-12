@@ -214,7 +214,7 @@ async def _api_cleanup_image_cache(plugin: SelfInitiatedReplyPlugin) -> dict[str
     if plugin._stopping:
         return {"ok": False, "error": "插件正在关闭"}
     try:
-        removed = await plugin._run_image_cleanup()
+        removed = await plugin._scheduler.run_image_cleanup()
         return {
             "ok": True,
             "removed": removed,
@@ -496,7 +496,7 @@ async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict
     for umo in snapshot["delay_umos"]:
         if umo in plugin.sessions and not plugin._stopping:
             try:
-                plugin._schedule_delayed_check(
+                plugin._scheduler.schedule_delayed_check(
                     umo, delay_sec=None, trigger="message_delay", force=False
                 )
             except Exception as re_exc:
@@ -514,8 +514,8 @@ async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict
     # 回滚后恢复任务拓扑：禁用路径可能已停掉 patrol/cleanup，
     # 否则出现 runtime_enabled=True 但巡检永久停止的不一致态。
     if snapshot["runtime_enabled"] and not plugin._stopping:
-        plugin._ensure_patrol_task()
-        plugin._ensure_image_cleanup_task()
+        plugin._scheduler.ensure_patrol()
+        plugin._scheduler.ensure_image_cleanup()
     try:
         plugin._sync_whitelist()
         await plugin._save_storage()
@@ -548,7 +548,7 @@ async def _apply_config_updates(
         # self.settings 引用，整体替换会造成热更新后组件读旧值（0.9.0 轴 A）。
         plugin.settings.apply(new_settings)
         if "whitelist_sessions" in updates:
-            plugin._replace_whitelist(new_settings.whitelist)
+            plugin._whitelist.replace(new_settings.whitelist)
         if vision_changed:
             plugin._image_parsers.clear()
             plugin._image_parser_timeout = None
@@ -565,13 +565,13 @@ async def _apply_config_updates(
         if enabled_persisted_changed:
             plugin.runtime_enabled = new_settings.enabled
             if plugin.runtime_enabled:
-                plugin._ensure_patrol_task()
-                plugin._ensure_image_cleanup_task()
+                plugin._scheduler.ensure_patrol()
+                plugin._scheduler.ensure_image_cleanup()
             else:
                 plugin._cancel_delay_tasks()
-                await plugin._stop_patrol_task()
+                await plugin._scheduler.stop_patrol()
         elif plugin.runtime_enabled:
-            plugin._ensure_image_cleanup_task()
+            plugin._scheduler.ensure_image_cleanup()
         _log_audited_changes(snapshot, new_settings, updates)
         config = new_settings.to_config_dict()
         adjusted_fields = sorted(

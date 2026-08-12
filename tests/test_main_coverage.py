@@ -2,7 +2,7 @@
 
 按缺失行分组补齐关键路径与分支：
 - on_message 门卫（命令已处理/禁用/非白名单/忽略/空文本/纯图/图片捕获）
-- _prepare_images_for_session 出口（陈旧代次/超时/异常/全部失败）
+- Vision 图片准备出口（陈旧代次/超时/异常/全部失败）
 - 图片 parser 缓存与描述上下文构建
 - check 流程守卫与判断早退分支、直发文本重复抑制
 - 命令文本与全部子命令处理器（含 stopping 拒绝、非白名单回收）
@@ -74,6 +74,15 @@ class _FakeParser:
 
 async def _consume(gen):
     return await gen.__anext__()
+
+
+def _vision_runtime(main):
+    return importlib.import_module(main.__package__ + ".image.vision_runtime")
+
+
+def _cache_parser(plugin, parser, provider_id: str = "") -> None:
+    plugin._image_parser_timeout = float(plugin.settings.vision_timeout_sec)
+    plugin._image_parsers[provider_id] = parser
 
 
 # ============================================================================
@@ -151,7 +160,7 @@ def test_on_message_empty_text_and_no_images_invalidates(tmp_path: Path) -> None
 def test_on_message_image_only_event_records_placeholder(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin.settings.vision_main_enabled = True
-        plugin._get_image_parser = lambda *a, **k: _FakeParser(batch=[True])
+        _cache_parser(plugin, _FakeParser(batch=[True]))
         event = _image_event(message_str="")
         await plugin.on_message(event)
         state = plugin._state_for(UMO)
@@ -172,7 +181,7 @@ def test_on_message_captures_images_in_background(tmp_path: Path) -> None:
         plugin.settings.vision_main_enabled = True
         plugin.settings.enabled_message_trigger = False
         parser = _FakeParser(batch=[True])
-        plugin._get_image_parser = lambda *a, **k: parser
+        _cache_parser(plugin, parser)
         await plugin.on_message(_image_event(message_str="看看这张图"))
         await until(lambda: UMO in plugin._recent_image_events)
         events = plugin._recent_image_events[UMO]
@@ -225,11 +234,15 @@ def test_on_message_snapshots_before_background_prepare(tmp_path: Path) -> None:
         async def prepare(*args, **kwargs):
             order.append("prepare")
 
-        plugin._get_image_parser = lambda *a, **k: OrderingParser(batch=[True])
-        plugin._prepare_images_for_session = prepare
-
-        await plugin.on_message(_image_event(message_str="看看这张图"))
-        await until(lambda: "prepare" in order)
+        _cache_parser(plugin, OrderingParser(batch=[True]))
+        ingress = importlib.import_module(main.__package__ + ".message_ingress")
+        original_prepare = ingress.prepare_images_for_session
+        ingress.prepare_images_for_session = prepare
+        try:
+            await plugin.on_message(_image_event(message_str="看看这张图"))
+            await until(lambda: "prepare" in order)
+        finally:
+            ingress.prepare_images_for_session = original_prepare
 
         assert order == ["snapshot", "prepare"]
 
@@ -239,11 +252,11 @@ def test_on_message_snapshots_before_background_prepare(tmp_path: Path) -> None:
 def test_prepare_images_stale_generation_skips_capture(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         parser = _FakeParser(batch=[True])
-        plugin._get_image_parser = lambda *a, **k: parser
+        _cache_parser(plugin, parser)
         token = plugin._gate.advance(UMO)
         plugin._gate.advance(UMO)  # 会话已更新，旧 token 失效
-        await plugin._prepare_images_for_session(
-            UMO, generation=token, active_at=1.0, images=[_image()]
+        await _vision_runtime(main).prepare_images_for_session(
+            plugin, UMO, generation=token, active_at=1.0, images=[_image()]
         )
         assert UMO not in plugin._recent_image_events
 
@@ -253,10 +266,10 @@ def test_prepare_images_stale_generation_skips_capture(tmp_path: Path) -> None:
 def test_prepare_images_timeout_warns_without_capture(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         parser = _FakeParser(batch=[True], exc=TimeoutError())
-        plugin._get_image_parser = lambda *a, **k: parser
+        _cache_parser(plugin, parser)
         token = plugin._gate.advance(UMO)
-        await plugin._prepare_images_for_session(
-            UMO, generation=token, active_at=1.0, images=[_image()]
+        await _vision_runtime(main).prepare_images_for_session(
+            plugin, UMO, generation=token, active_at=1.0, images=[_image()]
         )
         assert UMO not in plugin._recent_image_events
 
@@ -266,10 +279,10 @@ def test_prepare_images_timeout_warns_without_capture(tmp_path: Path) -> None:
 def test_prepare_images_error_warns_without_capture(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         parser = _FakeParser(batch=[True], exc=RuntimeError("download failed"))
-        plugin._get_image_parser = lambda *a, **k: parser
+        _cache_parser(plugin, parser)
         token = plugin._gate.advance(UMO)
-        await plugin._prepare_images_for_session(
-            UMO, generation=token, active_at=1.0, images=[_image()]
+        await _vision_runtime(main).prepare_images_for_session(
+            plugin, UMO, generation=token, active_at=1.0, images=[_image()]
         )
         assert UMO not in plugin._recent_image_events
 
@@ -279,10 +292,10 @@ def test_prepare_images_error_warns_without_capture(tmp_path: Path) -> None:
 def test_prepare_images_all_failed_keeps_no_index(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         parser = _FakeParser(batch=[False])
-        plugin._get_image_parser = lambda *a, **k: parser
+        _cache_parser(plugin, parser)
         token = plugin._gate.advance(UMO)
-        await plugin._prepare_images_for_session(
-            UMO, generation=token, active_at=1.0, images=[_image()]
+        await _vision_runtime(main).prepare_images_for_session(
+            plugin, UMO, generation=token, active_at=1.0, images=[_image()]
         )
         assert UMO not in plugin._recent_image_events
 
@@ -295,13 +308,14 @@ def test_get_image_parser_cache_shared_and_timeout_rebuild(tmp_path: Path) -> No
     async def scenario(plugin, main):
         plugin.settings.vision_main_enabled = True
         plugin.settings.vision_timeout_sec = 5
-        first = plugin._get_image_parser("v1")
-        assert plugin._get_image_parser("v1") is first
-        assert plugin._get_image_parser("") is not first  # 不同 provider 键
+        vision = _vision_runtime(main)
+        first = vision.get_image_parser(plugin, "v1")
+        assert vision.get_image_parser(plugin, "v1") is first
+        assert vision.get_image_parser(plugin, "") is not first  # 不同 provider 键
         plugin.settings.vision_timeout_sec = 30
-        assert plugin._get_image_parser("v1") is not first
+        assert vision.get_image_parser(plugin, "v1") is not first
         plugin.settings.vision_main_enabled = False
-        assert plugin._get_image_parser("v1") is None
+        assert vision.get_image_parser(plugin, "v1") is None
 
     with_plugin(tmp_path, scenario)
 
@@ -310,17 +324,18 @@ def test_build_image_context_describes_recent_images(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin.settings.vision_main_enabled = True
         plugin.settings.vision_max_images = 2
-        plugin._get_image_parser = lambda *a, **k: _FakeParser(parse=lambda images: ["一只猫"])
+        _cache_parser(plugin, _FakeParser(parse=lambda images: ["一只猫"]), "v1")
         package = main.__package__
         models = importlib.import_module(package + ".models")
         plugin._coordinator.capture_images(UMO, models.now_ts(), [_image()])
 
-        context = await plugin._build_image_context(UMO, enabled=True, provider_id="v1")
+        vision = _vision_runtime(main)
+        context = await vision.build_image_context(plugin, UMO, enabled=True, provider_id="v1")
         assert "一只猫" in context
 
-        assert await plugin._build_image_context(UMO, enabled=False) == ""
+        assert await vision.build_image_context(plugin, UMO, enabled=False) == ""
         plugin._coordinator.clear(UMO)
-        assert await plugin._build_image_context(UMO, enabled=True) == ""
+        assert await vision.build_image_context(plugin, UMO, enabled=True) == ""
 
     with_plugin(tmp_path, scenario)
 
@@ -328,11 +343,11 @@ def test_build_image_context_describes_recent_images(tmp_path: Path) -> None:
 def test_build_image_context_empty_descriptions_yield_empty(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin.settings.vision_main_enabled = True
-        plugin._get_image_parser = lambda *a, **k: _FakeParser(parse=lambda images: [""])
+        _cache_parser(plugin, _FakeParser(parse=lambda images: [""]))
         package = main.__package__
         models = importlib.import_module(package + ".models")
         plugin._coordinator.capture_images(UMO, models.now_ts(), [_image()])
-        assert await plugin._build_image_context(UMO, enabled=True) == ""
+        assert await _vision_runtime(main).build_image_context(plugin, UMO, enabled=True) == ""
 
     with_plugin(tmp_path, scenario)
 
@@ -802,7 +817,7 @@ def test_on_message_snapshot_failure_still_captures(tmp_path: Path) -> None:
                 raise RuntimeError("snapshot failed")
 
         parser = SnapshotFailingParser(batch=[True])
-        plugin._get_image_parser = lambda *a, **k: parser
+        _cache_parser(plugin, parser)
         await plugin.on_message(_image_event(message_str="看看这张图"))
         await until(lambda: UMO in plugin._recent_image_events)
 
@@ -859,8 +874,8 @@ def test_prepare_images_without_vision_returns_early(tmp_path: Path) -> None:
         plugin.settings.vision_main_enabled = False
         plugin.settings.vision_judge_enabled = False
         token = plugin._gate.advance(UMO)
-        await plugin._prepare_images_for_session(
-            UMO, generation=token, active_at=1.0, images=[_image()]
+        await _vision_runtime(main).prepare_images_for_session(
+            plugin, UMO, generation=token, active_at=1.0, images=[_image()]
         )
         assert UMO not in plugin._recent_image_events
 
@@ -894,7 +909,7 @@ def test_build_image_context_without_parser_returns_empty(tmp_path: Path) -> Non
     async def scenario(plugin, main):
         plugin.settings.vision_main_enabled = False
         plugin.settings.vision_judge_enabled = False
-        assert await plugin._build_image_context(UMO, enabled=True) == ""
+        assert await _vision_runtime(main).build_image_context(plugin, UMO, enabled=True) == ""
 
     with_plugin(tmp_path, scenario)
 
