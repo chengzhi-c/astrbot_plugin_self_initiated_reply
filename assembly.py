@@ -37,11 +37,13 @@ def assemble_plugin_components(
         spawn=plugin._track_background_task,
         should_run=lambda: not plugin._stopping and plugin.runtime_enabled,
         state_for=lambda umo: plugin._state_for(umo),
-        check_session=lambda umo, trigger, force, expected_generation: plugin._check_session(
-            umo,
-            trigger=trigger,
-            force=force,
-            expected_generation=expected_generation,
+        check_session=lambda umo, trigger, force, expected_generation: (
+            plugin._pipeline.check_session(
+                umo,
+                trigger=trigger,
+                force=force,
+                expected_generation=expected_generation,
+            )
         ),
         clear_cached_event=lambda umo: plugin._clear_cached_event(umo),
         last_events=plugin._last_events,

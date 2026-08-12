@@ -181,7 +181,7 @@ async def dispatch_command_action(
                 )
             )
         try:
-            result = await plugin._check_session(
+            result = await plugin._pipeline.check_session(
                 umo,
                 trigger="manual",
                 force=True,

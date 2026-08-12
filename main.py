@@ -90,20 +90,13 @@ from .models import (
     PLUGIN_ID,
     PLUGIN_VERSION,
     SESSION_CANCEL_COMMAND_ACTIONS,
-    PipelineReply,
     SendOutcome,
     SessionState,
     Settings,
     now_ts,
 )
 from .plugin_state import (
-    decide_session_reply as state_decide_session_reply,
-)
-from .plugin_state import (
     persist_enabled as state_persist_enabled,
-)
-from .plugin_state import (
-    record_decision as state_record_decision,
 )
 from .plugin_state import (
     refresh_admin_ids as state_refresh_admin_ids,
@@ -440,106 +433,6 @@ class SelfInitiatedReplyPlugin(Star):
 
     def _ensure_patrol_task(self) -> None:
         self._scheduler.ensure_patrol()
-
-    async def _check_session(
-        self,
-        umo: str,
-        *,
-        trigger: str,
-        force: bool,
-        expected_generation: int | None = None,
-    ) -> str:
-        return await self._pipeline.check_session(
-            umo,
-            trigger=trigger,
-            force=force,
-            expected_generation=expected_generation,
-        )
-
-    async def _check_session_locked(
-        self,
-        umo: str,
-        *,
-        trigger: str,
-        force: bool,
-        expected_generation: int | None = None,
-    ) -> str:
-        """单会话检查主链（委托 ``SessionPipeline``）。"""
-        return await self._pipeline.check_session_locked(
-            umo,
-            trigger=trigger,
-            force=force,
-            expected_generation=expected_generation,
-        )
-
-    def _session_check_guard(
-        self, umo: str, *, force: bool, expected_generation: int | None
-    ) -> str | None:
-        """会话级前置门卫（委托 ``SessionPipeline``）。"""
-        return self._pipeline.session_check_guard(
-            umo, force=force, expected_generation=expected_generation
-        )
-
-    def _record_decision(self, umo: str, trigger: str, *, should_reply: bool, reason: str) -> None:
-        state_record_decision(self, umo, trigger, should_reply=should_reply, reason=reason)
-
-    async def _decide_session_reply(
-        self,
-        umo: str,
-        state: SessionState,
-        *,
-        trigger: str,
-        force: bool,
-        expected_generation: int | None,
-    ) -> dict[str, Any] | str:
-        return await state_decide_session_reply(
-            self,
-            umo,
-            state,
-            trigger=trigger,
-            force=force,
-            expected_generation=expected_generation,
-        )
-
-    async def _deliver_session_reply(
-        self,
-        umo: str,
-        state: SessionState,
-        reply: str,
-        direct_send_count: int,
-        *,
-        expected_generation: int | None,
-        observed_active_at: float | None,
-        force: bool,
-        trigger: str,
-    ) -> str:
-        """发送前门卫与发送状态机；返回结果消息。（委托壳，逻辑在 delivery.py）"""
-        return await self._delivery.deliver_reply(
-            umo,
-            state,
-            reply,
-            direct_send_count,
-            expected_generation=expected_generation,
-            observed_active_at=observed_active_at,
-            force=force,
-            trigger=trigger,
-        )
-
-    async def _generate_reply_via_pipeline(
-        self,
-        umo: str,
-        state: SessionState,
-        *,
-        expected_generation: int | None = None,
-        force: bool = False,
-    ) -> PipelineReply:
-        """Run AstrBot's main Agent and account for tool-side direct sends."""
-        return await self._generation.generate(
-            umo,
-            state,
-            expected_generation=expected_generation,
-            force=force,
-        )
 
     def _enforce_final_tool_policy(self, req: Any, inherit_tools: bool) -> bool:
         """Enforce the proactive tool allowlist; abort the run when unverifiable."""

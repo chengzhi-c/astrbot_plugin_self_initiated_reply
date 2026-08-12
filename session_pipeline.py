@@ -1,8 +1,4 @@
-"""会话检查主链：闸门 → 裁决 → 生成 → 投递。
-
-从 main 抽出以便阅读与测试定位；不引入 DI。经 ``owner`` 属性查找调用
-decide/generate/deliver，测试替换 ``plugin._generate_reply_via_pipeline`` 等仍生效。
-"""
+"""会话检查主链：闸门 → 裁决 → 生成 → 投递。"""
 
 from __future__ import annotations
 
@@ -12,6 +8,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .models import PLUGIN_ID, STALE_TASK_MESSAGE
+from .plugin_state import decide_session_reply
 from .utils import session_whitelisted, whitelist_storage_key
 
 
@@ -86,7 +83,8 @@ class SessionPipeline:
 
         self._gate.mark_running(umo)
         try:
-            decision = await owner._decide_session_reply(
+            decision = await decide_session_reply(
+                owner,
                 umo,
                 state,
                 trigger=trigger,
@@ -96,7 +94,7 @@ class SessionPipeline:
             if isinstance(decision, str):
                 return decision
 
-            pipeline_reply = await owner._generate_reply_via_pipeline(
+            pipeline_reply = await owner._generation.generate(
                 umo,
                 state,
                 expected_generation=expected_generation,
@@ -119,7 +117,7 @@ class SessionPipeline:
             if not reply and not direct_send_count:
                 return "管线未生成内容。"
 
-            return await owner._deliver_session_reply(
+            return await owner._delivery.deliver_reply(
                 umo,
                 state,
                 reply,
