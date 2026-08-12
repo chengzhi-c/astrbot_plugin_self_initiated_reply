@@ -152,6 +152,74 @@ def _backup_state_file(path: Path) -> None:
         logger.error("[%s] failed to back up state file %s", PLUGIN_ID, path)
 
 
+def _read_state_document(path: Path) -> dict[Any, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        if isinstance(data, dict):
+            file_version = data.get("version")
+            if file_version is not None and file_version != STATE_VERSION:
+                logger.error(
+                    "[%s] state version mismatch: file=%s expected=%s; backing up",
+                    PLUGIN_ID,
+                    file_version,
+                    STATE_VERSION,
+                )
+                _backup_state_file(path)
+            raw_sessions = data.get("sessions", {})
+            return raw_sessions if isinstance(raw_sessions, dict) else {}
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        logger.error("[%s] failed to load state (backing up): %s", PLUGIN_ID, exc)
+        _backup_state_file(path)
+    except Exception as exc:
+        logger.error("[%s] unexpected error loading state: %s", PLUGIN_ID, exc, exc_info=True)
+        _backup_state_file(path)
+    return {}
+
+
+def _load_recent_records(
+    raw_recent: Any, recent_limit: int, load_now: float
+) -> deque[MessageRecord]:
+    recent: deque[MessageRecord] = deque(maxlen=recent_limit)
+    if not isinstance(raw_recent, list):
+        return recent
+    for item in raw_recent:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        role = str(item.get("role") or "user").strip().lower()
+        if role not in {"user", "assistant"}:
+            role = "user"
+        recent.append(
+            MessageRecord(
+                role=role,
+                name=str(item.get("name") or "用户"),
+                text=text,
+                sender_id=str(item.get("sender_id") or ""),
+                at=as_timestamp(item.get("at"), now=load_now),
+            )
+        )
+    return recent
+
+
+def _load_session_record(raw: dict[Any, Any], recent_limit: int, load_now: float) -> SessionState:
+    state = SessionState(recent=deque(maxlen=recent_limit))
+    state.last_active_at = as_timestamp(raw.get("last_active_at"), now=load_now)
+    state.last_active_sender_id = str(raw.get("last_active_sender_id") or "")
+    state.last_proactive_at = as_timestamp(raw.get("last_proactive_at"), now=load_now)
+    state.last_proactive_observed_at = as_timestamp(
+        raw.get("last_proactive_observed_at"), now=load_now
+    )
+    state.last_proactive_text = str(raw.get("last_proactive_text") or "")
+    state.daily_key = str(raw.get("daily_key") or state.daily_key)
+    state.daily_count = as_int(raw.get("daily_count"), 0)
+    state.recent = _load_recent_records(raw.get("recent", []), recent_limit, load_now)
+    return state
+
+
 def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[str, SessionState]:
     """从 state.json 载入会话状态，只保留仍在白名单内的会话。
 
@@ -174,32 +242,7 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
     """
     load_now = now_ts()
     sessions: dict[str, SessionState] = {}
-    raw_sessions: Any = {}
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
-            if isinstance(data, dict):
-                file_version = data.get("version")
-                if file_version is not None and file_version != STATE_VERSION:
-                    # 版本不符：结构可能已变化，静默容错解析会产生"半加载"状态
-                    # （字段默认化、计数错位），用户无感知。备份原文件并告警，
-                    # 之后按当前结构尽力解析，避免直接丢弃仍兼容的数据。
-                    logger.error(
-                        "[%s] state version mismatch: file=%s expected=%s; backing up",
-                        PLUGIN_ID,
-                        file_version,
-                        STATE_VERSION,
-                    )
-                    _backup_state_file(path)
-            raw_sessions = data.get("sessions", {}) if isinstance(data, dict) else {}
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
-            logger.error("[%s] failed to load state (backing up): %s", PLUGIN_ID, exc)
-            _backup_state_file(path)
-        except Exception as exc:
-            logger.error("[%s] unexpected error loading state: %s", PLUGIN_ID, exc, exc_info=True)
-            _backup_state_file(path)
-    if not isinstance(raw_sessions, dict):
-        raw_sessions = {}
+    raw_sessions = _read_state_document(path)
 
     for raw_umo, raw in raw_sessions.items():
         umo = str(raw_umo or "").strip()
@@ -207,38 +250,7 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
             continue
         try:
             key = whitelist_storage_key(umo)
-            state = SessionState(recent=deque(maxlen=recent_limit))
-            state.last_active_at = as_timestamp(raw.get("last_active_at"), now=load_now)
-            state.last_active_sender_id = str(raw.get("last_active_sender_id") or "")
-            state.last_proactive_at = as_timestamp(raw.get("last_proactive_at"), now=load_now)
-            state.last_proactive_observed_at = as_timestamp(
-                raw.get("last_proactive_observed_at"), now=load_now
-            )
-            state.last_proactive_text = str(raw.get("last_proactive_text") or "")
-            state.daily_key = str(raw.get("daily_key") or state.daily_key)
-            state.daily_count = as_int(raw.get("daily_count"), 0)
-            raw_recent = raw.get("recent", [])
-            if not isinstance(raw_recent, list):
-                raw_recent = []
-            for item in raw_recent:
-                if not isinstance(item, dict):
-                    continue
-                text = str(item.get("text") or "").strip()
-                if not text:
-                    continue
-                role = str(item.get("role") or "user").strip().lower()
-                if role not in {"user", "assistant"}:
-                    role = "user"
-                state.recent.append(
-                    MessageRecord(
-                        role=role,
-                        name=str(item.get("name") or "用户"),
-                        text=text,
-                        sender_id=str(item.get("sender_id") or ""),
-                        at=as_timestamp(item.get("at"), now=load_now),
-                    )
-                )
-            sessions[key] = state
+            sessions[key] = _load_session_record(raw, recent_limit, load_now)
         except Exception as exc:
             logger.warning("[%s] skipped malformed session state %s: %s", PLUGIN_ID, umo, exc)
 
