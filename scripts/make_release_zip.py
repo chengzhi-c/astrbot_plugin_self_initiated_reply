@@ -45,7 +45,8 @@ def main() -> int:
     # 与 check_wheel.py 同口径取字典序最后一个，保证两个脚本看的是同一个 wheel。
     wheel = wheels[-1]
 
-    out_path = ROOT / "dist" / f"{PLUGIN_DIR_NAME}-deploy.zip"
+    version = wheel.name.removeprefix(f"{PLUGIN_DIR_NAME}-").split("-", 1)[0]
+    out_path = ROOT / "dist" / f"{PLUGIN_DIR_NAME}-{version}-deploy.zip"
     copied: list[str] = []
     skipped = 0
 
