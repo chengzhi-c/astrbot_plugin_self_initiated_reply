@@ -52,6 +52,99 @@ _UNABLE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+_CacheEntry = tuple[float, Path, int, Path]
+
+
+def _resolve_protected_cache_sources(
+    resolved_root: Path, protected_sources: set[str] | None
+) -> set[Path]:
+    protected: set[Path] = set()
+    for source in protected_sources or set():
+        value = str(source or "").strip()
+        if not value or value.startswith("data:"):
+            continue
+        try:
+            candidate = Path(value).resolve()
+            candidate.relative_to(resolved_root)
+            protected.add(candidate)
+        except (OSError, ValueError):
+            continue
+    return protected
+
+
+def _scan_source_cache(
+    cache_root: Path, resolved_root: Path
+) -> tuple[list[_CacheEntry], list[Path]]:
+    """Take one cache-tree snapshot while rejecting links and invalid entries."""
+    files: list[_CacheEntry] = []
+    directories: list[Path] = []
+    for path in cache_root.rglob("*"):
+        try:
+            if path.is_symlink():
+                continue
+            if path.is_dir():
+                directories.append(path)
+                continue
+            if not path.is_file():
+                continue
+            resolved = path.resolve()
+            resolved.relative_to(resolved_root)
+            stat_result = path.stat()
+            files.append((stat_result.st_mtime, path, stat_result.st_size, resolved))
+        except (OSError, ValueError):
+            continue
+    return files, directories
+
+
+def _remove_expired_cache_files(
+    files: list[_CacheEntry], protected: set[Path], cutoff: float
+) -> tuple[int, list[_CacheEntry]]:
+    """Remove expired files and retain every file that still occupies quota."""
+    removed = 0
+    survivors: list[_CacheEntry] = []
+    for entry in files:
+        mtime, path, _size, resolved = entry
+        if resolved in protected or mtime >= cutoff:
+            survivors.append(entry)
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            survivors.append(entry)
+    return removed, survivors
+
+
+def _remove_over_quota_cache_files(
+    files: list[_CacheEntry], protected: set[Path], quota: int | None
+) -> int:
+    if quota is None:
+        return 0
+    removed = 0
+    total_bytes = sum(size for _, _, size, _ in files)
+    for _, path, size, resolved in sorted(files, key=lambda item: item[0]):
+        if total_bytes <= quota:
+            break
+        if resolved in protected:
+            continue
+        try:
+            path.unlink()
+            total_bytes -= size
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _remove_empty_cache_directories(directories: list[Path]) -> None:
+    for directory in sorted(directories, reverse=True):
+        try:
+            if next(directory.iterdir(), None) is not None:
+                continue
+            directory.rmdir()
+        except OSError:
+            pass
+
 
 def _redact_url(value: str) -> str:
     """去掉 query/fragment 后再截断，避免签名 token 进日志。
@@ -356,83 +449,17 @@ class ImageParser:
             return 0
 
         resolved_root = cache_root.resolve()
-        protected: set[Path] = set()
-        for source in protected_sources or set():
-            value = str(source or "").strip()
-            if not value or value.startswith("data:"):
-                continue
-            try:
-                candidate = Path(value).resolve()
-                candidate.relative_to(resolved_root)
-                protected.add(candidate)
-            except (OSError, ValueError):
-                continue
-
-        # 单遍采集：三个阶段共享同一时刻的目录视图，每文件只 stat 一次。
-        # 单文件的文件系统错误就地跳过；rglob 本身抛出（目录不可读）时上抛，
-        # 三个调用方都记 warning，不在此处静默掉整轮清理失败。
-        files: list[tuple[float, Path, int, Path]] = []
-        directories: list[Path] = []
-        for path in cache_root.rglob("*"):
-            try:
-                # symlink 先于 stat 拒绝：跟随链接会删到 image_cache 之外。
-                if path.is_symlink():
-                    continue
-                if path.is_dir():
-                    directories.append(path)
-                    continue
-                if not path.is_file():
-                    continue
-                resolved = path.resolve()
-                resolved.relative_to(resolved_root)
-                stat_result = path.stat()
-                files.append((stat_result.st_mtime, path, stat_result.st_size, resolved))
-            except (OSError, ValueError):
-                continue
-
-        removed = 0
-        # survivors：过期回收后仍在盘上的文件，配额阶段据此计账。unlink 失败的
-        # 文件必须留在表内——它还占着空间，配额阶段不能把它当已释放。
-        survivors: list[tuple[float, Path, int, Path]] = []
-        for entry in files:
-            mtime, path, _size, resolved = entry
-            if resolved in protected or mtime >= cutoff:
-                survivors.append(entry)
-                continue
-            try:
-                path.unlink()
-                removed += 1
-            except OSError:
-                survivors.append(entry)
+        protected = _resolve_protected_cache_sources(resolved_root, protected_sources)
+        # rglob 整体失败继续上抛给调用方；单文件错误由扫描步骤就地跳过。
+        files, directories = _scan_source_cache(cache_root, resolved_root)
+        removed, survivors = _remove_expired_cache_files(files, protected, cutoff)
 
         try:
             quota = None if max_total_bytes is None else max(0, int(max_total_bytes))
         except (TypeError, ValueError, OverflowError):
             quota = None
-        if quota is not None:
-            total_bytes = sum(size for _, _, size, _ in survivors)
-            for _, path, size, resolved in sorted(survivors, key=lambda item: item[0]):
-                if total_bytes <= quota:
-                    break
-                if resolved in protected:
-                    continue
-                try:
-                    path.unlink()
-                    total_bytes -= size
-                    removed += 1
-                except OSError:
-                    continue
-
-        for directory in sorted(directories, reverse=True):
-            try:
-                # 显式空目录守卫（0.9.3 C3）：不依赖 rmdir 的 ENOTEMPTY 语义保护
-                # 活跃文件——某些沙箱/容器文件系统会让非空目录 rmdir 成功并连带
-                # 删除目录内文件。代价是一次 iterdir()。
-                if next(directory.iterdir(), None) is not None:
-                    continue
-                directory.rmdir()
-            except OSError:
-                pass
+        removed += _remove_over_quota_cache_files(survivors, protected, quota)
+        _remove_empty_cache_directories(directories)
         return removed
 
     async def parse_batch(
