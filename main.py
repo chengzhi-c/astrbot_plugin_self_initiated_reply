@@ -72,7 +72,6 @@ from .commands import (
     list_text,
     status_text,
 )
-from .generation import GenerationRunner
 from .image import ImageInfo, ImageParser
 from .models import (
     ADMIN_COMMAND_ACTIONS,
@@ -81,7 +80,6 @@ from .models import (
     PLUGIN_ID,
     PLUGIN_VERSION,
     SESSION_CANCEL_COMMAND_ACTIONS,
-    SendOutcome,
     SessionState,
     Settings,
     now_ts,
@@ -253,16 +251,6 @@ class SelfInitiatedReplyPlugin(Star):
     def _validate_agent_api() -> None:
         _AGENT_RUNTIME.validate()
 
-    def _install_agent_tool_boundary(
-        self, event: AstrMessageEvent, inherit_tools: bool
-    ) -> dict[str, Any]:
-        """Limit a proactive run to built-in low-side-effect tools by default."""
-        return self._generation.install_agent_tool_boundary(event, inherit_tools)
-
-    @staticmethod
-    def _restore_agent_tool_boundary(event: AstrMessageEvent, state: dict[str, Any]) -> None:
-        GenerationRunner.restore_agent_tool_boundary(event, state)
-
     @staticmethod
     def _resolve_paths(config_obj: Any) -> tuple[Path, Path]:
         return state_resolve_paths(
@@ -366,19 +354,6 @@ class SelfInitiatedReplyPlugin(Star):
         umo = event_umo(event)
         if umo and session_whitelisted(umo, self.settings.whitelist):
             self._invalidate_session(umo, force_cancel=True)
-
-    def _enforce_final_tool_policy(self, req: Any, inherit_tools: bool) -> bool:
-        """Enforce the proactive tool allowlist; abort the run when unverifiable."""
-        return self._generation.enforce_final_tool_policy(req, inherit_tools)
-
-    async def _send_reply(
-        self, umo: str, reply: str, *, expected_generation: int | None = None
-    ) -> SendOutcome:
-        """Send one proactive reply without retrying an unknown submission.
-
-        （委托壳，逻辑在 delivery.py）
-        """
-        return await self._delivery.send_reply(umo, reply, expected_generation=expected_generation)
 
     async def _add_whitelist_session(self, umo: str) -> bool:
         async with self._config_lock:

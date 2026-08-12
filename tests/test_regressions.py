@@ -241,7 +241,7 @@ def _install_tool_injecting_pipeline(plugin, main, *, event):
     main._AGENT_RUNTIME = _PipelineTestAdapter(
         original_runtime, build_effect=build_effect, run_effect=run_effect
     )
-    original_enforce = plugin._generation._enforce_policy
+    original_enforce = plugin._generation.enforce_final_tool_policy
 
     def counting_enforce(req, inherit_tools):
         ok = original_enforce(req, inherit_tools)
@@ -251,14 +251,14 @@ def _install_tool_injecting_pipeline(plugin, main, *, event):
             req.func_tool.add_tool(SimpleNamespace(name="hook_injected"))
         return ok
 
-    plugin._generation._enforce_policy = counting_enforce
+    plugin._generation.enforce_final_tool_policy = counting_enforce
     return {
         "req_holder": req_holder,
         "enforce_snapshots": enforce_snapshots,
         "reset_snapshots": reset_snapshots,
         "prompts": prompts,
         "restore": lambda: (
-            setattr(plugin._generation, "_enforce_policy", original_enforce),
+            setattr(plugin._generation, "enforce_final_tool_policy", original_enforce),
             setattr(main, "_AGENT_RUNTIME", original_runtime),
         ),
     }
@@ -323,7 +323,7 @@ def test_r1_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> N
         main._AGENT_RUNTIME = _PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
-        original_enforce = plugin._generation._enforce_policy
+        original_enforce = plugin._generation.enforce_final_tool_policy
 
         def counting_enforce(req, inherit_tools):
             ok = original_enforce(req, inherit_tools)
@@ -332,7 +332,7 @@ def test_r1_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> N
                 req.func_tool.add_tool(SimpleNamespace(name="hook_injected"))
             return ok
 
-        plugin._generation._enforce_policy = counting_enforce
+        plugin._generation.enforce_final_tool_policy = counting_enforce
         try:
             result = await _run_pipeline(plugin)
             assert result.text == "你好呀"
@@ -340,7 +340,7 @@ def test_r1_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> N
             assert enforce_snapshots == [[], []]
             assert main._AGENT_RUNTIME.final_tool_ids(req_holder["req"]) == []
         finally:
-            plugin._generation._enforce_policy = original_enforce
+            plugin._generation.enforce_final_tool_policy = original_enforce
             main._AGENT_RUNTIME = original_runtime
 
     with_plugin(tmp_path, scenario)
@@ -525,7 +525,7 @@ def test_r6_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
         main._AGENT_RUNTIME = _PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
-        original_enforce = plugin._generation._enforce_policy
+        original_enforce = plugin._generation.enforce_final_tool_policy
 
         def counting_enforce(req, inherit_tools):
             ok = original_enforce(req, inherit_tools)
@@ -536,7 +536,7 @@ def test_r6_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
                 req.func_tool.add_tool(SimpleNamespace(name="third_party_weather"))
             return ok
 
-        plugin._generation._enforce_policy = counting_enforce
+        plugin._generation.enforce_final_tool_policy = counting_enforce
         try:
             result = await plugin._generation.generate(
                 UMO, plugin._state_for(UMO), expected_generation=1, force=True
@@ -546,7 +546,7 @@ def test_r6_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
             assert enforce_snapshots[0] == ["send_image"]
             assert enforce_snapshots[1] == ["send_image", "third_party_weather"]
         finally:
-            plugin._generation._enforce_policy = original_enforce
+            plugin._generation.enforce_final_tool_policy = original_enforce
             main._AGENT_RUNTIME = original_runtime
 
     with_plugin(tmp_path, scenario, proactive_inherit_tools=True)
@@ -611,13 +611,13 @@ def test_r7_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) ->
         main._AGENT_RUNTIME = _PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
-        original_send_reply = plugin._delivery._send_reply
+        original_send_reply = plugin._delivery.send_reply
 
         async def unknown_send_reply(umo, reply, expected_generation=None):
             models = importlib.import_module(f"{main.__package__}.models")
             return models.SendOutcome(models.SendStatus.UNKNOWN, "adapter raised after submit")
 
-        plugin._delivery._send_reply = unknown_send_reply
+        plugin._delivery.send_reply = unknown_send_reply
         try:
             result = await plugin._pipeline.check_session(UMO, trigger="patrol", force=True)
             assert "未自动重试" in result
@@ -626,7 +626,7 @@ def test_r7_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) ->
             assert state.last_proactive_observed_at >= state.last_active_at
             assert state.last_proactive_at >= state.last_active_at
         finally:
-            plugin._delivery._send_reply = original_send_reply
+            plugin._delivery.send_reply = original_send_reply
             main._AGENT_RUNTIME = original_runtime
 
     with_plugin(tmp_path, scenario)

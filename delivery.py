@@ -5,12 +5,12 @@
 UNKNOWN 语义（不自动重试、不触发 after-send 钩子、仍消耗冷却与日配额
 并推进观察窗口）、主动状态记录（冷却、日配额、观察窗口、历史条目）。
 
-对外暴露三个入口（main.py 保留同名委托壳，测试替换实例方法仍生效）：
+对外暴露三个入口：
 - ``deliver_reply``：投递一次回复（发送前门卫 + 状态机 + 结果分类 + 记录）
 - ``send_reply``：发送一条文本回复（钩子装饰与代次复核 + 事件/context 发送）
 - ``record_proactive_state``：记录一次主动发送尝试的状态
 
-宿主交互经注入回调执行：钩子调用与 context 发送经 lambda 运行时查找
+宿主交互经注入回调执行：钩子调用与 context 发送运行时查找
 （测试替换 ``main.call_event_hook`` / ``plugin.context.send_message``
 后仍指向最新实现）。
 """
@@ -47,7 +47,6 @@ from .outbound import OutboundGateway
 SaveStorageCallback = Callable[[], Awaitable[None]]
 CallHookCallback = Callable[[Any, Any], Awaitable[None]]
 ContextSendCallback = Callable[[str, Any], Awaitable[Any]]
-SendReplyCallback = Callable[[str, str, int | None], Awaitable[SendOutcome]]
 RuntimeCallback = Callable[[], Any]
 
 
@@ -63,7 +62,6 @@ class DeliveryRunner:
         last_events: dict[str, Any],
         call_hook: CallHookCallback,
         context_send: ContextSendCallback,
-        send_reply: SendReplyCallback,
         save_storage: SaveStorageCallback,
         runtime: RuntimeCallback,
     ) -> None:
@@ -73,7 +71,6 @@ class DeliveryRunner:
         self._last_events = last_events
         self._call_hook = call_hook
         self._context_send = context_send
-        self._send_reply = send_reply
         self._save_storage = save_storage
         self._runtime = runtime
 
@@ -121,7 +118,7 @@ class DeliveryRunner:
             return gate
 
         if reply:
-            sent = await self._send_reply(umo, reply, expected_generation)
+            sent = await self.send_reply(umo, reply, expected_generation=expected_generation)
             if not sent.delivered:
                 if sent.status is SendStatus.UNKNOWN:
                     # 可能已经提交：不自动重试；消耗冷却与日配额并推进观察窗口
@@ -154,7 +151,7 @@ class DeliveryRunner:
             # 仅有工具直发。这里不再合成 SendOutcome：原先合成的 DELIVERED 之后
             # 无人读取（下文只用 reply / direct_send_count），却让「确定未提交也算
             # 已投递」这个错觉留在源码里。真正的把关在 OutboundGateway：确定未提交
-            # 会退还 direct_send_count，于是 main.py 的 `not reply and not
+            # 会退还 direct_send_count，于是 session_pipeline 的 `not reply and not
             # direct_send_count` 会先行短路，走不到这一支。能到这里说明至少有一条
             # 直发是 DELIVERED/UNKNOWN——UNKNOWN 可能已达，扣配额是正确的兜底。
             pass

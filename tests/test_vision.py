@@ -1119,7 +1119,7 @@ def test_image_context_returns_empty_without_valid_rows() -> None:
     """无有效描述时必须返回空串，不得输出只有声明的空壳。"""
     _, image, _ = _load_modules()
     assert image.format_image_context([]) == ""
-    assert image.format_image_context(["", "", ""]) == ""
+    assert image.format_image_context(["", None, ""]) == ""
 
 
 def test_image_context_numbering_follows_original_position() -> None:

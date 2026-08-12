@@ -415,7 +415,7 @@ class SessionState:
         ``confirmed=False`` 表示 UNKNOWN 投递：只消耗冷却与日配额，
         不写历史条目。
 
-        先 ``refresh_day`` 再自增：调用方（``_check_session_locked``）的跨天
+        先 ``refresh_day`` 再自增：调用方（``SessionPipeline.check_session_locked``）的跨天
         刷新发生在判断+生成之前，二者相隔可达数十秒（判断超时 20s + 生成
         超时 60s）。跨零点时增量会记到昨日键上，随下一次刷新归零 —— 等于
         今日配额白送一次。本方法自带刷新后不再依赖调用方的时序。

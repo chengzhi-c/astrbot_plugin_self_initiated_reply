@@ -1,7 +1,7 @@
 """插件协作对象装配。
 
-从 ``main._assemble_components`` 抽出，避免入口文件承载 100+ 行同质接线。
-跨对象依赖一律 lambda 运行时查找，便于测试替换实例方法。
+从 ``main._assemble_components`` 抽出，避免入口文件承载同质接线。
+仅循环依赖与宿主热替换点使用 lambda 延迟查找，稳定组件方法直接接线。
 """
 
 from __future__ import annotations
@@ -81,9 +81,6 @@ def assemble_plugin_components(
         runtime=lambda: get_runtime(),
         gate=plugin._gate,
         local_gate=lambda state, force: plugin._decision.local_gate(state, force=force),
-        enforce_policy=lambda req, inherit_tools: plugin._enforce_final_tool_policy(
-            req, inherit_tools
-        ),
         call_hook=lambda event, event_type, req: get_call_hook()(event, event_type, req),
         grace_stop_sec=lambda: grace(),
         background_tasks=plugin._background_tasks,
@@ -111,9 +108,6 @@ def assemble_plugin_components(
         last_events=plugin._last_events,
         call_hook=lambda event, event_type: get_call_hook()(event, event_type),
         context_send=lambda umo, message: plugin.context.send_message(umo, message),
-        send_reply=lambda umo, reply, expected_generation: plugin._send_reply(
-            umo, reply, expected_generation=expected_generation
-        ),
         save_storage=lambda: plugin._save_storage(),
         runtime=lambda: get_runtime(),
     )

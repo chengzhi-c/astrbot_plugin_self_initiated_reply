@@ -79,11 +79,8 @@ def _make_runner(
     settings = models.Settings.from_config(config or {})
     last_events: dict[str, object] = {}
     gate = SimpleNamespace(is_current=lambda umo, generation: gate_current)
-    if sender is None:
-        if sender_status is None:
-            outcome = models.SendOutcome(models.SendStatus.DELIVERED, "")
-        else:
-            outcome = models.SendOutcome(models.SendStatus(sender_status), "")
+    if sender is None and sender_status is not None:
+        outcome = models.SendOutcome(models.SendStatus(sender_status), "")
         sender = FakeSender(outcome)
     delivered = delivery_mod.DeliveryRunner(
         settings=settings,
@@ -92,7 +89,6 @@ def _make_runner(
         last_events=last_events,
         call_hook=hook if hook is not None else FakeHook(),
         context_send=context_send if context_send is not None else FakeContextSend(),
-        send_reply=sender,
         save_storage=save if save is not None else FakeSave(),
         runtime=lambda: SimpleNamespace(
             # 复用宿主桩的 MessageEventResult（message 链式 + chain 属性）
@@ -104,6 +100,8 @@ def _make_runner(
             ),
         ),
     )
+    if sender is not None:
+        delivered.send_reply = sender
     return delivery_mod, models, delivered, last_events
 
 

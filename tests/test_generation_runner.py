@@ -172,7 +172,7 @@ class RealResetRuntime(FakeRuntime):
     默认的 `_FakeResetCoro.close()` 是空操作，无法区分「回收了」与「泄漏了」；
     真协程才能用 `inspect.getcoroutinestate` 做确定性断言。沿用默认 build 而非
     注入 build_results 是必需的：注入的 req 若 `func_tool=None`，第一道
-    `_enforce_policy` 就会 fail-closed 早退，测试会因错误的原因通过。
+    工具策略复核就会 fail-closed 早退，测试会因错误的原因通过。
     """
 
     def __init__(self) -> None:
@@ -210,13 +210,7 @@ def _make_runner(
     settings = models.Settings.from_config(config or {})
     fake_runtime = runtime if runtime is not None else FakeRuntime()
     gate = SimpleNamespace(is_current=lambda umo, generation: True)
-    calls = {"enforce": 0, "hook": 0, "history": 0, "image": 0}
-
-    if enforce is None:
-
-        def enforce(req, inherit_tools):
-            calls["enforce"] += 1
-            return True
+    calls = {"hook": 0, "history": 0, "image": 0}
 
     if hook is None:
 
@@ -243,7 +237,6 @@ def _make_runner(
         runtime=lambda: fake_runtime,
         gate=gate,
         local_gate=lambda state, force: "",
-        enforce_policy=enforce,
         call_hook=hook,
         grace_stop_sec=lambda: grace_sec,
         background_tasks=background_tasks,
@@ -252,6 +245,8 @@ def _make_runner(
         build_image_context=build_image_context,
         last_events={},
     )
+    if enforce is not None:
+        runner.enforce_final_tool_policy = enforce
     return generation_mod, models, runner, fake_runtime, calls, background_tasks
 
 
@@ -582,7 +577,7 @@ async def test_generate_fail_closed_aborts_run_keeps_directs(tmp_path: Path) -> 
     def reject_policy(req, inherit_tools):
         return False  # 工具集无法枚举 → fail closed
 
-    runner._enforce_policy = reject_policy
+    runner.enforce_final_tool_policy = reject_policy
     event = FakeEvent()
     runner._last_events["s1"] = event
     state = _state(models)
@@ -630,7 +625,7 @@ async def test_generate_hook_early_exit_restores_event(tmp_path: Path) -> None:
 async def test_generate_closes_reset_coro_when_hook_raises(tmp_path: Path) -> None:
     """hook 抛异常（而非返回真早退）时，reset 协程必须仍被回收（0.9.4 阶段 1.3）。
 
-    修复前：三个早退点经 _abort 关闭、成功路径 await，但 _enforce_policy/_call_hook
+    修复前：三个早退点经 _abort 关闭、成功路径 await，但工具策略/调用钩子
     抛异常时控制流直奔 except Exception，那里的 return 不碰 reset_coro，finally 的三段
     清理也不碰，于是留下 "coroutine was never awaited" 告警并泄漏宿主 reset 状态。
     第三方插件注册的 OnLLMRequestEvent hook 抛异常就是现实触发条件。
@@ -684,7 +679,7 @@ async def test_generate_closes_reset_coro_when_hook_raises_timeout(tmp_path: Pat
 
 
 async def test_generate_second_enforcement_aborts_and_closes_reset(tmp_path: Path) -> None:
-    """第二道 _enforce_policy（reset 之前）拒绝时：不得 run，reset 协程必须已回收。
+    """第二道工具策略复核（reset 之前）拒绝时：不得 run，reset 协程必须已回收。
 
     这道闸门存在的理由是 hook 可能在 build 之后往 req 里注入工具，必须在 reset
     之前再查一次——宿主 reset 会把工具集拷进 runner，查晚了就来不及。此前该早退点

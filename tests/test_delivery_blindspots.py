@@ -190,10 +190,6 @@ async def test_deliver_context_cancellation_records_unknown_state(tmp_path: Path
         hook=hook,
     )
 
-    async def send_via_runner(umo: str, reply: str, expected_generation: int | None):
-        return await runner.send_reply(umo, reply, expected_generation=expected_generation)
-
-    runner._send_reply = send_via_runner
     state = _state(models)
 
     result = await runner.deliver_reply(
@@ -229,10 +225,6 @@ async def test_deliver_event_cancellation_records_unknown_state(tmp_path: Path) 
     _, models, runner, last_events = _make_runner(tmp_path, hook=hook)
     last_events["s1"] = CancelAfterStart()
 
-    async def send_via_runner(umo: str, reply: str, expected_generation: int | None):
-        return await runner.send_reply(umo, reply, expected_generation=expected_generation)
-
-    runner._send_reply = send_via_runner
     state = _state(models)
 
     result = await runner.deliver_reply(

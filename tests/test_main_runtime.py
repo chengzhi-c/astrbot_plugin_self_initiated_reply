@@ -296,7 +296,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
         enforce_tool_snapshots: list[list[str]] = []
-        original_enforce = plugin._generation._enforce_policy
+        original_enforce = plugin._generation.enforce_final_tool_policy
 
         def counting_enforce(req, inherit_tools):
             ok = original_enforce(req, inherit_tools)
@@ -306,7 +306,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
                 req.func_tool.add_tool(SimpleNamespace(name="hook_injected"))
             return ok
 
-        plugin._generation._enforce_policy = counting_enforce
+        plugin._generation.enforce_final_tool_policy = counting_enforce
         try:
             state = plugin._state_for(UMO)
             token = plugin._gate.advance(UMO)
@@ -329,7 +329,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
             assert event.plugins_name == original_plugins_name
             assert event.get_extra("provider_request") is None
         finally:
-            plugin._generation._enforce_policy = original_enforce
+            plugin._generation.enforce_final_tool_policy = original_enforce
             main._AGENT_RUNTIME = original_runtime
 
     with_plugin(tmp_path, scenario)

@@ -377,7 +377,7 @@ def test_session_state_record_proactive_attempt_confirmed_and_unconfirmed() -> N
 def test_record_proactive_attempt_refreshes_day_before_counting() -> None:
     """跨零点记账必须落在当日键上，否则今日配额被白送一次。
 
-    调用方 `_check_session_locked` 的跨天刷新发生在判断+生成之前，二者相隔
+    调用方 `SessionPipeline.check_session_locked` 的跨天刷新发生在判断+生成之前，二者相隔
     可达数十秒（判断超时 20s + 生成超时 60s）。若本方法不自带刷新，跨零点的
     自增会记到昨日键，随下一次 refresh_day 归零 —— 日配额闸门被绕过一次。
     """

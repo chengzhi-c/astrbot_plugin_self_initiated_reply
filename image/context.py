@@ -20,7 +20,7 @@ UNTRUSTED_HEADER = (
 )
 
 
-def format_image_context(descriptions: Iterable[str]) -> str:
+def format_image_context(descriptions: Iterable[str | None]) -> str:
     """把 Vision 描述列表拼成带不可信声明的提示词片段。
 
     空描述会被跳过；全空（或入参为空）时返回空串，让调用方据此完全省略该段，

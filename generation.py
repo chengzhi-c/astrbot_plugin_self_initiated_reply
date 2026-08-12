@@ -241,7 +241,6 @@ class GenerationRunner:
         runtime: Callable[[], Any],
         gate: Any,
         local_gate: LocalGateCallback,
-        enforce_policy: Callable[[Any, bool], bool],
         call_hook: Callable[[Any, Any, Any], Awaitable[bool]],
         grace_stop_sec: Callable[[], float],
         background_tasks: set[asyncio.Task[Any]],
@@ -255,7 +254,6 @@ class GenerationRunner:
         self._runtime = runtime
         self._gate = gate
         self._local_gate = local_gate
-        self._enforce_policy = enforce_policy
         self._call_hook = call_hook
         self._grace_stop_sec = grace_stop_sec
         self._background_tasks = background_tasks
@@ -403,7 +401,7 @@ class GenerationRunner:
         run.build_result = build_result
         run.reset_coro = build_result.reset_coro
 
-        if not self._enforce_policy(req, inherit_tools):
+        if not self.enforce_final_tool_policy(req, inherit_tools):
             return run.abort(run.reset_coro)
 
         if await self._call_hook(
@@ -417,7 +415,7 @@ class GenerationRunner:
         # request between build and reset. Enforce BEFORE reset so that any
         # tool set the host copies into the runner during reset is already
         # clean; the runner only ever sees the allowlisted set.
-        if not self._enforce_policy(req, inherit_tools):
+        if not self.enforce_final_tool_policy(req, inherit_tools):
             return run.abort(run.reset_coro)
         if run.reset_coro:
             await run.reset_coro
