@@ -182,6 +182,60 @@ def test_on_message_captures_images_in_background(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+def test_on_message_computes_image_eligibility_once(tmp_path: Path, monkeypatch) -> None:
+    """图片资格由入口计算一次，并把结果传给通用忽略门。"""
+
+    async def scenario(plugin, main):
+        ingress = importlib.import_module(main.__package__ + ".message_ingress")
+        plugin.settings.vision_main_enabled = True
+        plugin.settings.vision_skip_stickers = True
+        plugin.settings.enabled_message_trigger = False
+        calls = []
+
+        def has_images(event, *, skip_stickers):
+            calls.append(("has_images", skip_stickers))
+            return True
+
+        def should_ignore(event, text, *, vision_has_images):
+            calls.append(("ignore", vision_has_images))
+            return False
+
+        monkeypatch.setattr(ingress.ImageExtractor, "has_images", staticmethod(has_images))
+        plugin._should_ignore_event = should_ignore
+
+        await plugin.on_message(_make_event(message_str="普通消息"))
+
+        assert calls == [("has_images", True), ("ignore", True)]
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_on_message_snapshots_before_background_prepare(tmp_path: Path) -> None:
+    """宿主临时图片必须在后台冻结任务启动前完成同步快照。"""
+
+    async def scenario(plugin, main):
+        plugin.settings.vision_main_enabled = True
+        plugin.settings.enabled_message_trigger = False
+        order = []
+
+        class OrderingParser(_FakeParser):
+            async def snapshot_local_sources(self, images, *, max_concurrent=2) -> None:
+                order.append("snapshot")
+
+        async def prepare(*args, **kwargs):
+            order.append("prepare")
+
+        plugin._get_image_parser = lambda *a, **k: OrderingParser(batch=[True])
+        plugin._prepare_images_for_session = prepare
+
+        await plugin.on_message(_image_event(message_str="看看这张图"))
+        await until(lambda: "prepare" in order)
+
+        assert order == ["snapshot", "prepare"]
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_prepare_images_stale_generation_skips_capture(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         parser = _FakeParser(batch=[True])

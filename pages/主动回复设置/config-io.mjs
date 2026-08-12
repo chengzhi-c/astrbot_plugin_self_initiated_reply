@@ -3,7 +3,7 @@ import { isSuccessfulConfigPayload } from "./frontend-core.mjs";
 const WHITELIST_ITEM_MAX_LEN = 200;
 const WHITELIST_ILLEGAL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f]/;
 
-/** POST /config 写回字段全集（与 tests/test_config_source_of_truth._FE_WRITABLE 对齐）。 */
+/** POST /config 写回字段全集；后端契约测试校验这些键可读写。 */
 export const CONFIG_SAVE_KEYS = Object.freeze([
   "enabled",
   "decision_model_enabled",

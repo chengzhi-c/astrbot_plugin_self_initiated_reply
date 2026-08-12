@@ -581,49 +581,6 @@ def test_every_exposed_config_key_is_consumed_by_the_panel() -> None:
     assert not stale, f"_FRONTEND_INTENTIONALLY_ABSENT 里的键已不由 /config 返回：{stale}"
 
 
-def test_panel_post_payload_keys_are_all_writable() -> None:
-    """面板 POST 提交的键必须全在 CONFIG_SCHEMA_KEYS 内。
-
-    失效场景：JS 里把 ``cooldown_sec`` 写成 ``cooldown_secs``。后端
-    ``_parse_config_updates`` 对未知键 **抛 ValueError**（"未知配置键"），
-    于是整次保存失败——不是这一项不生效，是**所有**设置都存不进去。前端是
-    手写字面量、没有类型检查，这类拼写错误只能靠断言拦。
-
-    提取口径：``apiPost("config", { ... })`` 请求体里 ``key:`` 形态的标识符。
-    """
-    import re
-
-    webapi = _webapi()
-    front = _frontend_sources()
-
-    match = re.search(r"apiPost\(\s*\"config\"\s*,\s*\{", front)
-    assert match, '未定位到 pages/ 里的 apiPost("config", {...}) 调用（写法变了，需复核本守卫）'
-
-    # 从 "{" 起按括号配平截出请求体字面量
-    start = match.end() - 1
-    depth = 0
-    for index in range(start, len(front)):
-        if front[index] == "{":
-            depth += 1
-        elif front[index] == "}":
-            depth -= 1
-            if depth == 0:
-                body = front[start : index + 1]
-                break
-    else:
-        raise AssertionError("apiPost 请求体括号未配平")
-
-    # 只取该层的 `key:` 标识符（值里的嵌套对象键也会被收，宁多不漏）
-    submitted = set(re.findall(r"(?m)^\s{2,}([a-z_][a-z0-9_]*)\s*:", body))
-    assert submitted, f"未从请求体提取到任何键：{body[:200]}"
-
-    unknown = sorted(submitted - set(webapi.CONFIG_SCHEMA_KEYS))
-    assert not unknown, (
-        f"面板提交了不可写的键 {unknown}：_parse_config_updates 会对未知键抛"
-        f"「未知配置键」，导致整次保存失败（不只是这一项）。"
-    )
-
-
 def _mypy_files_entries() -> list[str]:
     try:
         import tomllib

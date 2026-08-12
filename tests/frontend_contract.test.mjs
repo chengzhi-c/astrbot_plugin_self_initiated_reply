@@ -10,7 +10,10 @@ import {
   providerNeedsManualInput,
   requestPluginApi,
 } from "../pages/主动回复设置/frontend-core.mjs";
-import { CONFIG_SAVE_KEYS } from "../pages/主动回复设置/config-io.mjs";
+import {
+  CONFIG_SAVE_KEYS,
+  createConfigIo,
+} from "../pages/主动回复设置/config-io.mjs";
 import { THEME_KEY } from "../pages/主动回复设置/theme.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -193,8 +196,7 @@ test("theme localStorage key stays single-sourced with the HTML bootstrap", asyn
   assert.equal((html.match(/selfreply-theme/g) || []).length, 1);
 });
 
-test("config save key list is complete and used by save path", async () => {
-  const source = await readFile(join(pageDir, "config-io.mjs"), "utf8");
+test("config save path posts exactly the declared writable keys", async () => {
   assert.deepEqual([...CONFIG_SAVE_KEYS].sort(), [
     "cooldown_sec",
     "decision_history_min_messages",
@@ -217,11 +219,64 @@ test("config save key list is complete and used by save path", async () => {
     "vision_timeout_sec",
     "whitelist_sessions",
   ]);
-  assert.match(source, /buildConfigSaveBody\(/);
-  assert.match(source, /apiPost\("config", body\)/);
-  for (const key of CONFIG_SAVE_KEYS) {
-    assert.match(source, new RegExp(`${key}\\s*:`));
-  }
+
+  const field = (value = "") => ({ value });
+  const checkbox = (checked = false) => ({ checked });
+  const classList = { add() {}, remove() {}, toggle() {} };
+  const form = { classList, inert: false, querySelector: () => null };
+  const elements = {
+    configForm: form,
+    enabledInput: checkbox(true),
+    decisionModelInput: checkbox(true),
+    decisionTempInput: field("0.3"),
+    decisionTimeoutInput: field("21"),
+    decisionPromptInput: field("  prompt  "),
+    minContextInput: field("6"),
+    messageDelayInput: field("61"),
+    minSilenceInput: field("46"),
+    cooldownInput: field("901"),
+    visionJudgeEnabledInput: checkbox(true),
+    visionMainEnabledInput: checkbox(true),
+    visionSkipStickersInput: checkbox(true),
+    visionMaxImagesInput: field("3"),
+    visionImageAgeInput: field("301"),
+    visionTimeoutInput: field("22"),
+    proactiveInheritToolsInput: checkbox(true),
+    whitelistInput: field("group:a\ngroup:b"),
+    whitelistCount: { textContent: "" },
+  };
+  const state = { configLoaded: true, savingConfig: false };
+  const posts = [];
+  const provider = (value) => ({ value: () => value });
+  const io = createConfigIo({
+    getEls: () => elements,
+    getState: () => state,
+    setState: (updates) => Object.assign(state, updates),
+    apiGet: async () => {
+      throw new Error("skip refresh");
+    },
+    apiPost: async (endpoint, body) => {
+      posts.push({ endpoint, body });
+      return { ok: true };
+    },
+    showToast() {},
+    setStatState() {},
+    renderPromptPreview() {},
+    judgeProviderControl: provider("judge"),
+    visionProviderControl: provider("vision"),
+    visionJudgeProviderControl: provider("vision-judge"),
+    fmtBool: String,
+  });
+
+  await io.saveConfig({ preventDefault() {} });
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].endpoint, "config");
+  assert.deepEqual(Object.keys(posts[0].body).sort(), [...CONFIG_SAVE_KEYS].sort());
+  assert.deepEqual(posts[0].body.whitelist_sessions, ["group:a", "group:b"]);
+  assert.equal(posts[0].body.decision_prompt_template, "prompt");
+  assert.equal(state.savingConfig, false);
+  assert.equal(form.inert, false);
 });
 
 test("settings page JS sources keep lines under the maintainability cap", async () => {
