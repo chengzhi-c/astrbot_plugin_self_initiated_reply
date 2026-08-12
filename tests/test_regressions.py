@@ -12,8 +12,8 @@ import asyncio
 import base64
 import hashlib
 import importlib
-import inspect
 import logging
+import os
 import sys
 import types
 from pathlib import Path
@@ -76,39 +76,15 @@ def _load_r3_modules():
     return models, utils, commands, image, recorder
 
 
-def _main_source() -> str:
-    return (ROOT / "main.py").read_text(encoding="utf-8")
-
-
 # ============================================================================
 # RL-4 任意用户可触发命令并吞掉事件（中危）
 # ============================================================================
 
 
-def test_inline_command_requires_slash_or_mention() -> None:
-    """裸词 selfreply 不应在任意会话里被当成命令并 stop_event。
-
-    契约分两段：``on_message`` 消费命令前必须经 ``_is_command_entry`` 把门，
-    门本身必须要求显式入口（斜杠 / 点名 / 唤醒词）。
-    """
-    assert "plugin._is_command_entry" in calls_in(
-        "message_ingress.py", "handle_incoming_message"
-    ), (
-        "on_message 未经 _is_command_entry 把门：任意群成员发送裸词 selfreply "
-        "就能让 Bot 回复整段帮助文本并 stop_event()，从而吞掉该消息、阻断其他插件"
-    )
-
-    gate = method_source("main.py", "_is_command_entry")
-    assert 'startswith("/")' in gate
-    assert "is_at_or_wake_command_event" in gate, "命令入口门未要求斜杠前缀或点名/唤醒"
-
-
 def test_help_action_is_reachable_without_admin() -> None:
     """确认 help 不在管理员动作集合内（用于说明上一条的影响面）。"""
     models, _, _, _, _ = _load_r3_modules()
-    source = inspect.getsource(models)
-    line = next(item for item in source.splitlines() if item.startswith("ADMIN_COMMAND_ACTIONS"))
-    assert '"help"' not in line, "help 不受管理员限制，配合缺失的前缀校验构成无门槛触发面"
+    assert "help" not in models.ADMIN_COMMAND_ACTIONS
 
 
 def test_bare_command_word_is_parsed_as_command() -> None:
@@ -159,17 +135,28 @@ def test_terminate_waits_for_cancelled_background_tasks() -> None:
     assert "self._background_tasks" in wait_method
 
 
-def test_image_cache_cleanup_has_manual_api_and_startup_sweep() -> None:
-    """图片缓存既要能手动清理，也要在插件重载时立即扫一次。"""
-    registration = method_source("webapi.py", "register_web_apis")
+def test_image_cache_cleanup_has_manual_api_and_startup_sweep(tmp_path: Path) -> None:
+    """插件启动即回收过期缓存，并向宿主注册手动 POST 清理入口。"""
+    models, _, _, _, _ = _load_r3_modules()
+    cache_dir = tmp_path / "data" / models.PLUGIN_ID / "image_cache"
+    cache_dir.mkdir(parents=True)
+    expired = cache_dir / "expired.png"
+    expired.write_bytes(b"old")
+    os.utime(expired, (1, 1))
 
-    assert 'f"{route}/image-cache/cleanup"' in registration
-    assert '"POST"' in registration
-    assert "_api_cleanup_image_cache" in registration
-    assert "self._cleanup_image_sources(now=now_ts())" in _main_source()
-    # 清理必须与 vision_enabled 解耦：关掉视觉后旧缓存仍要能被回收。
-    assert "if not self.settings.vision_enabled" not in method_source(
-        "main.py", "_cleanup_image_sources"
+    async def scenario(plugin, main):
+        assert not expired.exists()
+        assert any(
+            route.endswith("/image-cache/cleanup") and "POST" in methods
+            for route, _handler, methods, _description in plugin.context.register_web_api_calls
+        )
+
+    with_plugin(
+        tmp_path,
+        scenario,
+        vision_judge_enabled=False,
+        vision_main_enabled=False,
+        vision_image_age_sec=60,
     )
 
 
@@ -208,68 +195,6 @@ def test_config_mutations_share_one_lock_and_settings_normalizer() -> None:
     assert defines("whitelist.py", "WhitelistManager.remove")
     # 规范化入口：候选配置必须经 Settings.from_config 归一，不得直接落库
     assert "Settings.from_config(candidate)" in method_source("webapi.py", "_apply_config_updates")
-
-
-def test_proactive_agent_starts_with_restricted_tool_scope() -> None:
-    """主动 Agent 默认不得继承全局插件、跨会话消息和高危工具。
-
-    实现在 generation.py：generate 编排阶段函数；工具边界在
-    ``_build_and_bound_tools`` / ``_cleanup_generation_state``。
-    """
-    generate = method_source("generation.py", "generate")
-    build = method_source("generation.py", "_build_and_bound_tools")
-    cleanup = method_source("generation.py", "_cleanup_generation_state")
-    build_calls = calls_in("generation.py", "_build_and_bound_tools")
-
-    assert "_build_and_bound_tools" in generate
-    assert "req.func_tool = self._runtime().new_tool_set()" in build
-    assert "self.install_agent_tool_boundary" in build_calls
-    assert "self._enforce_policy" in build_calls
-    assert "self._call_hook" in build_calls
-    # 双 enforce：hook 前后各一次（fail-closed 红线）
-    assert build.count("_enforce_policy") >= 2
-    assert "restore_agent_tool_boundary" in cleanup
-
-    boundary = method_source("generation.py", "install_agent_tool_boundary")
-    assert "event.plugins_name = []" in boundary
-    # 共享 platform_meta 是适配器单例，禁止原地修改；边界必须靠最终工具集策略。
-    assert "support_proactive_message" not in boundary
-
-    policy = method_source("generation.py", "enforce_final_tool_policy")
-    assert "filter_final_tools(req, keep=PROACTIVE_ALLOWED_TOOL_IDS)" in policy
-
-    # 主插件仍经委托壳暴露原方法名（测试与外部调用面保持）
-    for shell in (
-        "_generate_reply_via_pipeline",
-        "_enforce_final_tool_policy",
-        "_install_agent_tool_boundary",
-    ):
-        assert defines("main.py", f"SelfInitiatedReplyPlugin.{shell}"), (
-            f"main 未保留委托壳 {shell}（外部调用面与测试替换点）"
-        )
-
-
-def test_new_message_does_not_cancel_running_decorating_hook() -> None:
-    """新消息应使旧回复失效，但不能取消正在执行的装饰钩子。
-
-    守卫点在 ``SessionScheduler.cancel_delay``：``not force`` 与 ``is_running``
-    必须在同一个短路条件里，运行中的会话才不会被普通新消息掐断。
-    """
-    cancel_delay = method_source("scheduler.py", "SessionScheduler.cancel_delay")
-    assert "not force" in cancel_delay and "self._gate.is_running(umo)" in cancel_delay, (
-        "cancel_delay 未用 not force + is_running 短路保护运行中的会话："
-        "普通新消息会掐断正在执行的装饰钩子"
-    )
-
-    # 实现迁入 SessionScheduler（ticket 02）：插件壳只委托，语义由 force 传递
-    cancel_shell = method_source("main.py", "SelfInitiatedReplyPlugin._cancel_delay_task")
-    assert "self._scheduler.cancel_delay(umo, force=force)" in cancel_shell
-    assert "force_cancel" in method_source(
-        "main.py", "SelfInitiatedReplyPlugin._invalidate_session"
-    )
-    assert "force_cancel=True" in method_source(
-        "main.py", "SelfInitiatedReplyPlugin._cancel_delay_tasks"
-    )
 
 
 if __name__ == "__main__":

@@ -16,7 +16,6 @@ from .host_stubs import ROOT
 
 __all__ = [
     "call_names",
-    "call_order",
     "callers_of",
     "calls_in",
     "constructor_param_bindings",
@@ -24,7 +23,6 @@ __all__ = [
     "logger_levels_for",
     "method_source",
     "module_ast",
-    "params_of",
     "source_of",
 ]
 
@@ -97,22 +95,6 @@ def calls_in(rel: str, qualname: str) -> list[str]:
     return call_names(_lookup(rel, qualname))
 
 
-def call_order(rel: str, qualname: str, names: tuple[str, ...]) -> list[str]:
-    """在某定义体内，``names`` 中各调用按源码位置出现的顺序（含重复）。
-
-    用于表达「A 必须发生在 B 之前」这类顺序契约。
-    """
-    wanted = set(names)
-    found: list[tuple[int, int, str]] = []
-    for node in ast.walk(_lookup(rel, qualname)):
-        if not isinstance(node, ast.Call):
-            continue
-        name = ast.unparse(node.func)
-        if name in wanted:
-            found.append((node.lineno, node.col_offset, name))
-    return [name for _, _, name in sorted(found)]
-
-
 def callers_of(rel: str, call_name: str) -> list[str]:
     """某个调用在哪些函数/方法里发生（限定名，去重排序）。
 
@@ -130,13 +112,6 @@ def callers_of(rel: str, call_name: str) -> list[str]:
     return sorted(
         name for name in owners if not any(other.startswith(f"{name}.") for other in owners)
     )
-
-
-def params_of(rel: str, qualname: str) -> list[str]:
-    """某函数/方法的全部形参名（含仅关键字形参）。"""
-    node = _lookup(rel, qualname)
-    args = node.args  # type: ignore[attr-defined]
-    return [a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
 
 
 def constructor_param_bindings(rel: str, cls: str) -> dict[str, str]:

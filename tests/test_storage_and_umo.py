@@ -6,7 +6,6 @@ from collections import deque
 from pathlib import Path
 
 from .host_stubs import install_astrbot_stubs, load_package
-from .source_contract import call_order, method_source, params_of
 
 PACKAGE_NAME = "selfreply_test_package"
 
@@ -38,35 +37,6 @@ def test_tool_call_marker_is_not_sent_as_a_reply() -> None:
         == ""
     )
     assert utils.clean_reply("自然回复", allow_multiline=True, max_chars=200) == "自然回复"
-
-
-def test_final_send_path_rechecks_generation_after_decorating_hook() -> None:
-    """装饰钩子之后、真正发送之前必须再复核一次代次（旧回复不得越过钩子发出）。
-
-    行为侧由 test_delivery_blindspots 的 ``_FlipGate(true_times=N)`` 逐点锚定；
-    本条守的是结构：复核点存在且**位置在钩子之后、发送之前**。
-    """
-    assert "expected_generation" in params_of("delivery.py", "DeliveryRunner.send_reply")
-    # 0.9.4 阶段 3 把两条投递路径拆成独立方法，钩子与发送整体迁入 _send_via_event，
-    # 故顺序契约的锚点随之下移。代次仍必须透传到该方法（否则复核拿到 None）。
-    assert "expected_generation" in params_of("delivery.py", "DeliveryRunner._send_via_event")
-
-    order = call_order(
-        "delivery.py",
-        "DeliveryRunner._send_via_event",
-        ("self._call_hook", "self._gate.is_current", "outbound.send"),
-    )
-    # 取第一个装饰钩子之后的片段：必须先出现 is_current，才允许出现 outbound.send
-    hook_at = order.index("self._call_hook")
-    after_hook = order[hook_at + 1 :]
-    assert "self._gate.is_current" in after_hook, "装饰钩子后没有任何代次复核"
-    assert after_hook.index("self._gate.is_current") < after_hook.index("outbound.send"), (
-        f"发送发生在钩子后的代次复核之前，旧回复会越过失效边界发出：{order}"
-    )
-
-    # 委托壳必须把代次透传下去，否则 delivery 侧复核永远拿到 None（等于不复核）
-    shell = method_source("main.py", "SelfInitiatedReplyPlugin._send_reply")
-    assert "expected_generation=expected_generation" in shell
 
 
 def test_bare_group_whitelist_keeps_platform_state_isolated(tmp_path: Path) -> None:

@@ -808,12 +808,14 @@ def test_on_message_has_images_but_extract_empty(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
-def test_is_command_entry_rejects_bare_command_word(tmp_path: Path) -> None:
-    """命令判定：裸命令词（非 / 前缀、无 @Bot/唤醒词）不算命令入口。"""
+def test_on_message_treats_bare_command_word_as_chat(tmp_path: Path) -> None:
+    """裸命令词按普通消息处理，不回复帮助，也不吞掉后续插件的事件。"""
 
     async def scenario(plugin, main):
         event = _make_event(message_str="selfreply help")
-        assert plugin._is_command_entry(event, "selfreply help") is False
+        await plugin.on_message(event)
+        assert event.is_stopped() is False
+        assert plugin._last_events.get(UMO) is event
 
     with_plugin(tmp_path, scenario)
 
