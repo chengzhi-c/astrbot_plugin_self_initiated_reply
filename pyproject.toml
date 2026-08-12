@@ -7,7 +7,7 @@ name = "astrbot_plugin_self_initiated_reply"
 # 版本号不在此处写死（0.9.4 阶段 2.3）：改由 [tool.hatch.version] 从
 # models.PLUGIN_VERSION 读取，见该节的说明。
 dynamic = ["version"]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 # 运行时零第三方依赖：全部复用宿主 AstrBot API
 
 [project.optional-dependencies]
@@ -20,7 +20,7 @@ requires-python = ">=3.10"
 # - ruff 用**精确**钉版。它同时出现在 ci.yml 的 lint 作业与 .pre-commit-config.yaml
 #   的 rev，三处必须同版，否则本地 pre-commit 通过、CI 变红。三处一致性由
 #   scripts/version_gates.py --cross-only 断言（此前只有注释声明，无人核验）。
-# - 其余工具用**主版本上界**而非精确钉版：test 作业要跨 3.10–3.14 五个 Python，
+# - 其余工具用**主版本上界**而非精确钉版：test 作业覆盖 3.12–3.14，
 #   精确钉版会在新 Python 上撞到"该版本没有对应 wheel"。上界只挡破坏性大版本。
 # - mypy 下界 1.19：与 .pre-commit-config.yaml 的 mirrors-mypy rev 对齐。实测
 #   1.19.0 与 2.3.0 对本仓库均为 Success，故两版共存是无害的，不必强求字面同版。
@@ -40,7 +40,6 @@ dev = [
   "httpx>=0.27,<1",
   "pathspec>=0.10.1,<2",
   "packaging>=22",
-  "tomli; python_version < '3.11'",
 ]
 
 [tool.hatch.version]
@@ -137,7 +136,7 @@ exclude = [
 ]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 100
 lint.select = ["E", "F", "I", "UP", "B"]
 lint.ignore = []  # 按存量修复后的实际结果收敛
@@ -199,6 +198,7 @@ files = [
   "delivery.py",
   "generation.py",
   "session_coordinator.py",
+  "session_pipeline.py",
   "whitelist.py",
   "image",
 ]

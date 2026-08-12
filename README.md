@@ -260,7 +260,7 @@ whitelisted sessions.
   treated as untrusted context: they never enter history or trigger tools.
 - **Commands.** `/selfreply` plus `status`, `add`, `remove`, `list`,
   `check [content]`, `on`, `off`, `debug`.
-- **Requirements.** AstrBot `>=4.23.3,<5`, Python `>=3.10`, and **zero runtime
+- **Requirements.** AstrBot `>=4.23.3,<5`, Python `>=3.12`, and **zero runtime
   third-party dependencies** — everything reuses the host API.
 
 > ⚠️ **Security.** The bundled settings page and its Web API have **no

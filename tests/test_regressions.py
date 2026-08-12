@@ -955,7 +955,7 @@ def test_r12_non_force_check_rejected_for_non_whitelisted_session(tmp_path: Path
 # proactive reply sent 有两处（log_reply_content 的 if/else 双分支）。
 _DEBUG_LOG_CONTRACTS = [
     ("scheduler.py", "[%s] wait for minimum silence session=", 1),
-    ("main.py", "[%s] skip session=%s trigger=", 1),
+    ("session_pipeline.py", "[%s] skip session=%s trigger=", 1),
     # `[%s] decision session=` 自 0.9.5 起移出本契约、升为 INFO（用户要求）。
     # 它不违反本契约的初衷：初衷是拦「逐条消息级」的刷屏，而这一行与
     # scheduler.py 那条已是 INFO 的 `check result session=` 在常见路径上 1:1

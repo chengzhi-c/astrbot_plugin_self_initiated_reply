@@ -51,6 +51,8 @@ THRESHOLDS = {
     "whitelist.py": 95,
     # 07 拆分后新模块，实测 96% − 5% 缓冲
     "session_coordinator.py": 91,
+    # 检查主链从 main 抽出；门槛对齐 main 留缓冲，待全量覆盖实测后再收紧
+    "session_pipeline.py": 80,
     # 0.9.0 D1 容错分支补盲后 72% → 95%，实测 − 5%
     "storage.py": 90,
     # 0.9.0 P2 降级宿主分支补盲后 86% → 100%，实测 − 5%；

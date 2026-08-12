@@ -346,24 +346,6 @@ code {
 }
 
 /* --------------------------------------------------------------------------
-   滚动进度条 · 顶部细线
-   -------------------------------------------------------------------------- */
-
-.scroll-progress {
-  position: fixed;
-  top: 0;
-  left: 0;
-  z-index: 70;
-  height: 3px;
-  width: var(--progress, 0%);
-  background: linear-gradient(90deg, var(--accent), var(--spirit));
-  border-radius: 0 3px 3px 0;
-  box-shadow: 0 0 8px var(--ring);
-  transition: width .1s linear;
-  pointer-events: none;
-}
-
-/* --------------------------------------------------------------------------
    跳跃链接 · 键盘可达性
    -------------------------------------------------------------------------- */
 
@@ -389,26 +371,6 @@ code {
   transform: translate(-50%, 0);
   outline: 3px solid var(--focus-color);
   outline-offset: 2px;
-}
-
-/* --------------------------------------------------------------------------
-   氛围层 · 只装饰，不承载功能
-   顶部两团柔光，不画具象物体
-   -------------------------------------------------------------------------- */
-
-.ambience {
-  position: absolute;
-  inset: 0 0 auto;
-  z-index: 0;
-  height: 300px;
-  overflow: hidden;
-  pointer-events: none;
-  background:
-    radial-gradient(900px 260px at 20% -55%, var(--ornament-soft), transparent 70%),
-    radial-gradient(760px 240px at 84% -45%, var(--accent-soft), transparent 72%),
-    radial-gradient(700px 250px at 55% -50%, var(--spirit-soft), transparent 70%);
-  mask-image: linear-gradient(180deg, #000 0%, #000 38%, transparent 100%);
-  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 38%, transparent 100%);
 }
 
 .shell {
@@ -709,8 +671,6 @@ details.panel {
 html.dimmed { --dim-level: 0.82; }
 
 html.dimmed .shell,
-html.dimmed .ambience,
-html.dimmed .scroll-progress,
 html.dimmed .toast,
 html.dimmed .mobile-savebar,
 html.dimmed .mobile-tabbar,

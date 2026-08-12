@@ -61,6 +61,7 @@ _CHECKED_MODULES = [
     "scheduler.py",
     "session_coordinator.py",
     "session_gate.py",
+    "session_pipeline.py",
     "storage.py",
     "whitelist.py",
 ]

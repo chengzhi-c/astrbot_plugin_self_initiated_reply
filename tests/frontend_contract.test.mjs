@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import {
+  isSuccessfulConfigPayload,
   normalizeApiError,
   providerNeedsManualInput,
   requestPluginApi,
@@ -80,6 +81,52 @@ test("API errors retain a stable user-facing message", () => {
   assert.equal(normalizeApiError(original), original);
 });
 
+test("HTTP 200 non-JSON response fails closed", async () => {
+  await assert.rejects(
+    requestPluginApi({
+      getBridge: async () => null,
+      pluginId: "plugin-id",
+      endpoint: "config",
+      method: "GET",
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError("Unexpected token");
+        },
+      }),
+      pageUrl: "https://dashboard.example/",
+    }),
+    (error) => error instanceof Error && error.message === "响应不是有效 JSON"
+  );
+});
+
+test("config payload requires ok true and write-critical fields", () => {
+  assert.equal(isSuccessfulConfigPayload(null), false);
+  assert.equal(isSuccessfulConfigPayload({}), false);
+  assert.equal(isSuccessfulConfigPayload({ ok: false, error: "x" }), false);
+  assert.equal(
+    isSuccessfulConfigPayload({ ok: true, enabled: true }),
+    false
+  );
+  assert.equal(
+    isSuccessfulConfigPayload({
+      ok: true,
+      enabled: false,
+      whitelist_sessions: "not-array",
+    }),
+    false
+  );
+  assert.equal(
+    isSuccessfulConfigPayload({
+      ok: true,
+      enabled: false,
+      whitelist_sessions: [],
+    }),
+    true
+  );
+});
+
 test("page exposes the accessibility and narrow-layout contracts", async () => {
   const [html, app, css] = await Promise.all([
     readFile(join(pageDir, "index.html"), "utf8"),
@@ -98,6 +145,10 @@ test("page exposes the accessibility and narrow-layout contracts", async () => {
   );
   assert.match(html, /id="moreActionsBtn"[^>]*aria-controls="moreActionsMenu"[^>]*aria-expanded="false"/);
   assert.match(html, /id="judgeProviderInput"[^>]*hidden/);
+  assert.match(html, /超时则本次不主动回应/);
+  assert.doesNotMatch(html, /超时按默认放行/);
+  assert.match(app, /isSuccessfulConfigPayload\(/);
+  assert.match(app, /btn\.disabled = loading \|\| !configLoaded/);
   assert.match(css, /@media \(max-width: 360px\)/);
   assert.match(css, /more-actions-menu\[hidden\]/);
 });

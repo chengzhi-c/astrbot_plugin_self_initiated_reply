@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
@@ -33,6 +32,7 @@ from .runtime_adapter import AstrBotRuntimeAdapter
 from .scheduler import SessionScheduler
 from .session_coordinator import SessionCoordinator
 from .session_gate import SessionGate
+from .session_pipeline import SessionPipeline
 
 # 指令处理器的产出类型：每个 @selfreply.command 处理器都是 async generator，
 # 逐条 yield event.plain_result(...)。宿主侧契约是
@@ -410,6 +410,15 @@ class SelfInitiatedReplyPlugin(Star):
                 | set(self._session_locks)
             ),
             runtime_umos=self._whitelist_runtime_umos,
+        )
+
+        # 检查主链编排。owner 属性查找 decide/generate/deliver，测试替换仍生效。
+        self._pipeline = SessionPipeline(
+            owner=self,
+            settings=self.settings,
+            gate=self._gate,
+            decision=self._decision,
+            last_events=self._last_events,
         )
 
     @staticmethod
@@ -866,16 +875,12 @@ class SelfInitiatedReplyPlugin(Star):
         force: bool,
         expected_generation: int | None = None,
     ) -> str:
-        lock = self._gate.lock_for(umo)
-        if lock.locked():
-            return "已有判断任务在运行。"
-        async with lock:
-            return await self._check_session_locked(
-                umo,
-                trigger=trigger,
-                force=force,
-                expected_generation=expected_generation,
-            )
+        return await self._pipeline.check_session(
+            umo,
+            trigger=trigger,
+            force=force,
+            expected_generation=expected_generation,
+        )
 
     async def _check_session_locked(
         self,
@@ -885,99 +890,21 @@ class SelfInitiatedReplyPlugin(Star):
         force: bool,
         expected_generation: int | None = None,
     ) -> str:
-        """单会话检查主链：闸门 → 本地裁决 → 模型裁决 → 生成 → 投递，返回结果文案。
-
-        调用方已持有该会话的检查锁（故名 locked）。代次基线：无显式代次的调用
-        （patrol/manual）会绑定任务开始时的世代，防止会话移出白名单后重加（ABA）
-        时旧任务越过代次门复活发送。
-
-        失败时：任一阶段返回字符串即为终止原因（闸门拒绝/本地跳过/裁决否决），
-        直接回传给调用方而不抛出。``finally`` 无条件 ``unmark_running``——运行标记
-        泄漏会让该会话后续所有检查永久排队。工具已直发但最终文本重复时丢弃文本，
-        避免同一句话在群里出现两次。
-        """
-        guard = self._session_check_guard(umo, force=force, expected_generation=expected_generation)
-        if guard is not None:
-            return guard
-        if expected_generation is None:
-            # 任务代次基线：无代次调用（patrol/手动）且会话已有代次记录时，
-            # 绑定任务开始时的世代，防止会话移除后重加（ABA）时旧任务越过
-            # 代次门复活发送。无记录（0）的会话保持 None 放行（兼容历史语义）。
-            baseline = self._gate.current(umo)
-            if baseline:
-                expected_generation = baseline
-        state = self._state_for(whitelist_storage_key(umo))
-        observed_active_at = state.last_active_at
-
-        state.refresh_day()
-        gate = self._decision.local_gate(state, force=force)
-        if gate:
-            logger.debug("[%s] skip session=%s trigger=%s reason=%s", PLUGIN_ID, umo, trigger, gate)
-            return gate
-
-        self._gate.mark_running(umo)
-        try:
-            decision = await self._decide_session_reply(
-                umo,
-                state,
-                trigger=trigger,
-                force=force,
-                expected_generation=expected_generation,
-            )
-            if isinstance(decision, str):
-                return decision
-
-            pipeline_reply = await self._generate_reply_via_pipeline(
-                umo,
-                state,
-                expected_generation=expected_generation,
-                force=force,
-            )
-            reply = pipeline_reply.text.strip()
-            direct_send_count = pipeline_reply.direct_send_count
-            if reply and pipeline_reply.direct_texts:
-                normalized_reply = re.sub(r"\s+", " ", reply).strip()
-                if any(
-                    normalized_reply == re.sub(r"\s+", " ", text).strip()
-                    for text in pipeline_reply.direct_texts
-                ):
-                    logger.info(
-                        "[%s] suppress duplicate final text after tool direct send session=%s",
-                        PLUGIN_ID,
-                        umo,
-                    )
-                    reply = ""
-            if not reply and not direct_send_count:
-                return "管线未生成内容。"
-
-            return await self._deliver_session_reply(
-                umo,
-                state,
-                reply,
-                direct_send_count,
-                expected_generation=expected_generation,
-                observed_active_at=observed_active_at,
-                force=force,
-                trigger=trigger,
-            )
-        finally:
-            self._gate.unmark_running(umo)
+        """单会话检查主链（委托 ``SessionPipeline``）。"""
+        return await self._pipeline.check_session_locked(
+            umo,
+            trigger=trigger,
+            force=force,
+            expected_generation=expected_generation,
+        )
 
     def _session_check_guard(
         self, umo: str, *, force: bool, expected_generation: int | None
     ) -> str | None:
-        """会话级前置门卫：全部通过返回 None，否则返回跳过原因。"""
-        if self._stopping or (not force and not self.runtime_enabled):
-            return "插件未启用。"
-        if not force and not session_whitelisted(umo, self.settings.whitelist):
-            return "会话不在主动回复白名单。"
-        if not self._gate.is_current(umo, expected_generation):
-            return STALE_TASK_MESSAGE
-        if not force and not self._last_events.get(umo):
-            return "没有可用的最近消息事件。"
-        if self._gate.is_running(umo):
-            return "已有判断任务在运行。"
-        return None
+        """会话级前置门卫（委托 ``SessionPipeline``）。"""
+        return self._pipeline.session_check_guard(
+            umo, force=force, expected_generation=expected_generation
+        )
 
     def _record_decision(self, umo: str, trigger: str, *, should_reply: bool, reason: str) -> None:
         """调试面板最近裁决记录（仅内存，随 _prune_session 回收）。"""

@@ -1,6 +1,7 @@
 ﻿const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
 
 import {
+  isSuccessfulConfigPayload,
   providerNeedsManualInput,
   requestPluginApi,
 } from "./frontend-core.mjs";
@@ -11,7 +12,6 @@ function getEls() {
   if (els) return els;
   els = {
     topbar: document.querySelector(".topbar"),
-    scrollProgress: document.getElementById("scrollProgress"),
     sidenav: document.getElementById("sidenav"),
     navSaveDot: document.getElementById("navSaveDot"),
     navSaveState: document.getElementById("navSaveState"),
@@ -540,9 +540,10 @@ async function loadProviders() {
 
 async function loadConfig() {
   const config = await apiGet("config");
-  // 后端异常时返回 {ok: false, error}，此时不得用假默认值填表单（防止
-  // 用户保存时把未加载的默认值写回真实配置）。
-  if (!config || config.ok === false) {
+  // 必须 ok===true 且含关键字段；{} / 缺 ok 不得当成功（否则默认值可覆盖真配置）。
+  if (!isSuccessfulConfigPayload(config)) {
+    configLoaded = false;
+    setSaving(false);
     throw new Error(config?.error || "配置加载失败");
   }
   els.enabledInput.checked = Boolean(config.enabled);
@@ -586,6 +587,7 @@ async function loadConfig() {
   // 状态染色与文案同源（config 端点），避免与 overview 端点并发互相覆盖。
   setStatState(els.selfStat, runtimeOn ? "is-on" : "is-off");
   configLoaded = true;
+  setSaving(false);
   setDirty(false);
 }
 
@@ -804,17 +806,8 @@ function updateNavFades() {
 }
 
 // --------------------------------------------------------------------------
-// 滚动进度条 + 顶栏附着态
+// 顶栏附着态
 // --------------------------------------------------------------------------
-
-function updateScrollProgress() {
-  if (!els.scrollProgress) return;
-  const doc = document.documentElement;
-  const scrollTop = doc.scrollTop || document.body.scrollTop || window.scrollY || 0;
-  const height = doc.scrollHeight - doc.clientHeight;
-  const pct = height > 0 ? Math.min(100, Math.max(0, (scrollTop / height) * 100)) : 0;
-  els.scrollProgress.style.setProperty("--progress", pct + "%");
-}
 
 function updateTopbarStuck() {
   if (!els.topbar) return;
@@ -827,7 +820,6 @@ function onScroll() {
   if (scrollTicking) return;
   scrollTicking = true;
   requestAnimationFrame(() => {
-    updateScrollProgress();
     updateTopbarStuck();
     scrollTicking = false;
   });
@@ -843,7 +835,8 @@ function setSaving(loading) {
   buttons.forEach((btn) => {
     if (!btn) return;
     btn.classList.toggle("is-loading", loading);
-    btn.disabled = loading;
+    // 未成功加载配置时禁止保存，避免默认值写回。
+    btn.disabled = loading || !configLoaded;
   });
   // P1-1: 保存期间禁用刷新按钮，避免并发竞态
   if (els.refreshBtn) els.refreshBtn.disabled = loading;
@@ -1105,7 +1098,6 @@ setupNav();
 setupValidation();
 setupMoreActionsMenu();
 window.addEventListener("scroll", onScroll, { passive: true });
-updateScrollProgress();
 updateTopbarStuck();
 
 attachDirtyListeners();
@@ -1159,6 +1151,9 @@ const bootTimeout = window.setTimeout(() => {
   showToast("加载超时，请刷新页面或检查后端状态");
 }, BOOT_TIMEOUT_MS);
 
+getEls();
+setSaving(false);
+
 loadAll()
   .then(() => {
     window.clearTimeout(bootTimeout);
@@ -1166,6 +1161,8 @@ loadAll()
   })
   .catch((err) => {
     window.clearTimeout(bootTimeout);
+    configLoaded = false;
+    setSaving(false);
     hideBoot();
     showToast(err.message || "加载失败");
   });

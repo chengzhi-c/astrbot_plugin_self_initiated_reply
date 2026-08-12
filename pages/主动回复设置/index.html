@@ -48,17 +48,11 @@
     <symbol id="i-more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></symbol>
   </svg>
 
-  <!-- 氛围层：纯渐变晕光，不画具象物体。功能区保持素净 -->
-  <div class="ambience" aria-hidden="true"></div>
-
   <!-- 首屏加载遮罩：配置返回前给出即时反馈，避免空白闪动 -->
   <div class="boot" id="boot" role="status" aria-live="polite">
     <span class="boot-spinner" aria-hidden="true"></span>
     <span class="boot-text">正在加载配置…</span>
   </div>
-
-  <!-- 顶部滚动进度条，随阅读进度填充 -->
-  <div class="scroll-progress" id="scrollProgress" aria-hidden="true"></div>
 
   <!-- 键盘用户跳转锚点 -->
   <a class="skip-link" href="#selfStat">跳到配置主体</a>
@@ -284,7 +278,7 @@
             <label class="field">
               <span class="field-label">判断超时<em>秒</em></span>
               <input type="number" id="decisionTimeoutInput" min="1" max="300" step="1">
-              <p class="field-hint">判断模型等待上限，超时按默认放行</p>
+              <p class="field-hint">判断模型等待上限，超时则本次不主动回应</p>
             </label>
           </div>
 

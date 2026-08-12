@@ -6,6 +6,17 @@ export function normalizeApiError(error) {
   return error;
 }
 
+/** GET /config 成功体：ok 必须为 true，且含写回所需关键字段。 */
+export function isSuccessfulConfigPayload(config) {
+  return (
+    !!config &&
+    typeof config === "object" &&
+    config.ok === true &&
+    typeof config.enabled === "boolean" &&
+    Array.isArray(config.whitelist_sessions)
+  );
+}
+
 export async function requestPluginApi({
   getBridge,
   pluginId,
@@ -38,7 +49,14 @@ export async function requestPluginApi({
       body: method === "POST" ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(timeoutMs),
     });
-    const result = await response.json().catch(() => ({}));
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      throw new Error(
+        response.ok ? "响应不是有效 JSON" : `请求失败 (${response.status})`
+      );
+    }
     if (!response.ok) {
       throw new Error(result?.error || `请求失败 (${response.status})`);
     }
