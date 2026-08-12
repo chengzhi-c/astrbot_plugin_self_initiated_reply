@@ -256,13 +256,12 @@ details.panel {
 :root[data-theme="dark"] .theme-toggle .icon-dark { display: block; }
 :root[data-theme="light"] .theme-label::after { content: "慈爱之惠"; }
 :root[data-theme="dark"] .theme-label::after { content: "审判之司"; }
-html.dimmed { --dim-level: 0.82; }
-html.dimmed .shell,
-html.dimmed .toast,
-html.dimmed .mobile-savebar,
-html.dimmed .mobile-tabbar,
-html.dimmed .boot {
-  transition: opacity 0.18s var(--ease), transform 0.18s var(--ease), background 0.16s var(--ease);
+html::after {
+  content: ""; position: fixed; inset: 0; z-index: 100; pointer-events: none;
+  background: rgba(0, 0, 0, 0); transition: background 0.18s var(--ease);
+}
+html.dimmed::after {
+  background: rgba(0, 0, 0, .18);
 }
 html.bold-text body,
 html.bold-text .form {

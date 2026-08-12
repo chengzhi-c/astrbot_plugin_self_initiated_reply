@@ -253,17 +253,54 @@ test("prompt preview escapes HTML and theme choice persists", async ({ page }) =
   expect(errors).toEqual([]);
 });
 
-test("fetch non-JSON and pending responses both leave a recoverable page", async ({ page }) => {
-  await page.addInitScript(() => {
-    const nativeSetTimeout = window.setTimeout.bind(window);
-    window.setTimeout = (callback, delay, ...args) =>
-      nativeSetTimeout(callback, delay === 15000 ? 30 : delay, ...args);
+test("dimming places a visible non-interactive overlay above the page", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  await expect(page.locator("#dimBtn")).toBeVisible();
+  await page.locator("#dimBtn").click();
+  await expect(page.locator("html")).toHaveClass(/dimmed/);
+  await expect.poll(() => page.evaluate(() =>
+    getComputedStyle(document.documentElement, "::after").backgroundColor)).toBe("rgba(0, 0, 0, 0.18)");
+  const overlay = await page.evaluate(() => {
+    const style = getComputedStyle(document.documentElement, "::after");
+    return { pointerEvents: style.pointerEvents, zIndex: style.zIndex };
   });
+  expect(overlay.pointerEvents).toBe("none");
+  expect(Number(overlay.zIndex)).toBeGreaterThan(90);
+  expect(await page.evaluate(() => localStorage.getItem("selfreply-dim"))).toBe("1");
+  await page.locator("#dimBtn").click();
+  await expect(page.locator("html")).not.toHaveClass(/dimmed/);
+  await expect.poll(() => page.evaluate(() =>
+    getComputedStyle(document.documentElement, "::after").backgroundColor)).toBe("rgba(0, 0, 0, 0)");
+  expect(errors).toEqual([]);
+});
+
+test("compact more-actions menu exposes auxiliary controls", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  await expect(page.locator("#moreActionsMenu")).toBeHidden();
+  await expect(page.locator("#moreActionsBtn")).toHaveAttribute("title", "更多操作");
+  await page.locator("#moreActionsBtn").click();
+  await expect(page.locator("#moreActionsBtn")).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("#dimBtn")).toBeVisible();
+  await expect(page.locator("#boldBtn")).toBeVisible();
+  await expect(page.locator("#refreshBtn")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("fetch non-JSON and pending responses both leave a recoverable page", async ({ page }) => {
   let errors = await openPage(page, "?scenario=bad-json");
   await expect(page.locator("#toast")).toContainText("响应不是有效 JSON");
   await expect(page.locator("#saveTopBtn")).toBeDisabled();
   expect(errors).toEqual([]);
 
+  await page.addInitScript(() => {
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = (callback, delay, ...args) =>
+      nativeSetTimeout(callback, delay === 15000 ? 30 : delay, ...args);
+  });
   await page.goto(`${baseUrl}${PAGE_PATH}?scenario=fetch-pending`);
   await expect(page.locator("#boot")).toHaveClass(/is-hidden/);
   await expect(page.locator("#toast")).toContainText("请求超时");
