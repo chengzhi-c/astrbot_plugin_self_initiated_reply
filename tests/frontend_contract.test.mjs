@@ -128,31 +128,35 @@ test("config payload requires ok true and write-critical fields", () => {
 });
 
 test("page exposes the accessibility and narrow-layout contracts", async () => {
-  const [html, app, css] = await Promise.all([
+  const [html, app, css, chrome, configIo, providers] = await Promise.all([
     readFile(join(pageDir, "index.html"), "utf8"),
     readFile(join(pageDir, "app.js"), "utf8"),
     readFile(join(pageDir, "style.css"), "utf8"),
+    readFile(join(pageDir, "chrome.mjs"), "utf8"),
+    readFile(join(pageDir, "config-io.mjs"), "utf8"),
+    readFile(join(pageDir, "providers.mjs"), "utf8"),
   ]);
+  const fe = [app, chrome, configIo, providers].join("\n");
   assert.match(html, /<main\b[^>]*class="layout"/);
   assert.match(html, /id="whitelistInput"[^>]*aria-describedby="whitelistError"/);
-  assert.match(app, /setAttribute\("aria-describedby",/);
-  assert.match(app, /setAttribute\("aria-current", "location"\)/);
+  assert.match(fe, /setAttribute\("aria-describedby",/);
+  assert.match(fe, /setAttribute\("aria-current", "location"\)/);
   assert.match(app, /requestPluginApi\(/);
   assert.match(app, /createProviderControl\(/);
   assert.match(
-    await readFile(join(pageDir, "providers.mjs"), "utf8"),
+    providers,
     /providerNeedsManualInput\(next, getOptions\(\), isListAvailable\(\)\)/
   );
   assert.match(
-    app,
+    chrome,
     /event\.key !== "Escape" \|\| !media\.matches \|\| els\.moreActionsMenu\.hidden/
   );
   assert.match(html, /id="moreActionsBtn"[^>]*aria-controls="moreActionsMenu"[^>]*aria-expanded="false"/);
   assert.match(html, /id="judgeProviderInput"[^>]*hidden/);
   assert.match(html, /超时则本次不主动回应/);
   assert.doesNotMatch(html, /超时按默认放行/);
-  assert.match(app, /isSuccessfulConfigPayload\(/);
-  assert.match(app, /btn\.disabled = loading \|\| !configLoaded/);
+  assert.match(fe, /isSuccessfulConfigPayload\(/);
+  assert.match(fe, /btn\.disabled = loading \|\| !configLoaded/);
   assert.match(css, /@media \(max-width: 360px\)/);
   assert.match(css, /more-actions-menu\[hidden\]/);
 });

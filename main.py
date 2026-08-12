@@ -158,22 +158,7 @@ class SelfInitiatedReplyPlugin(Star):
     def __init__(
         self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None
     ) -> None:
-        """装配插件：校验宿主 API → 解析路径 → 载入配置与状态 → 接线 → 启动副作用。
-
-        三段结构：本体只做「准备状态」与「启动副作用」，中间的六个协作对象构造
-        在 ``_assemble_components``（0.9.5 抽出，那段 120 行内部同质，顺序约束
-        与共享语义都记在它自己的 docstring 里）。
-
-        顺序有硬依赖：``_validate_agent_api`` 必须最先（宿主不兼容时应在加载期
-        就失败，而非运行到一半）；路径解析先于 ``load_sessions``；``settings``
-        与各状态容器先于 ``_assemble_components``（它的入参全部来自这里）；
-        ``_assemble_components`` 先于 ``_save_storage_sync`` 与两个 ensure_task。
-        协作对象共享状态容器的引用而非副本，因此测试替换实例属性后仍指向最新值。
-
-        失败时：宿主 API 缺失直接抛出（拒绝以半可用状态加载）；图片缓存目录
-        不可建仅告警并继续（视觉功能降级，主动回复本身不受影响）；状态文件
-        损坏由 ``load_sessions`` 内部备份后返回空态，不阻断启动。
-        """
+        """校验宿主 → 路径/配置/状态 → ``_assemble_components`` → 启动副作用。"""
         self._validate_agent_api()
         super().__init__(context)
         self.context = context
@@ -263,33 +248,10 @@ class SelfInitiatedReplyPlugin(Star):
         register_web_apis(self)
 
     def _assemble_components(self) -> None:
-        """把六个协作对象接线成一个流程（0.9.5 自 ``__init__`` 抽出）。
+        """接线协作对象。须在 gate/状态容器就绪之后、ensure_task 之前调用。
 
-        抽出的动机是长度：``__init__`` 曾 223 行，本段占其中 120 行且内部同质
-        （六个 ``XxxRunner(...)``，每个都是「注入回调 + 共享状态容器」），抽走后
-        ``__init__`` 回到「准备状态 → 接线 → 启动副作用」三段可扫读的层次。
-        只抽这一段：前面的路径/配置/容器初始化与后面的启动副作用留在原处，
-        因为它们各自主题不同，一起搬会把两个 ``try`` 与启动顺序也搅进来。
-
-        **调用位置的约束（0.9.5 逐项变异实测，不是推断）**：上界是
-        ``self._gate`` 与 ``self.sessions`` / 各状态容器 / ``settings``——它们是本
-        方法全部入参的来源；下界是 ``_ensure_patrol_task`` 与
-        ``_ensure_image_cleanup_task``，两者都走 ``self._scheduler``，挪到它们之后
-        会 ``AttributeError``（实测 136 red）。夹在这两界之间可以自由移动：挪到
-        ``_save_storage_sync`` 之后仍全绿（它只读 ``self.sessions``，不碰协作对象），
-        挪到 ``_last_decisions`` 之前也全绿（没有协作对象引用它）。
-        唯一的静默陷阱是 ``_cleanup_image_sources``：它也走 ``self._scheduler``，
-        但外层 ``try`` 吞掉 ``Exception`` 只打 warning，因此挪到它之后不会红，
-        只是启动清理静默失效——所以本方法必须留在整个启动副作用段之前。
-
-        六个对象之间**不再有构造顺序约束**（历史上有过，见下方 ``_delivery``
-        处的注释），因为所有跨对象引用都走 lambda 运行时查找而非绑定方法。
-        0.9.5 变异实测：把 ``DecisionMaker`` 从第二位挪到最后一位，671 项全绿。
-        协作对象共享状态容器的引用而非副本，因此测试替换实例属性后仍指向最新值。
+        跨对象依赖一律 lambda 运行时查找，便于测试替换实例方法。
         """
-        # 调度职责（延迟检查/巡检/清理）迁入 SessionScheduler（ticket 02）。
-        # 状态容器经引用共享：测试对 _delay_tasks 等属性断言保持有效；
-        # 回调经 lambda 运行时查找，测试替换实例方法后仍指向最新实现。
         self._scheduler = SessionScheduler(
             settings=self.settings,
             gate=self._gate,
@@ -312,11 +274,8 @@ class SelfInitiatedReplyPlugin(Star):
             running_check_tasks=self._running_check_tasks,
             background_tasks=self._background_tasks,
         )
-        self._scheduler.last_cleanup_at = now_ts()  # 事件清理时间戳
+        self._scheduler.last_cleanup_at = now_ts()
 
-        # 裁决职责（判断模型调用/提示词构建/明确请求窗口/局部闸门）迁入
-        # DecisionMaker（ticket 03）。桥接调用经 lambda 运行时查找，测试替换
-        # 实例方法或 bridge 后仍指向最新实现。
         self._decision = DecisionMaker(
             settings=self.settings,
             resolve_provider=lambda umo: self.bridge.resolve_provider_id(
@@ -335,10 +294,6 @@ class SelfInitiatedReplyPlugin(Star):
             ),
         )
 
-        # 生成职责（工具边界/策略强制/超时收敛/直发追踪）迁入 GenerationRunner
-        # （ticket 04）。runtime 经 getter 动态读取 main 模块的 _AGENT_RUNTIME，
-        # 测试替换该全局后仍生效；工具策略经 self 回调运行时查找，测试替换
-        # 实例方法后仍命中。
         self._generation = GenerationRunner(
             settings=self.settings,
             context=self.context,
@@ -359,9 +314,6 @@ class SelfInitiatedReplyPlugin(Star):
             last_events=self._last_events,
         )
 
-        # 会话协作（事件/时间/图片缓存 + 失效级联单点 + 阶段投影）迁入
-        # SessionCoordinator（ticket 07）。状态容器经引用共享，测试直连
-        # _last_events 等属性保持原字段名访问。
         self._coordinator = SessionCoordinator(
             events=self._last_events,
             event_at=self._last_event_at,
@@ -371,14 +323,6 @@ class SelfInitiatedReplyPlugin(Star):
             notify_silence=lambda umo: self._scheduler.notify_activity(umo),
         )
 
-        # 投递职责（门卫/钩子/发送分类/UNKNOWN 语义/状态记录）迁入
-        # DeliveryRunner（ticket 05）。钩子与 context 发送经 lambda 运行时
-        # 查找，测试替换 main.call_event_hook 或插件 context 后仍指向最新实现。
-        # local_gate 原先是全部注入回调里唯一的绑定方法（构造期即解析），迫使
-        # DecisionMaker 必须早于 GenerationRunner 与 DeliveryRunner 构造，否则
-        # 重排顺序会静默 AttributeError。现已与邻居统一为 lambda 运行时查找，
-        # 该顺序约束随之解除——两处注入点（此处与 GenerationRunner）都要保持
-        # lambda 形态，只改一处约束依旧成立。
         self._delivery = DeliveryRunner(
             settings=self.settings,
             gate=self._gate,
@@ -393,8 +337,6 @@ class SelfInitiatedReplyPlugin(Star):
             runtime=lambda: _AGENT_RUNTIME,
         )
 
-        # 白名单职责（替换/增删/双写回滚）迁入 WhitelistManager（ticket 06）。
-        # 状态容器经引用共享（sessions/runtime_umos），失效与代次清理经回调。
         self._whitelist = WhitelistManager(
             settings=self.settings,
             sync_whitelist=lambda: self._sync_whitelist(),
@@ -412,7 +354,6 @@ class SelfInitiatedReplyPlugin(Star):
             runtime_umos=self._whitelist_runtime_umos,
         )
 
-        # 检查主链编排。owner 属性查找 decide/generate/deliver，测试替换仍生效。
         self._pipeline = SessionPipeline(
             owner=self,
             settings=self.settings,
@@ -572,17 +513,7 @@ class SelfInitiatedReplyPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     @filter.platform_adapter_type(filter.PlatformAdapterType.ALL)
     async def on_message(self, event: AstrMessageEvent) -> None:
-        """全事件入口：指令分流 → 白名单过滤 → 记录上下文 → 排延迟检查。
-
-        顺序是安全边界，不可重排：指令已处理标记与指令分流必须在白名单判定
-        之前（指令在非白名单会话也要能用），忽略判定必须在写入 recent 之前
-        （否则被忽略的发送者内容仍进上下文）。
-
-        失败时：本函数不向上抛异常——事件管线的其他插件不应被本插件的故障
-        阻断。图片快照失败降级为「本次不带图」（debug 日志），提取到空列表
-        只记 debug；任一早退分支都会先 ``_invalidate_session`` 推进代次，
-        使在途的延迟检查任务自然失效，不留孤儿回复。
-        """
+        """指令分流 → 白名单 → 记上下文 → 延迟检查。顺序是安全边界，不可重排。"""
         text = event_text(event).strip()
         if event_extra(event, COMMAND_HANDLED_KEY, False):
             return
@@ -1114,16 +1045,7 @@ class SelfInitiatedReplyPlugin(Star):
         await self._send_command_text(event, await self._command_text(event, action, arg))
 
     async def _command_text(self, event: AstrMessageEvent, action: str, arg: str = "") -> str:
-        """把已解析的指令动作分派为回显文本（help/status/list/add/remove/check/on/off/debug）。
-
-        只读动作（help/status/list/debug）不要求会话可识别；写动作在 umo 为空时
-        直接回「无法识别当前会话」。``on``/``off`` 在 ``_config_lock`` 内改运行开关，
-        避免与配置热重载交错。
-
-        失败时：``check`` 是唯一有副作用的分支，它强制检查后在 ``finally`` 里回收
-        缓存事件，并对非白名单会话额外 ``_prune_session``（force 检查可能发生在
-        白名单外，不回收会留下代次/锁/运行标记）。未知 action 回落 help 而非报错。
-        """
+        """指令动作 → 回显文本。check 在 finally 回收缓存；未知 action 回落 help。"""
         umo = event_umo(event)
         if action == "help":
             return help_text()

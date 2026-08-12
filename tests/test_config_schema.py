@@ -530,9 +530,10 @@ _FRONTEND_INTENTIONALLY_ABSENT = {"patrol_inactive_after_sec"}
 
 def _frontend_sources() -> str:
     page = ROOT / "pages" / "主动回复设置"
-    return (page / "app.js").read_text(encoding="utf-8") + (page / "index.html").read_text(
-        encoding="utf-8"
-    )
+    parts = [(page / "index.html").read_text(encoding="utf-8")]
+    for path in sorted(page.glob("*.js")) + sorted(page.glob("*.mjs")):
+        parts.append(path.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 def _api_get_config_keys() -> list[str]:
