@@ -18,7 +18,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import At
 
-from .models import PLUGIN_ID, MessageRecord, ReadHistoryCallback
+from .models import PLUGIN_ID, MessageRecord, ReadHistoryCallback, history_display_name
 
 # 预编译正则表达式以提升性能
 _AT_MENTION_PATTERN = re.compile(r"^(?:\[[^\]]*[Aa][Tt][^\]]*\]\s*)+")
@@ -368,6 +368,11 @@ def is_explicit_direct_call(event: AstrMessageEvent, text: str) -> bool:
     return False
 
 
+def collapse_whitespace(text: Any) -> str:
+    """把连续空白压成单空格并去首尾。历史去重与工具直发去重共用。"""
+    return _WHITESPACE_PATTERN.sub(" ", str(text or "")).strip()
+
+
 def strip_leading_mentions(text: str) -> str:
     raw = str(text or "").strip()
     raw = _AT_MENTION_PATTERN.sub("", raw).strip()
@@ -380,7 +385,7 @@ def clean_chat_text(text: str) -> str:
     raw = strip_leading_mentions(text)
     raw = _INLINE_AT_PATTERN.sub("", raw)
     raw = _INLINE_MENTION_PATTERN.sub("", raw)
-    return _WHITESPACE_PATTERN.sub(" ", raw).strip()
+    return collapse_whitespace(raw)
 
 
 def is_alias_call(text: str, aliases: list[str]) -> bool:
@@ -428,7 +433,7 @@ def dedupe_message_records(records: list[MessageRecord]) -> list[MessageRecord]:
     deduped: list[MessageRecord] = []
     index: dict[tuple[str, str], int] = {}
     for item in records:
-        text = re.sub(r"\s+", " ", str(item.text or "")).strip()
+        text = collapse_whitespace(item.text)
         if not text:
             continue
         key = (str(item.role or ""), text)
@@ -446,7 +451,7 @@ def format_message_records(records: list[MessageRecord], *, limit: int) -> str:
         return "(无)"
     lines = []
     for item in rows:
-        name = "Bot" if item.role == "assistant" else (item.name or "用户")
+        name = history_display_name(item.role, item.name)
         lines.append(f"{name}: {item.text}")
     return "\n".join(lines)
 
@@ -506,7 +511,7 @@ def clean_reply(text: str, *, allow_multiline: bool, max_chars: int) -> str:
         lines = [_INLINE_SPACE_PATTERN.sub(" ", line).strip() for line in text.split("\n")]
         text = "\n".join(line for line in lines if line).strip()
     else:
-        text = _WHITESPACE_PATTERN.sub(" ", text).strip()
+        text = collapse_whitespace(text)
 
     if not text:
         return ""

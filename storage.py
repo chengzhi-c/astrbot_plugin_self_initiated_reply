@@ -28,6 +28,7 @@ from .models import (
     Settings,
     as_int,
     as_timestamp,
+    history_display_name,
     now_ts,
 )
 from .utils import session_whitelisted, whitelist_storage_key
@@ -196,7 +197,7 @@ def _load_recent_records(
         recent.append(
             MessageRecord(
                 role=role,
-                name=str(item.get("name") or "用户"),
+                name=history_display_name(role, item.get("name")),
                 text=text,
                 sender_id=str(item.get("sender_id") or ""),
                 at=as_timestamp(item.get("at"), now=load_now),

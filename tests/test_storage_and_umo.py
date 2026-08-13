@@ -501,6 +501,26 @@ def test_dedupe_normalizes_whitespace_and_drops_blank() -> None:
     assert len(both) == 2, "role 未参与去重键，用户与助手消息被错误合并"
 
 
+def test_collapse_whitespace_collapses_runs_and_strips() -> None:
+    """历史去重、聊天清洗、工具直发去重必须共用同一空白归一。"""
+    _, utils, _ = _load_modules()
+    assert utils.collapse_whitespace("  你 \n 好\t ") == "你 好"
+    assert utils.collapse_whitespace("") == ""
+    assert utils.collapse_whitespace(None) == ""
+    assert utils.collapse_whitespace("你  好") == utils.collapse_whitespace("你\n好")
+
+
+def test_history_display_name_assistant_is_bot() -> None:
+    """历史展示名：助手固定 Bot，其他人用名字，缺名才回落用户。"""
+    models, utils, _ = _load_modules()
+    assert models.history_display_name("assistant") == "Bot"
+    assert models.history_display_name("assistant", "自定义") == "Bot"
+    assert models.history_display_name("user") == "用户"
+    assert models.history_display_name("user", "小明") == "小明"
+    rec = models.MessageRecord(role="assistant", name="x", text="hi")
+    assert utils.format_message_records([rec], limit=1) == "Bot: hi"
+
+
 def test_parse_decision_json_truncates_overlong_reason() -> None:
     """裁决理由超长必须截断——它会进日志与 /status 面板，不设上限即放大攻击面。
 

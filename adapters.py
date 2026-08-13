@@ -17,7 +17,7 @@ from typing import Any
 from astrbot.api import logger
 from astrbot.api.star import Context
 
-from .models import PLUGIN_ID, MessageRecord
+from .models import PLUGIN_ID, MessageRecord, history_display_name
 from .utils import content_to_text, maybe_await
 
 
@@ -336,7 +336,7 @@ class AstrBotBridge:
             records.append(
                 MessageRecord(
                     role=role,
-                    name="Bot" if role == "assistant" else str(item.get("name") or "用户"),
+                    name=history_display_name(role, item.get("name")),
                     text=text,
                     sender_id=str(item.get("sender_id") or ""),
                     at=0.0,

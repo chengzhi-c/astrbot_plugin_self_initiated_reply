@@ -28,6 +28,18 @@ from .utils import (
     whitelist_storage_key,
 )
 
+COMMAND_ALIASES: dict[str, set[str]] = {
+    "help": {"help", "h"},
+    "status": {"status", "stat"},
+    "add": {"add"},
+    "remove": {"remove", "rm", "del", "delete"},
+    "list": {"list", "ls", "whitelist"},
+    "check": {"check", "test"},
+    "on": {"on", "enable", "start"},
+    "off": {"off", "disable", "pause", "stop"},
+    "debug": {"debug", "diag", "diagnose"},
+}
+
 
 def parse_command_text(text: str) -> tuple[str, str] | None:
     raw = strip_leading_mentions(str(text or "")).strip()
@@ -44,18 +56,7 @@ def parse_command_text(text: str) -> tuple[str, str] | None:
     parts = body.split(maxsplit=1)
     token = parts[0].strip().lower()
     rest = parts[1].strip() if len(parts) > 1 else ""
-    aliases = {
-        "help": {"help", "h"},
-        "status": {"status", "stat"},
-        "add": {"add"},
-        "remove": {"remove", "rm", "del", "delete"},
-        "list": {"list", "ls", "whitelist"},
-        "check": {"check", "test"},
-        "on": {"on", "enable", "start"},
-        "off": {"off", "disable", "pause", "stop"},
-        "debug": {"debug", "diag", "diagnose"},
-    }
-    for action, names in aliases.items():
+    for action, names in COMMAND_ALIASES.items():
         if token in names:
             return action, rest
     return None

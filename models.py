@@ -345,6 +345,13 @@ class MessageRecord:
     at: float = field(default_factory=now_ts)
 
 
+def history_display_name(role: str, name: str | None = None) -> str:
+    """历史展示名：助手固定 Bot，其他人用名字，缺名才回落用户。"""
+    if role == "assistant":
+        return "Bot"
+    return str(name or "用户")
+
+
 class ReadHistoryCallback(Protocol):
     """宿主历史读取回调（limit 关键字调用）。"""
 
@@ -438,7 +445,14 @@ class SessionState:
         if not confirmed:
             return
         self.last_proactive_text = text
-        self.recent.append(MessageRecord(role="assistant", name="Bot", text=text, at=at))
+        self.recent.append(
+            MessageRecord(
+                role="assistant",
+                name=history_display_name("assistant"),
+                text=text,
+                at=at,
+            )
+        )
 
     def remaining_silence_sec(self, min_silence_sec: float, now: float) -> float:
         """距上次活跃的剩余静默时间（从未活跃按 0 计，调用方自行决定特例）。"""

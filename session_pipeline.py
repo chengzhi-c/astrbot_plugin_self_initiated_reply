@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from typing import Any
 
@@ -10,7 +9,7 @@ from astrbot.api import logger
 
 from .models import PLUGIN_ID, STALE_TASK_MESSAGE
 from .plugin_state import decide_session_reply
-from .utils import session_whitelisted, whitelist_storage_key
+from .utils import collapse_whitespace, session_whitelisted, whitelist_storage_key
 
 
 class SessionPipeline:
@@ -115,9 +114,9 @@ class SessionPipeline:
             reply = pipeline_reply.text.strip()
             direct_send_count = pipeline_reply.direct_send_count
             if reply and pipeline_reply.direct_texts:
-                normalized_reply = re.sub(r"\s+", " ", reply).strip()
+                normalized_reply = collapse_whitespace(reply)
                 if any(
-                    normalized_reply == re.sub(r"\s+", " ", text).strip()
+                    normalized_reply == collapse_whitespace(text)
                     for text in pipeline_reply.direct_texts
                 ):
                     logger.info(

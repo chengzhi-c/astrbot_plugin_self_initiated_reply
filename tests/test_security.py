@@ -730,14 +730,18 @@ def test_response_text_single_source_behavior() -> None:
 
 
 def _commands_alias_table() -> dict[str, set[str]]:
-    """``commands.py::parse_command_text`` 的运行时调度表（含 canonical 名）。"""
+    """``commands.py::COMMAND_ALIASES`` 运行时调度表（含 canonical 名）。"""
     tree = ast.parse((ROOT / "commands.py").read_text(encoding="utf-8"))
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names = [node.target.id]
+            value = node.value
+        elif isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        else:
             continue
-        if not any(isinstance(t, ast.Name) and t.id == "aliases" for t in node.targets):
-            continue
-        if not isinstance(node.value, ast.Dict):
+        if "COMMAND_ALIASES" not in names or not isinstance(value, ast.Dict):
             continue
         return {
             key.value: {e.value for e in value.elts if isinstance(e, ast.Constant)}
@@ -745,7 +749,7 @@ def _commands_alias_table() -> dict[str, set[str]]:
             for key, value in zip(node.value.keys, node.value.values, strict=True)
             if isinstance(key, ast.Constant) and isinstance(value, ast.Set)
         }
-    raise AssertionError("commands.py 里找不到 parse_command_text 的 aliases 调度表")
+    raise AssertionError("commands.py 里找不到 COMMAND_ALIASES 调度表")
 
 
 def _main_decorator_alias_table() -> dict[str, set[str]]:
