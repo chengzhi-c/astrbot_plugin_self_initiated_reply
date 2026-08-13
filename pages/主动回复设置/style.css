@@ -7,11 +7,19 @@
   --border-strong: light-dark(rgba(48, 48, 64, .36), rgba(224, 160, 64, .42));
   --border-w:        2px; --text:      light-dark(#22222e, #f4ece0);
   --text-soft: light-dark(#3a3a4a, #ddcdb8); --muted:     light-dark(#5c5c70, #b09a80);
-  --faint:     light-dark(#63697c, #9c876a); --accent:        #4a5580; --accent-text:   #414c76; --accent-soft:   rgba(74, 85, 128, .11);
-  --focus-color:        #3a4468;
+  --faint:     light-dark(#63697c, #9c876a);
+  --accent-light: #4a5580; --accent-text-light: #414c76; --accent-soft-light: rgba(74, 85, 128, .11);
+  --focus-light: #3a4468; --ornament-light: #5f6b8e; --ornament-soft-light: rgba(110, 122, 158, .15);
+  --accent-dark: #e0a040; --accent-text-dark: #e8ae52; --accent-soft-dark: rgba(224, 160, 64, .15);
+  --focus-dark: #eeb45c; --ornament-dark: #b4762e; --ornament-soft-dark: rgba(180, 118, 46, .20);
+  --accent:        light-dark(var(--accent-light), var(--accent-dark));
+  --accent-text:   light-dark(var(--accent-text-light), var(--accent-text-dark));
+  --accent-soft:   light-dark(var(--accent-soft-light), var(--accent-soft-dark));
+  --focus-color:        light-dark(var(--focus-light), var(--focus-dark));
   --focus-offset-color: var(--surface);
   --focus-ring: 0 0 0 2px var(--focus-offset-color), 0 0 0 4px var(--focus-color);
-  --ornament:      #5f6b8e; --ornament-soft: rgba(110, 122, 158, .15);
+  --ornament:      light-dark(var(--ornament-light), var(--ornament-dark));
+  --ornament-soft: light-dark(var(--ornament-soft-light), var(--ornament-soft-dark));
   --mirror-well: light-dark(#303040, #0e1b1d); --spirit:      #7fccce;
   --spirit-soft: rgba(127, 204, 206, .13); --info:        light-dark(#3f6fb0, #9ec5ef);
   --info-soft:   light-dark(rgba(63, 111, 176, .14), rgba(158, 197, 239, .16));
@@ -48,6 +56,9 @@
     --toast-bg:   rgba(34, 34, 46, .96); --toast-text: #fbfcfe;
     --shadow-btn: inset 0 1px 0 rgba(255, 255, 255, .55), 0 1px 2px rgba(34, 34, 46, .07);
     --shadow-drop: 0 1px 2px rgba(34, 34, 46, .07);
+    --accent: var(--accent-light); --accent-text: var(--accent-text-light);
+    --accent-soft: var(--accent-soft-light); --focus-color: var(--focus-light);
+    --ornament: var(--ornament-light); --ornament-soft: var(--ornament-soft-light);
   }
   .topbar,
   .mobile-savebar,
@@ -64,8 +75,9 @@
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"]  { color-scheme: dark; }
 :root[data-theme="dark"] {
-  --accent:        #e0a040; --accent-text:   #e8ae52;
-  --accent-soft:   rgba(224, 160, 64, .15); --focus-color:   #eeb45c; --ornament:      #b4762e; --ornament-soft: rgba(180, 118, 46, .20);
+  --accent:        var(--accent-dark); --accent-text:   var(--accent-text-dark);
+  --accent-soft:   var(--accent-soft-dark); --focus-color:   var(--focus-dark);
+  --ornament:      var(--ornament-dark); --ornament-soft: var(--ornament-soft-dark);
   --shadow-btn:    inset 0 1px 0 rgba(244, 236, 224, .08), 0 1px 2px rgba(0, 0, 0, .55);
   --shadow-drop:   0 1px 2px rgba(0, 0, 0, .55);
 }
@@ -75,8 +87,9 @@
 :root[data-theme="dark"] .theme-toggle .icon-dark { color: var(--spirit); }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --accent:        #e0a040; --accent-text:   #e8ae52;
-    --accent-soft:   rgba(224, 160, 64, .15); --focus-color:   #eeb45c; --ornament:      #b4762e; --ornament-soft: rgba(180, 118, 46, .20);
+    --accent:        var(--accent-dark); --accent-text:   var(--accent-text-dark);
+    --accent-soft:   var(--accent-soft-dark); --focus-color:   var(--focus-dark);
+    --ornament:      var(--ornament-dark); --ornament-soft: var(--ornament-soft-dark);
     --shadow-btn:    inset 0 1px 0 rgba(244, 236, 224, .08), 0 1px 2px rgba(0, 0, 0, .55);
     --shadow-drop:   0 1px 2px rgba(0, 0, 0, .55);
   }
@@ -781,6 +794,7 @@ textarea {
 .boot.is-hidden {
   opacity: 0; visibility: hidden; pointer-events: none;
 }
+.boot.is-failed .boot-spinner { display: none; }
 .boot-spinner {
   width: 26px; height: 26px; border: 3px solid var(--border-strong);
   border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite;

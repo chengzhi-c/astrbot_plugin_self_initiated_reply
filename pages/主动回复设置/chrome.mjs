@@ -15,7 +15,9 @@ export function setupMoreActionsMenu(els) {
     const visible = compact && Boolean(open);
     els.moreActions.classList.toggle("is-open", visible);
     els.moreActionsMenu.hidden = compact ? !visible : false;
-    els.moreActionsBtn.setAttribute("aria-expanded", String(visible));
+    // 桌面菜单常显、trigger 隐藏，不渲染折叠态。
+    if (compact) els.moreActionsBtn.setAttribute("aria-expanded", String(visible));
+    else els.moreActionsBtn.removeAttribute("aria-expanded");
     if (visible && focusMenu) {
       const first = els.moreActionsMenu.querySelector("button:not([disabled])");
       window.requestAnimationFrame(() => first?.focus());

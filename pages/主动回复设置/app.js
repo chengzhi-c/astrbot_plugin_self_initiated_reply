@@ -1,4 +1,6 @@
 const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
+window.__selfreplyAppStarted = true;
+if (window.__selfreplyBootFailTimer) window.clearTimeout(window.__selfreplyBootFailTimer);
 import { FETCH_TIMEOUT_MS, requestPluginApi } from "./frontend-core.mjs";
 import { renderPromptTemplateHtml } from "./config-form.mjs";
 import { createProviderControl } from "./providers.mjs";

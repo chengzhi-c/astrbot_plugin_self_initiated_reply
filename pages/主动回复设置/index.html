@@ -19,6 +19,17 @@
       } catch (e) { /* localStorage 不可用时跟随系统 */ }
     })();
   </script>
+  <script>
+    window.__selfreplyBootFailTimer = setTimeout(function () {
+      if (window.__selfreplyAppStarted) return;
+      document.body.classList.add("is-ready");
+      var boot = document.getElementById("boot");
+      if (!boot) return;
+      boot.classList.add("is-failed");
+      var text = boot.querySelector(".boot-text");
+      if (text) text.textContent = "脚本加载失败，请刷新";
+    }, 8000);
+  </script>
   <script src="/api/plugin/page/bridge-sdk.js"></script>
   <!-- P2-11: 脱离 JS 兆底，防止脚本未运行时页面永久隐藏 -->
   <noscript>

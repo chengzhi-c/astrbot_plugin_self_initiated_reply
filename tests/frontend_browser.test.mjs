@@ -284,6 +284,24 @@ test("compact more-actions menu exposes auxiliary controls", async ({ page }) =>
   expect(errors).toEqual([]);
 });
 
+test("desktop more-actions trigger stays collapsed-attribute free", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  await expect(page.locator("#moreActionsBtn")).not.toHaveAttribute("aria-expanded");
+  await expect(page.locator("#moreActionsMenu")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("module load failure surfaces a refresh hint", async ({ page }) => {
+  await page.route("**/app.js", (route) => route.abort());
+  await page.clock.install();
+  await page.goto(`${baseUrl}${PAGE_PATH}`);
+  await page.clock.runFor(8000);
+  await expect(page.locator("body")).toHaveClass(/is-ready/);
+  await expect(page.locator(".boot-text")).toHaveText("脚本加载失败，请刷新");
+});
+
 test("fetch non-JSON and pending responses both leave a recoverable page", async ({ page }) => {
   let errors = await openPage(page, "?scenario=bad-json");
   await expect(page.locator("#toast")).toContainText("响应不是有效 JSON");

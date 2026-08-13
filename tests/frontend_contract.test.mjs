@@ -247,9 +247,24 @@ test("CI runs the dependency-free frontend gate", async () => {
 
 test("theme localStorage key stays single-sourced with the HTML bootstrap", async () => {
   const html = await readFile(join(pageDir, "index.html"), "utf8");
-  assert.equal(THEME_KEY, "selfreply-theme");
-  assert.match(html, new RegExp(`localStorage\\.getItem\\("${THEME_KEY}"\\)`));
-  assert.equal((html.match(/selfreply-theme/g) || []).length, 1);
+  const htmlKey = html.match(/localStorage\.getItem\("([^"]+)"\)/)?.[1];
+  assert.equal(htmlKey, THEME_KEY);
+});
+
+test("dark accent tokens are declared once and reused", async () => {
+  const css = await readFile(join(pageDir, "style.css"), "utf8");
+  assert.equal((css.match(/#e0a040/g) || []).length, 1);
+  assert.match(css, /--accent:\s*light-dark\(/);
+});
+
+test("script load failure fallback does not depend on the module", async () => {
+  const html = await readFile(join(pageDir, "index.html"), "utf8");
+  const chrome = await readFile(join(pageDir, "chrome.mjs"), "utf8");
+  assert.match(html, /脚本加载失败，请刷新/);
+  assert.match(html, /__selfreplyAppStarted/);
+  assert.doesNotMatch(html, /<script type="module">[\s\S]*脚本加载失败/);
+  assert.match(chrome, /桌面菜单常显/);
+  assert.match(chrome, /removeAttribute\("aria-expanded"\)/);
 });
 
 test("config save path posts exactly the declared writable keys", async () => {
