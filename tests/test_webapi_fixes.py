@@ -343,22 +343,6 @@ def test_bound_api_handlers_match_class_declarations() -> None:
     )
 
 
-def test_unified_overview_returns_only_frontend_consumed_keys(tmp_path) -> None:
-    """概览端点只返回前端消费的键：漏 whitelist_count 则会话计数恒为 0，
-    多出配置值镜像（/config 与 /status 已有内容的第三份副本）即红。
-    """
-
-    async def scenario(plugin, main):
-        plugin.settings.whitelist = {"qq:GroupMessage:1", "qq:GroupMessage:2"}
-        payload = await plugin.unified_manager.overview()
-        assert payload["ok"] is True
-        summary = payload["self_reply"]
-        assert summary["whitelist_count"] == 2
-        assert set(summary) == {"available", "whitelist_count"}
-
-    with_plugin(tmp_path, scenario)
-
-
 def test_api_cleanup_image_cache_paths(tmp_path) -> None:
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]
@@ -607,6 +591,23 @@ def test_api_get_config_exposes_panel_surface_only(tmp_path) -> None:
         assert result["ok"] is True
         assert result["runtime_enabled"] is plugin.runtime_enabled
         assert result["decision_prompt_default"] == models.DEFAULT_DECISION_PROMPT_TEMPLATE
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_web_apis_do_not_register_overview_route(tmp_path) -> None:
+    """白名单计数只走 GET /config，不再注册第三份 overview 副本。"""
+
+    async def scenario(plugin, main):
+        routes = [route for route, *_ in plugin.context.register_web_api_calls]
+        assert not any(route.endswith("/unified/overview") for route in routes)
+        webapi = sys.modules[f"{PACKAGE}.webapi"]
+        plugin.settings.whitelist = {"qq:GroupMessage:1", "qq:GroupMessage:2"}
+        payload = await webapi._api_get_config(plugin)
+        assert payload["whitelist_sessions"] == [
+            "qq:GroupMessage:1",
+            "qq:GroupMessage:2",
+        ]
 
     with_plugin(tmp_path, scenario)
 

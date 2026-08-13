@@ -685,7 +685,6 @@ def register_web_apis(plugin: SelfInitiatedReplyPlugin) -> None:
         ["POST"],
         "更新插件页面 UI 偏好（主题）",
     )
-    plugin.unified_manager.register(plugin.context, route)
 
 
 def bind_api_handlers(plugin: SelfInitiatedReplyPlugin) -> None:
@@ -698,31 +697,3 @@ def bind_api_handlers(plugin: SelfInitiatedReplyPlugin) -> None:
 
 # 公开入口：main.py 初始化时加载主题偏好。
 load_ui_theme = _load_ui_theme
-
-
-class UnifiedManagerApi:
-    """Simplified dashboard API - only self-reply config.（0.9.0 B3 自 unified_manager.py 并入）"""
-
-    def __init__(self, owner: Any) -> None:
-        self.owner = owner
-
-    def register(self, context: Any, route: str) -> None:
-        register = context.register_web_api
-        register(f"{route}/unified/overview", self.overview, ["GET"], "统一管理页概览")
-
-    async def overview(self) -> dict[str, Any]:
-        return {
-            "ok": True,
-            "self_reply": self._self_reply_summary(),
-        }
-
-    def _self_reply_summary(self) -> dict[str, Any]:
-        """概览页摘要：只含前端 ``loadOverview`` 消费的键（形状守卫见 test_webapi_fixes）。
-
-        配置值一律不在此镜像——``GET /config`` 与 ``/status`` 已是权威来源。
-        ``available`` 不是配置值，是端点可用性契约标记。
-        """
-        return {
-            "available": True,
-            "whitelist_count": len(self.owner.settings.whitelist),
-        }

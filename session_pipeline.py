@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 from astrbot.api import logger
@@ -18,17 +19,27 @@ class SessionPipeline:
     def __init__(
         self,
         *,
-        owner: Any,
+        state_for: Callable[[str], Any],
+        generation: Any,
+        delivery: Any,
+        is_stopping: Callable[[], bool],
+        is_enabled: Callable[[], bool],
         settings: Any,
         gate: Any,
         decision: Any,
         last_events: dict[str, Any],
+        last_decisions: dict[str, Any],
     ) -> None:
-        self._owner = owner
+        self._state_for = state_for
+        self._generation = generation
+        self._delivery = delivery
+        self._is_stopping = is_stopping
+        self._is_enabled = is_enabled
         self._settings = settings
         self._gate = gate
         self._decision = decision
         self._last_events = last_events
+        self._last_decisions = last_decisions
 
     async def check_session(
         self,
@@ -65,8 +76,7 @@ class SessionPipeline:
             baseline = self._gate.current(umo)
             if baseline:
                 expected_generation = baseline
-        owner = self._owner
-        state = owner._state_for(whitelist_storage_key(umo))
+        state = self._state_for(whitelist_storage_key(umo))
         observed_active_at = state.last_active_at
 
         state.refresh_day()
@@ -84,7 +94,9 @@ class SessionPipeline:
         self._gate.mark_running(umo)
         try:
             decision = await decide_session_reply(
-                owner,
+                self._decision,
+                self._gate,
+                self._last_decisions,
                 umo,
                 state,
                 trigger=trigger,
@@ -94,7 +106,7 @@ class SessionPipeline:
             if isinstance(decision, str):
                 return decision
 
-            pipeline_reply = await owner._generation.generate(
+            pipeline_reply = await self._generation.generate(
                 umo,
                 state,
                 expected_generation=expected_generation,
@@ -117,7 +129,7 @@ class SessionPipeline:
             if not reply and not direct_send_count:
                 return "管线未生成内容。"
 
-            return await owner._delivery.deliver_reply(
+            return await self._delivery.deliver_reply(
                 umo,
                 state,
                 reply,
@@ -134,8 +146,7 @@ class SessionPipeline:
         self, umo: str, *, force: bool, expected_generation: int | None
     ) -> str | None:
         """会话级前置门卫：全部通过返回 None，否则返回跳过原因。"""
-        owner = self._owner
-        if owner._stopping or (not force and not owner.runtime_enabled):
+        if self._is_stopping() or (not force and not self._is_enabled()):
             return "插件未启用。"
         if not force and not session_whitelisted(umo, self._settings.whitelist):
             return "会话不在主动回复白名单。"

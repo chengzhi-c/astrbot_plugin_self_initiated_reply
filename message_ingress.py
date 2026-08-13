@@ -26,6 +26,7 @@ from .utils import (
     looks_like_reply_request,
     session_group_id,
     session_whitelisted,
+    should_ignore_event,
     whitelist_storage_key,
 )
 
@@ -57,15 +58,20 @@ def _accepted_content(
         event,
         skip_stickers=plugin.settings.vision_skip_stickers,
     )
-    if plugin._should_ignore_event(event, text, vision_has_images=has_images):
-        plugin._invalidate_session(umo)
+    if should_ignore_event(
+        event,
+        text,
+        vision_has_images=has_images,
+        ignored_sender_ids=plugin.settings.ignored_sender_ids,
+    ):
+        plugin._coordinator.invalidate(umo)
         if not is_self_message(event) and is_explicit_direct_call(event, text):
             state = plugin._state_for(state_key)
             state.last_active_at = now_ts()
             state.last_active_sender_id = event_sender_id(event)
         return None
     if not clean_text and not has_images:
-        plugin._invalidate_session(umo)
+        plugin._coordinator.invalidate(umo)
         return None
     return clean_text or "[图片]", has_images
 

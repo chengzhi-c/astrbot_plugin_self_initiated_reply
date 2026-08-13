@@ -78,7 +78,9 @@ def test_skipped_decision_recorded_in_last_decisions(tmp_path: Path) -> None:
         plugin._decision = _FakeDecision()
         plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
         result = await plugin_state.decide_session_reply(
-            plugin,
+            plugin._decision,
+            plugin._gate,
+            plugin._last_decisions,
             umo,
             state,
             trigger="message",

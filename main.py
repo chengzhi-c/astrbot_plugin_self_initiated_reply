@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from pathlib import Path
+from functools import partial
 from types import MappingProxyType
 from typing import Any
 
@@ -58,7 +58,7 @@ _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
 
 # 宿主私有符号收敛（ticket 13）：值全部来自适配层探测，本文件不再直接
 # import 宿主私有层（astrbot.core.*）；模块级名字保留供测试替换与旧引用，
-# 加载期缺失由 _validate_agent_api 的契约断言兜底（缺失即红，拒绝加载并
+# 加载期缺失由 AstrBotRuntimeAdapter.validate() 的契约断言兜底（缺失即红，拒绝加载并
 # 提示修复方向）。
 call_event_hook = _AGENT_RUNTIME.capabilities.call_event_hook
 get_astrbot_config_path = _AGENT_RUNTIME.capabilities.config_path_fn
@@ -97,9 +97,6 @@ from .plugin_state import (
     save_storage as state_save_storage,
 )
 from .plugin_state import (
-    save_storage_snapshot as state_save_storage_snapshot,
-)
-from .plugin_state import (
     save_storage_sync as state_save_storage_sync,
 )
 from .plugin_state import (
@@ -124,10 +121,9 @@ from .utils import (
     is_explicit_direct_call,
     session_group_id,
     session_whitelisted,
-    should_ignore_event,
     whitelist_storage_key,
 )
-from .webapi import UnifiedManagerApi, bind_api_handlers, load_ui_theme, register_web_apis
+from .webapi import bind_api_handlers, load_ui_theme, register_web_apis
 
 
 @register(
@@ -148,11 +144,15 @@ class SelfInitiatedReplyPlugin(Star):
         self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None
     ) -> None:
         """校验宿主 → 路径/配置/状态 → ``_assemble_components`` → 启动副作用。"""
-        self._validate_agent_api()
+        _AGENT_RUNTIME.validate()
         super().__init__(context)
         self.context = context
         self.config = config if config is not None else {}
-        self._config_path, self._storage_path = self._resolve_paths(self.config)
+        self._config_path, self._storage_path = state_resolve_paths(
+            self.config,
+            get_config_path=get_astrbot_config_path,
+            get_plugin_data_path=get_astrbot_plugin_data_path,
+        )
         # state.json 位于 <data>/plugin_data/<plugin_id>/state.json
         _STATE_DEPTH_FROM_DATA = 2
         self._data_path = self._storage_path.parents[_STATE_DEPTH_FROM_DATA]
@@ -164,7 +164,6 @@ class SelfInitiatedReplyPlugin(Star):
         # 只保留历史记录桥接；表情包和 livingmemory 不再由本插件直连，
         # 改为通过 AstrBot 正常 LLM 管线自动触发，行为更接近 @Bot 回复。
         self.bridge = AstrBotBridge(context)
-        self.unified_manager = UnifiedManagerApi(self)
 
         migrate_config_file(self._config_path, self.config, self.settings)
 
@@ -200,10 +199,20 @@ class SelfInitiatedReplyPlugin(Star):
         self._admin_file_mtime: float | None = None
         self._admin_ids: set[str] = set()
         self._admin_probe_ts = 0.0  # 探测窗口起点：0 保证首次调用必探
-        self._refresh_admin_ids()
-        # 调试面板最近裁决（ticket 14）：每会话最近一条裁决的触发/原因，
-        # 供 /status 导出；仅存内存，不落盘。
         self._last_decisions: dict[str, dict[str, Any]] = {}
+        self._resolve_paths = lambda config_obj: state_resolve_paths(
+            config_obj,
+            get_config_path=get_astrbot_config_path,
+            get_plugin_data_path=get_astrbot_plugin_data_path,
+        )
+        self._refresh_admin_ids = partial(state_refresh_admin_ids, self)
+        self._state_for = partial(state_state_for, self)
+        self._save_storage_sync = partial(state_save_storage_sync, self)
+        self._save_storage = partial(state_save_storage, self)
+        self._sync_whitelist = partial(state_sync_whitelist, self)
+        self._persist_enabled = partial(state_persist_enabled, self)
+        self._track_background_task = partial(state_track_background_task, self)
+        self._refresh_admin_ids()
 
         self._assemble_components()
 
@@ -246,39 +255,6 @@ class SelfInitiatedReplyPlugin(Star):
             get_grace_stop_sec=lambda: GRACEFUL_STOP_GRACE_SEC,
         )
 
-    @staticmethod
-    def _validate_agent_api() -> None:
-        _AGENT_RUNTIME.validate()
-
-    @staticmethod
-    def _resolve_paths(config_obj: Any) -> tuple[Path, Path]:
-        return state_resolve_paths(
-            config_obj,
-            get_config_path=get_astrbot_config_path,
-            get_plugin_data_path=get_astrbot_plugin_data_path,
-        )
-
-    def _refresh_admin_ids(self) -> set[str]:
-        return state_refresh_admin_ids(self)
-
-    def _state_for(self, umo: str) -> SessionState:
-        return state_state_for(self, umo)
-
-    def _save_storage_sync(self) -> None:
-        state_save_storage_sync(self)
-
-    def _save_storage_snapshot(self) -> bool:
-        return state_save_storage_snapshot(self)
-
-    async def _save_storage(self) -> None:
-        await state_save_storage(self)
-
-    def _sync_whitelist(self) -> None:
-        state_sync_whitelist(self)
-
-    async def _persist_enabled(self, enabled: bool) -> None:
-        await state_persist_enabled(self, enabled)
-
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     @filter.platform_adapter_type(filter.PlatformAdapterType.ALL)
     async def on_message(self, event: AstrMessageEvent) -> None:
@@ -299,21 +275,6 @@ class SelfInitiatedReplyPlugin(Star):
             return True
         return is_at_or_wake_command_event(event) or is_explicit_direct_call(event, text)
 
-    def _should_ignore_event(
-        self,
-        event: AstrMessageEvent,
-        text: str,
-        *,
-        vision_has_images: bool,
-    ) -> bool:
-        """忽略判定（自消息/命令/纯图无识图/忽略名单/直接点名）。（委托壳，逻辑在 utils.py）"""
-        return should_ignore_event(
-            event,
-            text,
-            vision_has_images=vision_has_images,
-            ignored_sender_ids=self.settings.ignored_sender_ids,
-        )
-
     # 只读视图：数据归属 SessionGate，以下 property 供既有调用点与测试
     # 以原字段名访问，避免同步迁移动辄数十处引用面。回滚整表覆盖
     # 经 SessionGate.restore 封装，不再暴露 setter；读侧返回只读视图
@@ -330,13 +291,6 @@ class SelfInitiatedReplyPlugin(Star):
     def _session_locks(self) -> MappingProxyType[str, asyncio.Lock]:
         return self._gate.locks_view
 
-    def _track_background_task(self, coro: Any) -> asyncio.Task[Any] | None:
-        return state_track_background_task(self, coro)
-
-    def _invalidate_session(self, umo: str, *, force_cancel: bool = False) -> int:
-        """会话失效单点入口：代次推进 + 延迟取消 + 协作资源级联清理。"""
-        return self._coordinator.invalidate(umo, force_cancel=force_cancel)
-
     def _prune_session(self, umo: str) -> None:
         """会话回收单点：代次/锁/运行标记/最近裁决 + 会话状态内存回收。
 
@@ -352,7 +306,7 @@ class SelfInitiatedReplyPlugin(Star):
     def _cancel_event_session(self, event: AstrMessageEvent) -> None:
         umo = event_umo(event)
         if umo and session_whitelisted(umo, self.settings.whitelist):
-            self._invalidate_session(umo, force_cancel=True)
+            self._coordinator.invalidate(umo, force_cancel=True)
 
     async def _add_whitelist_session(self, umo: str) -> bool:
         async with self._config_lock:
@@ -503,7 +457,7 @@ class SelfInitiatedReplyPlugin(Star):
             set(self._delay_tasks) | set(self._running_sessions) | set(self._running_check_tasks)
         )
         for umo in sessions:
-            self._invalidate_session(umo, force_cancel=True)
+            self._coordinator.invalidate(umo, force_cancel=True)
         self._delay_tasks.clear()
         self._cancel_background_tasks()
 

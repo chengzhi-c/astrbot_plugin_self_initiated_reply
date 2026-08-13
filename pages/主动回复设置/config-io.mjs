@@ -307,7 +307,6 @@ export function createConfigIo(deps) {
       e.whitelistCount.textContent = String(body.whitelist_sessions.length);
       showToast("配置已保存");
       try {
-        await loadOverview();
         await loadConfig();
       } catch (error) {
         showToast("已保存，但刷新显示失败，请点刷新");
@@ -317,21 +316,6 @@ export function createConfigIo(deps) {
       e.configForm.classList.remove("is-saving");
       e.configForm.inert = false;
       setSaving(false);
-    }
-  }
-  async function loadOverview() {
-    const e = els();
-    let overview;
-    try {
-      overview = await apiGet("unified/overview");
-    } catch {
-      return;
-    }
-    if (!overview || typeof overview !== "object") return;
-    const self = overview.self_reply;
-    if (!self || typeof self !== "object") return;
-    if (e.whitelistCount) {
-      e.whitelistCount.textContent = String(self.whitelist_count || 0);
     }
   }
   async function cleanupImageCache() {
@@ -357,5 +341,5 @@ export function createConfigIo(deps) {
     }
   }
   return {
-    setSaveState, setDirty, attachDirtyListeners, setSaving, setupValidation, validateAll, validateWhitelist, loadConfig, saveConfig, loadOverview, cleanupImageCache, };
+    setSaveState, setDirty, attachDirtyListeners, setSaving, setupValidation, validateAll, validateWhitelist, loadConfig, saveConfig, cleanupImageCache, };
 }

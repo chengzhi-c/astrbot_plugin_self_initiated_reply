@@ -29,8 +29,18 @@ def assemble_plugin_components(
     """接线 scheduler/decision/generation/coordinator/delivery/whitelist/pipeline。
 
     getter 参数必须每次调用重新解析（测试会替换 main 模块全局）。
+    循环依赖（coordinator ↔ scheduler、scheduler → pipeline）用调用期查找，
+    不在装配后回填私有属性。
     """
     grace = get_grace_stop_sec or (lambda: GRACEFUL_STOP_GRACE_SEC)
+    plugin._coordinator = SessionCoordinator(
+        events=plugin._last_events,
+        event_at=plugin._last_event_at,
+        images=plugin._recent_image_events,
+        gate=plugin._gate,
+        cancel_delay=lambda umo, force: plugin._scheduler.cancel_delay(umo, force=force),
+        notify_silence=lambda umo: plugin._scheduler.notify_activity(umo),
+    )
     plugin._scheduler = SessionScheduler(
         settings=plugin.settings,
         gate=plugin._gate,
@@ -46,7 +56,7 @@ def assemble_plugin_components(
                 expected_generation=expected_generation,
             )
         ),
-        clear_cached_event=lambda umo: plugin._coordinator.clear(umo),
+        clear_cached_event=plugin._coordinator.clear,
         last_events=plugin._last_events,
         last_event_at=plugin._last_event_at,
         recent_image_events=plugin._recent_image_events,
@@ -92,15 +102,6 @@ def assemble_plugin_components(
         last_events=plugin._last_events,
     )
 
-    plugin._coordinator = SessionCoordinator(
-        events=plugin._last_events,
-        event_at=plugin._last_event_at,
-        images=plugin._recent_image_events,
-        gate=plugin._gate,
-        cancel_delay=lambda umo, force: plugin._scheduler.cancel_delay(umo, force=force),
-        notify_silence=lambda umo: plugin._scheduler.notify_activity(umo),
-    )
-
     plugin._delivery = DeliveryRunner(
         settings=plugin.settings,
         gate=plugin._gate,
@@ -117,7 +118,7 @@ def assemble_plugin_components(
         sync_whitelist=lambda: plugin._sync_whitelist(),
         save_storage=lambda: plugin._save_storage(),
         ensure_state=lambda key: plugin._state_for(key),
-        invalidate=lambda umo: plugin._invalidate_session(umo),
+        invalidate=lambda umo: plugin._coordinator.invalidate(umo),
         prune=lambda umo: plugin._prune_session(umo),
         sessions=plugin.sessions,
         tracked_umos=lambda: (
@@ -130,9 +131,14 @@ def assemble_plugin_components(
     )
 
     plugin._pipeline = SessionPipeline(
-        owner=plugin,
+        state_for=lambda umo: plugin._state_for(umo),
+        generation=plugin._generation,
+        delivery=plugin._delivery,
+        is_stopping=lambda: plugin._stopping,
+        is_enabled=lambda: plugin.runtime_enabled,
         settings=plugin.settings,
         gate=plugin._gate,
         decision=plugin._decision,
         last_events=plugin._last_events,
+        last_decisions=plugin._last_decisions,
     )

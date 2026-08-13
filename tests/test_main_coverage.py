@@ -205,12 +205,12 @@ def test_on_message_computes_image_eligibility_once(tmp_path: Path, monkeypatch)
             calls.append(("has_images", skip_stickers))
             return True
 
-        def should_ignore(event, text, *, vision_has_images):
+        def should_ignore(event, text, *, vision_has_images, ignored_sender_ids):
             calls.append(("ignore", vision_has_images))
             return False
 
         monkeypatch.setattr(ingress.ImageExtractor, "has_images", staticmethod(has_images))
-        plugin._should_ignore_event = should_ignore
+        monkeypatch.setattr(ingress, "should_ignore_event", should_ignore)
 
         await plugin.on_message(_make_event(message_str="普通消息"))
 
@@ -409,7 +409,14 @@ def test_decide_session_reply_early_reason_passthrough(tmp_path: Path) -> None:
             state = plugin._state_for(UMO)
             plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
             result = await plugin_state.decide_session_reply(
-                plugin, UMO, state, trigger="message_delay", force=False, expected_generation=None
+                plugin._decision,
+                plugin._gate,
+                plugin._last_decisions,
+                UMO,
+                state,
+                trigger="message_delay",
+                force=False,
+                expected_generation=None,
             )
             assert result == "判断模型解析失败"
         finally:
@@ -425,7 +432,14 @@ def test_decide_session_reply_stale_generation_rejected(tmp_path: Path) -> None:
         state = plugin._state_for(UMO)
         plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
         result = await plugin_state.decide_session_reply(
-            plugin, UMO, state, trigger="manual", force=True, expected_generation=token
+            plugin._decision,
+            plugin._gate,
+            plugin._last_decisions,
+            UMO,
+            state,
+            trigger="manual",
+            force=True,
+            expected_generation=token,
         )
         assert result == "会话已经更新，放弃旧任务。"
 
@@ -439,7 +453,14 @@ def test_decide_session_reply_no_reply_returns_reason(tmp_path: Path) -> None:
         state = plugin._state_for(UMO)
         plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
         result = await plugin_state.decide_session_reply(
-            plugin, UMO, state, trigger="message_delay", force=False, expected_generation=None
+            plugin._decision,
+            plugin._gate,
+            plugin._last_decisions,
+            UMO,
+            state,
+            trigger="message_delay",
+            force=False,
+            expected_generation=None,
         )
         assert result.startswith("判断不回复：")
 
@@ -896,7 +917,14 @@ def test_decide_session_reply_dict_no_reply(tmp_path: Path) -> None:
             state = plugin._state_for(UMO)
             plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
             result = await plugin_state.decide_session_reply(
-                plugin, UMO, state, trigger="message_delay", force=False, expected_generation=None
+                plugin._decision,
+                plugin._gate,
+                plugin._last_decisions,
+                UMO,
+                state,
+                trigger="message_delay",
+                force=False,
+                expected_generation=None,
             )
             assert result == "判断不回复：无意图"
         finally:

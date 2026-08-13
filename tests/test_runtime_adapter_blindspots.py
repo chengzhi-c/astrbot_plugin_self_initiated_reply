@@ -389,7 +389,7 @@ def test_fail_closed_warning_names_the_reason(caplog: object) -> None:
 def test_require_is_the_only_runtime_none_guard() -> None:
     """入口取消逐次 validate 后，``_require`` 成为运行期唯一的 None 兜底。
 
-    加载期守卫（``main._validate_agent_api`` → ``validate()`` 硬模式）拒绝不兼容
+    加载期守卫（``SelfInitiatedReplyPlugin.__init__`` → ``validate()`` 硬模式）拒绝不兼容
     宿主，但软模式只收集问题、不阻断。此时访问入口必须仍然抛出，且文案须来自
     ``_require``：``_probe_problems`` 的消息在软模式下已被调用方吞掉，若 ``_require``
     的 raise 被改成静默返回，None 会漏进宿主调用并在更深处以难诊断的形态崩溃。

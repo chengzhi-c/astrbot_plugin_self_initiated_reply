@@ -165,7 +165,7 @@ async def dispatch_command_action(
         removed = await plugin._remove_whitelist_session(umo)
         return f"已移出主动回复白名单：{umo}" if removed else f"当前会话本不在主动回复白名单：{umo}"
     if action == "check":
-        generation = plugin._invalidate_session(umo)
+        generation = plugin._coordinator.invalidate(umo)
         plugin._coordinator.record_event(umo, event, now_ts())
         text = clean_chat_text(arg or strip_command_prefix(event_text(event)))
         if text:

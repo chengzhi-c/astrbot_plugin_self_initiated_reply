@@ -31,7 +31,7 @@ def _require[T](value: T | None, name: str) -> T:
     调用并在更深处以难诊断的形态崩溃。这条理由与是否真用 -O 部署无关，
     它说明的是本函数为何写成 if/raise 而不是一行 assert，删掉会招来回改。
 
-    ``validate()`` 只在加载期跑一次（``main._validate_agent_api``），各入口
+    ``validate()`` 只在加载期跑一次（``SelfInitiatedReplyPlugin.__init__``），各入口
     不再逐次自校验，因此本函数是运行期唯一的 None 兜底，也防「探测表新增
     符号但未进 _probe_problems」的漂移。
     """
@@ -215,7 +215,7 @@ class AstrBotRuntimeAdapter:
     def validate(self, *, soft: bool = False) -> list[str]:
         """契约断言：缺失参数即红。硬模式首错 raise；软模式收集告警不阻塞。
 
-        调用时机是加载期一次：``main._validate_agent_api`` 在 ``PluginMain.__init__``
+        调用时机是加载期一次：``_AGENT_RUNTIME.validate()`` 在 ``SelfInitiatedReplyPlugin.__init__``
         首条语句执行（无条件、不被 try 包裹），宿主不兼容即拒绝加载。各入口
         （6 个 property + ``new_event_result`` / ``new_provider_request`` /
         ``call_event_hook`` / ``new_build_config``）**不再逐次调本方法**：
@@ -476,8 +476,8 @@ class AstrBotRuntimeAdapter:
 
         该缺属性分支在生产上**不可达**：``func_tool`` 在 ``_PROVIDER_REQUEST_FIELDS``
         中被加载期硬断言（实测改名后 ``validate()`` raise
-        「ProviderRequest 缺少字段：func_tool」，而 ``_validate_agent_api`` 是
-        ``PluginMain.__init__`` 第一条无 try 包裹的语句），且 dataclass 实例
+        「ProviderRequest 缺少字段：func_tool」，而 ``validate()`` 是
+        ``SelfInitiatedReplyPlugin.__init__`` 第一条无 try 包裹的语句），且 dataclass 实例
         ``del`` 掉字段后仍回落到类默认 ``None``（实测 ``hasattr`` 仍为 ``True``）。
         保留本分支是纵深防御 + 适配层自身契约完整（本方法是公共接缝，接受任意
         ``req``），不是在修一个可利用的活漏洞。

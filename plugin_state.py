@@ -194,9 +194,14 @@ def track_background_task(plugin: Any, coro: Any) -> asyncio.Task[Any] | None:
 
 
 def record_decision(
-    plugin: Any, umo: str, trigger: str, *, should_reply: bool, reason: str
+    last_decisions: dict[str, Any],
+    umo: str,
+    trigger: str,
+    *,
+    should_reply: bool,
+    reason: str,
 ) -> None:
-    plugin._last_decisions[umo] = {
+    last_decisions[umo] = {
         "at": round(now_ts(), 3),
         "trigger": trigger,
         "should_reply": should_reply,
@@ -205,7 +210,9 @@ def record_decision(
 
 
 async def decide_session_reply(
-    plugin: Any,
+    decision: Any,
+    gate: Any,
+    last_decisions: dict[str, Any],
     umo: str,
     state: SessionState,
     *,
@@ -213,28 +220,28 @@ async def decide_session_reply(
     force: bool,
     expected_generation: int | None,
 ) -> dict[str, Any] | str:
-    decision = await plugin._decision.decide(umo, state, trigger=trigger, force=force)
-    if isinstance(decision, str):
-        record_decision(plugin, umo, trigger, should_reply=False, reason=decision)
-        return decision
-    if not plugin._gate.is_current(umo, expected_generation):
+    result = await decision.decide(umo, state, trigger=trigger, force=force)
+    if isinstance(result, str):
+        record_decision(last_decisions, umo, trigger, should_reply=False, reason=result)
+        return result
+    if not gate.is_current(umo, expected_generation):
         return STALE_TASK_MESSAGE
     record_decision(
-        plugin,
+        last_decisions,
         umo,
         trigger,
-        should_reply=bool(decision.get("should_reply")),
-        reason=str(decision.get("reason") or ""),
+        should_reply=bool(result.get("should_reply")),
+        reason=str(result.get("reason") or ""),
     )
     logger.info(
         "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
         PLUGIN_ID,
         umo,
         trigger,
-        decision.get("should_reply"),
-        float(decision.get("elapsed_sec") or 0.0),
-        decision.get("reason") or "-",
+        result.get("should_reply"),
+        float(result.get("elapsed_sec") or 0.0),
+        result.get("reason") or "-",
     )
-    if not decision.get("should_reply"):
-        return f"判断不回复：{decision.get('reason') or '未说明'}"
-    return decision
+    if not result.get("should_reply"):
+        return f"判断不回复：{result.get('reason') or '未说明'}"
+    return result
