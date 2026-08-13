@@ -11,10 +11,8 @@
 状态容器经引用共享（main 的 dict 属性保持原字段名，既有调用点与测试
 不变）；延迟任务取消与代次推进经注入回调执行。
 
-``SessionPhase`` FSM 已移除：五个阶段只被写入
-（main 的 check 流程 4 处）而无任何生产读点——既不参与任何判定，也未进
-``/status`` 面板，是一层纯记账。运行中判定改由 ``SessionGate.is_running``
-与事件表直接回答。
+``SessionPhase`` FSM 已移除：该枚举只被写入而无任何生产读点，既不参与判定，
+也不进 ``/status``。运行中判定由 ``SessionGate.is_running`` 与事件表回答。
 """
 
 from __future__ import annotations
