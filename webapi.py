@@ -54,6 +54,7 @@ from .models import (
     ConfigSpec,
     Settings,
     normalize_config_updates,
+    panel_config_specs,
 )
 
 # 配置 schema 全键（_conf_schema.json，与正式键一一对应）。此名单之外的键
@@ -159,38 +160,21 @@ def _providers_from_manager(plugin: SelfInitiatedReplyPlugin) -> list[Any]:
 
 
 async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """返回当前配置。"""
+    """返回当前配置。
+
+    配置键从表里 ``panel`` 面派生，不再手抄。视图字段单独列出：
+    ``enabled`` 是持久配置，``runtime_enabled`` 是当前运行态，两者不能合并。
+    """
     try:
-        return {
+        payload: dict[str, Any] = {
             "ok": True,
-            # enabled 是持久配置；runtime_enabled 是当前实际运行态。
-            # 0.9.4 起 /on /off 会同时改两者，两者分叉只剩一个来源：
-            # POST config 提交的 enabled 与现值相同（见下方 elif 分支）。
-            # 仍分开暴露——合并会让前端全量保存把运行态固化成持久配置。
-            "enabled": plugin.settings.enabled,
             "runtime_enabled": plugin.runtime_enabled,
-            "decision_model_enabled": plugin.settings.decision_model_enabled,
-            "judge_provider_id": plugin.settings.judge_provider_id,
-            "decision_prompt_template": plugin.settings.decision_prompt_template,
             "decision_prompt_default": DEFAULT_DECISION_PROMPT_TEMPLATE,
-            "decision_temperature": plugin.settings.decision_temperature,
-            "decision_timeout_sec": plugin.settings.decision_timeout_sec,
-            "decision_history_min_messages": plugin.settings.decision_history_min_messages,
-            "message_delay_sec": plugin.settings.message_delay_sec,
-            "min_silence_sec": plugin.settings.min_silence_sec,
-            "cooldown_sec": plugin.settings.cooldown_sec,
-            "patrol_inactive_after_sec": plugin.settings.patrol_inactive_after_sec,
-            "proactive_inherit_tools": plugin.settings.proactive_inherit_tools,
-            "whitelist_sessions": sorted(plugin.settings.whitelist),
-            "vision_judge_enabled": plugin.settings.vision_judge_enabled,
-            "vision_main_enabled": plugin.settings.vision_main_enabled,
-            "vision_provider_id": plugin.settings.vision_provider_id,
-            "vision_judge_provider_id": plugin.settings.vision_judge_provider_id,
-            "vision_skip_stickers": plugin.settings.vision_skip_stickers,
-            "vision_max_images": plugin.settings.vision_max_images,
-            "vision_image_age_sec": plugin.settings.vision_image_age_sec,
-            "vision_timeout_sec": plugin.settings.vision_timeout_sec,
         }
+        for spec in panel_config_specs():
+            value = getattr(plugin.settings, spec.attr)
+            payload[spec.key] = sorted(value) if spec.container == "set" else value
+        return payload
     except Exception as exc:
         # 详情只进服务端日志：异常文本可能带绝对路径、内部键名或
         # 上游 provider 报错原文，回显给客户端等于把内部结构透给调用方。
@@ -534,14 +518,9 @@ async def _apply_config_updates(
             candidate[key] = value
         new_settings = Settings.from_config(candidate)
         vision_changed = any(
-            getattr(plugin.settings, key) != getattr(new_settings, key)
-            for key in (
-                "vision_judge_enabled",
-                "vision_main_enabled",
-                "vision_provider_id",
-                "vision_judge_provider_id",
-                "vision_timeout_sec",
-            )
+            getattr(plugin.settings, spec.attr) != getattr(new_settings, spec.attr)
+            for spec in CONFIG_SPECS
+            if spec.key.startswith("vision_")
         )
         # 原地应用（保持 Settings 对象身份）：五个组件构造时各存
         # self.settings 引用，整体替换会造成热更新后组件读旧值（0.9.0 轴 A）。
@@ -602,8 +581,7 @@ def _log_audited_changes(
     for key in _AUDITED_CONFIG_KEYS:
         if key not in updates:
             continue
-        # whitelist_sessions 键对应的 Settings 字段名为 whitelist
-        attr = "whitelist" if key == "whitelist_sessions" else key
+        attr = CONFIG_SPEC_BY_KEY[key].attr
         old_value = getattr(snapshot["settings"], attr, None)
         new_value = getattr(new_settings, attr, None)
         old_norm = sorted(old_value) if isinstance(old_value, (set, list)) else old_value

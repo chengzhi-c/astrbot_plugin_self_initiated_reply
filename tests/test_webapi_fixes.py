@@ -593,15 +593,41 @@ def test_api_get_config_sorts_whitelist_sessions(tmp_path) -> None:
     with_plugin(tmp_path, scenario)
 
 
-def test_apply_vision_change_clears_parser_cache(tmp_path) -> None:
+def test_api_get_config_exposes_panel_surface_only(tmp_path) -> None:
+    """GET /config 只带 panel 面与三个视图字段，不含宿主独占键。"""
+
+    async def scenario(plugin, main):
+        models = sys.modules[f"{PACKAGE}.models"]
+        webapi = sys.modules[f"{PACKAGE}.webapi"]
+        result = await webapi._api_get_config(plugin)
+        panel_keys = {spec.key for spec in models.panel_config_specs()}
+        view_keys = {"ok", "runtime_enabled", "decision_prompt_default"}
+        assert set(result) == panel_keys | view_keys
+        assert "patrol_inactive_after_sec" not in result
+        assert result["ok"] is True
+        assert result["runtime_enabled"] is plugin.runtime_enabled
+        assert result["decision_prompt_default"] == models.DEFAULT_DECISION_PROMPT_TEMPLATE
+
+    with_plugin(tmp_path, scenario)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"vision_provider_id": "new"},
+        {"vision_skip_stickers": True},
+    ],
+)
+def test_apply_vision_change_clears_parser_cache(tmp_path, payload) -> None:
     async def scenario(plugin, main):
         web = sys.modules["astrbot.api.web"]
         plugin._image_parsers["x"] = object()
         plugin._image_parser_timeout = 30.0
-        web.request.payload = {"vision_provider_id": "new"}
+        web.request.payload = payload
         result = await plugin._api_post_config()
         assert result["ok"] is True
-        assert plugin.settings.vision_provider_id == "new"
+        for key, value in payload.items():
+            assert getattr(plugin.settings, key) == value
         assert plugin._image_parsers == {}
         assert plugin._image_parser_timeout is None
 

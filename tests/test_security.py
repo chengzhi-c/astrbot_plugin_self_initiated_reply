@@ -1050,8 +1050,7 @@ def test_audited_config_keys_cover_sensitive_surface() -> None:
     settings = models.Settings.from_config({})
     for key in audited:
         assert key in webapi.CONFIG_SCHEMA_KEYS, f"{key} 不在 schema 内，updates 永不含它"
-        # whitelist_sessions 是唯一的键名/字段名不一致项，映射在 _log_audited_changes 内
-        attr = "whitelist" if key == "whitelist_sessions" else key
+        attr = models.CONFIG_SPEC_BY_KEY[key].attr
         assert hasattr(settings, attr), f"{key} 在 Settings 上无 {attr} 字段，审计取不到值"
 
 

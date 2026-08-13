@@ -469,6 +469,8 @@ class ConfigSpec:
         legacy_keys: 旧版本键名，只在读侧回退；``to_config_dict`` 只写正式键。
         special/editor_mode/editor_language: schema 的 UI 专属字段。
         max_len/max_items: 硬上限（防 OOM 与费用滥用），超限截断并记 warning。
+        surfaces: 该键出现在哪些配置面。``host`` 为宿主 schema；
+            ``panel`` 为自定义设置页。GET /config 与前端可写键都从此派生。
     """
 
     key: str
@@ -487,6 +489,7 @@ class ConfigSpec:
     editor_language: str = ""
     max_len: int | None = None
     max_items: int | None = None
+    surfaces: frozenset[str] = frozenset({"host"})
 
     @property
     def attr(self) -> str:
@@ -501,11 +504,20 @@ class ConfigSpec:
         return self.kind
 
 
+_PANEL = frozenset({"host", "panel"})
+
 # 34 个配置键的规格表。顺序 = _conf_schema.json 顺序 = 面板呈现顺序。
 CONFIG_SPECS: tuple[ConfigSpec, ...] = (
-    ConfigSpec("enabled", "bool", True, audited=True),
-    ConfigSpec("decision_model_enabled", "bool", True),
-    ConfigSpec("judge_provider_id", "str", "", special="select_provider", audited=True),
+    ConfigSpec("enabled", "bool", True, audited=True, surfaces=_PANEL),
+    ConfigSpec("decision_model_enabled", "bool", True, surfaces=_PANEL),
+    ConfigSpec(
+        "judge_provider_id",
+        "str",
+        "",
+        special="select_provider",
+        audited=True,
+        surfaces=_PANEL,
+    ),
     ConfigSpec(
         "decision_prompt_template",
         "text",
@@ -513,9 +525,10 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         editor_mode=True,
         editor_language="text",
         max_len=MAX_PROMPT_LENGTH,
+        surfaces=_PANEL,
     ),
-    ConfigSpec("decision_temperature", "float", 0.2, 0.0, 2.0, step=0.1),
-    ConfigSpec("decision_timeout_sec", "float", 20.0, 1, 300, step=1),
+    ConfigSpec("decision_temperature", "float", 0.2, 0.0, 2.0, step=0.1, surfaces=_PANEL),
+    ConfigSpec("decision_timeout_sec", "float", 20.0, 1, 300, step=1, surfaces=_PANEL),
     ConfigSpec(
         "decision_history_min_messages",
         "int",
@@ -524,6 +537,7 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         30,
         step=1,
         legacy_keys=("min_context_messages", "proactive_threshold"),
+        surfaces=_PANEL,
     ),
     ConfigSpec(
         "reply_length_mode",
@@ -545,34 +559,98 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         audited=True,
         legacy_keys=("whitelist",),
         max_items=MAX_WHITELIST_SIZE,
+        surfaces=_PANEL,
     ),
     ConfigSpec("check_interval_sec", "int", 300, 30, 86400, step=30),
     ConfigSpec("patrol_inactive_after_sec", "int", 1800, 0, 604800, step=3600),
     ConfigSpec(
-        "message_delay_sec", "int", 60, 5, 86400, step=5, legacy_keys=("idle_trigger_seconds",)
+        "message_delay_sec",
+        "int",
+        60,
+        5,
+        86400,
+        step=5,
+        legacy_keys=("idle_trigger_seconds",),
+        surfaces=_PANEL,
     ),
-    ConfigSpec("min_silence_sec", "int", 45, 0, 86400, step=10),
-    ConfigSpec("cooldown_sec", "int", 900, 0, 86400, step=60, legacy_keys=("cooldown_seconds",)),
+    ConfigSpec("min_silence_sec", "int", 45, 0, 86400, step=10, surfaces=_PANEL),
+    ConfigSpec(
+        "cooldown_sec",
+        "int",
+        900,
+        0,
+        86400,
+        step=60,
+        legacy_keys=("cooldown_seconds",),
+        surfaces=_PANEL,
+    ),
     ConfigSpec("max_daily_replies_per_session", "int", 5, 0, MAX_DAILY_REPLIES_LIMIT, step=1),
     ConfigSpec("recent_message_limit", "int", 20, 3, MAX_RECENT_MESSAGE_LIMIT, step=1),
     ConfigSpec("quiet_hours", "list", [], container="list"),
     ConfigSpec("enabled_message_trigger", "bool", True),
     ConfigSpec("enabled_patrol_trigger", "bool", False),
     ConfigSpec("generation_timeout_sec", "float", 60.0, 1, 300, step=1),
-    ConfigSpec("proactive_inherit_tools", "bool", False, audited=True),
+    ConfigSpec("proactive_inherit_tools", "bool", False, audited=True, surfaces=_PANEL),
     ConfigSpec(
-        "vision_judge_enabled", "bool", False, audited=True, legacy_keys=("vision_enabled",)
+        "vision_judge_enabled",
+        "bool",
+        False,
+        audited=True,
+        legacy_keys=("vision_enabled",),
+        surfaces=_PANEL,
     ),
-    ConfigSpec("vision_main_enabled", "bool", False, audited=True, legacy_keys=("vision_enabled",)),
-    ConfigSpec("vision_provider_id", "str", "", special="select_provider", audited=True),
-    ConfigSpec("vision_skip_stickers", "bool", False),
-    ConfigSpec("vision_judge_provider_id", "str", "", special="select_provider", audited=True),
-    ConfigSpec("vision_max_images", "int", 2, 1, MAX_VISION_IMAGES, step=1),
-    ConfigSpec("vision_image_age_sec", "int", 300, 60, MAX_VISION_IMAGE_AGE_SEC, step=60),
-    ConfigSpec("vision_timeout_sec", "float", 20.0, 1, MAX_VISION_TIMEOUT_SEC, step=1),
+    ConfigSpec(
+        "vision_main_enabled",
+        "bool",
+        False,
+        audited=True,
+        legacy_keys=("vision_enabled",),
+        surfaces=_PANEL,
+    ),
+    ConfigSpec(
+        "vision_provider_id",
+        "str",
+        "",
+        special="select_provider",
+        audited=True,
+        surfaces=_PANEL,
+    ),
+    ConfigSpec("vision_skip_stickers", "bool", False, surfaces=_PANEL),
+    ConfigSpec(
+        "vision_judge_provider_id",
+        "str",
+        "",
+        special="select_provider",
+        audited=True,
+        surfaces=_PANEL,
+    ),
+    ConfigSpec("vision_max_images", "int", 2, 1, MAX_VISION_IMAGES, step=1, surfaces=_PANEL),
+    ConfigSpec(
+        "vision_image_age_sec",
+        "int",
+        300,
+        60,
+        MAX_VISION_IMAGE_AGE_SEC,
+        step=60,
+        surfaces=_PANEL,
+    ),
+    ConfigSpec(
+        "vision_timeout_sec",
+        "float",
+        20.0,
+        1,
+        MAX_VISION_TIMEOUT_SEC,
+        step=1,
+        surfaces=_PANEL,
+    ),
 )
 
 CONFIG_SPEC_BY_KEY: dict[str, ConfigSpec] = {spec.key: spec for spec in CONFIG_SPECS}
+
+
+def panel_config_specs() -> tuple[ConfigSpec, ...]:
+    """Specs exposed on the custom settings page and GET /config."""
+    return tuple(spec for spec in CONFIG_SPECS if "panel" in spec.surfaces)
 
 
 def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:

@@ -524,14 +524,6 @@ def test_tool_versions_agree_across_config_sources() -> None:
 # 查的是某个按钮 id），而它有两个反方向的失效模式，故需两条断言。
 # ============================================================================
 
-# GET 返回但面板刻意不渲染的配置键。
-#
-# patrol_inactive_after_sec：实测 git 历史里**从未**出现在 pages/（对 pages/ 的
-# -S 查询零命中），且它经 POST 可写并已被 test_webapi_fixes.py 的严格校验用例
-# 覆盖。故它是「宿主 _conf_schema.json 面板负责、自定义面板不重复呈现」的一项，
-# 不是遗漏。往这里加键前先确认同一件事：它真的有意不上面板，而不是忘了接。
-_FRONTEND_INTENTIONALLY_ABSENT = {"patrol_inactive_after_sec"}
-
 
 def _frontend_sources() -> str:
     page = ROOT / "pages" / "主动回复设置"
@@ -541,49 +533,23 @@ def _frontend_sources() -> str:
     return "\n".join(parts)
 
 
-def _api_get_config_keys() -> list[str]:
-    """AST 提取 ``_api_get_config`` 返回的 dict 字面量键。
-
-    读源码而非调函数：调函数需要构造完整 plugin，而这里要的是**契约**
-    （声明了哪些键），不是某次运行的取值。
-    """
-    import ast
-
-    tree = ast.parse((ROOT / "webapi.py").read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.AsyncFunctionDef) or node.name != "_api_get_config":
-            continue
-        for stmt in ast.walk(node):
-            if isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Dict):
-                return [k.value for k in stmt.value.keys if isinstance(k, ast.Constant)]
-    raise AssertionError("未定位到 _api_get_config 的返回字典（写法变了，需复核本守卫）")
-
-
 def test_every_exposed_config_key_is_consumed_by_the_panel() -> None:
     """GET 暴露的配置键必须被面板消费，否则是"接口给了、面板没接"。
 
-    失效场景：给 ``_api_get_config`` 加一个键并配好 POST 校验，却忘了在
-    pages/ 加控件。此时后端测试全绿（键在表里、校验通过），面板上却根本
-    看不到这个设置项——用户唯一能改它的地方是宿主面板，而我们以为已经
-    支持了。这条断言让"忘了接前端"在 CI 就红。
+    失效场景：给规格表标 ``panel`` 并配好 POST 校验，却忘了在 pages/ 加控件。
+    此时后端测试全绿（键在表里、校验通过），面板上却根本看不到这个设置项。
+    GET 已从表派生，这里直接钉 panel 面，不再抠返回字典字面量。
     """
     models = _models()
-    config_keys = {spec.key for spec in models.CONFIG_SPECS}
-    exposed = [key for key in _api_get_config_keys() if key in config_keys]
-    assert exposed, "未从 _api_get_config 提取到任何配置键（提取逻辑失效）"
+    exposed = [spec.key for spec in models.panel_config_specs()]
+    assert exposed, "panel 面为空（surfaces 标记失效）"
 
     front = _frontend_sources()
-    missing = [
-        key for key in exposed if key not in front and key not in _FRONTEND_INTENTIONALLY_ABSENT
-    ]
+    missing = [key for key in exposed if key not in front]
     assert not missing, (
-        f"这些配置键由 /config 返回但 pages/ 零引用：{sorted(missing)}。"
-        f"要么补面板控件，要么加入 _FRONTEND_INTENTIONALLY_ABSENT 并写明为何不上面板。"
+        f"这些配置键标了 panel 但 pages/ 零引用：{sorted(missing)}。"
+        f"要么补面板控件，要么从 surfaces 拿掉 panel。"
     )
-
-    # 反向：豁免名单不得留下已经不存在的键（否则豁免会悄悄覆盖掉新的遗漏）
-    stale = sorted(_FRONTEND_INTENTIONALLY_ABSENT - set(exposed))
-    assert not stale, f"_FRONTEND_INTENTIONALLY_ABSENT 里的键已不由 /config 返回：{stale}"
 
 
 def _mypy_files_entries() -> list[str]:

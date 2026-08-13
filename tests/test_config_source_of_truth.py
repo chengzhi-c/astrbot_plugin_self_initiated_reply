@@ -44,14 +44,17 @@ def _schema_keys() -> set[str]:
     return {k for k, v in schema.items() if isinstance(v, dict)}
 
 
-def _webapi_get_keys() -> set[str]:
-    web = (ROOT / "webapi.py").read_text(encoding="utf-8")
-    m = re.search(
-        r"async def _api_get_config[\s\S]*?return \{\n(?P<body>[\s\S]*?)\n\s*\}",
-        web,
-    )
-    assert m, "_api_get_config return block not found"
-    return set(re.findall(r'"([a-z0-9_]+)"\s*:', m.group("body")))
+def _expected_get_config_keys() -> set[str]:
+    """GET /config 的期望键：panel 面 + 三个视图字段。真实形状由行为测试钉住。"""
+    from .host_stubs import install_astrbot_stubs, load_package
+
+    install_astrbot_stubs()
+    models = load_package("selfreply_config_sot_package", "models")
+    return {spec.key for spec in models.panel_config_specs()} | {
+        "ok",
+        "runtime_enabled",
+        "decision_prompt_default",
+    }
 
 
 def _fe_default_block() -> str:
@@ -94,7 +97,7 @@ def test_config_specs_match_schema_keys() -> None:
 
 
 def test_webapi_get_exposes_fe_writable_fields() -> None:
-    keys = _webapi_get_keys()
+    keys = _expected_get_config_keys()
     writable = _fe_writable_keys()
     for required in ("ok", "enabled", "whitelist_sessions"):
         assert required in keys, f"GET config missing {required}"
@@ -105,6 +108,21 @@ def test_webapi_get_exposes_fe_writable_fields() -> None:
     specs = _config_spec_keys()
     orphan = writable - specs
     assert not orphan, f"FE-writable keys not in CONFIG_SPECS: {sorted(orphan)}"
+
+
+def test_fe_writable_keys_match_panel_surfaces() -> None:
+    """前端可写键必须等于规格表里标了 panel 的键，两边不得各写一份。"""
+    from .host_stubs import install_astrbot_stubs, load_package
+
+    install_astrbot_stubs()
+    models = load_package("selfreply_config_sot_package", "models")
+    panel = {spec.key for spec in models.panel_config_specs()}
+    writable = _fe_writable_keys()
+    assert writable == panel, (
+        f"FE CONFIG_SAVE_KEYS 与 panel 面漂移："
+        f"FE 独有 {sorted(writable - panel)}，panel 独有 {sorted(panel - writable)}"
+    )
+    assert "patrol_inactive_after_sec" not in writable
 
 
 def test_fe_default_config_keys_subset_of_specs() -> None:
@@ -157,3 +175,44 @@ def test_frontend_whitelist_illegal_chars_match_backend() -> None:
     assert backend.search('has"quote')
     assert frontend.search("has\ttab")
     assert frontend.search("has'quote")
+
+
+def test_frontend_number_bounds_match_panel_specs() -> None:
+    """自定义页 number 控件的 min/max 必须等于规格表边界。"""
+    from .host_stubs import install_astrbot_stubs, load_package
+
+    install_astrbot_stubs()
+    models = load_package("selfreply_config_sot_package", "models")
+    html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
+    io = (ROOT / "pages" / "主动回复设置" / "config-io.mjs").read_text(encoding="utf-8")
+    key_by_control = {
+        control: key
+        for key, control in re.findall(
+            r"([a-z0-9_]+):\s*num\(\s*e\.(\w+)\.value",
+            io,
+        )
+    }
+    assert key_by_control, "未从 config-io.mjs 解析到 number 控件绑定"
+
+    seen: set[str] = set()
+    drift: list[str] = []
+    for match in re.finditer(
+        r'<input type="number" id="(\w+)" min="([^\"]+)" max="([^\"]+)"',
+        html,
+    ):
+        control_id, raw_min, raw_max = match.groups()
+        key = key_by_control.get(control_id)
+        assert key is not None, f"HTML number #{control_id} 没有对应的保存键"
+        spec = models.CONFIG_SPEC_BY_KEY[key]
+        seen.add(key)
+        if float(raw_min) != float(spec.minimum):
+            drift.append(f"{key}: HTML min={raw_min} spec={spec.minimum}")
+        if float(raw_max) != float(spec.maximum):
+            drift.append(f"{key}: HTML max={raw_max} spec={spec.maximum}")
+    missing = [
+        spec.key
+        for spec in models.panel_config_specs()
+        if spec.kind in {"int", "float"} and spec.key not in seen
+    ]
+    assert not missing, f"panel 数值键没有 HTML number 控件：{missing}"
+    assert not drift, "HTML number 边界与规格表漂移：\n" + "\n".join(drift)
