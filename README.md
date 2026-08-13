@@ -111,7 +111,10 @@
 
 ## ⚙️ 设置页面
 
-插件详情页内的设置页，覆盖：
+插件详情页内的**自定义设置页**是常用面：日常开关、白名单、判断模型与识图。  
+官方 Dashboard 的 `_conf_schema.json` 是全量面：巡检、勿扰、回复长度、每日上限等运维键只在那边。两套面板读同一份配置，不是两套配置。
+
+自定义页覆盖：
 
 - 运行开关与白名单概况；
 - 上下文 / 延迟 / 静默 / 冷却参数；
@@ -260,6 +263,10 @@ whitelisted sessions.
 - **Optional vision.** Off by default. When enabled, recent images can be
   described and attached to the judge and/or main prompt. Descriptions are
   treated as untrusted context: they never enter history or trigger tools.
+- **Two settings surfaces.** The plugin page is the daily face (switch,
+  whitelist, judge, vision). AstrBot Dashboard `_conf_schema.json` is the full
+  face (patrol, quiet hours, reply length, daily cap). Both read the same
+  config.
 - **Commands.** `/selfreply` plus `status`, `add`, `remove`, `list`,
   `check [content]`, `on`, `off`, `debug`.
 - **Requirements.** AstrBot `>=4.23.3,<5`, Python `>=3.12`, and **zero runtime

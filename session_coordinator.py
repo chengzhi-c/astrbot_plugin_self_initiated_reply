@@ -1,4 +1,4 @@
-"""会话状态协作（自 main.py 拆分，ticket 07）。
+"""会话状态协作。
 
 把散落在主插件上的隐式会话状态收敛为每会话协作入口：最近事件与事件时间
 的写入、失效级联清理（事件/时间/图片/延迟任务）、图片索引写入与读取
@@ -11,7 +11,7 @@
 状态容器经引用共享（main 的 dict 属性保持原字段名，既有调用点与测试
 不变）；延迟任务取消与代次推进经注入回调执行。
 
-0.9.3 移除 ``SessionPhase`` FSM 与 ``mark``/``state``：五个阶段只被写入
+``SessionPhase`` FSM 已移除：五个阶段只被写入
 （main 的 check 流程 4 处）而无任何生产读点——既不参与任何判定，也未进
 ``/status`` 面板，是一层纯记账。运行中判定改由 ``SessionGate.is_running``
 与事件表直接回答。
@@ -56,7 +56,7 @@ class SessionCoordinator:
     def record_event(self, umo: str, event: Any, at: float) -> None:
         """记录一条最近事件与其时间戳（消息触发与巡检的检查素材）。
 
-        会话活动同时意味着静默期重置：通知延迟链立即醒来复查（ticket 11）。
+        会话活动同时意味着静默期重置：通知延迟链立即醒来复查。
         """
         self._events[umo] = event
         self._event_at[umo] = at

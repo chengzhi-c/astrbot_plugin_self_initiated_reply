@@ -1,4 +1,4 @@
-"""主动回复投递状态机（自 main.py 拆分，ticket 05）。
+"""主动回复投递状态机。
 
 负责一次回复投递的完整状态机：发送前门卫、装饰钩子调用与代次复核
 （前/后/发送中）、事件发送与 context 兜底发送、发送结果分类、
@@ -42,7 +42,7 @@ from .outbound import OutboundGateway
 #
 # - SaveStorageCallback：生产注入 ``_save_storage``（锁串行 + 快照 + to_thread
 #   原子写），返回即已落盘。落盘失败只影响持久化，不影响已发生的投递，故调用点兜异常。
-# - RuntimeCallback：宿主私有符号适配层获取器（ticket 13）。用 getter 而非传值，
+# - RuntimeCallback：宿主私有符号适配层获取器。用 getter 而非传值，
 #   使测试替换 ``_AGENT_RUNTIME`` 后仍指向最新实现。
 SaveStorageCallback = Callable[[], Awaitable[None]]
 CallHookCallback = Callable[[Any, Any], Awaitable[None]]

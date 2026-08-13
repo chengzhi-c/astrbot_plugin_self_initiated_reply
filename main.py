@@ -56,7 +56,7 @@ CommandReply = AsyncGenerator[Any, None]
 
 _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
 
-# 宿主私有符号收敛（ticket 13）：值全部来自适配层探测，本文件不再直接
+# 宿主私有符号收敛：值全部来自适配层探测，本文件不再直接
 # import 宿主私有层（astrbot.core.*）；模块级名字保留供测试替换与旧引用，
 # 加载期缺失由 AstrBotRuntimeAdapter.validate() 的契约断言兜底（缺失即红，拒绝加载并
 # 提示修复方向）。

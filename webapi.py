@@ -582,7 +582,7 @@ def _log_audited_changes(
 
 
 async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """返回插件集成状态与会话级运行状态（调试面板导出，ticket 14）。
+    """返回插件集成状态与会话级运行状态（调试面板导出）。
 
     覆盖：代次快照、运行中集合、任务数（延迟/运行中检查/后台）、缓存规模
     （事件/图片事件/会话）、每会话最近裁决原因。
