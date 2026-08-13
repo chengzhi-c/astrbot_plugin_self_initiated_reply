@@ -67,6 +67,19 @@ class SessionCoordinator:
         image_events = self._images.setdefault(umo, deque(maxlen=MAX_CACHED_IMAGE_EVENTS))
         image_events.append((timestamp, cached_images))
 
+    def drop_older_than(self, cutoff: float, *, umo: str | None = None) -> None:
+        """弹出早于 cutoff 的图片事件；umo 为空时扫全表。"""
+        if umo is not None:
+            events = self._images.get(umo)
+            items = [(umo, events)] if events is not None else []
+        else:
+            items = list(self._images.items())
+        for key, events in items:
+            while events and events[0][0] < cutoff:
+                events.popleft()
+            if not events:
+                self._images.pop(key, None)
+
     def invalidate(self, umo: str, *, force_cancel: bool = False) -> int:
         """会话失效单点入口：推进代次 → 取消延迟任务 → 级联清理全部协作资源。
 
@@ -89,6 +102,26 @@ class SessionCoordinator:
         self._event_at.clear()
         self._images.clear()
 
+    def snapshot(self) -> dict[str, Any]:
+        """复制三张协作表，供配置回滚。容器身份仍由 restore_inplace 保持。"""
+        return {
+            "last_events": dict(self._events),
+            "last_event_at": dict(self._event_at),
+            "recent_image_events": {
+                key: deque(values, maxlen=MAX_CACHED_IMAGE_EVENTS)
+                for key, values in self._images.items()
+            },
+        }
+
+    def restore_inplace(self, snapshot: dict[str, Any]) -> None:
+        """原地写回三张协作表，不换 dict 对象（契约 §11）。"""
+        self._events.clear()
+        self._events.update(snapshot["last_events"])
+        self._event_at.clear()
+        self._event_at.update(snapshot["last_event_at"])
+        self._images.clear()
+        self._images.update(snapshot["recent_image_events"])
+
     # ------------------------------------------------------------------
     # 读侧
     # ------------------------------------------------------------------
@@ -102,15 +135,13 @@ class SessionCoordinator:
         vision_max_images: int,
     ) -> list[Any]:
         """返回一个会话去重后的近期图片引用（过期条目顺手清理）。"""
-        events = self._images.get(umo)
-        if not events:
+        if umo not in self._images:
             logger.debug("[%s] images_for: no cached images for umo=%s", PLUGIN_ID, umo)
             return []
         cutoff = now_ts() - vision_age_sec
-        while events and events[0][0] < cutoff:
-            events.popleft()
+        self.drop_older_than(cutoff, umo=umo)
+        events = self._images.get(umo)
         if not events:
-            self._images.pop(umo, None)
             return []
 
         candidates: list[Any] = []

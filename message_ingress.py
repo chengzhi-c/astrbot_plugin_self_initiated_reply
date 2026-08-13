@@ -13,7 +13,7 @@ from astrbot.api.event import AstrMessageEvent
 from .commands import parse_command_text
 from .image import ImageExtractor
 from .image.vision_runtime import get_image_parser, prepare_images_for_session
-from .models import COMMAND_HANDLED_KEY, PLUGIN_ID, now_ts
+from .models import COMMAND_HANDLED_KEY, PLUGIN_ID, CheckTrigger, now_ts
 from .plugin_state import append_recent_user_message
 from .utils import (
     clean_chat_text,
@@ -137,9 +137,9 @@ def _schedule_message_check(plugin: Any, umo: str, clean_text: str, generation: 
     if not plugin.settings.enabled_message_trigger:
         return
     trigger = (
-        "reply_request"
+        CheckTrigger.REPLY_REQUEST
         if looks_like_reply_request(clean_text, plugin.settings.bot_aliases)
-        else "message_delay"
+        else CheckTrigger.MESSAGE_DELAY
     )
     plugin._scheduler.schedule_delayed_check(
         umo,

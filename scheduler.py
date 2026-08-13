@@ -26,6 +26,7 @@ from .models import (
     PATROL_BACKOFF_DELAY_SEC,
     PLUGIN_ID,
     RELEASE_WAIT_TIMEOUT_SEC,
+    CheckTrigger,
     SessionState,
     Settings,
     now_ts,
@@ -55,6 +56,7 @@ class SessionScheduler:
         state_for: Callable[[str], SessionState],
         check_session: CheckSessionCallback,
         clear_cached_event: Callable[[str], None],
+        drop_older_images: Callable[[float], None],
         last_events: dict[str, Any],
         last_event_at: dict[str, float],
         recent_image_events: dict[str, Any],
@@ -71,6 +73,7 @@ class SessionScheduler:
         self._state_for = state_for
         self._check_session = check_session
         self._clear_cached_event = clear_cached_event
+        self._drop_older_images = drop_older_images
         self._last_events = last_events
         self._last_event_at = last_event_at
         self._recent_image_events = recent_image_events
@@ -107,7 +110,7 @@ class SessionScheduler:
 
     def message_trigger_delay(self, trigger: str) -> int:
         min_silence = max(0, int(self.settings.min_silence_sec))
-        if trigger == "reply_request":
+        if trigger == CheckTrigger.REPLY_REQUEST:
             return min_silence
         return max(int(self.settings.message_delay_sec), min_silence)
 
@@ -277,7 +280,7 @@ class SessionScheduler:
         umo: str,
         *,
         delay_sec: int | None = None,
-        trigger: str = "message_delay",
+        trigger: str = CheckTrigger.MESSAGE_DELAY,
         force: bool = False,
         generation: int | None = None,
     ) -> None:
@@ -320,12 +323,7 @@ class SessionScheduler:
     def _prune_image_index(self, current: float) -> tuple[float, set[str]]:
         """回收过期图片索引（纯内存，无磁盘 IO），返回 (保留窗口, 受保护源)。"""
         image_age = max(60.0, float(self.settings.vision_image_age_sec))
-        cutoff = current - image_age
-        for umo, events in list(self._recent_image_events.items()):
-            while events and events[0][0] < cutoff:
-                events.popleft()
-            if not events:
-                self._recent_image_events.pop(umo, None)
+        self._drop_older_images(current - image_age)
 
         protected_sources = {
             image.prepared_source
@@ -553,7 +551,7 @@ class SessionScheduler:
                             generation = self._gate.generation_view.get(umo, 0)
                             result = await self._check_session(
                                 umo,
-                                trigger="patrol",
+                                trigger=CheckTrigger.PATROL,
                                 force=False,
                                 expected_generation=generation,
                             )

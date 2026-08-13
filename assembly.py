@@ -57,6 +57,7 @@ def assemble_plugin_components(
             )
         ),
         clear_cached_event=plugin._coordinator.clear,
+        drop_older_images=plugin._coordinator.drop_older_than,
         last_events=plugin._last_events,
         last_event_at=plugin._last_event_at,
         recent_image_events=plugin._recent_image_events,

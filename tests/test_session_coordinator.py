@@ -180,3 +180,37 @@ async def test_images_for_sticker_filter_and_limit() -> None:
     )
 
     assert [img.cache_key() for img in result] == ["c"]  # 上限截断取最新一张
+
+
+async def test_drop_older_than_clears_expired_sessions_only() -> None:
+    """全表过期回收与 images_for 顺手清共用同一循环：过期会话整键消失，未过期留下。"""
+    _, _, models = _load_modules()
+    _, coordinator, ctx = _make_coordinator()
+    now = models.now_ts()
+    ctx.images["old"] = deque([(now - 7200, [_Image("gone")])])
+    ctx.images["fresh"] = deque([(now - 60, [_Image("keep")])])
+
+    coordinator.drop_older_than(now - 3600)
+
+    assert "old" not in ctx.images
+    assert [img.cache_key() for img in _images_for(coordinator, "fresh")] == ["keep"]
+
+
+async def test_restore_inplace_keeps_container_identity() -> None:
+    """配置回滚必须写回同一 dict，不能换掉协作对象手里的容器。"""
+    _, coordinator, ctx = _make_coordinator()
+    first = object()
+    coordinator.record_event("s1", first, 1.0)
+    coordinator.capture_images("s1", 1.0, [_Image("a")])
+    snapshot = coordinator.snapshot()
+    coordinator.reset_all()
+    coordinator.record_event("s2", object(), 2.0)
+
+    coordinator.restore_inplace(snapshot)
+
+    assert ctx.events is coordinator._events
+    assert ctx.event_at is coordinator._event_at
+    assert ctx.images is coordinator._images
+    assert ctx.events.get("s1") is first
+    assert "s2" not in ctx.events
+    assert "s1" in ctx.images

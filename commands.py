@@ -10,7 +10,7 @@ from typing import Any
 
 from astrbot.api.event import AstrMessageEvent
 
-from .models import SessionState, Settings, fmt_ts, now_ts
+from .models import CheckTrigger, SessionState, Settings, fmt_ts, now_ts
 from .plugin_state import append_recent_user_message
 from .utils import (
     clean_chat_text,
@@ -178,7 +178,7 @@ async def dispatch_command_action(
         try:
             result = await plugin._pipeline.check_session(
                 umo,
-                trigger="manual",
+                trigger=CheckTrigger.MANUAL,
                 force=True,
                 expected_generation=generation,
             )

@@ -8,7 +8,6 @@ import hashlib
 import inspect
 import json
 import math
-from collections import deque
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -47,10 +46,10 @@ from .models import (
     CONFIG_SPEC_BY_KEY,
     CONFIG_SPECS,
     DEFAULT_DECISION_PROMPT_TEMPLATE,
-    MAX_CACHED_IMAGE_EVENTS,
     MAX_STRING_LIST_ITEM_LEN,
     PLUGIN_ID,
     STRING_LIST_ILLEGAL_RE,
+    CheckTrigger,
     ConfigSpec,
     Settings,
     normalize_config_updates,
@@ -438,12 +437,7 @@ def _snapshot_plugin_state(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     return {
         "settings": copy.deepcopy(plugin.settings),
         "runtime_enabled": plugin.runtime_enabled,
-        "last_events": dict(plugin._last_events),
-        "last_event_at": dict(plugin._last_event_at),
-        "recent_image_events": {
-            key: deque(values, maxlen=MAX_CACHED_IMAGE_EVENTS)
-            for key, values in plugin._recent_image_events.items()
-        },
+        **plugin._coordinator.snapshot(),
         "whitelist_runtime_umos": {
             key: set(values) for key, values in plugin._whitelist_runtime_umos.items()
         },
@@ -463,12 +457,7 @@ async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict
     # 捕获的是这些 dict 对象本身的引用（main.py 装配段），属性重绑定会让
     # 它们继续写孤儿容器——回滚后 main 从新 dict 读、协作对象写旧 dict，
     # 该会话主动回复静默停止直到重启。clear+update 保持容器身份不变。
-    plugin._last_events.clear()
-    plugin._last_events.update(snapshot["last_events"])
-    plugin._last_event_at.clear()
-    plugin._last_event_at.update(snapshot["last_event_at"])
-    plugin._recent_image_events.clear()
-    plugin._recent_image_events.update(snapshot["recent_image_events"])
+    plugin._coordinator.restore_inplace(snapshot)
     plugin._whitelist_runtime_umos.clear()
     plugin._whitelist_runtime_umos.update(snapshot["whitelist_runtime_umos"])
     plugin._gate.restore(snapshot["gate"])
@@ -480,7 +469,7 @@ async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict
         if umo in plugin.sessions and not plugin._stopping:
             try:
                 plugin._scheduler.schedule_delayed_check(
-                    umo, delay_sec=None, trigger="message_delay", force=False
+                    umo, delay_sec=None, trigger=CheckTrigger.MESSAGE_DELAY, force=False
                 )
             except Exception as re_exc:
                 logger.debug(

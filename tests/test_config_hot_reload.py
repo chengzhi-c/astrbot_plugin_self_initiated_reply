@@ -361,11 +361,18 @@ def _restored_containers() -> set[str]:
 
     ``_gate`` 走 ``restore()`` 整表替换，不在此列（它没有外部持有者，
     另有 ``test_session_gate_tables_have_no_external_holders`` 看守）。
+    事件/图片三表经 ``plugin._coordinator.restore_inplace`` 原地写回，
+    与 ``plugin._last_events.clear()+update`` 等价，也算原地恢复。
     """
     node = _lookup_restore()
     cleared: set[str] = set()
     written: set[str] = set()
     rebound: set[str] = set()
+    # 事件/图片三表经 coordinator.restore_inplace 原地写回，等价于
+    # plugin._last_events.clear()+update（容器身份仍是 main 上那份 dict）。
+    if "plugin._coordinator.restore_inplace" in ast.unparse(node):
+        cleared.update({"_last_events", "_last_event_at", "_recent_image_events"})
+        written.update({"_last_events", "_last_event_at", "_recent_image_events"})
 
     def _plugin_attr(expr: ast.AST) -> str | None:
         """``plugin.X`` → ``"X"``；其余返回 None。"""

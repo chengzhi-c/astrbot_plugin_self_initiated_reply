@@ -45,11 +45,15 @@ def _make_scheduler(tmp_path: Path, config: dict | None = None):
     delay_tasks: dict[str, asyncio.Task] = {}
     running_check_tasks: dict[str, asyncio.Task] = {}
     background_tasks: set[asyncio.Task] = set()
-
-    def clear_cached_event(umo: str) -> None:
-        last_events.pop(umo, None)
-        last_event_at.pop(umo, None)
-        recent_image_events.pop(umo, None)
+    coordinator_mod = importlib.import_module(f"{PACKAGE_NAME}.session_coordinator")
+    coordinator = coordinator_mod.SessionCoordinator(
+        events=last_events,
+        event_at=last_event_at,
+        images=recent_image_events,
+        gate=gate,
+        cancel_delay=lambda umo, force: None,
+        notify_silence=lambda umo: None,
+    )
 
     async def check_session(umo, *, trigger, force, expected_generation):
         checks.append((umo, trigger, force, expected_generation))
@@ -63,7 +67,8 @@ def _make_scheduler(tmp_path: Path, config: dict | None = None):
         should_run=lambda: True,
         state_for=lambda umo: state_map.setdefault(umo, models.SessionState()),
         check_session=check_session,
-        clear_cached_event=clear_cached_event,
+        clear_cached_event=coordinator.clear,
+        drop_older_images=coordinator.drop_older_than,
         last_events=last_events,
         last_event_at=last_event_at,
         recent_image_events=recent_image_events,

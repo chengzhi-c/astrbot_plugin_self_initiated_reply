@@ -22,6 +22,7 @@ from .models import (
     DEFAULT_DECISION_PROMPT_TEMPLATE,
     PLUGIN_ID,
     REPLY_REQUEST_WINDOW_SEC,
+    CheckTrigger,
     ImageContextCallback,
     ReadHistoryCallback,
     SessionState,
@@ -165,7 +166,9 @@ class DecisionMaker:
         if force:
             decision = {"should_reply": True, "reason": "手动强制检查", "elapsed_sec": 0.0}
         else:
-            intent_reason = "" if trigger == "patrol" else self.recent_reply_request_reason(state)
+            intent_reason = (
+                "" if trigger == CheckTrigger.PATROL else self.recent_reply_request_reason(state)
+            )
             decision = (
                 {"should_reply": True, "reason": intent_reason, "elapsed_sec": 0.0}
                 if intent_reason
@@ -194,7 +197,7 @@ class DecisionMaker:
         """
         started = self._clock()
         if not self.settings.decision_model_enabled:
-            if trigger == "patrol":
+            if trigger == CheckTrigger.PATROL:
                 return {
                     "should_reply": True,
                     "reason": "判断模型关闭，后台巡检触发",

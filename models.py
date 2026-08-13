@@ -372,6 +372,15 @@ class PipelineReply:
     direct_texts: tuple[str, ...] = ()
 
 
+class CheckTrigger(StrEnum):
+    """会话检查触发名。拼错在加载期变成 AttributeError，不再静默漏判。"""
+
+    MESSAGE_DELAY = "message_delay"
+    REPLY_REQUEST = "reply_request"
+    PATROL = "patrol"
+    MANUAL = "manual"
+
+
 class SendStatus(StrEnum):
     """Outcome of one outbound attempt.
 
