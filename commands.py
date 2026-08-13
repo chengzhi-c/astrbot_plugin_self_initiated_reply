@@ -10,13 +10,13 @@ from typing import Any
 
 from astrbot.api.event import AstrMessageEvent
 
-from .models import MessageRecord, SessionState, Settings, fmt_ts, now_ts
+from .models import SessionState, Settings, fmt_ts, now_ts
+from .plugin_state import append_recent_user_message
 from .utils import (
     clean_chat_text,
     event_group_id,
     event_self_id,
     event_sender_id,
-    event_sender_name,
     event_text,
     event_umo,
     is_at_or_wake_command_event,
@@ -167,18 +167,13 @@ async def dispatch_command_action(
     if action == "check":
         generation = plugin._invalidate_session(umo)
         plugin._coordinator.record_event(umo, event, now_ts())
-        state = plugin._state_for(whitelist_storage_key(umo))
         text = clean_chat_text(arg or strip_command_prefix(event_text(event)))
         if text:
-            state.last_active_at = now_ts()
-            state.last_active_sender_id = event_sender_id(event)
-            state.recent.append(
-                MessageRecord(
-                    role="user",
-                    name=event_sender_name(event),
-                    text=text,
-                    at=state.last_active_at,
-                )
+            append_recent_user_message(
+                plugin,
+                event,
+                state_key=whitelist_storage_key(umo),
+                clean_text=text,
             )
         try:
             result = await plugin._pipeline.check_session(

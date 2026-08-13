@@ -1,6 +1,11 @@
 export function normalizeApiError(error) {
   const message = String(error?.message || error || "");
-  if (message === "Failed to fetch" || message.includes("fetch")) {
+  if (
+    message === "Failed to fetch" ||
+    message === "NetworkError" ||
+    message === "Load failed" ||
+    message === "NetworkError when attempting to fetch resource."
+  ) {
     return new Error("无法连接插件 API，请重载页面或重启 AstrBot 后重试");
   }
   return error;

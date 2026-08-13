@@ -13,12 +13,12 @@ from astrbot.api.event import AstrMessageEvent
 from .commands import parse_command_text
 from .image import ImageExtractor
 from .image.vision_runtime import get_image_parser, prepare_images_for_session
-from .models import COMMAND_HANDLED_KEY, PLUGIN_ID, MessageRecord, now_ts
+from .models import COMMAND_HANDLED_KEY, PLUGIN_ID, now_ts
+from .plugin_state import append_recent_user_message
 from .utils import (
     clean_chat_text,
     event_extra,
     event_sender_id,
-    event_sender_name,
     event_text,
     event_umo,
     is_explicit_direct_call,
@@ -79,18 +79,11 @@ def _record_message(
     clean_text: str,
 ) -> tuple[int, float]:
     generation = plugin._gate.advance(umo)
-    active_at = now_ts()
-    state = plugin._state_for(state_key)
-    state.last_active_at = active_at
-    state.last_active_sender_id = event_sender_id(event)
-    state.recent.append(
-        MessageRecord(
-            role="user",
-            name=event_sender_name(event),
-            sender_id=state.last_active_sender_id,
-            text=clean_text,
-            at=active_at,
-        )
+    active_at = append_recent_user_message(
+        plugin,
+        event,
+        state_key=state_key,
+        clean_text=clean_text,
     )
     plugin._coordinator.record_event(umo, event, active_at)
     return generation, active_at

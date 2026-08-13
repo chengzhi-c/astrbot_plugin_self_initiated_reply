@@ -782,6 +782,34 @@ def test_force_check_prunes_session_state(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+def test_manual_check_records_sender_id(tmp_path: Path) -> None:
+    """/selfreply check 写入的历史必须带发送者，不能落成空串。"""
+
+    async def scenario(plugin, main):
+        original_check = plugin._pipeline.check_session
+
+        async def fake_check(*args, **kwargs):
+            return "完成"
+
+        plugin._pipeline.check_session = fake_check
+        plugin.settings.whitelist.add(UMO)
+        try:
+            event = _make_event(
+                umo=UMO,
+                sender_id="sender-42",
+                message_str="/selfreply check 测一下",
+            )
+            await plugin._command_text(event, "check", "测一下")
+            state = plugin._state_for(UMO)
+            assert state.recent, "check 未写入历史"
+            assert state.recent[-1].sender_id == "sender-42"
+            assert state.last_active_sender_id == "sender-42"
+        finally:
+            plugin._pipeline.check_session = original_check
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_version_consistency_across_metadata() -> None:
     """models / metadata.yaml / pyproject.toml / 双语 README 五源版本必须一致。
 

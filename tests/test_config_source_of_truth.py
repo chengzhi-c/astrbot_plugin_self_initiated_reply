@@ -100,6 +100,7 @@ def test_webapi_get_exposes_fe_writable_fields() -> None:
         assert required in keys, f"GET config missing {required}"
     missing = writable - keys
     assert not missing, f"GET config missing FE-writable keys: {sorted(missing)}"
+    assert "pipeline_mode" not in keys
     # FE 可写键必须也在 CONFIG_SPECS（配置键名，非 Settings 属性名）
     specs = _config_spec_keys()
     orphan = writable - specs
@@ -130,3 +131,29 @@ def test_fe_default_config_values_match_specs() -> None:
             assert fe_val == spec_val, (
                 f"DEFAULT_CONFIG[{key}]={fe_val!r} != CONFIG_SPECS default {spec_val!r}"
             )
+
+
+def _fe_whitelist_illegal_pattern() -> str:
+    text = (ROOT / "pages" / "主动回复设置" / "config-io.mjs").read_text(encoding="utf-8")
+    match = re.search(r"export const WHITELIST_ILLEGAL_RE = /(.+)/;", text)
+    assert match, "WHITELIST_ILLEGAL_RE not found"
+    return match.group(1)
+
+
+def test_frontend_whitelist_illegal_chars_match_backend() -> None:
+    """前端白名单非法字符集必须与 STRING_LIST_ILLEGAL_RE 判定同一批字符。"""
+    from .host_stubs import install_astrbot_stubs, load_package
+
+    install_astrbot_stubs()
+    models = load_package("selfreply_config_sot_package", "models")
+    backend = models.STRING_LIST_ILLEGAL_RE
+    frontend = re.compile(_fe_whitelist_illegal_pattern())
+    probes = [chr(code) for code in range(32)] + ['"', "'", "\\", "ok", "qq:GroupMessage:1"]
+    drifted = [
+        probe for probe in probes if bool(backend.search(probe)) != bool(frontend.search(probe))
+    ]
+    assert not drifted, f"whitelist illegal charset drifted on {drifted!r}"
+    assert backend.search("has\ttab")
+    assert backend.search('has"quote')
+    assert frontend.search("has\ttab")
+    assert frontend.search("has'quote")

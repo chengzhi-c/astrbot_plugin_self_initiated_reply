@@ -277,7 +277,7 @@ class ImageParser:
                 logger.info("[%s] image source unavailable during event capture", PLUGIN_ID)
                 return False
             if image_url.startswith("data:") and self._source_cache_dir:
-                path = self._materialize_data_url(image_url)
+                path = await asyncio.to_thread(self._materialize_data_url, image_url)
                 if path:
                     image_info.file_path = str(path)
                     image_info.prepared_source = str(path)

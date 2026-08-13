@@ -82,6 +82,8 @@ def test_parse_config_updates_whitelist_rules() -> None:
         webapi._parse_config_updates({"whitelist_sessions": ['bad"quote']})
     with pytest.raises(ValueError):
         webapi._parse_config_updates({"whitelist_sessions": ["bad\\slash"]})
+    with pytest.raises(ValueError):
+        webapi._parse_config_updates({"whitelist_sessions": ["has\ttab"]})
     # 200 边界接受
     ok = webapi._parse_config_updates({"whitelist_sessions": ["x" * 200]})
     assert ok["whitelist_sessions"] == ["x" * 200]
@@ -242,6 +244,7 @@ def test_api_status(tmp_path) -> None:
         assert status["runtime_enabled"] is plugin.runtime_enabled
         assert status["whitelist_count"] == len(plugin.settings.whitelist)
         assert status["decision_model_enabled"] is plugin.settings.decision_model_enabled
+        assert "pipeline_mode" not in status
         # 调试面板导出（ticket 14）：代次/运行中/任务数/缓存规模/最近裁决
         assert "gate" in status and "generation" in status["gate"]
         assert set(status["tasks"]) == {"delay", "running_check", "background"}

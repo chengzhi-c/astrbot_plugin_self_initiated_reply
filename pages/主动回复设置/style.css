@@ -772,11 +772,6 @@ textarea {
 .toast.show {
   opacity: 1; transform: translateY(0) scale(1);
 }
-.master, .panel, .form-actions, .form > *:nth-child(2) { animation-delay: .04s; }
-.form > *:nth-child(3) { animation-delay: .08s; }
-.form > *:nth-child(4) { animation-delay: .12s; }
-.form > *:nth-child(5) { animation-delay: .16s; }
-.form > *:nth-child(6) { animation-delay: .2s; }
 .boot {
   position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 14px; background: var(--bg);

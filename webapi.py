@@ -8,7 +8,6 @@ import hashlib
 import inspect
 import json
 import math
-import re
 from collections import deque
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -51,6 +50,7 @@ from .models import (
     MAX_CACHED_IMAGE_EVENTS,
     MAX_STRING_LIST_ITEM_LEN,
     PLUGIN_ID,
+    STRING_LIST_ILLEGAL_RE,
     ConfigSpec,
     Settings,
     normalize_config_updates,
@@ -182,7 +182,6 @@ async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
             "patrol_inactive_after_sec": plugin.settings.patrol_inactive_after_sec,
             "proactive_inherit_tools": plugin.settings.proactive_inherit_tools,
             "whitelist_sessions": sorted(plugin.settings.whitelist),
-            "pipeline_mode": True,
             "vision_judge_enabled": plugin.settings.vision_judge_enabled,
             "vision_main_enabled": plugin.settings.vision_main_enabled,
             "vision_provider_id": plugin.settings.vision_provider_id,
@@ -304,7 +303,7 @@ def _string_list(data: dict[str, Any], key: str) -> list[str]:
         # 先查非法字符再查长度：过长文案会把 text[:20] 带进
         # logger.warning，若其中含 \n / 控制字符即可伪造日志行。收窄顺序后，
         # 能进日志的片段必然已通过控制字符过滤。
-        if re.search(r"[\x00-\x1f\"'\\]", text):
+        if STRING_LIST_ILLEGAL_RE.search(text):
             raise ValueError(f"{key} 条目含非法字符")
         if len(text) > MAX_STRING_LIST_ITEM_LEN:
             raise ValueError(f"{key} 条目过长: {text[:20]}…")
@@ -639,7 +638,6 @@ async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
             "loaded": True,
             "runtime_enabled": plugin.runtime_enabled,
             "whitelist_count": len(plugin.settings.whitelist),
-            "pipeline_mode": True,
             "decision_model_enabled": plugin.settings.decision_model_enabled,
             "gate": {
                 "generation": dict(getattr(plugin._gate, "generation_view", {})),

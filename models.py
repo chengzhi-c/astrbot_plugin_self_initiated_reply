@@ -32,6 +32,9 @@ MAX_WHITELIST_SIZE = 1000  # 白名单最大条目数，防止性能降级
 MAX_STRING_LIST_ITEM_LEN = (
     200  # 字符串列表条目最大长度（白名单/别名/忽略名单等共用），防止垃圾长条目
 )
+# 与前端 pages/主动回复设置/config-io.mjs 的 WHITELIST_ILLEGAL_RE 同字符集。
+# 控制字符 + 引号 + 反斜杠：过长文案截进 logger.warning 时不能伪造日志行。
+STRING_LIST_ILLEGAL_RE = re.compile(r"[\x00-\x1f\"'\\]")
 MAX_RECENT_MESSAGE_LIMIT = 100  # 历史消息最大缓存数
 MAX_DAILY_REPLIES_LIMIT = 1000  # 每日回复次数上限
 MAX_VISION_IMAGES = 5  # 单次主动回复最多解析的图片数

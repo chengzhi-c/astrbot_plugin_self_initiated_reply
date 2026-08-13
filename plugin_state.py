@@ -10,13 +10,20 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .models import ADMIN_REFRESH_WINDOW_SEC, PLUGIN_ID, STALE_TASK_MESSAGE, SessionState, now_ts
+from .models import (
+    ADMIN_REFRESH_WINDOW_SEC,
+    PLUGIN_ID,
+    STALE_TASK_MESSAGE,
+    MessageRecord,
+    SessionState,
+    now_ts,
+)
 from .storage import (
     build_sessions_payload,
     sync_config_whitelist,
     write_sessions_payload,
 )
-from .utils import session_group_id
+from .utils import event_sender_id, event_sender_name, session_group_id
 
 
 def resolve_paths(
@@ -78,6 +85,31 @@ def state_for(plugin: Any, umo: str) -> SessionState:
             state.recent = deque(state.recent, maxlen=limit)
     state.refresh_day()
     return state
+
+
+def append_recent_user_message(
+    plugin: Any,
+    event: Any,
+    *,
+    state_key: str,
+    clean_text: str,
+    active_at: float | None = None,
+) -> float:
+    """Write last_active + recent user record. Does not advance generation."""
+    stamped = now_ts() if active_at is None else active_at
+    state = plugin._state_for(state_key)
+    state.last_active_at = stamped
+    state.last_active_sender_id = event_sender_id(event)
+    state.recent.append(
+        MessageRecord(
+            role="user",
+            name=event_sender_name(event),
+            sender_id=state.last_active_sender_id,
+            text=clean_text,
+            at=stamped,
+        )
+    )
+    return stamped
 
 
 def save_storage_snapshot(plugin: Any) -> bool:

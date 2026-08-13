@@ -107,3 +107,35 @@ async def test_image_cleanup_serialized_under_concurrency(tmp_path: Path) -> Non
         )
     finally:
         scheduler_mod.ImageParser.cleanup_source_cache = original
+
+
+async def test_prepare_materializes_data_url_off_the_event_loop(tmp_path: Path) -> None:
+    """prepare() 物化 data URL 必须离开事件循环线程。
+
+    远程图经 _resolve_image_url 变成 data: 后走这条路径；同步解码+写盘
+    会阻塞整 bot，与 cleanup 已钉死的 to_thread 契约同一类问题。
+    """
+    from .test_vision_parser_gaps import PNG_DATA_URL, _load_modules, _make_parser
+
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    threads: list[int] = []
+    original = parser._materialize_data_url
+
+    def probe(data_url: str):
+        threads.append(threading.get_ident())
+        return original(data_url)
+
+    async def resolved(_info):
+        return PNG_DATA_URL
+
+    parser._resolve_image_url = resolved
+    parser._materialize_data_url = probe
+    loop_thread = threading.get_ident()
+    info = image.ImageInfo(url="https://cdn.example/x.png")
+    assert await parser.prepare(info) is True
+    assert threads, "prepare() 未物化 data URL"
+    assert threads[0] != loop_thread, (
+        "prepare() 在事件循环线程内物化 data URL——base64 解码+写盘会阻塞所有会话"
+    )
+    assert info.prepared_source

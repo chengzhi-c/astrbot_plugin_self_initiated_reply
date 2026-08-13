@@ -1,7 +1,7 @@
 import { DEFAULT_CONFIG, num, parseWhitelist } from "./config-form.mjs";
 import { isSuccessfulConfigPayload } from "./frontend-core.mjs";
 const WHITELIST_ITEM_MAX_LEN = 200;
-const WHITELIST_ILLEGAL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f]/;
+export const WHITELIST_ILLEGAL_RE = /[\x00-\x1f"'\\]/;
 
 /** POST /config 写回字段全集；后端契约测试校验这些键可读写。 */
 export const CONFIG_SAVE_KEYS = Object.freeze([
@@ -291,8 +291,15 @@ export function createConfigIo(deps) {
       });
       const result = await apiPost("config", body);
       if (!result || result.ok !== true) {
+        const errorText = result?.error || "保存失败";
         setSaveState("保存失败", "error");
-        showToast(result?.error || "保存失败");
+        if (String(errorText).includes("非法字符") && e.whitelistInput && e.whitelistError) {
+          e.whitelistInput.setAttribute("aria-invalid", "true");
+          e.whitelistError.textContent = errorText;
+          e.whitelistError.classList.add("show");
+          e.whitelistInput.focus();
+        }
+        showToast(errorText);
         return;
       }
       setSaveState("已保存", "ok");
@@ -314,9 +321,18 @@ export function createConfigIo(deps) {
   }
   async function loadOverview() {
     const e = els();
-    const overview = await apiGet("unified/overview");
-    const self = overview.self_reply || {};
-    e.whitelistCount.textContent = String(self.whitelist_count || 0);
+    let overview;
+    try {
+      overview = await apiGet("unified/overview");
+    } catch {
+      return;
+    }
+    if (!overview || typeof overview !== "object") return;
+    const self = overview.self_reply;
+    if (!self || typeof self !== "object") return;
+    if (e.whitelistCount) {
+      e.whitelistCount.textContent = String(self.whitelist_count || 0);
+    }
   }
   async function cleanupImageCache() {
     const e = els();

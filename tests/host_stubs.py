@@ -529,6 +529,9 @@ class FakeEvent:
     def get_sender_id(self) -> str:
         return self._sender_id
 
+    def get_sender_name(self) -> str:
+        return self._sender_id
+
     def get_self_id(self) -> str:
         return self._self_id
 

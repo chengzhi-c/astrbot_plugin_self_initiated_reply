@@ -139,6 +139,8 @@ test("API errors retain a stable user-facing message", () => {
   );
   const original = new Error("validation failed");
   assert.equal(normalizeApiError(original), original);
+  const upstream = new Error("failed to fetch session history");
+  assert.equal(normalizeApiError(upstream), upstream);
 });
 
 test("HTTP 200 non-JSON response fails closed", async () => {
@@ -219,6 +221,8 @@ test("page exposes the accessibility and narrow-layout contracts", async () => {
   assert.match(fe, /btn\.disabled = loading \|\| !configLoaded/);
   assert.match(css, /@media \(max-width: 360px\)/);
   assert.match(css, /more-actions-menu\[hidden\]/);
+  assert.doesNotMatch(css, /\.master, \.panel, \.form-actions/);
+  assert.doesNotMatch(css, /\.form > \*:nth-child\([2-6]\) \{ animation-delay/);
 });
 
 test("context-history setting describes its fallback behavior", async () => {

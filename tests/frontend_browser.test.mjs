@@ -93,7 +93,7 @@ async function serveStatic(request, response) {
 
 async function installBridge(page, options = {}) {
   await page.addInitScript(
-    ({ config, providersFail, saveMode, theme }) => {
+    ({ config, providersFail, saveMode, theme, overviewFail }) => {
       const state = { saveMode, saveAttempts: 0, config };
       window.__bridgeCalls = [];
       window.__bridgeState = state;
@@ -107,6 +107,7 @@ async function installBridge(page, options = {}) {
           }
           if (endpoint === "config") return state.config;
           if (endpoint === "unified/overview") {
+            if (overviewFail) throw new Error("overview unavailable");
             return { ok: true, self_reply: { whitelist_count: state.config.whitelist_sessions.length } };
           }
           if (endpoint === "ui/theme") return { ok: true, theme };
@@ -134,6 +135,7 @@ async function installBridge(page, options = {}) {
       providersFail: Boolean(options.providersFail),
       saveMode: options.saveMode || "success",
       theme: options.theme || "light",
+      overviewFail: Boolean(options.overviewFail),
     }
   );
 }
@@ -218,6 +220,16 @@ test("pending save restores the form and a second save succeeds", async ({ page 
   );
   expect(posts).toHaveLength(2);
   expect(posts[1].body.message_delay_sec).toBe(75);
+  expect(errors).toEqual([]);
+});
+
+test("overview failure does not block a successful config load", async ({ page }) => {
+  await installBridge(page, { overviewFail: true });
+  const errors = await openPage(page);
+  await expect(page.locator("#configForm")).toBeVisible();
+  await expect(page.locator("#configForm")).not.toHaveAttribute("inert", "");
+  await expect(page.locator("#enabledInput")).toBeChecked();
+  await expect(page.locator("#boot")).toHaveClass(/is-hidden/);
   expect(errors).toEqual([]);
 });
 

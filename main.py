@@ -217,8 +217,7 @@ class SelfInitiatedReplyPlugin(Star):
         self._scheduler.ensure_patrol()
         self._scheduler.ensure_image_cleanup()
         logger.info(
-            "[%s] v%s enabled=%s whitelist=%d message_trigger=%s patrol_trigger=%s"
-            " pipeline_mode=true",
+            "[%s] v%s enabled=%s whitelist=%d message_trigger=%s patrol_trigger=%s",
             PLUGIN_ID,
             PLUGIN_VERSION,
             self.runtime_enabled,

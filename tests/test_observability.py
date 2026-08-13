@@ -46,7 +46,7 @@ _INFO_WHITELIST = {
     # 这是排查「插件为什么没说话／为什么说话了」唯一需要的一行。
     "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
     # 运维状态：启动/终止横幅
-    "[%s] v%s enabled=%s whitelist=%d message_trigger=%s patrol_trigger=%s pipeline_mode=true",
+    "[%s] v%s enabled=%s whitelist=%d message_trigger=%s patrol_trigger=%s",
     "[%s] vision judge=%s main=%s skip_stickers=%s provider=%s judge_provider=%s",
     "[%s] terminated",
 }

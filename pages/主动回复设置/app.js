@@ -266,7 +266,12 @@ async function loadProviders() {
 
 async function loadAll() {
   await loadProviders();
-  await Promise.all([configIo.loadConfig(), configIo.loadOverview()]);
+  await configIo.loadConfig();
+  try {
+    await configIo.loadOverview();
+  } catch (error) {
+    showToast(error.message || "概览加载失败");
+  }
 }
 
 let refreshing = false;
