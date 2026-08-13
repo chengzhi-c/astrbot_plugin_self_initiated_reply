@@ -4,7 +4,7 @@
 实测数据（CPython 3.14 / x64）。数值为上限估算：deque 容器随
 `maxlen` 预分配，深度计算含嵌套对象，实测见下文表。
 
-公式由 `tests/test_memory_budget.py` 的 deque maxlen 行为测试锁实施，不只锁乘法。
+公式由 `tests/test_memory_budget.py` 对 deque / 缓存容量的行为测试锁实施。
 
 ## 每会话内存组成
 
