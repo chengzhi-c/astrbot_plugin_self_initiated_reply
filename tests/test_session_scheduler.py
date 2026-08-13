@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import os
+from collections import deque
 from pathlib import Path
 
 from .test_vision import PACKAGE_NAME, _load_modules
@@ -407,3 +408,35 @@ def test_run_image_cleanup_removes_expired_files(tmp_path: Path) -> None:
     removed = asyncio.run(scheduler.run_image_cleanup())
     assert removed == 1
     assert not expired.exists()
+
+
+def test_run_image_cleanup_uses_configured_age_window(tmp_path: Path) -> None:
+    """过期源按 vision_image_age_sec 删除，窗口内源和受保护源都留下。"""
+    scheduler_mod, _models, scheduler, _, _ = _make_scheduler(
+        tmp_path, {"vision_image_age_sec": 60}
+    )
+    _, image, _ = _load_modules()
+    root = tmp_path / "image_cache"
+    root.mkdir()
+    now = 10_000.0
+    expired = root / "expired.png"
+    fresh = root / "fresh.png"
+    protected = root / "protected.png"
+    for path in (expired, fresh, protected):
+        path.write_bytes(b"x")
+    os.utime(expired, (now - 200.0, now - 200.0))
+    os.utime(fresh, (now - 10.0, now - 10.0))
+    os.utime(protected, (now - 200.0, now - 200.0))
+    scheduler._recent_image_events["s1"] = deque(
+        [(now - 10.0, [image.ImageInfo(prepared_source=str(protected))])]
+    )
+    original_now = scheduler_mod.now_ts
+    scheduler_mod.now_ts = lambda: now
+    try:
+        removed = asyncio.run(scheduler.run_image_cleanup())
+    finally:
+        scheduler_mod.now_ts = original_now
+    assert removed == 1
+    assert not expired.exists()
+    assert fresh.exists()
+    assert protected.exists()

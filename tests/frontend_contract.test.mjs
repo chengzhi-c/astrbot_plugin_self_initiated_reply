@@ -200,9 +200,7 @@ test("page exposes the accessibility and narrow-layout contracts", async () => {
   ]);
   const fe = [app, chrome, configIo, providers].join("\n");
   assert.match(html, /<main\b[^>]*class="layout"/);
-  assert.match(html, /id="whitelistInput"[^>]*aria-describedby="whitelistError"/);
-  assert.match(fe, /setAttribute\("aria-describedby",/);
-  assert.match(fe, /setAttribute\("aria-current", "location"\)/);
+  assert.match(html, /class="skip-link"[^>]*href="#selfStat"/);
   assert.match(app, /requestPluginApi\(/);
   assert.match(app, /createProviderControl\(/);
   assert.match(

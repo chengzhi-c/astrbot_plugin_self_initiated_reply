@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { FETCH_TIMEOUT_MS } from "../pages/主动回复设置/frontend-core.mjs";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -202,11 +203,11 @@ for (const variant of [
 test("pending save restores the form and a second save succeeds", async ({ page }) => {
   await installBridge(page, { saveMode: "pending" });
   const errors = await openPage(page);
-  await page.evaluate(() => {
+  await page.evaluate((timeoutMs) => {
     const nativeSetTimeout = window.setTimeout.bind(window);
     window.setTimeout = (callback, delay, ...args) =>
-      nativeSetTimeout(callback, delay === 15000 ? 30 : delay, ...args);
-  });
+      nativeSetTimeout(callback, delay === timeoutMs ? 30 : delay, ...args);
+  }, FETCH_TIMEOUT_MS);
   await page.locator("#messageDelayInput").fill("75");
   await page.locator("#saveTopBtn").click();
   await expect(page.locator("#configSaveState")).toHaveText("保存失败");
@@ -308,15 +309,33 @@ test("fetch non-JSON and pending responses both leave a recoverable page", async
   await expect(page.locator("#saveTopBtn")).toBeDisabled();
   expect(errors).toEqual([]);
 
-  await page.addInitScript(() => {
+  await page.addInitScript((timeoutMs) => {
     const nativeSetTimeout = window.setTimeout.bind(window);
     window.setTimeout = (callback, delay, ...args) =>
-      nativeSetTimeout(callback, delay === 15000 ? 30 : delay, ...args);
-  });
+      nativeSetTimeout(callback, delay === timeoutMs ? 30 : delay, ...args);
+  }, FETCH_TIMEOUT_MS);
   await page.goto(`${baseUrl}${PAGE_PATH}?scenario=fetch-pending`);
   await expect(page.locator("#boot")).toHaveClass(/is-hidden/);
   await expect(page.locator("#toast")).toContainText("请求超时");
   await expect(page.locator("#saveTopBtn")).toBeDisabled();
   errors = errors.filter(Boolean);
+  expect(errors).toEqual([]);
+});
+
+test("skip link and invalid whitelist stay keyboard-accessible", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  await page.keyboard.press("Tab");
+  await expect(page.locator(".skip-link")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#selfStat")).toBeInViewport();
+
+  await page.locator("#whitelistInput").fill('bad"quote');
+  await page.locator("#saveTopBtn").click();
+  await expect(page.locator("#whitelistError")).toBeVisible();
+  await expect(page.locator("#whitelistInput")).toHaveAttribute("aria-invalid", "true");
+  await expect(page.locator("#whitelistInput")).toHaveAttribute("aria-describedby", "whitelistError");
+  await expect(page.locator("#whitelistInput")).toBeFocused();
   expect(errors).toEqual([]);
 });

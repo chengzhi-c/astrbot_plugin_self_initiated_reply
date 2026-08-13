@@ -715,29 +715,46 @@ def test_ask_decision_model_provider_failure_returns_clear_reason(tmp_path: Path
     with_plugin(tmp_path, scenario)
 
 
-def test_command_group_and_help_are_admin_gated() -> None:
-    """selfreply 命令组入口与全部子命令都必须带 ADMIN 权限门（源码护栏）。"""
-    source = Path(__file__).resolve().parents[1] / "main.py"
-    text = source.read_text(encoding="utf-8")
-    lines = text.splitlines()
+def test_write_commands_require_admin_and_admins_can_run_them(tmp_path: Path) -> None:
+    """写指令看的是管理员判定，不是装饰器写在哪一行。"""
 
-    group_index = next(
-        i for i, line in enumerate(lines) if '@filter.command_group("selfreply")' in line
-    )
-    # 组入口：permission_type 必须在 command_group 内层（下方一行）。真实宿主的
-    # permission_type 会访问被装饰对象的 __name__，RegisteringCommandable 没有，
-    # 因此放外层（上方）会在加载时抛 AttributeError（0.7.15 线上事故）。
-    assert lines[group_index + 1].strip() == "@permission_type(PermissionType.ADMIN)", (
-        f"行 {group_index + 1} 的 command_group 缺少内层 ADMIN 权限门"
-    )
+    async def scenario(plugin, main):
+        other = "fake:group:999"
+        before = set(plugin.settings.whitelist)
+        denied = _make_event(umo=other, message_str="/selfreply add", is_admin=False)
+        await plugin._handle_inline_command(denied, ("add", ""))
+        assert any("没有权限" in text for text in denied.sent_texts)
+        assert set(plugin.settings.whitelist) == before
+        assert other not in plugin.settings.whitelist
 
-    subcommand_indexes = [i for i, line in enumerate(lines) if ".command(" in line]
-    assert len(subcommand_indexes) >= 9, "9 个子命令都应找到"
-    for index in subcommand_indexes:
-        # 子命令：permission_type 在命令装饰器正上方一行（函数形态，顺序安全）
-        assert lines[index - 1].strip() == "@permission_type(PermissionType.ADMIN)", (
-            f"行 {index + 1} 的命令缺少 ADMIN 权限门: {lines[index].strip()}"
+        allowed = _make_event(umo=other, message_str="/selfreply add", is_admin=True)
+        await plugin._handle_inline_command(allowed, ("add", ""))
+        assert other in plugin.settings.whitelist
+        assert allowed.sent_texts
+        assert all("没有权限" not in text for text in allowed.sent_texts)
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_command_group_keeps_permission_type_inner() -> None:
+    """command_group 必须包住内层 ADMIN 门，外层会在宿主加载时 AttributeError。"""
+    import ast
+
+    from .source_contract import module_ast
+
+    tree = module_ast("main.py")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef) or node.name != "selfreply":
+            continue
+        names = [ast.unparse(decorator) for decorator in node.decorator_list]
+        group_index = next(i for i, name in enumerate(names) if "command_group" in name)
+        perm_index = next(i for i, name in enumerate(names) if "permission_type" in name)
+        assert "PermissionType.ADMIN" in names[perm_index]
+        assert group_index < perm_index, (
+            "permission_type 必须写在 command_group 内层，外层会在加载时崩"
         )
+        return
+    raise AssertionError("未找到 selfreply 命令组")
 
 
 def test_whitelist_remove_recycles_legacy_group_key(tmp_path: Path) -> None:

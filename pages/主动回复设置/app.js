@@ -1,5 +1,5 @@
 const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
-import { requestPluginApi } from "./frontend-core.mjs";
+import { FETCH_TIMEOUT_MS, requestPluginApi } from "./frontend-core.mjs";
 import { renderPromptTemplateHtml } from "./config-form.mjs";
 import { createProviderControl } from "./providers.mjs";
 import {
@@ -102,7 +102,6 @@ const TOAST_MS = 2200;
 const SAVE_ANIM_MS = 1100;
 const SAVE_DOT_MS = 700;
 const PREVIEW_DEBOUNCE_MS = 80;
-const FETCH_TIMEOUT_MS = 15000;
 const BOOT_TIMEOUT_MS = 12000;
 
 function setStatState(element, stateName) {

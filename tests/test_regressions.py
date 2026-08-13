@@ -19,7 +19,7 @@ import types
 from pathlib import Path
 
 from .host_stubs import with_plugin
-from .source_contract import calls_in, defines, logger_levels_for, method_source, source_of
+from .source_contract import calls_in, logger_levels_for, method_source
 from .test_main_runtime import UMO, _make_event, _PipelineTestAdapter
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -154,16 +154,35 @@ def test_successful_image_cache_logs_are_debug_only() -> None:
     )
 
 
-def test_config_mutations_share_one_lock_and_settings_normalizer() -> None:
-    """白名单和 Web 配置更新不能交错覆盖，配置必须经统一入口规范化。"""
-    api = method_source("webapi.py", "_api_post_config")
+def test_config_mutations_share_one_lock_and_settings_normalizer(tmp_path: Path) -> None:
+    """两次并发 POST 不得交错损坏配置；候选值必须经 Settings 归一。"""
 
-    assert "async with plugin._config_lock" in api
-    assert "_api_post_config_locked" in api
-    assert defines("whitelist.py", "WhitelistManager.add")
-    assert defines("whitelist.py", "WhitelistManager.remove")
-    # 规范化入口：候选配置必须经 Settings.from_config 归一，不得直接落库
-    assert "Settings.from_config(candidate)" in method_source("webapi.py", "_apply_config_updates")
+    async def scenario(plugin, main):
+        web = sys.modules["astrbot.api.web"]
+        webapi = sys.modules[plugin._api_post_config.func.__module__]
+        payloads = iter(({"cooldown_sec": 111}, {"min_silence_sec": 222}))
+        original = webapi._request_json
+
+        async def fake_json():
+            payload = next(payloads)
+            await asyncio.sleep(0)
+            return payload
+
+        webapi._request_json = fake_json
+        try:
+            first, second = await asyncio.gather(
+                plugin._api_post_config(), plugin._api_post_config()
+            )
+        finally:
+            webapi._request_json = original
+            web.request.payload = {}
+
+        assert first["ok"] is True
+        assert second["ok"] is True
+        assert plugin.settings.cooldown_sec == 111
+        assert plugin.settings.min_silence_sec == 222
+
+    with_plugin(tmp_path, scenario)
 
 
 if __name__ == "__main__":
@@ -1111,21 +1130,8 @@ def test_r18_aba_old_task_does_not_revive_after_re_add(tmp_path: Path) -> None:
 # ============================================================================
 
 
-def test_r19_no_scattered_event_table_mutation_in_main() -> None:
-    """事件/时间/图片三表的清理必须由 SessionCoordinator 单点拥有。"""
-    main_source = source_of("main.py")
-
-    for frag in [
-        "_last_events.pop",
-        "_last_event_at.pop",
-        "_recent_image_events.pop",
-        "_last_events.clear",
-        "_last_event_at.clear",
-        "_recent_image_events.clear",
-    ]:
-        assert frag not in main_source, f"main 不应散落清理 {frag}（收敛到 SessionCoordinator）"
-
-    # 级联单点存在：invalidate 必须推进代次 + 取消延迟 + 清三表
+def test_r19_invalidate_cascades_generation_delay_and_tables() -> None:
+    """invalidate 必须推进代次、取消延迟并清三表。事件表身份由 r20 行为钉住。"""
     invalidate_calls = calls_in("session_coordinator.py", "SessionCoordinator.invalidate")
     for callee in ("self._gate.advance", "self._cancel_delay", "self.clear"):
         assert callee in invalidate_calls, f"invalidate 未级联 {callee}"
@@ -1150,13 +1156,19 @@ def test_r20_invalidate_clears_observation_material(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         event = _make_event()
         plugin._coordinator.record_event(UMO, event, 1.0)
+        plugin._coordinator.capture_images(UMO, 1.0, [])
+        assert plugin._last_events is plugin._coordinator._events
+        assert plugin._last_event_at is plugin._coordinator._event_at
+        assert plugin._recent_image_events is plugin._coordinator._images
         assert UMO in plugin._last_events
+        assert UMO in plugin._recent_image_events
 
         before = plugin._gate.current(UMO)
         plugin._coordinator.invalidate(UMO)
 
         assert UMO not in plugin._last_events
         assert UMO not in plugin._last_event_at
+        assert UMO not in plugin._recent_image_events
         assert plugin._gate.current(UMO) > before
 
     with_plugin(tmp_path, scenario)

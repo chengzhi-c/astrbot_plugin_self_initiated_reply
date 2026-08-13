@@ -41,3 +41,19 @@ def test_disk_cache_budget_constant(tmp_path: Path) -> None:
     models = _models_module()
     assert models.MAX_IMAGE_CACHE_BYTES > 0
     assert models.MAX_CACHED_IMAGE_EVENTS * models.MAX_VISION_IMAGES <= 100
+
+
+def test_runtime_containers_honor_budget_caps(tmp_path: Path) -> None:
+    """公式必须落到运行容器：历史 deque 与图片索引的 maxlen。"""
+    from .host_stubs import with_plugin
+
+    async def scenario(plugin, main):
+        models = _models_module()
+        state = plugin._state_for("fake:group:123")
+        assert state.recent.maxlen == plugin.settings.recent_message_limit
+        plugin._coordinator.capture_images("fake:group:123", 1.0, [])
+        assert (
+            plugin._recent_image_events["fake:group:123"].maxlen == models.MAX_CACHED_IMAGE_EVENTS
+        )
+
+    with_plugin(tmp_path, scenario)

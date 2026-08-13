@@ -511,6 +511,7 @@ class FakeEvent:
         sender_id: str = "u1",
         self_id: str = "bot1",
         platform: str = "fake",
+        is_admin: bool = False,
     ) -> None:
         self.unified_msg_origin = umo
         self.message_str = message_str
@@ -520,9 +521,11 @@ class FakeEvent:
         self._sender_id = sender_id
         self._self_id = self_id
         self._platform = platform
+        self._is_admin = is_admin
         self._result: Any = None
         self._extra: dict[str, Any] = {}
         self._stopped = False
+        self.sent_texts: list[str] = []
         self.trace = _FakeTrace()
 
     # sender / platform identity
@@ -536,7 +539,7 @@ class FakeEvent:
         return self._self_id
 
     def is_admin(self) -> bool:
-        return False
+        return self._is_admin
 
     def get_platform_name(self) -> str:
         return self._platform
@@ -570,6 +573,11 @@ class FakeEvent:
         return self._extra.get(key, default)
 
     async def send(self, message: Any) -> Any:
+        getter = getattr(message, "get_plain_text", None)
+        if callable(getter):
+            self.sent_texts.append(str(getter()))
+        else:
+            self.sent_texts.append(str(getattr(message, "text", message) or ""))
         return None
 
 

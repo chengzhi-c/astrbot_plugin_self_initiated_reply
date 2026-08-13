@@ -20,6 +20,7 @@ export function isSuccessfulConfigPayload(config) {
   );
 }
 
+export const FETCH_TIMEOUT_MS = 15000;
 const REQUEST_TIMEOUT_MESSAGE = "请求超时，请稍后重试";
 
 async function withDeadline(operation, timeoutMs, onTimeout) {
@@ -46,7 +47,7 @@ export async function requestPluginApi({
   body = {},
   fetchImpl,
   pageUrl,
-  timeoutMs = 15000,
+  timeoutMs = FETCH_TIMEOUT_MS,
 }) {
   let controller;
   try {

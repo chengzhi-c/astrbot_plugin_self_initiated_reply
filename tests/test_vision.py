@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .host_stubs import ROOT, install_astrbot_stubs, load_package
-from .source_contract import calls_in, method_source
+from .source_contract import calls_in
 
 PACKAGE_NAME = "selfreply_vision_test_package"
 
@@ -334,9 +334,6 @@ def test_image_cleanup_loop_keeps_runtime_age_contract() -> None:
     assert "self.run_image_cleanup" in calls_in(
         "scheduler.py", "SessionScheduler._image_cleanup_loop"
     ), "图片清理循环没有调用 run_image_cleanup，冻结的缓存永不回收"
-    assert "max_age_sec=image_age" in method_source(
-        "scheduler.py", "SessionScheduler.run_image_cleanup"
-    ), "run_image_cleanup 未按 vision_image_age_sec 传过期阈值"
 
 
 def test_image_parser_uses_direct_vision_call_and_caches_caption() -> None:
