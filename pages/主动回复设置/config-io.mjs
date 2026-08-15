@@ -2,58 +2,50 @@ import { DEFAULT_CONFIG, num, parseWhitelist } from "./config-form.mjs";
 import { isSuccessfulConfigPayload } from "./frontend-core.mjs";
 const WHITELIST_ITEM_MAX_LEN = 200;
 export const WHITELIST_ILLEGAL_RE = /[\x00-\x1f"'\\]/;
+const CONFIG_CONTROL_SELECTOR = "[data-config-key]";
 
-/** POST /config 写回字段全集；后端契约测试校验这些键可读写。 */
-export const CONFIG_SAVE_KEYS = Object.freeze([
-  "enabled",
-  "decision_model_enabled",
-  "judge_provider_id",
-  "decision_temperature",
-  "decision_timeout_sec",
-  "decision_prompt_template",
-  "decision_history_min_messages",
-  "message_delay_sec",
-  "min_silence_sec",
-  "cooldown_sec",
-  "vision_judge_enabled",
-  "vision_main_enabled",
-  "vision_skip_stickers",
-  "vision_provider_id",
-  "vision_judge_provider_id",
-  "vision_max_images",
-  "vision_image_age_sec",
-  "vision_timeout_sec",
-  "proactive_inherit_tools",
-  "whitelist_sessions",
-]);
+/** POST /config fields are declared by form data-config-key metadata. */
+function configControls(form) {
+  return [...form.querySelectorAll(CONFIG_CONTROL_SELECTOR)];
+}
 
-export function buildConfigSaveBody(e, controls) {
-  const { judgeProviderControl, visionProviderControl, visionJudgeProviderControl } = controls;
-  return {
-    enabled: e.enabledInput.checked,
-    decision_model_enabled: e.decisionModelInput.checked,
-    judge_provider_id: judgeProviderControl.value(),
-    decision_temperature: num(e.decisionTempInput.value, DEFAULT_CONFIG.decision_temperature),
-    decision_timeout_sec: num(e.decisionTimeoutInput.value, DEFAULT_CONFIG.decision_timeout_sec),
-    decision_prompt_template: e.decisionPromptInput.value.trim(),
-    decision_history_min_messages: num(
-      e.minContextInput.value,
-      DEFAULT_CONFIG.decision_history_min_messages
-    ),
-    message_delay_sec: num(e.messageDelayInput.value, DEFAULT_CONFIG.message_delay_sec),
-    min_silence_sec: num(e.minSilenceInput.value, DEFAULT_CONFIG.min_silence_sec),
-    cooldown_sec: num(e.cooldownInput.value, DEFAULT_CONFIG.cooldown_sec),
-    vision_judge_enabled: e.visionJudgeEnabledInput.checked,
-    vision_main_enabled: e.visionMainEnabledInput.checked,
-    vision_skip_stickers: e.visionSkipStickersInput.checked,
-    vision_provider_id: visionProviderControl.value(),
-    vision_judge_provider_id: visionJudgeProviderControl.value(),
-    vision_max_images: num(e.visionMaxImagesInput.value, DEFAULT_CONFIG.vision_max_images),
-    vision_image_age_sec: num(e.visionImageAgeInput.value, DEFAULT_CONFIG.vision_image_age_sec),
-    vision_timeout_sec: num(e.visionTimeoutInput.value, DEFAULT_CONFIG.vision_timeout_sec),
-    proactive_inherit_tools: e.proactiveInheritToolsInput.checked,
-    whitelist_sessions: parseWhitelist(e.whitelistInput.value),
-  };
+export function configSaveKeys(form) {
+  return configControls(form).map((control) => control.dataset.configKey);
+}
+
+function configControlValue(control, providerControls) {
+  const { configControl, configKey, configTransform } = control.dataset;
+  if (configControl) return providerControls[configControl].value();
+  if (configTransform === "whitelist") return parseWhitelist(control.value);
+  if (control.type === "checkbox") return control.checked;
+  if (control.type === "number") return num(control.value, DEFAULT_CONFIG[configKey]);
+  return configTransform === "trim" ? control.value.trim() : control.value;
+}
+
+export function buildConfigSaveBody(form, providerControls) {
+  return Object.fromEntries(
+    configControls(form).map((control) => [
+      control.dataset.configKey,
+      configControlValue(control, providerControls),
+    ])
+  );
+}
+
+function loadConfigControls(form, config, providerControls) {
+  for (const control of configControls(form)) {
+    const { configControl, configDefault, configFallbackKey, configKey, configTransform } = control.dataset;
+    if (configControl) {
+      providerControls[configControl].sync(config[configKey] || "");
+    } else if (configTransform === "whitelist") {
+      control.value = Array.isArray(config[configKey]) ? config[configKey].join("\n") : "";
+    } else if (control.type === "checkbox") {
+      control.checked = configDefault === "true" ? config[configKey] !== false : Boolean(config[configKey]);
+    } else if (control.type === "number") {
+      control.value = config[configKey] ?? DEFAULT_CONFIG[configKey];
+    } else {
+      control.value = config[configKey] || config[configFallbackKey] || DEFAULT_CONFIG[configKey] || "";
+    }
+  }
 }
 
 export function createConfigIo(deps) {
@@ -218,27 +210,14 @@ export function createConfigIo(deps) {
       setSaving(false);
       throw new Error(config?.error || "配置加载失败");
     }
-    e.enabledInput.checked = Boolean(config.enabled);
-    e.decisionModelInput.checked = config.decision_model_enabled !== false;
-    judgeProviderControl.sync(config.judge_provider_id || "");
-    e.decisionTempInput.value = config.decision_temperature ?? DEFAULT_CONFIG.decision_temperature;
-    e.decisionTimeoutInput.value = config.decision_timeout_sec ?? DEFAULT_CONFIG.decision_timeout_sec;
-    e.decisionPromptInput.value = config.decision_prompt_template || config.decision_prompt_default || "";
+    const providerControls = {
+      judge: judgeProviderControl,
+      vision: visionProviderControl,
+      visionJudge: visionJudgeProviderControl,
+    };
+    loadConfigControls(e.configForm, config, providerControls);
     e.decisionPromptInput.dataset.defaultPrompt = config.decision_prompt_default || config.decision_prompt_template || "";
-    e.minContextInput.value = config.decision_history_min_messages ?? DEFAULT_CONFIG.decision_history_min_messages;
-    e.messageDelayInput.value = config.message_delay_sec ?? DEFAULT_CONFIG.message_delay_sec;
-    e.minSilenceInput.value = config.min_silence_sec ?? DEFAULT_CONFIG.min_silence_sec;
-    e.cooldownInput.value = config.cooldown_sec ?? DEFAULT_CONFIG.cooldown_sec;
-    e.visionJudgeEnabledInput.checked = Boolean(config.vision_judge_enabled);
-    e.visionMainEnabledInput.checked = Boolean(config.vision_main_enabled);
-    e.visionSkipStickersInput.checked = Boolean(config.vision_skip_stickers);
-    visionProviderControl.sync(config.vision_provider_id || "");
-    visionJudgeProviderControl.sync(config.vision_judge_provider_id || "");
-    e.visionMaxImagesInput.value = config.vision_max_images ?? DEFAULT_CONFIG.vision_max_images;
-    e.visionImageAgeInput.value = config.vision_image_age_sec ?? DEFAULT_CONFIG.vision_image_age_sec;
-    e.visionTimeoutInput.value = config.vision_timeout_sec ?? DEFAULT_CONFIG.vision_timeout_sec;
-    e.proactiveInheritToolsInput.checked = Boolean(config.proactive_inherit_tools);
-    const whitelist = Array.isArray(config.whitelist_sessions) ? config.whitelist_sessions : [];
+    const whitelist = parseWhitelist(e.whitelistInput.value);
     e.whitelistInput.value = whitelist.join("\n");
     e.whitelistCount.textContent = String(whitelist.length);
     if (e.decisionModelStatus) {
@@ -284,10 +263,10 @@ export function createConfigIo(deps) {
     e.configForm.classList.add("is-saving");
     setSaveState("保存中", "saving");
     try {
-      const body = buildConfigSaveBody(e, {
-        judgeProviderControl,
-        visionProviderControl,
-        visionJudgeProviderControl,
+      const body = buildConfigSaveBody(e.configForm, {
+        judge: judgeProviderControl,
+        vision: visionProviderControl,
+        visionJudge: visionJudgeProviderControl,
       });
       const result = await apiPost("config", body);
       if (!result || result.ok !== true) {

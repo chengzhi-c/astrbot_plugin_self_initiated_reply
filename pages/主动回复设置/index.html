@@ -163,7 +163,7 @@
         <!-- 第一层：开不开。总电闸，独占顶部 -->
         <section class="master" id="selfStat">
           <label class="master-switch">
-            <input type="checkbox" id="enabledInput">
+            <input type="checkbox" id="enabledInput" data-config-key="enabled">
             <span class="master-switch-body">
               <i class="master-track" aria-hidden="true"></i>
               <span class="master-copy">
@@ -192,7 +192,7 @@
           </div>
           <label class="field">
             <span class="field-label">白名单会话 UMO / QQ 群号<em>每行一个</em></span>
-            <textarea id="whitelistInput" rows="5" spellcheck="false" aria-describedby="whitelistError"
+            <textarea id="whitelistInput" data-config-key="whitelist_sessions" data-config-transform="whitelist" rows="5" spellcheck="false" aria-describedby="whitelistError"
               placeholder="留空则任何会话都不会主动回复&#10;群聊可填完整 UMO，也可直接填 QQ 群号"></textarea>
             <span class="field-error" id="whitelistError" role="alert"></span>
             <p class="field-hint">每行一个 UMO 或 QQ 群号，可填完整 UMO 或纯群号</p>
@@ -216,12 +216,12 @@
               <div class="field-grid">
                 <label class="field">
                   <span class="field-label">消息后延迟<em>秒</em></span>
-                  <input type="number" id="messageDelayInput" min="5" max="86400">
+                  <input type="number" id="messageDelayInput" data-config-key="message_delay_sec" min="5" max="86400">
                   <p class="field-hint">消息后等待多久才开口，建议 30–120 秒</p>
                 </label>
                 <label class="field">
                   <span class="field-label">最小静默<em>秒</em></span>
-                  <input type="number" id="minSilenceInput" min="0" max="86400">
+                  <input type="number" id="minSilenceInput" data-config-key="min_silence_sec" min="0" max="86400">
                   <p class="field-hint">连续静默多久才允许触发</p>
                 </label>
               </div>
@@ -235,7 +235,7 @@
               <div class="field-grid">
                 <label class="field">
                   <span class="field-label">冷却<em>秒</em></span>
-                  <input type="number" id="cooldownInput" min="0" max="86400">
+                  <input type="number" id="cooldownInput" data-config-key="cooldown_sec" min="0" max="86400">
                   <p class="field-hint">两次主动回复之间的最小间隔</p>
                 </label>
               </div>
@@ -248,7 +248,7 @@
               <div class="field-grid">
                 <label class="field">
                   <span class="field-label">少于多少条时补读历史</span>
-                  <input type="number" id="minContextInput" min="0" max="30">
+                  <input type="number" id="minContextInput" data-config-key="decision_history_min_messages" min="0" max="30">
                   <p class="field-hint">本插件记录的文字消息少于此数时，会尝试读取同一会话的旧消息，帮助判断要不要接话。设为 0 时，只看插件已记录的消息。</p>
                 </label>
               </div>
@@ -264,12 +264,12 @@
           </div>
 
           <label class="toggle-row">
-            <input type="checkbox" id="decisionModelInput">
+            <input type="checkbox" id="decisionModelInput" data-config-key="decision_model_enabled" data-config-default="true">
             <span>启用提示词判断模型</span>
           </label>
 
           <div class="field-grid model-grid">
-            <div class="provider-field" id="judgeProviderField">
+            <div class="provider-field" id="judgeProviderField" data-config-key="judge_provider_id" data-config-control="judge">
               <label class="field-label" for="judgeProviderSelect">判断模型 Provider</label>
               <div class="provider-control">
                 <select id="judgeProviderSelect">
@@ -283,12 +283,12 @@
             </div>
             <label class="field">
               <span class="field-label">判断温度</span>
-              <input type="number" id="decisionTempInput" min="0" max="2" step="0.05">
+              <input type="number" id="decisionTempInput" data-config-key="decision_temperature" min="0" max="2" step="0.05">
               <p class="field-hint">越高越发散，默认 0.2</p>
             </label>
             <label class="field">
               <span class="field-label">判断超时<em>秒</em></span>
-              <input type="number" id="decisionTimeoutInput" min="1" max="300" step="1">
+              <input type="number" id="decisionTimeoutInput" data-config-key="decision_timeout_sec" min="1" max="300" step="1">
               <p class="field-hint">判断模型等待上限，超时则本次不主动回应</p>
             </label>
           </div>
@@ -296,7 +296,7 @@
           <div class="prompt-workspace">
             <label class="prompt-editor">
               <span class="field-label">判断提示词</span>
-              <textarea id="decisionPromptInput" rows="12" spellcheck="false" placeholder="留空则恢复默认提示词"></textarea>
+              <textarea id="decisionPromptInput" data-config-key="decision_prompt_template" data-config-transform="trim" data-config-fallback-key="decision_prompt_default" rows="12" spellcheck="false" placeholder="留空则恢复默认提示词"></textarea>
             </label>
             <section class="prompt-preview-panel" aria-labelledby="promptPreviewTitle">
               <div class="prompt-preview-head">
@@ -358,7 +358,7 @@
           </summary>
           <div class="details-body">
             <label class="toggle-row">
-              <input type="checkbox" id="proactiveInheritToolsInput">
+              <input type="checkbox" id="proactiveInheritToolsInput" data-config-key="proactive_inherit_tools">
               <span>允许继承插件工具（与正常 @Bot 回复一致）</span>
             </label>
             <p class="muted">默认关闭：主动回复只允许内置低副作用能力，第三方插件工具、Shell/Python、文件读写、浏览器、定时任务、技能管理和跨会话发送一律不可用。开启后，群聊里的普通消息可能间接触发插件能力（如发图、记忆、搜索），仅在你信任群聊环境并确认插件工具副作用可控时开启。</p>
@@ -373,22 +373,22 @@
           </summary>
           <div class="details-body">
             <label class="toggle-row">
-              <input type="checkbox" id="visionJudgeEnabledInput">
+              <input type="checkbox" id="visionJudgeEnabledInput" data-config-key="vision_judge_enabled">
               <span>判断模型识图（判断是否接话时看图）</span>
             </label>
             <label class="toggle-row">
-              <input type="checkbox" id="visionMainEnabledInput">
+              <input type="checkbox" id="visionMainEnabledInput" data-config-key="vision_main_enabled">
               <span>主模型识图（生成回复正文时看图）</span>
             </label>
             <label class="toggle-row">
-              <input type="checkbox" id="visionSkipStickersInput">
+              <input type="checkbox" id="visionSkipStickersInput" data-config-key="vision_skip_stickers">
               <span>跳过表情包识图（按 QQ 图片标记过滤）</span>
             </label>
 
             <div class="field-grid">
               <div class="field provider-cell">
                 <label class="field-label" for="visionProviderSelect">识图模型 Provider</label>
-                <div class="provider-field vision-provider-field">
+                <div class="provider-field vision-provider-field" data-config-key="vision_provider_id" data-config-control="vision">
                   <select id="visionProviderSelect">
                     <option value="">使用当前会话模型</option>
                   </select>
@@ -398,7 +398,7 @@
               </div>
               <div class="field provider-cell">
                 <label class="field-label" for="visionJudgeProviderSelect">判断阶段识图 Provider</label>
-                <div class="provider-field vision-provider-field">
+                <div class="provider-field vision-provider-field" data-config-key="vision_judge_provider_id" data-config-control="visionJudge">
                   <select id="visionJudgeProviderSelect">
                     <option value="">与识图模型一致</option>
                   </select>
@@ -409,17 +409,17 @@
               <div class="field-row">
                 <label class="field">
                   <span class="field-label">单次最多识别图片数<em>张</em></span>
-                  <input type="number" id="visionMaxImagesInput" min="1" max="5">
+                  <input type="number" id="visionMaxImagesInput" data-config-key="vision_max_images" min="1" max="5">
                   <p class="field-hint">单次最多读取几张图</p>
                 </label>
                 <label class="field">
                   <span class="field-label">图片有效时间<em>秒</em></span>
-                  <input type="number" id="visionImageAgeInput" min="60" max="86400">
+                  <input type="number" id="visionImageAgeInput" data-config-key="vision_image_age_sec" min="60" max="86400">
                   <p class="field-hint">超过此时长未活动的图片不再识别</p>
                 </label>
                 <label class="field">
                   <span class="field-label">识图超时<em>秒</em></span>
-                  <input type="number" id="visionTimeoutInput" min="1" max="120" step="1">
+                  <input type="number" id="visionTimeoutInput" data-config-key="vision_timeout_sec" min="1" max="120" step="1">
                   <p class="field-hint">单次识图等待上限</p>
                 </label>
               </div>

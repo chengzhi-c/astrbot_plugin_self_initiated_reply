@@ -80,11 +80,9 @@ def _fe_default_values() -> dict[str, object]:
 
 
 def _fe_writable_keys() -> set[str]:
-    text = (ROOT / "pages" / "主动回复设置" / "config-io.mjs").read_text(encoding="utf-8")
-    match = re.search(r"export const CONFIG_SAVE_KEYS = Object\.freeze\(\[([\s\S]*?)\]\);", text)
-    assert match, "CONFIG_SAVE_KEYS declaration not found"
-    keys = set(re.findall(r'"([a-z0-9_]+)"', match.group(1)))
-    assert keys, "CONFIG_SAVE_KEYS empty"
+    html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
+    keys = set(re.findall(r'data-config-key="([a-z0-9_]+)"', html))
+    assert keys, "index.html has no data-config-key declarations"
     return keys
 
 
@@ -119,7 +117,7 @@ def test_fe_writable_keys_match_panel_surfaces() -> None:
     panel = {spec.key for spec in models.panel_config_specs()}
     writable = _fe_writable_keys()
     assert writable == panel, (
-        f"FE CONFIG_SAVE_KEYS 与 panel 面漂移："
+        f"FE data-config-key 与 panel 面漂移："
         f"FE 独有 {sorted(writable - panel)}，panel 独有 {sorted(panel - writable)}"
     )
     assert "patrol_inactive_after_sec" not in writable
@@ -184,31 +182,27 @@ def test_frontend_number_bounds_match_panel_specs() -> None:
     install_astrbot_stubs()
     models = load_package("selfreply_config_sot_package", "models")
     html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
-    io = (ROOT / "pages" / "主动回复设置" / "config-io.mjs").read_text(encoding="utf-8")
-    key_by_control = {
-        control: key
-        for key, control in re.findall(
-            r"([a-z0-9_]+):\s*num\(\s*e\.(\w+)\.value",
-            io,
-        )
-    }
-    assert key_by_control, "未从 config-io.mjs 解析到 number 控件绑定"
-
     seen: set[str] = set()
     drift: list[str] = []
-    for match in re.finditer(
-        r'<input type="number" id="(\w+)" min="([^\"]+)" max="([^\"]+)"',
-        html,
-    ):
-        control_id, raw_min, raw_max = match.groups()
-        key = key_by_control.get(control_id)
-        assert key is not None, f"HTML number #{control_id} 没有对应的保存键"
+    for tag in re.findall(r"<input\b[^>]*>", html):
+        if 'type="number"' not in tag:
+            continue
+        control = re.search(r'id="(\w+)"', tag)
+        key_match = re.search(r'data-config-key="([a-z0-9_]+)"', tag)
+        raw_min = re.search(r'min="([^\"]+)"', tag)
+        raw_max = re.search(r'max="([^\"]+)"', tag)
+        assert control is not None, f"number control without id: {tag}"
+        assert key_match is not None, f"HTML number #{control.group(1)} has no data-config-key"
+        assert raw_min is not None and raw_max is not None, (
+            f"HTML number #{control.group(1)} lacks bounds"
+        )
+        key = key_match.group(1)
         spec = models.CONFIG_SPEC_BY_KEY[key]
         seen.add(key)
-        if float(raw_min) != float(spec.minimum):
-            drift.append(f"{key}: HTML min={raw_min} spec={spec.minimum}")
-        if float(raw_max) != float(spec.maximum):
-            drift.append(f"{key}: HTML max={raw_max} spec={spec.maximum}")
+        if float(raw_min.group(1)) != float(spec.minimum):
+            drift.append(f"{key}: HTML min={raw_min.group(1)} spec={spec.minimum}")
+        if float(raw_max.group(1)) != float(spec.maximum):
+            drift.append(f"{key}: HTML max={raw_max.group(1)} spec={spec.maximum}")
     missing = [
         spec.key
         for spec in models.panel_config_specs()
