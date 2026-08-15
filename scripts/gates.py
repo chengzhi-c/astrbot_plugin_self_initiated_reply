@@ -11,12 +11,26 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = ROOT / "pages" / "主动回复设置"
+RUFF_SUFFIXES = {".py", ".pyi"}
+FALLBACK_EXCLUDED_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".scratch",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "venv",
+}
 
 
 def _run(label: str, argv: list[str]) -> None:
@@ -27,9 +41,48 @@ def _run(label: str, argv: list[str]) -> None:
         raise SystemExit(completed.returncode)
 
 
+def _tracked_files() -> list[Path] | None:
+    try:
+        completed = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    return [ROOT / os.fsdecode(path) for path in completed.stdout.split(b"\0") if path]
+
+
+def _source_tree_files() -> list[Path]:
+    return [
+        path
+        for path in sorted(ROOT.rglob("*.py")) + sorted(ROOT.rglob("*.pyi"))
+        if not any(part in FALLBACK_EXCLUDED_DIRS for part in path.relative_to(ROOT).parts)
+    ]
+
+
+def ruff_targets() -> list[str]:
+    files = _tracked_files()
+    if files is None:
+        print("INFO: git tracked-file list unavailable; checking Python files from the source tree")
+        files = _source_tree_files()
+    return [
+        path.relative_to(ROOT).as_posix()
+        for path in files
+        if path.suffix in RUFF_SUFFIXES and path.is_file()
+    ]
+
+
 def main() -> int:
-    _run("ruff check", [sys.executable, "-m", "ruff", "check", "."])
-    _run("ruff format --check", [sys.executable, "-m", "ruff", "format", "--check", "."])
+    targets = ruff_targets()
+    if not targets:
+        print("FAIL: no Python source files found for Ruff")
+        return 1
+    _run("ruff check", [sys.executable, "-m", "ruff", "check", *targets])
+    _run("ruff format --check", [sys.executable, "-m", "ruff", "format", "--check", *targets])
     _run("mypy", [sys.executable, "-m", "mypy"])
     _run("docstring_gates", [sys.executable, "scripts/docstring_gates.py"])
     _run(
