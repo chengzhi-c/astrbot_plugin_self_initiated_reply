@@ -536,45 +536,50 @@ class SessionScheduler:
                         if umo in seen_patrol_umos:
                             continue
                         seen_patrol_umos.add(umo)
-                        try:
-                            if not self._last_events.get(umo):
-                                continue
-                            state = self._state_for(whitelist_storage_key(umo))
-                            if self.settings.patrol_inactive_after_sec and (
-                                not state.last_active_at
-                                or now - state.last_active_at
-                                > self.settings.patrol_inactive_after_sec
-                            ):
-                                continue
-                            if self._gate.is_running(umo):
-                                continue
-                            generation = self._gate.generation_view.get(umo, 0)
-                            result = await self._check_session(
-                                umo,
-                                trigger=CheckTrigger.PATROL,
-                                force=False,
-                                expected_generation=generation,
-                            )
-                            logger.debug(
-                                "[%s] patrol result session=%s result=%s",
-                                PLUGIN_ID,
-                                umo,
-                                result,
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "[%s] patrol session failed session=%s error=%s",
-                                PLUGIN_ID,
-                                umo,
-                                exc,
-                                exc_info=True,
-                            )
+                        await self._patrol_one_session(umo, now)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.warning("[%s] patrol loop failed error=%s", PLUGIN_ID, exc, exc_info=True)
                 # 添加退避延迟，避免错误循环
                 await asyncio.sleep(min(PATROL_BACKOFF_DELAY_SEC, self.settings.check_interval_sec))
+
+    async def _patrol_one_session(self, umo: str, now: float) -> None:
+        """巡检单个会话：跳过条件 → 触发检查，单会话异常隔离不中断整轮。"""
+        try:
+            if not self._last_events.get(umo):
+                return
+            state = self._state_for(whitelist_storage_key(umo))
+            if self.settings.patrol_inactive_after_sec and (
+                not state.last_active_at
+                or now - state.last_active_at
+                > self.settings.patrol_inactive_after_sec
+            ):
+                return
+            if self._gate.is_running(umo):
+                return
+            generation = self._gate.generation_view.get(umo, 0)
+            result = await self._check_session(
+                umo,
+                trigger=CheckTrigger.PATROL,
+                force=False,
+                expected_generation=generation,
+            )
+            logger.debug(
+                "[%s] patrol result session=%s result=%s",
+                PLUGIN_ID,
+                umo,
+                result,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] patrol session failed session=%s error=%s",
+                PLUGIN_ID,
+                umo,
+                exc,
+                exc_info=True,
+            )
+
 
     async def stop_patrol(self) -> None:
         task = self._patrol_task

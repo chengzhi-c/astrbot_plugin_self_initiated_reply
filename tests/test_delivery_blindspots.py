@@ -246,6 +246,40 @@ async def test_deliver_event_cancellation_records_unknown_state(tmp_path: Path) 
     assert _hook_names(hook) == ["OnDecoratingResultEvent"]
 
 
+async def test_deliver_cancel_after_send_start_no_retry(tmp_path: Path) -> None:
+    """发送已开始后被 cancel：记 UNKNOWN、sender 只调一次（无重试）。"""
+
+    send_calls = 0
+
+    class CancelAfterStart(FakeEvent):
+        async def send(self, message: object) -> None:
+            nonlocal send_calls
+            send_calls += 1
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            await asyncio.sleep(0)
+
+    _, models, runner, last_events = _make_runner(tmp_path)
+    last_events["s1"] = CancelAfterStart()
+
+    state = _state(models)
+    result = await runner.deliver_reply(
+        "s1",
+        state,
+        "hello",
+        0,
+        expected_generation=1,
+        observed_active_at=100.0,
+        force=False,
+        trigger="patrol",
+    )
+
+    assert "状态未知" in result
+    assert send_calls == 1
+    assert state.daily_count == 1
+
+
 # ============================================================================
 # deliver_reply：失败混合出口与日志分支
 # ============================================================================
