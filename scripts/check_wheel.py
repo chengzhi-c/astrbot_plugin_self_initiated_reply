@@ -141,16 +141,17 @@ def main() -> int:
     # logo/文档微增；超阈值必是新增开发物或大文件泄漏，早于发布拦住。
     size = wheel.stat().st_size
     if size > MAX_WHEEL_BYTES:
-        failures.append(
-            f"wheel 体积回归: {size} B > {MAX_WHEEL_BYTES} B 上限"
-        )
+        failures.append(f"wheel 体积回归: {size} B > {MAX_WHEEL_BYTES} B 上限")
 
     if failures:
         print("FAIL:")
         for line in failures:
             print(f"  - {line}")
         return 1
-    print(f"OK: {len(names)} 个文件，{size / 1024:.0f} KB，无开发物泄漏，必需文件齐全，版本 {expected} 一致")
+    print(
+        f"OK: {len(names)} 个文件，{size / 1024:.0f} KB，"
+        f"无开发物泄漏，必需文件齐全，版本 {expected} 一致"
+    )
     return 0
 
 

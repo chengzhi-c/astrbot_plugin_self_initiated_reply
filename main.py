@@ -64,6 +64,7 @@ call_event_hook = _AGENT_RUNTIME.capabilities.call_event_hook
 get_astrbot_config_path = _AGENT_RUNTIME.capabilities.config_path_fn
 get_astrbot_plugin_data_path = _AGENT_RUNTIME.capabilities.plugin_data_path_fn
 
+from . import plugin_state as _ps
 from .adapters import AstrBotBridge
 from .commands import (
     debug_text,
@@ -84,7 +85,6 @@ from .models import (
     Settings,
     now_ts,
 )
-from . import plugin_state as _ps
 from .storage import (
     load_config_data,
     load_sessions,

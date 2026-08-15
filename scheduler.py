@@ -552,8 +552,7 @@ class SessionScheduler:
             state = self._state_for(whitelist_storage_key(umo))
             if self.settings.patrol_inactive_after_sec and (
                 not state.last_active_at
-                or now - state.last_active_at
-                > self.settings.patrol_inactive_after_sec
+                or now - state.last_active_at > self.settings.patrol_inactive_after_sec
             ):
                 return
             if self._gate.is_running(umo):
@@ -579,7 +578,6 @@ class SessionScheduler:
                 exc,
                 exc_info=True,
             )
-
 
     async def stop_patrol(self) -> None:
         task = self._patrol_task
