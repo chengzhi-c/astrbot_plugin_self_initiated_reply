@@ -84,30 +84,7 @@ from .models import (
     Settings,
     now_ts,
 )
-from .plugin_state import (
-    persist_enabled as state_persist_enabled,
-)
-from .plugin_state import (
-    refresh_admin_ids as state_refresh_admin_ids,
-)
-from .plugin_state import (
-    resolve_paths as state_resolve_paths,
-)
-from .plugin_state import (
-    save_storage as state_save_storage,
-)
-from .plugin_state import (
-    save_storage_sync as state_save_storage_sync,
-)
-from .plugin_state import (
-    state_for as state_state_for,
-)
-from .plugin_state import (
-    sync_whitelist as state_sync_whitelist,
-)
-from .plugin_state import (
-    track_background_task as state_track_background_task,
-)
+from . import plugin_state as _ps
 from .storage import (
     load_config_data,
     load_sessions,
@@ -148,7 +125,7 @@ class SelfInitiatedReplyPlugin(Star):
         super().__init__(context)
         self.context = context
         self.config = config if config is not None else {}
-        self._config_path, self._storage_path = state_resolve_paths(
+        self._config_path, self._storage_path = _ps.resolve_paths(
             self.config,
             get_config_path=get_astrbot_config_path,
             get_plugin_data_path=get_astrbot_plugin_data_path,
@@ -200,18 +177,18 @@ class SelfInitiatedReplyPlugin(Star):
         self._admin_ids: set[str] = set()
         self._admin_probe_ts = 0.0  # 探测窗口起点：0 保证首次调用必探
         self._last_decisions: dict[str, dict[str, Any]] = {}
-        self._resolve_paths = lambda config_obj: state_resolve_paths(
+        self._resolve_paths = lambda config_obj: _ps.resolve_paths(
             config_obj,
             get_config_path=get_astrbot_config_path,
             get_plugin_data_path=get_astrbot_plugin_data_path,
         )
-        self._refresh_admin_ids = partial(state_refresh_admin_ids, self)
-        self._state_for = partial(state_state_for, self)
-        self._save_storage_sync = partial(state_save_storage_sync, self)
-        self._save_storage = partial(state_save_storage, self)
-        self._sync_whitelist = partial(state_sync_whitelist, self)
-        self._persist_enabled = partial(state_persist_enabled, self)
-        self._track_background_task = partial(state_track_background_task, self)
+        self._refresh_admin_ids = partial(_ps.refresh_admin_ids, self)
+        self._state_for = partial(_ps.state_for, self)
+        self._save_storage_sync = partial(_ps.save_storage_sync, self)
+        self._save_storage = partial(_ps.save_storage, self)
+        self._sync_whitelist = partial(_ps.sync_whitelist, self)
+        self._persist_enabled = partial(_ps.persist_enabled, self)
+        self._track_background_task = partial(_ps.track_background_task, self)
         self._refresh_admin_ids()
 
         self._assemble_components()
