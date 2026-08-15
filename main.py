@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from functools import partial
+from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
@@ -73,7 +74,8 @@ from .commands import (
     list_text,
     status_text,
 )
-from .image import ImageInfo, ImageParser
+from .image import ImageInfo
+from .image.vision_runtime import VisionService
 from .models import (
     ADMIN_COMMAND_ACTIONS,
     COMMAND_HANDLED_KEY,
@@ -102,6 +104,15 @@ from .utils import (
 )
 from .webapi import bind_api_handlers, load_ui_theme, register_web_apis
 
+if TYPE_CHECKING:
+    from .decision import DecisionMaker
+    from .delivery import DeliveryRunner
+    from .generation import GenerationRunner
+    from .scheduler import SessionScheduler
+    from .session_coordinator import SessionCoordinator
+    from .session_pipeline import SessionPipeline
+    from .whitelist import WhitelistManager
+
 
 @register(
     PLUGIN_ID,
@@ -116,6 +127,22 @@ class SelfInitiatedReplyPlugin(Star):
     _api_post_config: Callable[[], Awaitable[dict[str, Any]]]
     _api_get_ui_theme: Callable[[], Awaitable[dict[str, Any]]]
     _api_post_ui_theme: Callable[[], Awaitable[dict[str, Any]]]
+    _coordinator: SessionCoordinator
+    _decision: DecisionMaker
+    _delivery: DeliveryRunner
+    _generation: GenerationRunner
+    _pipeline: SessionPipeline
+    _scheduler: SessionScheduler
+    _vision: VisionService
+    _whitelist: WhitelistManager
+    _refresh_admin_ids: Callable[[], set[str]]
+    _state_for: Callable[[str], SessionState]
+    _save_storage_sync: Callable[[], None]
+    _save_storage: Callable[[], Awaitable[None]]
+    _sync_whitelist: Callable[[], None]
+    _persist_enabled: Callable[[bool], Awaitable[None]]
+    _track_background_task: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any] | None]
+    _resolve_paths: Callable[[Any], tuple[Path, Path]]
 
     def __init__(
         self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None
@@ -161,8 +188,7 @@ class SelfInitiatedReplyPlugin(Star):
         # 不可用，主题必须持久化在后端 JSON 文件（与 state.json 同目录）。
         self._ui_prefs_path = self._storage_path.parent / "ui_prefs.json"
         self._ui_theme = load_ui_theme(self)
-        self._image_parsers: dict[str, ImageParser] = {}
-        self._image_parser_timeout: float | None = None
+        self._vision: VisionService
         self._whitelist_runtime_umos: dict[str, set[str]] = {}
         self._delay_tasks: dict[str, asyncio.Task[Any]] = {}
         self._running_check_tasks: dict[str, asyncio.Task[Any]] = {}

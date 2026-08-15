@@ -336,6 +336,79 @@ def test_image_cleanup_loop_keeps_runtime_age_contract() -> None:
     ), "图片清理循环没有调用 run_image_cleanup，冻结的缓存永不回收"
 
 
+def test_vision_service_snapshots_before_background_freeze(tmp_path: Path) -> None:
+    """Vision 服务不能把远端图片冻结阻塞在消息入口里。"""
+    _, image, _ = _load_modules()
+    runtime = load_package(PACKAGE_NAME, "image.vision_runtime")
+
+    assert hasattr(runtime, "VisionService"), "Vision 缓存与后台 freeze 尚未收敛为服务"
+
+    class Coordinator:
+        def __init__(self) -> None:
+            self.captured: list[tuple[str, float, list[object]]] = []
+
+        def capture_images(self, umo: str, active_at: float, images: list[object]) -> None:
+            self.captured.append((umo, active_at, images))
+
+    class Gate:
+        @staticmethod
+        def is_current(umo: str, generation: int) -> bool:
+            return umo == "qq:GroupMessage:1" and generation == 7
+
+    settings = SimpleNamespace(
+        vision_enabled=True,
+        vision_timeout_sec=10,
+        vision_image_age_sec=300,
+        vision_skip_stickers=False,
+        vision_max_images=2,
+    )
+    coordinator = Coordinator()
+    background: list[object] = []
+    service = runtime.VisionService(
+        settings=settings,
+        bridge=object(),
+        context=object(),
+        source_cache_dir=tmp_path / "image_cache",
+        data_root=tmp_path,
+        coordinator=coordinator,
+        gate=Gate(),
+        is_stopping=lambda: False,
+        track_background_task=background.append,
+    )
+    parser = service.get_image_parser()
+    assert parser is not None
+    image_info = image.ImageInfo(url="https://cdn.example.test/cat.png")
+    snapshots: list[list[object]] = []
+
+    async def snapshot(images: list[object], *, max_concurrent: int) -> list[bool]:
+        assert max_concurrent == 2
+        snapshots.append(images)
+        return [True]
+
+    async def prepare(images: list[object], *, max_concurrent: int) -> list[bool]:
+        assert max_concurrent == 2
+        assert snapshots == [[image_info]]
+        return [True]
+
+    parser.snapshot_local_sources = snapshot
+    parser.prepare_batch = prepare
+
+    async def scenario() -> None:
+        await service.capture(
+            "qq:GroupMessage:1",
+            generation=7,
+            active_at=123.0,
+            images=[image_info],
+        )
+        assert snapshots == [[image_info]]
+        assert coordinator.captured == []
+        assert len(background) == 1
+        await background.pop()
+
+    asyncio.run(scenario())
+    assert coordinator.captured == [("qq:GroupMessage:1", 123.0, [image_info])]
+
+
 def test_image_parser_uses_direct_vision_call_and_caches_caption() -> None:
     _, image, _ = _load_modules()
 

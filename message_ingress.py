@@ -5,14 +5,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .commands import parse_command_text
 from .image import ImageExtractor
-from .image.vision_runtime import get_image_parser, prepare_images_for_session
 from .models import COMMAND_HANDLED_KEY, PLUGIN_ID, CheckTrigger, now_ts
 from .plugin_state import append_recent_user_message
 from .utils import (
@@ -30,8 +29,13 @@ from .utils import (
     whitelist_storage_key,
 )
 
+if TYPE_CHECKING:
+    from .main import SelfInitiatedReplyPlugin
 
-def _eligible_session(plugin: Any, event: AstrMessageEvent) -> tuple[str, str] | None:
+
+def _eligible_session(
+    plugin: SelfInitiatedReplyPlugin, event: AstrMessageEvent
+) -> tuple[str, str] | None:
     if plugin._stopping or not plugin.runtime_enabled or event.is_stopped():
         return None
     umo = event_umo(event)
@@ -46,7 +50,7 @@ def _eligible_session(plugin: Any, event: AstrMessageEvent) -> tuple[str, str] |
 
 
 def _accepted_content(
-    plugin: Any,
+    plugin: SelfInitiatedReplyPlugin,
     event: AstrMessageEvent,
     text: str,
     umo: str,
@@ -77,7 +81,7 @@ def _accepted_content(
 
 
 def _record_message(
-    plugin: Any,
+    plugin: SelfInitiatedReplyPlugin,
     event: AstrMessageEvent,
     *,
     umo: str,
@@ -96,7 +100,7 @@ def _record_message(
 
 
 async def _capture_images(
-    plugin: Any,
+    plugin: SelfInitiatedReplyPlugin,
     event: AstrMessageEvent,
     *,
     umo: str,
@@ -116,24 +120,17 @@ async def _capture_images(
             umo,
         )
         return
-    parser = get_image_parser(plugin)
-    if parser is not None:
-        try:
-            await parser.snapshot_local_sources(images, max_concurrent=2)
-        except Exception as exc:
-            logger.debug("[%s] local image snapshot stage failed: %s", PLUGIN_ID, exc)
-    plugin._track_background_task(
-        prepare_images_for_session(
-            plugin,
-            umo,
-            generation=generation,
-            active_at=active_at,
-            images=images,
-        )
+    await plugin._vision.capture(
+        umo,
+        generation=generation,
+        active_at=active_at,
+        images=images,
     )
 
 
-def _schedule_message_check(plugin: Any, umo: str, clean_text: str, generation: int) -> None:
+def _schedule_message_check(
+    plugin: SelfInitiatedReplyPlugin, umo: str, clean_text: str, generation: int
+) -> None:
     if not plugin.settings.enabled_message_trigger:
         return
     trigger = (
@@ -150,7 +147,9 @@ def _schedule_message_check(plugin: Any, umo: str, clean_text: str, generation: 
     )
 
 
-async def handle_incoming_message(plugin: Any, event: AstrMessageEvent) -> None:
+async def handle_incoming_message(
+    plugin: SelfInitiatedReplyPlugin, event: AstrMessageEvent
+) -> None:
     """Route one host event; invalid or ignored events stop before scheduling."""
     text = event_text(event).strip()
     if event_extra(event, COMMAND_HANDLED_KEY, False):

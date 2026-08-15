@@ -6,25 +6,29 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from .decision import DECISION_MAX_TOKENS, DECISION_SYSTEM_PROMPT, DecisionMaker
 from .delivery import DeliveryRunner
 from .generation import GenerationRunner
-from .image.vision_runtime import build_image_context
+from .image.vision_runtime import VisionService
 from .models import GRACEFUL_STOP_GRACE_SEC, now_ts
 from .scheduler import SessionScheduler
 from .session_coordinator import SessionCoordinator
 from .session_pipeline import SessionPipeline
 from .whitelist import WhitelistManager
 
+if TYPE_CHECKING:
+    from .main import SelfInitiatedReplyPlugin
+
 
 def assemble_plugin_components(
-    plugin: Any,
+    plugin: SelfInitiatedReplyPlugin,
     *,
-    get_runtime: Any,
-    get_call_hook: Any,
-    get_grace_stop_sec: Any | None = None,
+    get_runtime: Callable[[], Any],
+    get_call_hook: Callable[[], Any],
+    get_grace_stop_sec: Callable[[], float] | None = None,
 ) -> None:
     """接线 scheduler/decision/generation/coordinator/delivery/whitelist/pipeline。
 
@@ -40,6 +44,17 @@ def assemble_plugin_components(
         gate=plugin._gate,
         cancel_delay=lambda umo, force: plugin._scheduler.cancel_delay(umo, force=force),
         notify_silence=lambda umo: plugin._scheduler.notify_activity(umo),
+    )
+    plugin._vision = VisionService(
+        settings=plugin.settings,
+        bridge=plugin.bridge,
+        context=plugin.context,
+        source_cache_dir=plugin._image_cache_dir,
+        data_root=plugin._data_path,
+        coordinator=plugin._coordinator,
+        gate=plugin._gate,
+        is_stopping=lambda: plugin._stopping,
+        track_background_task=plugin._track_background_task,
     )
     plugin._scheduler = SessionScheduler(
         settings=plugin.settings,
@@ -81,9 +96,7 @@ def assemble_plugin_components(
             max_tokens=DECISION_MAX_TOKENS,
         ),
         read_history=lambda umo, limit: plugin.bridge.read_astrbot_history(umo, limit=limit),
-        build_image_context=lambda umo, enabled, provider_id: build_image_context(
-            plugin, umo, enabled=enabled, provider_id=provider_id
-        ),
+        build_image_context=plugin._vision.build_context,
     )
 
     plugin._generation = GenerationRunner(
@@ -97,9 +110,7 @@ def assemble_plugin_components(
         background_tasks=plugin._background_tasks,
         discard_background=plugin._background_tasks.discard,
         read_history=lambda umo, limit: plugin.bridge.read_astrbot_history(umo, limit=limit),
-        build_image_context=lambda umo, enabled, provider_id: build_image_context(
-            plugin, umo, enabled=enabled, provider_id=provider_id
-        ),
+        build_image_context=plugin._vision.build_context,
         last_events=plugin._last_events,
     )
 

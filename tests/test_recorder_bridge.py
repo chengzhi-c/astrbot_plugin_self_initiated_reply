@@ -387,21 +387,23 @@ async def test_maybe_await_handles_generator_based_coroutines(bridge_mod) -> Non
 def test_image_parser_recorder_bridge_is_scoped_to_plugin_context(bridge_mod, tmp_path) -> None:
     vision_runtime = importlib.import_module(f"{PACKAGE_NAME}.image.vision_runtime")
 
-    def plugin(context, cache_name):
-        return SimpleNamespace(
+    def service(context, cache_name):
+        return vision_runtime.VisionService(
             settings=SimpleNamespace(vision_enabled=True, vision_timeout_sec=20),
-            _image_parser_timeout=None,
-            _image_parsers={},
             bridge=object(),
             context=context,
-            _image_cache_dir=tmp_path / cache_name,
-            _data_path=tmp_path,
+            source_cache_dir=tmp_path / cache_name,
+            data_root=tmp_path,
+            coordinator=object(),
+            gate=object(),
+            is_stopping=lambda: False,
+            track_background_task=lambda task: task.close(),
         )
 
     first_context = object()
     second_context = object()
-    first = vision_runtime.get_image_parser(plugin(first_context, "a"))
-    second = vision_runtime.get_image_parser(plugin(second_context, "b"))
+    first = service(first_context, "a").get_image_parser()
+    second = service(second_context, "b").get_image_parser()
 
     assert first is not None and second is not None
     assert first._recorder_bridge is not second._recorder_bridge

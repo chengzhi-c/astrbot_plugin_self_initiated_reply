@@ -6,7 +6,7 @@ check/on/off 等有副作用分支，经 plugin 回调访问状态（测试可�
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from astrbot.api.event import AstrMessageEvent
 
@@ -27,6 +27,9 @@ from .utils import (
     strip_leading_mentions,
     whitelist_storage_key,
 )
+
+if TYPE_CHECKING:
+    from .main import SelfInitiatedReplyPlugin
 
 COMMAND_ALIASES: dict[str, set[str]] = {
     "help": {"help", "h"},
@@ -142,7 +145,10 @@ def debug_text(settings: Settings, event: AstrMessageEvent, ignored_sender: bool
 
 
 async def dispatch_command_action(
-    plugin: Any, event: AstrMessageEvent, action: str, arg: str = ""
+    plugin: SelfInitiatedReplyPlugin,
+    event: AstrMessageEvent,
+    action: str,
+    arg: str = "",
 ) -> str:
     """指令动作 → 回显文本。check 在 finally 回收缓存；未知 action 回落 help。"""
     umo = event_umo(event)

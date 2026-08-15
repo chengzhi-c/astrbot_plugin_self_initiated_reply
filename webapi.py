@@ -481,8 +481,7 @@ async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict
         else:
             logger.debug("[%s] delayed check dropped on rollback session=%s", PLUGIN_ID, umo)
     # 回滚后一律丢弃 parser 缓存，避免残留按失败配置建的实例
-    plugin._image_parsers.clear()
-    plugin._image_parser_timeout = None
+    plugin._vision.clear_parsers()
     # 回滚后恢复任务拓扑：禁用路径可能已停掉 patrol/cleanup，
     # 否则出现 runtime_enabled=True 但巡检永久停止的不一致态。
     if snapshot["runtime_enabled"] and not plugin._stopping:
@@ -517,8 +516,7 @@ async def _apply_config_updates(
         if "whitelist_sessions" in updates:
             plugin._whitelist.replace(new_settings.whitelist)
         if vision_changed:
-            plugin._image_parsers.clear()
-            plugin._image_parser_timeout = None
+            plugin._vision.clear_parsers()
         if updates:
             plugin._sync_whitelist()
             await plugin._save_storage()

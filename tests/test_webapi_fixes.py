@@ -622,15 +622,15 @@ def test_web_apis_do_not_register_overview_route(tmp_path) -> None:
 def test_apply_vision_change_clears_parser_cache(tmp_path, payload) -> None:
     async def scenario(plugin, main):
         web = sys.modules["astrbot.api.web"]
-        plugin._image_parsers["x"] = object()
-        plugin._image_parser_timeout = 30.0
+        plugin.settings.vision_main_enabled = True
+        parser_before = plugin._vision.get_image_parser()
+        assert parser_before is not None
         web.request.payload = payload
         result = await plugin._api_post_config()
         assert result["ok"] is True
         for key, value in payload.items():
             assert getattr(plugin.settings, key) == value
-        assert plugin._image_parsers == {}
-        assert plugin._image_parser_timeout is None
+        assert plugin._vision.get_image_parser() is not parser_before
 
     with_plugin(tmp_path, scenario)
 

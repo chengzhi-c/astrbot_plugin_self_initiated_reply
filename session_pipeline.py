@@ -6,9 +6,14 @@ from collections.abc import Callable
 from typing import Any
 
 from astrbot.api import logger
+from astrbot.api.event import AstrMessageEvent
 
-from .models import PLUGIN_ID, STALE_TASK_MESSAGE
+from .decision import DecisionMaker
+from .delivery import DeliveryRunner
+from .generation import GenerationRunner
+from .models import PLUGIN_ID, STALE_TASK_MESSAGE, SessionState, Settings
 from .plugin_state import decide_session_reply
+from .session_gate import SessionGate
 from .utils import collapse_whitespace, session_whitelisted, whitelist_storage_key
 
 
@@ -18,15 +23,15 @@ class SessionPipeline:
     def __init__(
         self,
         *,
-        state_for: Callable[[str], Any],
-        generation: Any,
-        delivery: Any,
+        state_for: Callable[[str], SessionState],
+        generation: GenerationRunner,
+        delivery: DeliveryRunner,
         is_stopping: Callable[[], bool],
         is_enabled: Callable[[], bool],
-        settings: Any,
-        gate: Any,
-        decision: Any,
-        last_events: dict[str, Any],
+        settings: Settings,
+        gate: SessionGate,
+        decision: DecisionMaker,
+        last_events: dict[str, AstrMessageEvent],
         last_decisions: dict[str, Any],
     ) -> None:
         self._state_for = state_for

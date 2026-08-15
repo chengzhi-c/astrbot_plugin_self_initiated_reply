@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
+from collections.abc import Coroutine
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
 
@@ -24,6 +25,9 @@ from .storage import (
     write_sessions_payload,
 )
 from .utils import event_sender_id, event_sender_name, session_group_id
+
+if TYPE_CHECKING:
+    from .main import SelfInitiatedReplyPlugin
 
 
 def resolve_paths(
@@ -48,7 +52,7 @@ def resolve_paths(
     return config_path, plugin_data_path / "state.json"
 
 
-def refresh_admin_ids(plugin: Any) -> set[str]:
+def refresh_admin_ids(plugin: SelfInitiatedReplyPlugin) -> set[str]:
     """时间窗 + mtime 双缓存热读管理员列表。"""
     now = now_ts()
     if now - plugin._admin_probe_ts < ADMIN_REFRESH_WINDOW_SEC:
@@ -69,7 +73,7 @@ def refresh_admin_ids(plugin: Any) -> set[str]:
     return plugin._admin_ids
 
 
-def state_for(plugin: Any, umo: str) -> SessionState:
+def state_for(plugin: SelfInitiatedReplyPlugin, umo: str) -> SessionState:
     state = plugin.sessions.get(umo)
     if state is None:
         legacy_key = session_group_id(umo)
@@ -88,7 +92,7 @@ def state_for(plugin: Any, umo: str) -> SessionState:
 
 
 def append_recent_user_message(
-    plugin: Any,
+    plugin: SelfInitiatedReplyPlugin,
     event: Any,
     *,
     state_key: str,
@@ -112,7 +116,7 @@ def append_recent_user_message(
     return stamped
 
 
-def save_storage_snapshot(plugin: Any) -> bool:
+def save_storage_snapshot(plugin: SelfInitiatedReplyPlugin) -> bool:
     # 直接使用本模块全局名：测试 patch ``plugin_state.write_sessions_payload`` 即可生效。
     try:
         payload = build_sessions_payload(
@@ -126,12 +130,12 @@ def save_storage_snapshot(plugin: Any) -> bool:
         return False
 
 
-def save_storage_sync(plugin: Any) -> None:
+def save_storage_sync(plugin: SelfInitiatedReplyPlugin) -> None:
     if not save_storage_snapshot(plugin):
         logger.warning("[%s] initial state save failed path=%s", PLUGIN_ID, plugin._storage_path)
 
 
-async def save_storage(plugin: Any) -> None:
+async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
     async with plugin._save_lock:
         payload = build_sessions_payload(
             plugin.sessions,
@@ -152,12 +156,12 @@ async def save_storage(plugin: Any) -> None:
             raise OSError(f"状态文件写入失败：{plugin._storage_path}")
 
 
-def sync_whitelist(plugin: Any) -> None:
+def sync_whitelist(plugin: SelfInitiatedReplyPlugin) -> None:
     if not sync_config_whitelist(plugin._config_path, plugin.config, plugin.settings):
         raise OSError(f"配置文件写入失败：{plugin._config_path}")
 
 
-async def persist_enabled(plugin: Any, enabled: bool) -> None:
+async def persist_enabled(plugin: SelfInitiatedReplyPlugin, enabled: bool) -> None:
     """双写 enabled + runtime_enabled；失败经 plugin._sync_whitelist 回滚。"""
     old_enabled = plugin.settings.enabled
     old_runtime = plugin.runtime_enabled
@@ -180,14 +184,16 @@ async def persist_enabled(plugin: Any, enabled: bool) -> None:
         raise
 
 
-def track_background_task(plugin: Any, coro: Any) -> asyncio.Task[Any] | None:
+def track_background_task(
+    plugin: SelfInitiatedReplyPlugin, coro: Coroutine[Any, Any, Any]
+) -> asyncio.Task[Any] | None:
     if plugin._stopping:
         try:
             coro.close()
         except Exception:
             pass
         return None
-    task = asyncio.create_task(coro)
+    task: asyncio.Task[Any] = asyncio.create_task(coro)
     plugin._background_tasks.add(task)
     task.add_done_callback(plugin._background_tasks.discard)
     return task
