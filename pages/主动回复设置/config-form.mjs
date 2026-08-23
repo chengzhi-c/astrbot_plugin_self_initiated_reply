@@ -20,6 +20,18 @@ export function parseWhitelist(text) {
     .map((item) => item.trim())
     .filter(Boolean);
 }
+export function summarizeWhitelist(text) {
+  const items = parseWhitelist(text);
+  const unique = Array.from(new Set(items));
+  if (unique.length === 0) return "未配置会话（留空则不主动回复任何会话）";
+  const pureNumbers = unique.filter((i) => /^\d+$/.test(i)).length;
+  const umos = unique.length - pureNumbers;
+  const parts = [];
+  if (pureNumbers > 0) parts.push(`${pureNumbers} 个纯群号`);
+  if (umos > 0) parts.push(`${umos} 个完整 UMO`);
+  const dupText = items.length > unique.length ? ` · 存在 ${items.length - unique.length} 处重复` : "";
+  return `已识别 ${unique.length} 个有效会话（${parts.join("，")}）${dupText}`;
+}
 export const PROMPT_PREVIEW_VALUES = {
   session: "aiocqhttp:GroupMessage:123456789",
   trigger: "message_delay",

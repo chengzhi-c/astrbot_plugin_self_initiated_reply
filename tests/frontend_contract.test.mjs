@@ -231,14 +231,14 @@ test("context-history setting describes its fallback behavior", async () => {
   assert.match(html, /少于多少条时补读历史/);
   assert.match(
     html,
-    /本插件记录的文字消息少于此数时，会尝试读取同一会话的旧消息，帮助判断要不要接话。设为 0 时，只看插件已记录的消息。/
+    /本插件记录的文字消息少于此数时，会尝试读取同一会话的旧消息，帮助判断要不要接话。设为\s+0 时，只看插件已记录的消息。/
   );
   assert.doesNotMatch(html, /上下文至少几条消息才判断接话/);
 });
 
 test("CI runs the dependency-free frontend gate", async () => {
   const workflow = await readFile(join(root, ".github", "workflows", "ci.yml"), "utf8");
-  assert.match(workflow, /^  frontend:\r?\n/m);
+  assert.match(workflow, /^ {2}frontend:\r?\n/m);
   assert.match(workflow, /actions\/setup-node@v4/);
   // 覆盖全部设置页 JS/MJS，而不是只检查入口两文件。
   assert.match(workflow, /pages\/主动回复设置\/\*\.\{js,mjs\}/);
