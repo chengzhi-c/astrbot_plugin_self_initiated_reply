@@ -176,7 +176,7 @@ def test_frontend_whitelist_illegal_chars_match_backend() -> None:
 
 
 def test_frontend_number_bounds_match_panel_specs() -> None:
-    """自定义页 number 控件的 min/max 必须等于规格表边界。"""
+    """自定义页 number 控件的 min/max/step 必须等于规格表。"""
     from .host_stubs import install_astrbot_stubs, load_package
 
     install_astrbot_stubs()
@@ -191,6 +191,7 @@ def test_frontend_number_bounds_match_panel_specs() -> None:
         key_match = re.search(r'data-config-key="([a-z0-9_]+)"', tag)
         raw_min = re.search(r'min="([^\"]+)"', tag)
         raw_max = re.search(r'max="([^\"]+)"', tag)
+        raw_step = re.search(r'step="([^\"]+)"', tag)
         assert control is not None, f"number control without id: {tag}"
         assert key_match is not None, f"HTML number #{control.group(1)} has no data-config-key"
         assert raw_min is not None and raw_max is not None, (
@@ -203,6 +204,10 @@ def test_frontend_number_bounds_match_panel_specs() -> None:
             drift.append(f"{key}: HTML min={raw_min.group(1)} spec={spec.minimum}")
         if float(raw_max.group(1)) != float(spec.maximum):
             drift.append(f"{key}: HTML max={raw_max.group(1)} spec={spec.maximum}")
+        html_step = None if raw_step is None else float(raw_step.group(1))
+        spec_step = None if spec.step is None else float(spec.step)
+        if html_step != spec_step:
+            drift.append(f"{key}: HTML step={html_step} spec={spec_step}")
     missing = [
         spec.key
         for spec in models.panel_config_specs()

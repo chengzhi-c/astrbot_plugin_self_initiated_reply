@@ -1020,13 +1020,11 @@ textarea {
     animation-iteration-count: 1 !important; transition-duration: .01ms !important;
     scroll-behavior: auto !important;
   }
-}
-.form.is-saving {
-  opacity: .72; pointer-events: none;
-}
-@media (prefers-reduced-motion: reduce) {
   .topbar,
   .mobile-savebar,
   .mobile-tabbar { background: var(--bg); }
   .toast { background: var(--toast-bg); }
+}
+.form.is-saving {
+  opacity: .72; pointer-events: none;
 }

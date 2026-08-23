@@ -216,12 +216,12 @@
               <div class="field-grid">
                 <label class="field">
                   <span class="field-label">消息后延迟<em>秒</em></span>
-                  <input type="number" id="messageDelayInput" data-config-key="message_delay_sec" min="5" max="86400">
+                  <input type="number" id="messageDelayInput" data-config-key="message_delay_sec" min="5" max="86400" step="5">
                   <p class="field-hint">消息后等待多久才开口，建议 30–120 秒</p>
                 </label>
                 <label class="field">
                   <span class="field-label">最小静默<em>秒</em></span>
-                  <input type="number" id="minSilenceInput" data-config-key="min_silence_sec" min="0" max="86400">
+                  <input type="number" id="minSilenceInput" data-config-key="min_silence_sec" min="0" max="86400" step="10">
                   <p class="field-hint">连续静默多久才允许触发</p>
                 </label>
               </div>
@@ -235,7 +235,7 @@
               <div class="field-grid">
                 <label class="field">
                   <span class="field-label">冷却<em>秒</em></span>
-                  <input type="number" id="cooldownInput" data-config-key="cooldown_sec" min="0" max="86400">
+                  <input type="number" id="cooldownInput" data-config-key="cooldown_sec" min="0" max="86400" step="60">
                   <p class="field-hint">两次主动回复之间的最小间隔</p>
                 </label>
               </div>
@@ -248,7 +248,7 @@
               <div class="field-grid">
                 <label class="field">
                   <span class="field-label">少于多少条时补读历史</span>
-                  <input type="number" id="minContextInput" data-config-key="decision_history_min_messages" min="0" max="30">
+                  <input type="number" id="minContextInput" data-config-key="decision_history_min_messages" min="0" max="30" step="1">
                   <p class="field-hint">本插件记录的文字消息少于此数时，会尝试读取同一会话的旧消息，帮助判断要不要接话。设为 0 时，只看插件已记录的消息。</p>
                 </label>
               </div>
@@ -283,7 +283,7 @@
             </div>
             <label class="field">
               <span class="field-label">判断温度</span>
-              <input type="number" id="decisionTempInput" data-config-key="decision_temperature" min="0" max="2" step="0.05">
+              <input type="number" id="decisionTempInput" data-config-key="decision_temperature" min="0" max="2" step="0.1">
               <p class="field-hint">越高越发散，默认 0.2</p>
             </label>
             <label class="field">
@@ -409,12 +409,12 @@
               <div class="field-row">
                 <label class="field">
                   <span class="field-label">单次最多识别图片数<em>张</em></span>
-                  <input type="number" id="visionMaxImagesInput" data-config-key="vision_max_images" min="1" max="5">
+                  <input type="number" id="visionMaxImagesInput" data-config-key="vision_max_images" min="1" max="5" step="1">
                   <p class="field-hint">单次最多读取几张图</p>
                 </label>
                 <label class="field">
                   <span class="field-label">图片有效时间<em>秒</em></span>
-                  <input type="number" id="visionImageAgeInput" data-config-key="vision_image_age_sec" min="60" max="86400">
+                  <input type="number" id="visionImageAgeInput" data-config-key="vision_image_age_sec" min="60" max="86400" step="60">
                   <p class="field-hint">超过此时长未活动的图片不再识别</p>
                 </label>
                 <label class="field">

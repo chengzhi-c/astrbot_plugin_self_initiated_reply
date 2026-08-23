@@ -55,6 +55,7 @@ from .models import (
     normalize_config_updates,
     panel_config_specs,
 )
+from .storage import _write_json_atomic
 
 # 配置 schema 全键（_conf_schema.json，与正式键一一对应）。此名单之外的键
 # 一律 fail loud 拒绝，防止前端/未来代码提交新字段时被静默吞掉。
@@ -227,16 +228,8 @@ def _load_ui_theme(plugin: SelfInitiatedReplyPlugin) -> str:
 
 
 def _save_ui_theme(plugin: SelfInitiatedReplyPlugin, theme: str) -> bool:
-    """原子写入主题偏好（tmp + replace）。"""
-    try:
-        tmp = plugin._ui_prefs_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"theme": theme}), encoding="utf-8")
-        tmp.replace(plugin._ui_prefs_path)
-        return True
-    except (OSError, UnicodeEncodeError, TypeError, ValueError) as exc:
-        # 与 _write_json_atomic 同型收窄：纯文件 I/O + JSON 序列化可枚举
-        logger.warning("[%s] ui theme save failed: %s", PLUGIN_ID, exc)
-        return False
+    """原子写入主题偏好，与状态文件同一套落盘。"""
+    return _write_json_atomic(plugin._ui_prefs_path, {"theme": theme})
 
 
 async def _api_get_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:

@@ -414,17 +414,30 @@ def test_api_post_ui_theme_paths(tmp_path) -> None:
         web.request.payload = {"theme": "neon"}
         result = await webapi._api_post_ui_theme(plugin)
         assert result["ok"] is False
-        # 保存失败 → error（父目录不存在）
+        # 父目录不存在时原子写会 mkdir，必须成功
+        plugin._ui_theme = "auto"
         plugin._ui_prefs_path = tmp_path / "no_dir" / "ui_prefs.json"
         web.request.payload = {"theme": "dark"}
         result = await webapi._api_post_ui_theme(plugin)
+        assert result["ok"] is True
+        assert json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8")) == {"theme": "dark"}
+        # 写入目标已是目录 → 失败
+        plugin._ui_theme = "auto"
+        blocked = tmp_path / "blocked.json"
+        blocked.mkdir()
+        plugin._ui_prefs_path = blocked
+        web.request.payload = {"theme": "light"}
+        result = await webapi._api_post_ui_theme(plugin)
         assert result["ok"] is False
         # 成功
+        plugin._ui_theme = "auto"
         plugin._ui_prefs_path = tmp_path / "ui_prefs.json"
+        web.request.payload = {"theme": "dark"}
         result = await webapi._api_post_ui_theme(plugin)
         assert result["ok"] is True
         assert result["theme"] == "dark"
         assert plugin._ui_theme == "dark"
+        assert json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8")) == {"theme": "dark"}
         # 相同主题不重复写盘
         result = await webapi._api_post_ui_theme(plugin)
         assert result["ok"] is True
