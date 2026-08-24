@@ -69,6 +69,36 @@ async def test_patrol_loop_full_cycle_branches(tmp_path: Path) -> None:
     assert expected_generation == 0  # 无代次记录会话保持 None→基线 0 语义
 
 
+async def test_patrol_skips_private_when_disabled(tmp_path: Path) -> None:
+    """关私聊主动回复后，巡检只碰群会话。"""
+    _, models, scheduler, _, checks = _make_scheduler(
+        tmp_path,
+        {"enabled_patrol_trigger": True, "patrol_inactive_after_sec": 0},
+    )
+    scheduler.settings.check_interval_sec = 0
+    scheduler.settings.enabled_private_sessions = False
+    flags = _run_flags(scheduler)
+    group = "qq:GroupMessage:1"
+    private = "qq:FriendMessage:user-1"
+    scheduler.settings.whitelist = {group, private}
+    now = models.now_ts()
+    event = object()
+    for umo in (group, private):
+        scheduler._last_events[umo] = event
+        scheduler._last_event_at[umo] = now
+        scheduler._state_for(umo).last_active_at = now
+
+    task = asyncio.create_task(scheduler._patrol_loop())
+    try:
+        await until(lambda: bool(checks))
+    finally:
+        flags["run"] = False
+        await asyncio.wait_for(task, timeout=5)
+
+    assert checks
+    assert all(umo == group for umo, *_ in checks), checks
+
+
 async def test_patrol_loop_session_error_continues(tmp_path: Path, caplog: object) -> None:
     """单个会话检查抛错：记 warning 后继续巡检其余轮次（不终止循环）。
 

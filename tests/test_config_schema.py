@@ -249,6 +249,21 @@ def test_every_schema_ui_field_is_known_to_the_spec_table() -> None:
     assert not unknown, f"schema 出现规格表未覆盖的字段: {sorted(unknown)}"
 
 
+def test_enabled_private_sessions_defaults_on_and_dual_panel() -> None:
+    """私聊主动回复默认开；自定义页与 Dashboard 共用同一键。"""
+    models = _models()
+    settings = models.Settings.from_config({})
+    assert getattr(settings, "enabled_private_sessions", None) is True
+    spec = models.CONFIG_SPEC_BY_KEY.get("enabled_private_sessions")
+    assert spec is not None
+    assert spec.kind == "bool"
+    assert spec.default is True
+    assert spec.surfaces == frozenset({"host", "panel"})
+    schema = _schema()
+    assert schema["enabled_private_sessions"]["type"] == "bool"
+    assert schema["enabled_private_sessions"]["default"] is True
+
+
 def test_spec_table_reproduces_python_defaults() -> None:
     """规格表逐键驱动的解析结果必须等于 Settings.from_config({})。
 

@@ -74,6 +74,16 @@ def test_session_whitelisted_rejects_empty_umo() -> None:
     assert not utils.session_whitelisted("   ", {"12345"})
 
 
+def test_session_is_private_treats_non_group_as_private() -> None:
+    """私聊门闩按「不是群」判，不写死 FriendMessage。"""
+    _, utils, _ = _load_modules()
+
+    assert utils.session_is_private("qq:FriendMessage:user-1")
+    assert utils.session_is_private("qq:PrivateMessage:user-1")
+    assert not utils.session_is_private("qq:GroupMessage:123")
+    assert not utils.session_is_private("fake:group:123")
+
+
 def test_raw_umo_returns_empty_when_host_callable_fails() -> None:
     _, utils, _ = _load_modules()
 

@@ -117,6 +117,41 @@ def test_on_message_skips_non_whitelisted_session(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+PRIVATE_UMO = "qq:FriendMessage:user-1"
+
+
+def test_on_message_skips_private_when_disabled(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        plugin.settings.whitelist.add(PRIVATE_UMO)
+        plugin.settings.enabled_private_sessions = False
+        await plugin.on_message(_make_event(umo=PRIVATE_UMO, message_str="今天天气不错"))
+        assert PRIVATE_UMO not in plugin._last_events
+        assert PRIVATE_UMO not in plugin._delay_tasks
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_on_message_still_schedules_group_when_private_disabled(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        plugin.settings.enabled_private_sessions = False
+        await plugin.on_message(_make_event(message_str="今天天气不错"))
+        assert UMO in plugin._last_events
+        assert UMO in plugin._delay_tasks
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_on_message_schedules_private_when_enabled(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        plugin.settings.whitelist.add(PRIVATE_UMO)
+        plugin.settings.enabled_private_sessions = True
+        await plugin.on_message(_make_event(umo=PRIVATE_UMO, message_str="今天天气不错"))
+        assert PRIVATE_UMO in plugin._last_events
+        assert PRIVATE_UMO in plugin._delay_tasks
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_on_message_ignored_sender_invalidates_session(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         event = _make_event(message_str="忽略我", sender_id="spammer")
@@ -380,6 +415,26 @@ def test_session_check_guard_reasons(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+def test_session_check_guard_blocks_private_unless_forced(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        plugin.settings.whitelist.add(PRIVATE_UMO)
+        plugin.settings.enabled_private_sessions = False
+        assert (
+            plugin._pipeline.session_check_guard(PRIVATE_UMO, force=False, expected_generation=None)
+            == "未启用私聊主动回复。"
+        )
+        assert (
+            plugin._pipeline.session_check_guard(PRIVATE_UMO, force=True, expected_generation=None)
+            is None
+        )
+        assert (
+            plugin._pipeline.session_check_guard(UMO, force=False, expected_generation=None)
+            == "没有可用的最近消息事件。"
+        )
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_decide_session_reply_early_reason_passthrough(tmp_path: Path) -> None:
     """判断模型给出字符串早退原因时原样返回。"""
 
@@ -605,6 +660,31 @@ def test_command_text_check_flow_and_non_whitelist_recycle(tmp_path: Path) -> No
             text = await plugin._command_text(event2, "check")
             assert text == "主动回复检查结果：完成"
             assert other not in plugin._session_generation  # 非白名单会话已回收
+        finally:
+            plugin._pipeline.check_session = original_check
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_command_check_still_runs_private_when_disabled(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        plugin.settings.whitelist.add(PRIVATE_UMO)
+        plugin.settings.enabled_private_sessions = False
+        seen: dict[str, object] = {}
+
+        async def fake_check(umo, *, trigger, force, expected_generation):
+            seen["umo"] = umo
+            seen["force"] = force
+            return "完成"
+
+        original_check = plugin._pipeline.check_session
+        plugin._pipeline.check_session = fake_check
+        try:
+            event = _make_event(umo=PRIVATE_UMO, message_str="/selfreply check")
+            text = await plugin._command_text(event, "check")
+            assert text == "主动回复检查结果：完成"
+            assert seen["umo"] == PRIVATE_UMO
+            assert seen["force"] is True
         finally:
             plugin._pipeline.check_session = original_check
 

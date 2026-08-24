@@ -86,6 +86,15 @@
   `enabled` 分开暴露，前端全量保存才不会把临时态固化成持久配置。
 - 回显文案含「重启后保持」，用户可见变更。
 
+## 6.2 私聊主动回复开关
+
+- `enabled_private_sessions` 默认开；总 `enabled` 仍是总电闸。
+- 关闭后：消息入口不记私聊、不调度延迟检查；`session_check_guard`
+  （`force=False`）与巡检跳过私聊。群聊白名单不受影响。
+- 判定按「不是群」：`session_group_id` 为空即私聊，不写死 `FriendMessage`。
+- `/selfreply check` 走 `force=True`，关闭后仍可测；`/selfreply add` 仍可把
+  当前私聊加入白名单。不另做第二套白名单。
+
 ## 7. 配置解析
 
 - 全部数值经 `as_int`/`as_float` 夹取（min/max），布尔严格化；白名单、提示词、

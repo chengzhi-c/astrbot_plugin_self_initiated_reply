@@ -24,6 +24,7 @@ from .utils import (
     is_self_message,
     looks_like_reply_request,
     session_group_id,
+    session_is_private,
     session_whitelisted,
     should_ignore_event,
     whitelist_storage_key,
@@ -40,6 +41,8 @@ def _eligible_session(
         return None
     umo = event_umo(event)
     if not session_whitelisted(umo, plugin.settings.whitelist):
+        return None
+    if session_is_private(umo) and not plugin.settings.enabled_private_sessions:
         return None
     state_key = whitelist_storage_key(umo)
     plugin._whitelist_runtime_umos.setdefault(state_key, set()).add(umo)

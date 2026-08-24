@@ -111,6 +111,12 @@
     "hint": "只对这些会话生效。群聊可填写完整 UMO 或直接填写 QQ 群号；也可以在目标会话里发送 /selfreply add 自动加入。",
     "default": []
   },
+  "enabled_private_sessions": {
+    "type": "bool",
+    "description": "允许私聊主动回复",
+    "hint": "关闭后只对群聊主动开口；私聊仍可用 /selfreply check 手动测试。",
+    "default": true
+  },
   "check_interval_sec": {
     "type": "int",
     "description": "后台巡检间隔（秒）",

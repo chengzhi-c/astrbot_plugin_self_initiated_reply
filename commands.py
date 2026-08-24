@@ -104,6 +104,7 @@ def status_text(
             f"运行中: {runtime_enabled}",
             f"当前会话: {umo or '-'}",
             f"当前会话在白名单: {'是' if session_whitelisted(umo, settings.whitelist) else '否'}",
+            f"私聊主动回复: {'启用' if settings.enabled_private_sessions else '关闭'}",
             f"白名单数量: {len(settings.whitelist)}",
             f"判断模型: {'启用' if settings.decision_model_enabled else '关闭'}，"
             f"Provider: {settings.judge_provider_id or '当前会话模型'}",

@@ -14,7 +14,12 @@ from .generation import GenerationRunner
 from .models import PLUGIN_ID, STALE_TASK_MESSAGE, SessionState, Settings
 from .plugin_state import decide_session_reply
 from .session_gate import SessionGate
-from .utils import collapse_whitespace, session_whitelisted, whitelist_storage_key
+from .utils import (
+    collapse_whitespace,
+    session_is_private,
+    session_whitelisted,
+    whitelist_storage_key,
+)
 
 
 class SessionPipeline:
@@ -154,6 +159,8 @@ class SessionPipeline:
             return "插件未启用。"
         if not force and not session_whitelisted(umo, self._settings.whitelist):
             return "会话不在主动回复白名单。"
+        if not force and session_is_private(umo) and not self._settings.enabled_private_sessions:
+            return "未启用私聊主动回复。"
         if not self._gate.is_current(umo, expected_generation):
             return STALE_TASK_MESSAGE
         if not force and not self._last_events.get(umo):

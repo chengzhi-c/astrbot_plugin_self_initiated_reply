@@ -22,7 +22,7 @@ from typing import Any, Protocol
 from astrbot.api import logger
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "1.2.0"
+PLUGIN_VERSION = "1.3.0"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -529,7 +529,7 @@ class ConfigSpec:
 
 _PANEL = frozenset({"host", "panel"})
 
-# 34 个配置键的规格表。顺序 = _conf_schema.json 顺序 = 面板呈现顺序。
+# 配置键规格表。顺序 = _conf_schema.json 顺序 = 面板呈现顺序。
 CONFIG_SPECS: tuple[ConfigSpec, ...] = (
     ConfigSpec("enabled", "bool", True, audited=True, surfaces=_PANEL),
     ConfigSpec("decision_model_enabled", "bool", True, surfaces=_PANEL),
@@ -584,6 +584,7 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         max_items=MAX_WHITELIST_SIZE,
         surfaces=_PANEL,
     ),
+    ConfigSpec("enabled_private_sessions", "bool", True, surfaces=_PANEL),
     ConfigSpec("check_interval_sec", "int", 300, 30, 86400, step=30),
     ConfigSpec("patrol_inactive_after_sec", "int", 1800, 0, 604800, step=3600),
     ConfigSpec(
@@ -775,6 +776,7 @@ class Settings:
     log_reply_content: bool
     bot_aliases: list[str]
     whitelist: set[str]
+    enabled_private_sessions: bool
     ignored_sender_ids: set[str]
     recent_message_limit: int
     message_delay_sec: int

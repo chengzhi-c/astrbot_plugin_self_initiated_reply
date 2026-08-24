@@ -215,6 +215,11 @@ def session_group_id(umo: str) -> str:
     return ""
 
 
+def session_is_private(umo: str) -> bool:
+    """非群会话视为私聊，不写死 FriendMessage。"""
+    return not session_group_id(umo)
+
+
 def session_whitelisted(umo: str, whitelist: set[str]) -> bool:
     normalized = str(umo or "").strip()
     if not normalized:

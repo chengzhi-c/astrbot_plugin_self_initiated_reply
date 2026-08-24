@@ -31,7 +31,7 @@ from .models import (
     Settings,
     now_ts,
 )
-from .utils import whitelist_storage_key
+from .utils import session_is_private, whitelist_storage_key
 
 
 class CheckSessionCallback(Protocol):
@@ -547,6 +547,8 @@ class SessionScheduler:
     async def _patrol_one_session(self, umo: str, now: float) -> None:
         """巡检单个会话：跳过条件 → 触发检查，单会话异常隔离不中断整轮。"""
         try:
+            if not self.settings.enabled_private_sessions and session_is_private(umo):
+                return
             if not self._last_events.get(umo):
                 return
             state = self._state_for(whitelist_storage_key(umo))

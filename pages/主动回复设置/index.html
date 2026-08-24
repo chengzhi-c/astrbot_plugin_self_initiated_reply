@@ -248,7 +248,7 @@
           <div class="brand-text">
             <div class="brand-title-wrap">
               <h1>业镜 · 主动回复</h1>
-              <span class="brand-badge">v1.2</span>
+              <span class="brand-badge">v1.3</span>
             </div>
           </div>
         </div>
@@ -530,6 +530,19 @@
                 每行一个 UMO 或 QQ 群号，可填完整 UMO 或纯群号
               </p>
             </div>
+            <label class="toggle-row">
+              <input
+                type="checkbox"
+                id="enabledPrivateSessionsInput"
+                data-config-key="enabled_private_sessions"
+                data-config-default="true"
+              />
+              <span>允许私聊主动回复</span>
+            </label>
+            <p class="muted">
+              默认开启。关闭后只对群聊主动开口；私聊仍可用
+              <code>/selfreply check</code> 手动测试。
+            </p>
             <p class="muted">
               日常建议用 <code>/selfreply add</code> 和
               <code>/selfreply remove</code> 管理当前会话，这里适合批量编辑。

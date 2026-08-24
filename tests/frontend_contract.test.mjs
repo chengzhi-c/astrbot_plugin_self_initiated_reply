@@ -277,6 +277,7 @@ test("config save path follows the form-declared writable keys", async () => {
     "decision_temperature",
     "decision_timeout_sec",
     "enabled",
+    "enabled_private_sessions",
     "judge_provider_id",
     "message_delay_sec",
     "min_silence_sec",
@@ -312,6 +313,7 @@ test("config save path follows the form-declared writable keys", async () => {
   const classList = { add() {}, remove() {}, toggle() {} };
   const fields = [
     checkbox("enabled", true),
+    checkbox("enabled_private_sessions", true),
     checkbox("decision_model_enabled", true),
     providerField("judge_provider_id", "judge"),
     number("decision_temperature", "0.3"),

@@ -18,6 +18,12 @@
 
 运行默认以 `CONFIG_SPECS` 为准。README 建议区间不是默认值；文档写建议时同时写默认。
 
+## 私聊主动回复开关
+
+`enabled_private_sessions` 放自定义页与 Dashboard（`surfaces=_PANEL`），默认开。
+关了只挡自动路径（入口 / 非 force 门卫 / 巡检），不挡 `/selfreply check`。
+不新增独立私聊模式，也不做第二套白名单。
+
 ## 测试与门禁
 
 覆盖率门槛（`fail_under` 与 `scripts/coverage_gates.py`）只上调。不为减行数删除行为测试或下调门槛。

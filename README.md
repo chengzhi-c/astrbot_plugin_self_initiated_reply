@@ -10,7 +10,7 @@
 
 <p align="center">
   让 AstrBot 在白名单会话里学会"自然接话"的插件。<br>
-  <img alt="版本" src="https://img.shields.io/badge/版本-1.2.0-4a5580">
+  <img alt="版本" src="https://img.shields.io/badge/版本-1.3.0-4a5580">
   <img alt="AstrBot 插件" src="https://img.shields.io/badge/AstrBot-插件-7b86ab">
 </p>
 
@@ -118,7 +118,7 @@
 
 自定义页覆盖：
 
-- 运行开关与白名单概况；
+- 运行开关、私聊主动回复开关与白名单概况；
 - 上下文 / 延迟 / 静默 / 冷却参数；
 - 判断模型（Provider、温度、超时、提示词编辑与实时预览）；
 - 白名单 UMO 批量编辑；
@@ -156,7 +156,9 @@
 1. AstrBot **全局白名单**先拦截；
 2. 过了之后，才轮到**插件白名单**决定"是否主动回复"。
 
-`/selfreply add` 加入的是整个群会话。页面「生效范围」支持批量编辑，可填完整 UMO，也可直接填裸群号。
+`/selfreply add` 加入当前会话（群聊是整个群，私聊是该好友 UMO）。页面「生效范围」支持批量编辑：群聊可填完整 UMO 或裸群号，私聊须填完整 UMO。
+
+「允许私聊主动回复」默认开启，与官方 Dashboard 同一键。关闭后只对群聊主动开口；私聊仍可用 `/selfreply check` 测试，也仍可用 `/selfreply add` 加入白名单。
 
 ---
 
@@ -213,10 +215,11 @@
 按顺序查：
 
 1. 会话已加入主动回复白名单？
-2. AstrBot 全局白名单没有拦截？
-3. 看 `/selfreply status`。
-4. 日志里的 `should_reply` 和 `reason`。
-5. 判断模型不放行？调「判断提示词」与「判断温度」。
+2. 若是私聊：设置里「允许私聊主动回复」是否开启？
+3. AstrBot 全局白名单没有拦截？
+4. 看 `/selfreply status`。
+5. 日志里的 `should_reply` 和 `reason`。
+6. 判断模型不放行？调「判断提示词」与「判断温度」。
 
 改完插件代码、页面或 metadata 后，重启 AstrBot 或重载插件生效。
 
