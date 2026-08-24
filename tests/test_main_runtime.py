@@ -575,6 +575,83 @@ def test_repeated_same_enabled_post_keeps_runtime_override(tmp_path: Path) -> No
 # ============================================================================
 
 
+def test_degraded_state_rejects_new_spawn_and_force_check(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        plugin._mark_degraded("stubborn runner")
+        assert plugin.lifecycle_state == "DEGRADED"
+
+        async def innocent() -> None:
+            await asyncio.sleep(0)
+
+        assert plugin._track_background_task(innocent()) is None
+        result = await plugin._pipeline.check_session(
+            UMO,
+            trigger="manual",
+            force=True,
+            expected_generation=None,
+        )
+        assert result == "插件未启用。"
+        event = _make_event()
+        plugin._last_events[UMO] = event
+        assert await plugin._command_text(event, "check") == "插件未启用。"
+        assert plugin._last_events[UMO] is event
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_terminate_quarantines_noncooperative_runner(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        release = asyncio.Event()
+
+        async def noncooperative() -> None:
+            while not release.is_set():
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    continue
+
+        task = plugin._track_background_task(noncooperative())
+        assert task is not None
+        await asyncio.sleep(0)
+        original_timeout = getattr(main, "TERMINATE_TASK_TIMEOUT_SEC", None)
+        main.TERMINATE_TASK_TIMEOUT_SEC = 0.02
+        termination = asyncio.create_task(plugin.terminate())
+        try:
+            await asyncio.sleep(0.08)
+            assert termination.done()
+            assert plugin.lifecycle_state == "DEGRADED"
+            assert task in plugin._quarantined_tasks
+        finally:
+            release.set()
+            if not termination.done():
+                await asyncio.wait_for(termination, timeout=1)
+            await asyncio.wait_for(task, timeout=1)
+            if original_timeout is None:
+                del main.TERMINATE_TASK_TIMEOUT_SEC
+            else:
+                main.TERMINATE_TASK_TIMEOUT_SEC = original_timeout
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_quarantine_capacity_closes_spawn_barrier(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        tasks = [
+            asyncio.create_task(asyncio.sleep(3600)) for _ in range(main.MAX_QUARANTINED_TASKS)
+        ]
+        plugin._quarantined_tasks.update({task: "test capacity" for task in tasks})
+        try:
+            assert plugin._can_start_tasks() is False
+            assert plugin._track_background_task(asyncio.sleep(0)) is None
+        finally:
+            plugin._quarantined_tasks.clear()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_track_background_task_barrier_after_stop(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin._stopping = True
@@ -589,6 +666,57 @@ def test_track_background_task_barrier_after_stop(tmp_path: Path) -> None:
             UMO, delay_sec=0, trigger="message_delay", force=False
         )
         assert UMO not in plugin._delay_tasks
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_terminate_quarantines_stuck_final_save(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        release = asyncio.Event()
+        original_save = plugin._save_storage
+        original_timeout = getattr(main, "TERMINATE_TASK_TIMEOUT_SEC", None)
+
+        async def stuck_save() -> None:
+            while not release.is_set():
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    continue
+
+        plugin._save_storage = stuck_save
+        main.TERMINATE_TASK_TIMEOUT_SEC = 0.02
+        termination = asyncio.create_task(plugin.terminate())
+        try:
+            await asyncio.sleep(0.08)
+            assert termination.done()
+            assert plugin.lifecycle_state == "DEGRADED"
+            assert any(
+                "final state save deadline exceeded" in reason
+                for reason in plugin._quarantined_tasks.values()
+            )
+        finally:
+            release.set()
+            plugin._save_storage = original_save
+            if not termination.done():
+                await asyncio.wait_for(termination, timeout=1)
+            for task in list(plugin._quarantined_tasks):
+                await asyncio.wait_for(task, timeout=1)
+            if original_timeout is None:
+                del main.TERMINATE_TASK_TIMEOUT_SEC
+            else:
+                main.TERMINATE_TASK_TIMEOUT_SEC = original_timeout
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_terminate_clears_tasks_and_saves(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        plugin._gate.advance(UMO)
+        await plugin.terminate()
+        assert plugin._stopping is True
+        assert plugin._delay_tasks == {}
+        assert plugin._last_events == {}
+        assert (tmp_path / "data" / "astrbot_plugin_self_initiated_reply" / "state.json").exists()
 
     with_plugin(tmp_path, scenario)
 
@@ -660,18 +788,6 @@ def test_state_for_refreshes_daily_count_across_midnight(tmp_path: Path) -> None
         assert refreshed is state
         assert state.daily_count == 0
         assert state.daily_key == time.strftime("%Y-%m-%d")
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_terminate_clears_tasks_and_saves(tmp_path: Path) -> None:
-    async def scenario(plugin, main):
-        plugin._gate.advance(UMO)
-        await plugin.terminate()
-        assert plugin._stopping is True
-        assert plugin._delay_tasks == {}
-        assert plugin._last_events == {}
-        assert (tmp_path / "data" / "astrbot_plugin_self_initiated_reply" / "state.json").exists()
 
     with_plugin(tmp_path, scenario)
 

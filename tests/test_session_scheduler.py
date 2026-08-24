@@ -390,6 +390,37 @@ def test_patrol_disabled_does_not_spawn(tmp_path: Path) -> None:
     assert scheduler.patrol_task is None
 
 
+async def test_stop_patrol_quarantines_noncooperative_task(tmp_path: Path) -> None:
+    _, _, scheduler, _, _ = _make_scheduler(tmp_path)
+    release = asyncio.Event()
+    quarantined: dict[str, object] = {}
+
+    async def stubborn() -> None:
+        while not release.is_set():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                continue
+
+    def quarantine(task: asyncio.Task, reason: str) -> None:
+        quarantined["task"] = task
+        quarantined["reason"] = reason
+
+    task = asyncio.create_task(stubborn())
+    scheduler._patrol_task = task
+    scheduler._stop_timeout = lambda: 0.01
+    scheduler._quarantine_task = quarantine
+    stopping = asyncio.create_task(scheduler.stop_patrol())
+    await asyncio.sleep(0.05)
+    assert stopping.done()
+    assert scheduler.patrol_task is None
+    assert quarantined["task"] is task
+    assert quarantined["reason"] == "patrol stop deadline exceeded"
+
+    release.set()
+    await asyncio.wait_for(task, timeout=1)
+
+
 async def test_patrol_enabled_spawns_and_stop_cancels(tmp_path: Path) -> None:
     _, _, scheduler, _, _ = _make_scheduler(
         tmp_path, {"enabled_patrol_trigger": True, "check_interval_sec": 86400}

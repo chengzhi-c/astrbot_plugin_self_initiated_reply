@@ -28,6 +28,9 @@ _INFO_WHITELIST = {
     "[%s] suppress stale reply before event send ledger_id=%s session=%s",
     "[%s] suppress stale reply before context send ledger_id=%s session=%s",
     "[%s] suppress tool direct send ledger_id=%s session=%s reason=%s",
+    "[%s] suppress ordinary agent send after lifecycle stop ledger_id=%s session=%s",
+    "[%s] suppress reply while plugin is stopping ledger_id=%s session=%s",
+    "[%s] suppress reply after decorating hook lifecycle stop ledger_id=%s session=%s",
     "[%s] suppress duplicate final text after tool direct send session=%s",
     # 未确认/过期代次记录：异常状态
     "[%s] record unconfirmed proactive send session=%s (submission status unknown)",

@@ -409,6 +409,41 @@ async def test_install_boundary_raises_when_assignment_fails(tmp_path: Path) -> 
 # ============================================================================
 
 
+async def test_generate_suppresses_direct_send_after_stop(tmp_path: Path) -> None:
+    _, models, runner, runtime, _, _ = _make_runner(tmp_path)
+    event = FakeEvent()
+    sent: list[object] = []
+
+    async def capture(message: object) -> None:
+        sent.append(message)
+
+    event.send = capture
+    runner._last_events["s1"] = event
+    state = _state(models)
+    stopped = False
+
+    def run_with_late_direct(_runner, **_kwargs):
+        async def gen():
+            nonlocal stopped
+            await _direct_send(event, "before stop")
+            stopped = True
+            await _direct_send(event, "after stop")
+            from .host_stubs import _FakeMessageChain
+
+            await event.send(_FakeMessageChain(type="assistant", chain=["late ordinary"]))
+            yield None
+
+        return gen()
+
+    runner._is_stopping = lambda: stopped
+    runtime.run = run_with_late_direct
+    result = await runner.generate("s1", state, force=True)
+
+    assert result.direct_send_count == 1
+    assert result.direct_texts == ("before stop",)
+    assert len(sent) == 1
+
+
 async def test_generate_tracks_direct_sends_within_budget(tmp_path: Path) -> None:
     _, models, runner, runtime, _, _ = _make_runner(tmp_path)
     event = FakeEvent()
@@ -561,6 +596,95 @@ async def test_generate_timeout_requests_graceful_stop_keeps_directs(tmp_path: P
     assert result.text == ""
     assert result.direct_send_count == 1  # 超时出口不丢直发
     assert result.direct_texts == ("超时前直发",)
+
+
+async def test_graceful_stop_ignores_request_stop_failure(tmp_path: Path) -> None:
+    _, _, runner, _, _, _ = _make_runner(tmp_path, grace_sec=0.01)
+
+    class StopRaises:
+        def request_stop(self) -> None:
+            raise RuntimeError("host stop hook failed")
+
+    task = asyncio.create_task(asyncio.sleep(0))
+    await runner._graceful_stop(task, StopRaises(), cancel_first=False)
+    assert task.done()
+
+
+async def test_graceful_stop_cancellation_quarantines_runner(tmp_path: Path) -> None:
+    _, _, runner, _, _, _ = _make_runner(tmp_path, grace_sec=0.05)
+    release = asyncio.Event()
+    quarantined: dict[str, object] = {}
+
+    async def stubborn() -> None:
+        while not release.is_set():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                continue
+
+    def quarantine(task: asyncio.Task, reason: str) -> None:
+        quarantined["task"] = task
+        quarantined["reason"] = reason
+
+    run_task = asyncio.create_task(stubborn())
+    runner._quarantine_task = quarantine
+    stopping = asyncio.create_task(runner._graceful_stop(run_task, object(), cancel_first=False))
+    await asyncio.sleep(0)
+    stopping.cancel()
+    try:
+        await stopping
+        raise AssertionError("expected CancelledError")
+    except asyncio.CancelledError:
+        pass
+
+    assert quarantined["task"] is run_task
+    assert quarantined["reason"] == "generation stop interrupted"
+    release.set()
+    await asyncio.wait_for(run_task, timeout=1)
+
+
+async def test_generate_quarantines_noncooperative_runner(tmp_path: Path) -> None:
+    _, models, runner, runtime, _, background_tasks = _make_runner(tmp_path, grace_sec=0.01)
+    event = FakeEvent()
+    runner._last_events["s1"] = event
+    release = asyncio.Event()
+    started = asyncio.Event()
+    quarantined: dict[str, object] = {}
+
+    def quarantine(task: asyncio.Task, reason: str) -> None:
+        quarantined["task"] = task
+        quarantined["reason"] = reason
+
+    async def noncooperative_run(_runner):
+        started.set()
+        while not release.is_set():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                continue
+        if False:
+            yield None
+
+    runtime.run = lambda _runner, **_kwargs: noncooperative_run(_runner)
+    runner._quarantine_task = quarantine
+    task = asyncio.create_task(runner.generate("s1", _state(models), force=True))
+    await started.wait()
+    task.cancel()
+    try:
+        await task
+        raise AssertionError("expected CancelledError")
+    except asyncio.CancelledError:
+        pass
+
+    quarantined_task = quarantined["task"]
+    assert isinstance(quarantined_task, asyncio.Task)
+    assert quarantined["reason"] == "agent runner ignored cancellation"
+    assert quarantined_task in background_tasks
+
+    release.set()
+    await asyncio.wait_for(quarantined_task, timeout=1)
+    await asyncio.sleep(0)
+    assert not background_tasks
 
 
 async def test_generate_cancel_converges_no_orphan(tmp_path: Path) -> None:

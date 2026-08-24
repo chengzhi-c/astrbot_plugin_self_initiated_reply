@@ -29,6 +29,7 @@ def assemble_plugin_components(
     get_runtime: Callable[[], Any],
     get_call_hook: Callable[[], Any],
     get_grace_stop_sec: Callable[[], float] | None = None,
+    get_stop_timeout: Callable[[], float] | None = None,
 ) -> None:
     """接线 scheduler/decision/generation/coordinator/delivery/whitelist/pipeline。
 
@@ -37,6 +38,7 @@ def assemble_plugin_components(
     不在装配后回填私有属性。
     """
     grace = get_grace_stop_sec or (lambda: GRACEFUL_STOP_GRACE_SEC)
+    stop_timeout = get_stop_timeout or (lambda: 3.0)
     plugin._coordinator = SessionCoordinator(
         events=plugin._last_events,
         event_at=plugin._last_event_at,
@@ -61,7 +63,7 @@ def assemble_plugin_components(
         gate=plugin._gate,
         image_cache_dir=plugin._image_cache_dir,
         spawn=plugin._track_background_task,
-        should_run=lambda: not plugin._stopping and plugin.runtime_enabled,
+        should_run=lambda: plugin._can_start_tasks() and plugin.runtime_enabled,
         state_for=lambda umo: plugin._state_for(umo),
         check_session=lambda umo, trigger, force, expected_generation: (
             plugin._pipeline.check_session(
@@ -80,6 +82,8 @@ def assemble_plugin_components(
         delay_tasks=plugin._delay_tasks,
         running_check_tasks=plugin._running_check_tasks,
         background_tasks=plugin._background_tasks,
+        stop_timeout=lambda: stop_timeout(),
+        quarantine_task=plugin._quarantine_task,
     )
     plugin._scheduler.last_cleanup_at = now_ts()
 
@@ -112,6 +116,8 @@ def assemble_plugin_components(
         read_history=lambda umo, limit: plugin.bridge.read_astrbot_history(umo, limit=limit),
         build_image_context=plugin._vision.build_context,
         last_events=plugin._last_events,
+        is_stopping=lambda: plugin._stopping,
+        quarantine_task=plugin._quarantine_task,
     )
 
     plugin._delivery = DeliveryRunner(
@@ -123,6 +129,7 @@ def assemble_plugin_components(
         context_send=lambda umo, message: plugin.context.send_message(umo, message),
         save_storage=lambda: plugin._save_storage(),
         runtime=lambda: get_runtime(),
+        is_stopping=lambda: plugin._stopping,
     )
 
     plugin._whitelist = WhitelistManager(

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -120,6 +121,41 @@ def _hook_names(hook: FakeHook) -> list[str]:
 # ============================================================================
 # 验收项 1：UNKNOWN 不自动重试、不触发 after-send 钩子、消耗状态并推进观察窗口
 # ============================================================================
+
+
+async def test_send_reply_is_suppressed_after_lifecycle_stop(tmp_path: Path) -> None:
+    _, models, delivery, _ = _make_runner(tmp_path)
+    delivery._is_stopping = lambda: True
+
+    result = await delivery.send_reply("s1", "reply", expected_generation=None)
+
+    assert result.status is models.SendStatus.SUPPRESSED
+
+
+async def test_stop_during_decorating_hook_blocks_event_send(tmp_path: Path) -> None:
+    _, models, delivery, last_events = _make_runner(tmp_path)
+    event = FakeEvent(umo="s1")
+    last_events["s1"] = event
+    hook_started = asyncio.Event()
+    release_hook = asyncio.Event()
+    stopping = False
+
+    async def hook(_event: object, event_type: object) -> None:
+        nonlocal stopping
+        if getattr(event_type, "name", "") == "OnDecoratingResultEvent":
+            hook_started.set()
+            await release_hook.wait()
+        stopping = True
+
+    delivery._call_hook = hook
+    delivery._is_stopping = lambda: stopping
+    send_task = asyncio.create_task(delivery.send_reply("s1", "reply", expected_generation=None))
+    await hook_started.wait()
+    release_hook.set()
+    result = await send_task
+
+    assert result.status is models.SendStatus.SUPPRESSED
+    assert event.sent_texts == []
 
 
 async def test_deliver_unknown_consumes_state_without_retry(tmp_path: Path) -> None:

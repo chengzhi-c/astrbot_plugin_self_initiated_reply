@@ -200,7 +200,7 @@ async def persist_enabled(plugin: SelfInitiatedReplyPlugin, enabled: bool) -> No
 def track_background_task(
     plugin: SelfInitiatedReplyPlugin, coro: Coroutine[Any, Any, Any]
 ) -> asyncio.Task[Any] | None:
-    if plugin._stopping:
+    if not plugin._can_start_tasks():
         try:
             coro.close()
         except Exception:

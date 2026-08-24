@@ -34,7 +34,10 @@
 关了只挡自动路径（入口 / 非 force 门卫 / 巡检），不挡 `/selfreply check`。
 不新增独立私聊模式，也不做第二套白名单。
 
-## 发送证据账本身份
+## 非协作任务隔离
+
+生命周期由插件 owner 持有 `RUNNING`、`STOPPING`、`DEGRADED` 三态。停止等待使用硬时间边界；仍吞取消的生成、patrol 或最终状态保存 task 进入 quarantine 并触发 `DEGRADED`，后续 spawn、巡检、force check、工具直发和最终回复全部拒绝。`MAX_QUARANTINED_TASKS` 是代码容量上限，不提供在线恢复命令；任务结束后仅从注册表移除，恢复仍依赖插件重载或宿主重启。
+
 
 每次主动检查由 pipeline 创建一个带 UUID4 hex `ledger_id` 的 `AttemptLedger`。生成、投递和唯一 record task 传递同一 ledger 引用；`ledger_id` 只用于日志、任务关联和一次性记账诊断，不进入持久配置或 `config_revision`，也不依赖进程级计数器。
 

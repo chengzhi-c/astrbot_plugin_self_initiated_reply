@@ -66,6 +66,7 @@ class DeliveryRunner:
         context_send: ContextSendCallback,
         save_storage: SaveStorageCallback,
         runtime: RuntimeCallback,
+        is_stopping: Callable[[], bool] | None = None,
     ) -> None:
         self.settings = settings
         self._gate = gate
@@ -75,6 +76,7 @@ class DeliveryRunner:
         self._context_send = context_send
         self._save_storage = save_storage
         self._runtime = runtime
+        self._is_stopping = is_stopping or (lambda: False)
 
     @staticmethod
     def _clear_result(last_event: Any) -> None:
@@ -102,6 +104,22 @@ class DeliveryRunner:
         if ledger is None:
             ledger = AttemptLedger()
         ledger_id = ledger.ledger_id
+        if self._is_stopping():
+            logger.info(
+                "[%s] suppress reply while plugin is stopping ledger_id=%s session=%s",
+                PLUGIN_ID,
+                ledger_id,
+                umo,
+            )
+            if direct_send_count and record_legacy_state:
+                await self._record_direct_sends(
+                    umo,
+                    state,
+                    direct_send_count,
+                    expected_generation=expected_generation,
+                    observed_active_at=observed_active_at,
+                )
+            return "插件未启用。"
         gate = "" if self._gate.is_current(umo, expected_generation) else STALE_TASK_MESSAGE
         if not gate:
             gate = self._local_gate(state, force=force)
@@ -257,6 +275,14 @@ class DeliveryRunner:
         # 到此已隔整轮 LLM 生成（多个 await），代次极可能已被新消息推进。此处尚未
         # set_result，无需 _clear_result。
         ledger = ledger or AttemptLedger()
+        if self._is_stopping():
+            logger.info(
+                "[%s] suppress reply while plugin is stopping ledger_id=%s session=%s",
+                PLUGIN_ID,
+                ledger.ledger_id,
+                umo,
+            )
+            return SendOutcome(SendStatus.SUPPRESSED, "plugin is stopping")
         if not self._gate.is_current(umo, expected_generation):
             logger.info(
                 "[%s] suppress stale reply before hooks ledger_id=%s session=%s",
@@ -319,6 +345,16 @@ class DeliveryRunner:
                     umo,
                 )
                 return SendOutcome(SendStatus.SUPPRESSED, "generation changed after decorating")
+            if self._is_stopping():
+                self._clear_result(last_event)
+                logger.info(
+                    "[%s] suppress reply after decorating hook lifecycle stop "
+                    "ledger_id=%s session=%s",
+                    PLUGIN_ID,
+                    ledger_id,
+                    umo,
+                )
+                return SendOutcome(SendStatus.SUPPRESSED, "plugin is stopping")
             result = last_event.get_result()
             if result is None or not result.chain:
                 self._clear_result(last_event)

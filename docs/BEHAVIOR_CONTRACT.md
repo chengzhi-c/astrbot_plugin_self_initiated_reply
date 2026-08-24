@@ -55,15 +55,16 @@
 4. 冷却（`cooldown_sec`）
 5. 观察窗口已推进（该事件后已回复过）
 
-判定必须读取**最新**状态（发送前重查，不得用决策时的旧快照）。
+判定必须读取**最新**状态（发送前重查，不得用决策时的旧快照）。decorating hook await 返回后，事件发送前还必须重新检查代次和插件生命周期；停止发生在 hook 内时不得继续 `event.send`。
 
 ## 5. 终止与任务生命周期
 
+- 插件生命周期由单一 owner 持有：`RUNNING` 允许新任务；`STOPPING` 阻止 spawn 并等待收敛；`DEGRADED` 表示存在超出硬停止窗口的 quarantine task，拒绝所有新检查（包括 `force=True`）并要求重载插件或重启宿主恢复。`MAX_QUARANTINED_TASKS` 是代码容量上限；达到上限后不再接收新的主动任务。
 - `terminate()` 开始后 spawn barrier 生效：不再启动任何新后台任务。
 - 生成超时不硬取消 run_agent：先 `request_stop` 优雅收敛，宽限
   `GRACEFUL_STOP_GRACE_SEC` 后仍不退才兜底取消；调用方取消时同样收敛，
   不得遗留孤儿任务（其工具直发会绕过预算与代次闸门）。
-- 终止/重载路径必须保证最终落盘（`_save_storage` 异常时告警但不吞终止）。
+- 终止路径对最终状态保存只等待一个 `TERMINATE_TASK_TIMEOUT_SEC` 硬窗口；写入若超时则保留 critical task 在 quarantine、标记 `DEGRADED` 并让 terminate 返回，不能把未完成写入报告为成功。立即失败只记录 WARNING，不阻塞宿主停止。
 - 延迟检查等待前次检查结束使用 release 事件；运行标记与 release 成对维护。等待必须**有界**：
   超时 + 轮次上限，闸门失同步只能降级为一次延迟或一次丢弃（丢弃记 WARNING），
   不得永久挂起（0.9.4 阶段 1.1，与 §11 B3 同源）。

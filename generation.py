@@ -225,10 +225,27 @@ class GenerationRunner:
                 pass
         if cancel_first:
             run_task.cancel()
+        grace_sec = max(0.0, self._grace_stop_sec())
         try:
-            await asyncio.wait_for(run_task, timeout=self._grace_stop_sec())
-        except (TimeoutError, asyncio.CancelledError):
+            done, _ = await asyncio.wait({run_task}, timeout=grace_sec)
+        except asyncio.CancelledError:
             run_task.cancel()
+            if self._quarantine_task and not run_task.done():
+                self._quarantine_task(run_task, "generation stop interrupted")
+            raise
+        if done:
+            return
+
+        run_task.cancel()
+        try:
+            done, _ = await asyncio.wait({run_task}, timeout=grace_sec)
+        except asyncio.CancelledError:
+            run_task.cancel()
+            if self._quarantine_task and not run_task.done():
+                self._quarantine_task(run_task, "generation cancellation interrupted")
+            raise
+        if not done and self._quarantine_task:
+            self._quarantine_task(run_task, "agent runner ignored cancellation")
 
     def __init__(
         self,
@@ -245,6 +262,8 @@ class GenerationRunner:
         read_history: ReadHistoryCallback,
         build_image_context: ImageContextCallback,
         last_events: dict[str, Any],
+        is_stopping: Callable[[], bool] | None = None,
+        quarantine_task: Callable[[asyncio.Task[Any], str], None] | None = None,
     ) -> None:
         self.settings = settings
         self._context = context
@@ -258,6 +277,8 @@ class GenerationRunner:
         self._read_history = read_history
         self._build_image_context = build_image_context
         self._last_events = last_events
+        self._is_stopping = is_stopping or (lambda: False)
+        self._quarantine_task = quarantine_task
 
     async def generate(
         self,
@@ -341,6 +362,7 @@ class GenerationRunner:
             max_direct_sends=MAX_DIRECT_TOOL_SENDS,
             allow_direct=lambda: (
                 self._gate.is_current(run.umo, run.expected_generation)
+                and not self._is_stopping()
                 and not self._local_gate(run.state, force=run.force)
             ),
             ledger=run.ledger,
@@ -350,6 +372,15 @@ class GenerationRunner:
         async def tracked_send(message: MessageChain) -> Any:
             is_tool_direct = getattr(message, "type", "") == "tool_direct_result"
             if not is_tool_direct:
+                if self._is_stopping():
+                    logger.info(
+                        "[%s] suppress ordinary agent send after lifecycle stop "
+                        "ledger_id=%s session=%s",
+                        PLUGIN_ID,
+                        run.ledger.ledger_id,
+                        run.umo,
+                    )
+                    return False
                 assert original_send is not None
                 return await original_send(message)
             result = await outbound.send(message, kind="tool_direct")

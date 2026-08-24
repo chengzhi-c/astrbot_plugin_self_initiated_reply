@@ -55,6 +55,9 @@ from .session_gate import SessionGate
 # 该价值由本注释承载。
 CommandReply = AsyncGenerator[Any, None]
 
+MAX_QUARANTINED_TASKS = 8
+TERMINATE_TASK_TIMEOUT_SEC = 3.0
+
 _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
 
 # 宿主私有符号收敛：值全部来自适配层探测，本文件不再直接
@@ -82,6 +85,7 @@ from .models import (
     PLUGIN_ID,
     PLUGIN_VERSION,
     SESSION_CANCEL_COMMAND_ACTIONS,
+    PluginLifecycle,
     SessionState,
     Settings,
     now_ts,
@@ -208,6 +212,8 @@ class SelfInitiatedReplyPlugin(Star):
         self._gate = SessionGate()
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._critical_tasks: set[asyncio.Task[Any]] = set()
+        self._quarantined_tasks: dict[asyncio.Task[Any], str] = {}
+        self._lifecycle_state = PluginLifecycle.RUNNING
         self._stopping = False
         self._save_lock = asyncio.Lock()
         self._config_lock = asyncio.Lock()
@@ -269,6 +275,57 @@ class SelfInitiatedReplyPlugin(Star):
             get_runtime=lambda: _AGENT_RUNTIME,
             get_call_hook=lambda: call_event_hook,
             get_grace_stop_sec=lambda: GRACEFUL_STOP_GRACE_SEC,
+            get_stop_timeout=lambda: TERMINATE_TASK_TIMEOUT_SEC,
+        )
+
+    @property
+    def lifecycle_state(self) -> str:
+        """Return the lifecycle state for diagnostics and entry-point gates."""
+        return self._lifecycle_state.value
+
+    def _can_start_tasks(self) -> bool:
+        """Return whether new plugin-owned work may be scheduled."""
+        return (
+            self._lifecycle_state is PluginLifecycle.RUNNING
+            and not self._stopping
+            and len(self._quarantined_tasks) < MAX_QUARANTINED_TASKS
+        )
+
+    def _mark_degraded(self, reason: str) -> None:
+        """Quarantine failure state and permanently close new work for this instance."""
+        if self._lifecycle_state is PluginLifecycle.DEGRADED:
+            return
+        self._lifecycle_state = PluginLifecycle.DEGRADED
+        self._stopping = True
+        logger.error(
+            "[%s] lifecycle degraded quarantined=%d reason=%s",
+            PLUGIN_ID,
+            len(self._quarantined_tasks),
+            reason,
+        )
+
+    def _release_quarantined_task(self, task: asyncio.Task[Any]) -> None:
+        """Remove a quarantined task after it finally exits."""
+        reason = self._quarantined_tasks.pop(task, "")
+        logger.warning(
+            "[%s] quarantined task exited reason=%s remaining=%d",
+            PLUGIN_ID,
+            reason,
+            len(self._quarantined_tasks),
+        )
+
+    def _quarantine_task(self, task: asyncio.Task[Any], reason: str) -> None:
+        """Track a task that ignored cancellation instead of pretending shutdown succeeded."""
+        if task.done() or task in self._quarantined_tasks:
+            return
+        self._quarantined_tasks[task] = reason
+        task.add_done_callback(self._release_quarantined_task)
+        self._mark_degraded(reason)
+        logger.warning(
+            "[%s] task quarantined count=%d reason=%s",
+            PLUGIN_ID,
+            len(self._quarantined_tasks),
+            reason,
         )
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
@@ -464,7 +521,12 @@ class SelfInitiatedReplyPlugin(Star):
     def _cancel_background_tasks(self) -> None:
         current = asyncio.current_task()
         for task in list(self._background_tasks):
-            if task is current or task.done() or task in self._critical_tasks:
+            if (
+                task is current
+                or task.done()
+                or task in self._critical_tasks
+                or task in self._quarantined_tasks
+            ):
                 continue
             task.cancel()
 
@@ -480,13 +542,49 @@ class SelfInitiatedReplyPlugin(Star):
     async def _wait_background_tasks(self) -> None:
         current = asyncio.current_task()
         tasks = [
-            task for task in list(self._background_tasks) if task is not current and not task.done()
+            task
+            for task in list(self._background_tasks)
+            if (task is not current and not task.done() and task not in self._quarantined_tasks)
         ]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._background_tasks.difference_update(tasks)
+        if not tasks:
+            return
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + TERMINATE_TASK_TIMEOUT_SEC
+        _, pending = await asyncio.wait(tasks, timeout=TERMINATE_TASK_TIMEOUT_SEC)
+        if pending:
+            for task in pending:
+                task.cancel()
+            remaining = max(0.0, deadline - loop.time())
+            if remaining:
+                _, pending = await asyncio.wait(pending, timeout=remaining)
+        if pending:
+            for task in pending:
+                self._quarantine_task(task, "shutdown deadline exceeded")
+        self._background_tasks.difference_update(task for task in tasks if task.done())
+
+    async def _save_final_state_with_deadline(self) -> None:
+        """Persist final state without letting a stuck writer block termination."""
+
+        async def persist() -> None:
+            await self._save_storage()
+
+        task = self._track_critical_task(persist())
+        done, _ = await asyncio.wait({task}, timeout=max(0.0, TERMINATE_TASK_TIMEOUT_SEC))
+        if not done:
+            self._quarantine_task(task, "final state save deadline exceeded")
+            return
+        try:
+            task.result()
+        except Exception as exc:
+            logger.warning("[%s] final state save failed: %s", PLUGIN_ID, exc)
 
     async def terminate(self) -> None:
+        self._lifecycle_state = (
+            PluginLifecycle.DEGRADED
+            if self._lifecycle_state is PluginLifecycle.DEGRADED
+            else PluginLifecycle.STOPPING
+        )
         self._stopping = True
         # 最终落盘必须与任务收敛同处 _config_lock 内：Dashboard 的 POST /config
         # 在同一把锁下改 settings/whitelist（webapi._apply_config_updates），
@@ -495,12 +593,10 @@ class SelfInitiatedReplyPlugin(Star):
         async with self._config_lock:
             self._cancel_delay_tasks()
             await self._scheduler.stop_patrol()
+            self._cancel_background_tasks()
             await self._wait_background_tasks()
             self._coordinator.reset_all()
-            try:
-                # 记录点已逐次落盘，此处兜底覆盖「最后一次记录之后又有内存
-                # 变更」（白名单回收、跨天刷新）。
-                await self._save_storage()
-            except Exception as exc:
-                logger.warning("[%s] final state save failed: %s", PLUGIN_ID, exc)
+            # 记录点已逐次落盘，此处兜底覆盖「最后一次记录之后又有内存
+            # 变更」（白名单回收、跨天刷新）。
+            await self._save_final_state_with_deadline()
         logger.info("[%s] terminated", PLUGIN_ID)

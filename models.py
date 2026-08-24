@@ -417,6 +417,14 @@ class SendStatus(StrEnum):
     SUPPRESSED = "suppressed"
 
 
+class PluginLifecycle(StrEnum):
+    """Plugin-level lifecycle owned by ``SelfInitiatedReplyPlugin``."""
+
+    RUNNING = "RUNNING"
+    STOPPING = "STOPPING"
+    DEGRADED = "DEGRADED"
+
+
 class AttemptState(StrEnum):
     """Lifecycle evidence for one outbound adapter attempt."""
 
