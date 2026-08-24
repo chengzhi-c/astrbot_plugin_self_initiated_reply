@@ -47,19 +47,6 @@ FORBIDDEN_GLOBS = (
 )
 
 
-def _find_sdist(explicit: str | Path | None = None) -> Path:
-    try:
-        return resolve_artifact(
-            ROOT,
-            pattern="*.tar.gz",
-            kind="sdist",
-            explicit=explicit,
-        ).path
-    except ArtifactError as exc:
-        print(f"FAIL: {exc}")
-        raise SystemExit(1) from exc
-
-
 def _expected_version() -> str:
     match = re.search(
         r"^version:\s*(.+)$",

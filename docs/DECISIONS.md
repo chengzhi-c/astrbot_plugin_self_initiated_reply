@@ -41,7 +41,10 @@
 
 每次主动检查由 pipeline 创建一个带 UUID4 hex `ledger_id` 的 `AttemptLedger`。生成、投递和唯一 record task 传递同一 ledger 引用；`ledger_id` 只用于日志、任务关联和一次性记账诊断，不进入持久配置或 `config_revision`，也不依赖进程级计数器。
 
-## 发布产物门禁
+## 轻量化边界
+
+按生产调用和契约测试复查后，仅删除发布脚本中无调用的 `_find_sdist` 辅助函数。`runtime_adapter` 的路径 accessor 虽然当前没有生产调用，但保留为宿主路径契约和测试接缝；`image.is_image_payload` 是包级公开导出；`save_storage_sync` 负责启动失败告警，不能视作纯转发 wrapper。后续若要删除这些边界，必须先迁移对应宿主/测试契约，而不是以删行数为目标。
+
 
 发布脚本不再按文件名字典序猜测目标 wheel。`release_artifacts.py` 使用 `packaging` 解析 wheel/sdist 文件名中的 PEP 440 版本；默认发现多个候选或坏文件名直接失败，只有显式路径能消除歧义。`check_wheel.py`、`check_sdist.py` 与部署 zip 共享同一解析器。`gates.py` 的普通本地模式在缺 wheel/sdist 时只报告 `NOT RELEASE-VERIFIED`，`--release` 则非零退出；CI build 独立检查 wheel、sdist 和 deploy zip。
 
