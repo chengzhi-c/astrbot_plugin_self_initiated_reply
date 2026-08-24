@@ -45,12 +45,13 @@ def _write_complete_wheel(path: Path, *, metadata_version: str) -> None:
         )
 
 
-def _write_sdist(path: Path, names: list[str]) -> None:
+def _write_sdist(path: Path, names: list[str], contents: dict[str, bytes] | None = None) -> None:
     with tarfile.open(path, "w:gz") as archive:
         for name in names:
+            data = (contents or {}).get(name, b"")
             info = tarfile.TarInfo(name)
-            info.size = 0
-            archive.addfile(info, io.BytesIO())
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
 
 
 def test_wheel_discovery_rejects_multiple_candidates(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -129,6 +130,37 @@ def test_sdist_rejects_cache_and_temporary_output(tmp_path: Path, capsys) -> Non
         monkeypatch.undo()
 
     assert "forbidden" in capsys.readouterr().out.lower()
+
+
+def test_sdist_rejects_machine_path_content(tmp_path: Path, capsys) -> None:
+    check_sdist = _load_script("check_sdist")
+    (tmp_path / "metadata.yaml").write_text("version: 1.3.0\n", encoding="utf-8")
+    archive = tmp_path / "dist" / "astrbot_plugin_self_initiated_reply-1.3.0.tar.gz"
+    archive.parent.mkdir()
+    root = "astrbot_plugin_self_initiated_reply-1.3.0"
+    main_name = f"{root}/main.py"
+    _write_sdist(
+        archive,
+        [
+            f"{root}/pyproject.toml",
+            f"{root}/PKG-INFO",
+            f"{root}/README.md",
+            f"{root}/CHANGELOG.md",
+            f"{root}/metadata.yaml",
+            f"{root}/_conf_schema.json",
+            main_name,
+            f"{root}/pages/index.html",
+        ],
+        {main_name: b"CACHE = r'C:\\Users\\Lenovo\\temp'\n"},
+    )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(check_sdist, "ROOT", tmp_path)
+    try:
+        assert check_sdist.main(archive) == 1
+    finally:
+        monkeypatch.undo()
+
+    assert "machine-specific path" in capsys.readouterr().out
 
 
 def test_sdist_rejects_parent_traversal_member() -> None:

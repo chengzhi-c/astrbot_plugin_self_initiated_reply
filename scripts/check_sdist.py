@@ -45,6 +45,18 @@ FORBIDDEN_GLOBS = (
     ".tox/**",
     ".git/**",
 )
+MACHINE_PATH_PATTERNS = (
+    re.compile(rb"(?<![A-Za-z])[A-Za-z]:[\\/][^\x00-\x20<>]+"),
+    re.compile(rb"(?<![A-Za-z0-9])/(?:home|Users|root|tmp)/[^\x00-\x20<>]+"),
+)
+
+
+def _machine_path_in(data: bytes) -> bytes | None:
+    for pattern in MACHINE_PATH_PATTERNS:
+        match = pattern.search(data)
+        if match:
+            return match.group(0)
+    return None
 
 
 def _expected_version() -> str:
@@ -108,6 +120,15 @@ def main(sdist_path: str | Path | None = None) -> int:
                     failures.append(f"invalid top-level path: {member.name}")
                     continue
                 if relative:
+                    if member.isfile():
+                        payload = archive.extractfile(member)
+                        if payload is not None:
+                            machine_path = _machine_path_in(payload.read())
+                            if machine_path is not None:
+                                failures.append(
+                                    "machine-specific path in content: "
+                                    f"{relative} ({machine_path!r})"
+                                )
                     if member.issym() or member.islnk():
                         link_name = _relative_name(member.linkname, root_name)
                         if link_name is None or _is_forbidden(link_name or ""):
