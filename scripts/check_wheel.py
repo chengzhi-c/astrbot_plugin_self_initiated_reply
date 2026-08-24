@@ -11,7 +11,7 @@ pyproject 的 exclude 修复后必须由本脚本断言闭环，防止配置漂�
 
 from __future__ import annotations
 
-import glob
+import argparse
 import sys
 import tomllib
 import zipfile
@@ -19,6 +19,12 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from packaging.requirements import Requirement
+from packaging.version import InvalidVersion, Version
+
+try:
+    from scripts.release_artifacts import ArtifactError, resolve_artifact
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    from release_artifacts import ArtifactError, resolve_artifact
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -78,13 +84,17 @@ FORBIDDEN_GLOBS = (
 MAX_WHEEL_BYTES = 280_000
 
 
-def _find_wheel() -> Path:
-    candidates = sorted(glob.glob(str(ROOT / "dist" / "*.whl")))
-    if not candidates:
-        print("FAIL: 未找到 wheel，请先执行 hatch build 或 pip wheel .")
-        sys.exit(1)
-    # 取字典序最后一个（dist/ 下通常只有一个 wheel；多版本并存时取最高版本号）
-    return Path(candidates[-1])
+def _find_wheel(explicit: str | Path | None = None) -> Path:
+    try:
+        return resolve_artifact(
+            ROOT,
+            pattern="*.whl",
+            kind="wheel",
+            explicit=explicit,
+        ).path
+    except ArtifactError as exc:
+        print(f"FAIL: {exc}")
+        raise SystemExit(1) from exc
 
 
 def _normalize_requirement(raw: str) -> str:
@@ -120,8 +130,20 @@ def _normalize(name: str) -> str:
     return name.replace("\\", "/").removeprefix("./")
 
 
-def main() -> int:
-    wheel = _find_wheel()
+def _has_required_file(names: list[str], required: str) -> bool:
+    if required.endswith("/"):
+        return any(name.startswith(required) for name in names)
+    return required in names
+
+
+def main(wheel_path: str | Path | None = None) -> int:
+    wheel = _find_wheel(wheel_path)
+    wheel_version = resolve_artifact(
+        ROOT,
+        pattern="*.whl",
+        kind="wheel",
+        explicit=wheel,
+    ).version
     expected = _expected_version()
     print(f"检查 wheel: {wheel.name} ({wheel.stat().st_size / 1024:.0f} KB)")
     with zipfile.ZipFile(wheel) as zf:
@@ -139,17 +161,24 @@ def main() -> int:
         ):
             failures.append(f"开发物泄漏: {normalized}")
 
+    normalized_names = [_normalize(name) for name in names]
     for required in REQUIRED_FILES:
-        if not any(_normalize(name).startswith(required) for name in names):
+        if not _has_required_file(normalized_names, required):
             failures.append(f"缺少必需文件: {required}")
 
     # 版本一致性（0.8.3 发布缺陷回归守卫：wheel 文件名与 dist-info 曾停在 0.8.3）
-    if expected not in wheel.name:
-        failures.append(f"wheel 文件名 {wheel.name} 不含版本 {expected}")
+    try:
+        expected_version = Version(expected)
+    except InvalidVersion:
+        print(f"FAIL: invalid metadata version: {expected}")
+        return 1
+    if wheel_version != expected_version:
+        failures.append(f"wheel 文件名版本 {wheel_version} 与 metadata {expected_version} 不一致")
+
     if not dist_meta:
         failures.append("wheel 内缺少 .dist-info/METADATA")
-    elif f"Version: {expected}" not in dist_text:
-        failures.append(f"dist-info 版本与 metadata {expected} 不一致")
+    elif not any(line == f"Version: {expected_version}" for line in dist_text.splitlines()):
+        failures.append(f"dist-info 版本与 metadata {expected_version} 不一致")
 
     # 运行时依赖必须进入生产 METADATA；只出现在 dev extra 会导致安装后
     # Vision 固定地址传输缺包，且此前的零依赖门禁无法发现这种漂移。
@@ -183,4 +212,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--wheel", type=Path, help="explicit wheel path")
+    sys.exit(main(parser.parse_args().wheel))

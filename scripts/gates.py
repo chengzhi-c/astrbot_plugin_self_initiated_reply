@@ -5,12 +5,14 @@
     python scripts/gates.py
 
 顺序：ruff check → ruff format --check → mypy → docstring/version →
-前端 syntax + contract → pytest → coverage_gates。
-任一失败非零退出。wheel 检查在 dist/ 有 .whl 时追加。
+前端 syntax + contract → pytest → coverage_gates。存在完整 wheel/sdist 时追加发布产物检查；
+`--release` 要求发布产物齐全。无产物的普通本地模式只报告 `NOT RELEASE-VERIFIED`，
+不会输出发布级全绿。
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -76,7 +78,14 @@ def ruff_targets() -> list[str]:
     ]
 
 
-def main() -> int:
+def _release_artifacts() -> tuple[list[Path], list[Path]]:
+    dist = ROOT / "dist"
+    if not dist.is_dir():
+        return [], []
+    return sorted(dist.glob("*.whl")), sorted(dist.glob("*.tar.gz"))
+
+
+def main(*, require_release: bool = False) -> int:
     targets = ruff_targets()
     if not targets:
         print("FAIL: no Python source files found for Ruff")
@@ -109,14 +118,29 @@ def main() -> int:
     _run("pytest", [sys.executable, "-m", "pytest", "-q"])
     _run("coverage_gates", [sys.executable, "scripts/coverage_gates.py"])
 
-    wheels = sorted((ROOT / "dist").glob("*.whl")) if (ROOT / "dist").is_dir() else []
-    if wheels:
-        _run("check_wheel", [sys.executable, "scripts/check_wheel.py"])
-    else:
-        print("skip check_wheel (no dist/*.whl)")
+    wheels, sdists = _release_artifacts()
+    if len(wheels) != 1 or len(sdists) != 1:
+        print(
+            "NOT RELEASE-VERIFIED: expected exactly one wheel and one sdist "
+            f"(found wheel={len(wheels)}, sdist={len(sdists)})"
+        )
+        if require_release:
+            return 1
+        print("OK: code gates passed; release artifacts were not verified")
+        return 0
+
+    _run("check_wheel", [sys.executable, "scripts/check_wheel.py"])
+    _run("check_sdist", [sys.executable, "scripts/check_sdist.py"])
+    _run("deploy zip", [sys.executable, "scripts/make_release_zip.py"])
     print("OK: all gates passed")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--release",
+        action="store_true",
+        help="require exactly one validated wheel, sdist, and deploy zip",
+    )
+    raise SystemExit(main(require_release=parser.parse_args().release))

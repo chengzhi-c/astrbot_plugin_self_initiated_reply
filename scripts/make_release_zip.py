@@ -12,19 +12,26 @@ assets/）。这里只读 wheel 并丢掉 pip 专用的 dist-info/ 元数据—�
 
 输出布局：<plugin_name>/...，解压到 AstrBot 的 data/plugins/ 下即为插件目录。
 
-用法（动过打包配置或版本号时，先删 dist/ 再构建，否则 check_wheel 会读到
-字典序最后的旧 wheel 而假绿）：
+用法（发布目录必须只含一个目标 wheel；多个候选时显式传路径）：
 
-    python -m hatch build
+    Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
+    python -m hatchling build
     python scripts/check_wheel.py
+    python scripts/check_sdist.py
     python scripts/make_release_zip.py
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 import zipfile
 from pathlib import Path
+
+try:
+    from scripts.release_artifacts import ArtifactError, resolve_artifact
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    from release_artifacts import ArtifactError, resolve_artifact
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR_NAME = "astrbot_plugin_self_initiated_reply"
@@ -37,20 +44,28 @@ REQUIRED = ("main.py", "metadata.yaml", "_conf_schema.json", "__init__.py")
 DEV_PREFIXES = ("tests/", "scripts/", "docs/", ".github/", ".scratch/", "assets/")
 
 
-def main() -> int:
-    wheels = sorted((ROOT / "dist").glob("*.whl"))
-    if not wheels:
-        print("FAIL: dist/ 下没有 wheel，请先执行 python -m hatch build")
+def main(wheel_path: str | Path | None = None) -> int:
+    try:
+        wheel = resolve_artifact(
+            ROOT,
+            pattern="*.whl",
+            kind="wheel",
+            explicit=wheel_path,
+        )
+    except ArtifactError as exc:
+        print(f"FAIL: {exc}")
         return 1
-    # 与 check_wheel.py 同口径取字典序最后一个，保证两个脚本看的是同一个 wheel。
-    wheel = wheels[-1]
+    source_wheel = wheel.path
 
-    version = wheel.name.removeprefix(f"{PLUGIN_DIR_NAME}-").split("-", 1)[0]
+    version = str(wheel.version)
     out_path = ROOT / "dist" / f"{PLUGIN_DIR_NAME}-{version}-deploy.zip"
     copied: list[str] = []
     skipped = 0
 
-    with zipfile.ZipFile(wheel) as src, zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as dst:
+    with (
+        zipfile.ZipFile(source_wheel) as src,
+        zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as dst,
+    ):
         for entry in src.infolist():
             name = entry.filename.replace("\\", "/")
             if name.endswith("/"):
@@ -71,7 +86,7 @@ def main() -> int:
         return 1
 
     size_kb = out_path.stat().st_size // 1024
-    print(f"源 wheel: {wheel.name}")
+    print(f"源 wheel: {source_wheel.name}")
     print(f"输出:     {out_path.name}（{size_kb} KB）")
     print(f"文件:     {len(copied)} 个（跳过 {skipped} 个 dist-info 条目）")
     print(f"根目录:   {PLUGIN_DIR_NAME}/")
@@ -80,4 +95,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--wheel", type=Path, help="explicit wheel path")
+    sys.exit(main(parser.parse_args().wheel))

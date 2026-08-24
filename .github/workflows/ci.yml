@@ -114,15 +114,21 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install hatch
+        run: pip install hatch packaging
       - name: Build
-        run: hatch build
+        run: |
+          rm -rf dist
+          hatch build
       - name: Runtime dependency assertion
         run: python scripts/runtime_dependency_gates.py
       - name: Wheel assertion
         # 内容（开发物不泄漏 + 必需文件齐全）与版本一致性（wheel 文件名与
         # dist-info 必须等于 metadata.yaml 的 version，0.8.3 发布缺陷回归守卫）
         run: python scripts/check_wheel.py
+      - name: Sdist assertion
+        run: python scripts/check_sdist.py
+      - name: Deploy zip assertion
+        run: python scripts/make_release_zip.py
 
   compat:
     runs-on: ubuntu-latest

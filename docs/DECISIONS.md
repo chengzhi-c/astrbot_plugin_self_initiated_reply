@@ -41,7 +41,10 @@
 
 每次主动检查由 pipeline 创建一个带 UUID4 hex `ledger_id` 的 `AttemptLedger`。生成、投递和唯一 record task 传递同一 ledger 引用；`ledger_id` 只用于日志、任务关联和一次性记账诊断，不进入持久配置或 `config_revision`，也不依赖进程级计数器。
 
-## 图片传输与生命周期
+## 发布产物门禁
+
+发布脚本不再按文件名字典序猜测目标 wheel。`release_artifacts.py` 使用 `packaging` 解析 wheel/sdist 文件名中的 PEP 440 版本；默认发现多个候选或坏文件名直接失败，只有显式路径能消除歧义。`check_wheel.py`、`check_sdist.py` 与部署 zip 共享同一解析器。`gates.py` 的普通本地模式在缺 wheel/sdist 时只报告 `NOT RELEASE-VERIFIED`，`--release` 则非零退出；CI build 独立检查 wheel、sdist 和 deploy zip。
+
 远程图片使用 `httpx` + `httpcore` 的固定地址传输：DNS 只在每个请求入口解析一次，
 TCP 连接使用已验证 IP，原 hostname 继续承担 Host/SNI；环境代理关闭，重定向由 HTTPX
 逐跳重新进入传输层。图片描述 LRU 同时受条目数和字节预算约束，磁盘不可用时的 data URL

@@ -182,4 +182,9 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
 跟上代码，漏登记的绑定就是下一个无人看守的 B1。绑定数量以该文件的
 `CONTAINER_HOLDERS` 与源码反推结果为准，此处不复述具体条数（会腐烂）。
 
-结构取舍（双面板、装配边界、设置页 chrome、默认值、门禁）见 `DECISIONS.md`。
+
+## 12. 发布产物验证
+
+- wheel、sdist 和 deploy zip 必须从同一次 clean build 产生；发布脚本默认要求每类产物恰好一个，多个或坏 PEP 440 文件名直接失败，不按字典序猜测。
+- sdist 可以包含源码文档，但不得包含覆盖率文件、缓存、虚拟环境、`output/`、`dist/` 或机器特有绝对路径。
+- 普通本地代码门禁缺少发布产物时必须输出 `NOT RELEASE-VERIFIED`，不得输出发布级全绿；CI 发布 job 对 wheel、sdist、deploy zip 分别执行硬检查。
