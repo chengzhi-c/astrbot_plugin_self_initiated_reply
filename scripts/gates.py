@@ -84,6 +84,10 @@ def main() -> int:
     _run("ruff check", [sys.executable, "-m", "ruff", "check", *targets])
     _run("ruff format --check", [sys.executable, "-m", "ruff", "format", "--check", *targets])
     _run("mypy", [sys.executable, "-m", "mypy"])
+    _run(
+        "runtime dependency gates",
+        [sys.executable, "scripts/runtime_dependency_gates.py"],
+    )
     _run("docstring_gates", [sys.executable, "scripts/docstring_gates.py"])
     _run(
         "version_gates",

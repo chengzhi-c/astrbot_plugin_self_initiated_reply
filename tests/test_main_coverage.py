@@ -354,7 +354,7 @@ def test_build_image_context_describes_recent_images(tmp_path: Path) -> None:
         assert "一只猫" in context
 
         assert await plugin._vision.build_context(UMO, enabled=False) == ""
-        plugin._coordinator.clear(UMO)
+        plugin._coordinator.clear_session(UMO)
         assert await plugin._vision.build_context(UMO, enabled=True) == ""
 
     with_plugin(tmp_path, scenario)

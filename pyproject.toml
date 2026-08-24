@@ -8,7 +8,11 @@ name = "astrbot_plugin_self_initiated_reply"
 # models.PLUGIN_VERSION 读取，见该节的说明。
 dynamic = ["version"]
 requires-python = ">=3.12"
-# 运行时零第三方依赖：全部复用宿主 AstrBot API
+dependencies = [
+  "httpx>=0.27,<0.29",
+  "httpcore>=1,<1.1",
+]
+# 远程图片固定地址传输直接使用 httpx/httpcore；其余能力仍复用宿主 AstrBot API。
 
 [project.optional-dependencies]
 # 开发依赖钉版。实测动机：CI 的 mypy / test / compat 三个作业都跑
@@ -37,7 +41,6 @@ dev = [
   "pytest-cov>=5,<8",
   "ruff==0.16.1",
   "mypy>=1.19,<3",
-  "httpx>=0.27,<1",
   "pathspec>=0.10.1,<2",
   "packaging>=22",
 ]

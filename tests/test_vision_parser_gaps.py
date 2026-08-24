@@ -127,41 +127,200 @@ def test_host_all_global_dns_resolution_branches(monkeypatch) -> None:
     assert parser_mod._host_all_global("bad-addr.example") is False
 
 
-def test_global_only_transport_forwards_safe_host_and_rejects_unsafe(monkeypatch) -> None:
+def test_fixed_transport_rejects_non_global_bound_address() -> None:
     _, image, _ = _load_modules()
     parser_mod = _parser_module()
-    calls: list[tuple[str, object]] = []
+    transport = parser_mod._FixedAddressTransport(address="127.0.0.1")
+    request = parser_mod.httpx.Request("GET", "https://cdn.example/x.png")
 
-    class Wrapped:
-        async def handle_async_request(self, request: object) -> str:
-            calls.append(("handle", request))
-            return "ok"
-
-        async def aclose(self) -> None:
-            calls.append(("aclose", None))
-
-    transport = parser_mod._GlobalOnlyTransport(Wrapped())
-    request = SimpleNamespace(url=SimpleNamespace(host="8.8.8.8"))
-
-    monkeypatch.setattr(parser_mod, "_host_all_global", lambda host: True)
-    assert asyncio.run(transport.handle_async_request(request)) == "ok"
-    assert calls == [("handle", request)]
-
-    monkeypatch.setattr(parser_mod, "_host_all_global", lambda host: False)
     with pytest.raises(parser_mod.httpx.ConnectError):
         asyncio.run(transport.handle_async_request(request))
-    assert len(calls) == 1, "非公网主机必须拒绝，不得转发"
-
-    asyncio.run(transport.aclose())
-    assert calls[-1] == ("aclose", None)
 
 
-def test_image_parser_init_tolerates_unwritable_cache_dir(tmp_path: Path) -> None:
+def test_fixed_backend_works_with_real_httpcore_pool() -> None:
     _, image, _ = _load_modules()
-    blocked = tmp_path / "occupied"
-    blocked.write_text("not a directory")
-    parser = image.ImageParser(object(), source_cache_dir=blocked)
-    assert parser._source_cache_dir == blocked.resolve()
+    parser_mod = _parser_module()
+    calls: list[tuple[str, int]] = []
+
+    class RecordingBackend(parser_mod.httpcore.AsyncMockBackend):
+        async def connect_tcp(
+            self,
+            host,
+            port,
+            timeout=None,
+            local_address=None,
+            socket_options=None,
+        ):
+            calls.append((host, port))
+            return await super().connect_tcp(
+                host,
+                port,
+                timeout,
+                local_address,
+                socket_options,
+            )
+
+    async def scenario() -> tuple[int, bytes]:
+        wrapped = RecordingBackend([b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"])
+        backend = parser_mod._FixedAddressBackend("93.184.216.34", wrapped)
+        pool = parser_mod.httpcore.AsyncConnectionPool(
+            network_backend=backend,
+            max_connections=1,
+            max_keepalive_connections=0,
+        )
+        try:
+            response = await pool.handle_async_request(
+                parser_mod.httpcore.Request(
+                    "GET",
+                    "http://cdn.example/x",
+                    headers=[(b"host", b"cdn.example")],
+                )
+            )
+            body = await response.aread()
+            await response.aclose()
+            return response.status, body
+        finally:
+            await pool.aclose()
+
+    status, body = asyncio.run(scenario())
+    assert (status, body) == (200, b"OK")
+    assert calls == [("93.184.216.34", 80)]
+
+
+def test_fixed_address_backend_connects_to_checked_ip(monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    calls: list[tuple[str, int]] = []
+
+    class WrappedBackend:
+        async def connect_tcp(self, host, port, **_kwargs):
+            calls.append((host, port))
+            return "stream"
+
+        async def connect_unix_socket(self, *_args, **_kwargs):
+            raise AssertionError("image downloads must not use unix sockets")
+
+        async def sleep(self, _seconds):
+            return None
+
+    backend = parser_mod._FixedAddressBackend("93.184.216.34", WrappedBackend())
+    result = asyncio.run(backend.connect_tcp("cdn.example", 443))
+
+    assert result == "stream"
+    assert calls == [("93.184.216.34", 443)]
+
+
+def test_fetch_uses_direct_fixed_transport_and_disables_env_proxy(monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: "93.184.216.34")
+    captured: dict[str, object] = {}
+    response = _make_response(chunks=[PNG_BYTES])
+
+    class FakeStream:
+        async def __aenter__(self):
+            return response
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        def stream(self, _method, _url):
+            return FakeStream()
+
+    monkeypatch.setattr(parser_mod.httpx, "AsyncClient", FakeClient)
+    parser = image.ImageParser(object())
+
+    assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) == PNG_DATA_URL
+    assert captured["trust_env"] is False
+    assert isinstance(captured["transport"], parser_mod._FixedAddressTransport)
+
+
+def test_fixed_transport_preserves_host_and_default_tls_port(monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    captured: list[object] = []
+
+    class CoreStream:
+        async def __aiter__(self):
+            if False:
+                yield b""
+
+        async def aclose(self):
+            return None
+
+    class FakePool:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def handle_async_request(self, request):
+            captured.append(request)
+            return SimpleNamespace(status=200, headers=[], stream=CoreStream(), extensions={})
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(parser_mod.httpcore, "AsyncConnectionPool", FakePool)
+    transport = parser_mod._FixedAddressTransport(address="93.184.216.34")
+    request = parser_mod.httpx.Request(
+        "GET", "https://cdn.example/path?q=1", headers={"host": "cdn.example"}
+    )
+
+    response = asyncio.run(transport.handle_async_request(request))
+    asyncio.run(response.aclose())
+    core_request = captured[0]
+
+    assert core_request.url.host == b"cdn.example"
+    assert core_request.url.port == 443
+    assert (b"host", b"cdn.example") in core_request.headers
+    assert core_request.url.target == b"/path?q=1"
+
+
+def test_fixed_transport_re_resolves_each_redirect_hop(monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    addresses = iter(["1.1.1.1", "8.8.8.8"])
+    backends: list[object] = []
+
+    class CoreStream:
+        async def aclose(self):
+            return None
+
+    class FakePool:
+        def __init__(self, **kwargs):
+            backends.append(kwargs["network_backend"])
+
+        async def handle_async_request(self, _request):
+            return SimpleNamespace(status=200, headers=[], stream=CoreStream(), extensions={})
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(parser_mod.httpcore, "AsyncConnectionPool", FakePool)
+    transport = parser_mod._FixedAddressTransport(
+        address="93.184.216.34",
+        resolver=lambda _host: next(addresses),
+    )
+    request = parser_mod.httpx.Request("GET", "https://cdn.example/x.png")
+
+    first = asyncio.run(transport.handle_async_request(request))
+    asyncio.run(first.aclose())
+    second = asyncio.run(transport.handle_async_request(request))
+    asyncio.run(second.aclose())
+
+    assert [backend._address for backend in backends] == [
+        "93.184.216.34",
+        "1.1.1.1",
+    ]
 
 
 # ============================================================================
@@ -900,12 +1059,23 @@ def test_materialize_rejects_existing_non_file_target(tmp_path: Path) -> None:
     assert parser._materialize_data_url(PNG_DATA_URL) is None
 
 
-def test_materialize_write_failure_returns_none(tmp_path: Path) -> None:
+def test_materialize_publishes_with_atomic_replace(tmp_path: Path, monkeypatch) -> None:
     _, image, _ = _load_modules()
+    parser_mod = _parser_module()
     parser = _make_parser(image, tmp_path)
-    occupied = tmp_path / "image_cache" / PNG_DIGEST[:2]
-    occupied.write_bytes(b"occupied")
-    assert parser._materialize_data_url(PNG_DATA_URL) is None
+    calls: list[tuple[Path, Path]] = []
+    original_replace = parser_mod.os.replace
+
+    def replace(source, target):
+        calls.append((Path(source), Path(target)))
+        original_replace(source, target)
+
+    monkeypatch.setattr(parser_mod.os, "replace", replace)
+    target = parser._materialize_data_url(PNG_DATA_URL)
+
+    assert target is not None and target.is_file()
+    assert calls and calls[0][1] == target
+    assert not list(target.parent.glob("*.tmp"))
 
 
 # ============================================================================
@@ -938,7 +1108,7 @@ def test_is_safe_url_tolerates_urlparse_failure(monkeypatch) -> None:
 def _make_fetch_env(monkeypatch, response):
     _, image, _ = _load_modules()
     parser_mod = _parser_module()
-    monkeypatch.setattr(parser_mod, "_host_all_global", lambda host: True)
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: "93.184.216.34")
 
     class FakeAsyncHTTPTransport:
         def __init__(self, **_kwargs):
@@ -1033,7 +1203,7 @@ def test_fetch_success_returns_data_url(monkeypatch) -> None:
 def test_fetch_client_exception_returns_none(monkeypatch) -> None:
     _, image, _ = _load_modules()
     parser_mod = _parser_module()
-    monkeypatch.setattr(parser_mod, "_host_all_global", lambda host: True)
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: "93.184.216.34")
 
     class ExplodingClient:
         def __init__(self, **_kwargs):
@@ -1064,6 +1234,6 @@ def test_fetch_without_httpx_returns_none(monkeypatch) -> None:
 def test_fetch_unsafe_url_returns_none(monkeypatch) -> None:
     _, image, _ = _load_modules()
     parser_mod = _parser_module()
-    monkeypatch.setattr(parser_mod, "_host_all_global", lambda host: False)
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: None)
     parser = image.ImageParser(object())
     assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) is None

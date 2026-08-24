@@ -1232,12 +1232,12 @@ def test_r18_aba_old_task_does_not_revive_after_re_add(tmp_path: Path) -> None:
 def test_r19_invalidate_cascades_generation_delay_and_tables() -> None:
     """invalidate 必须推进代次、取消延迟并清三表。事件表身份由 r20 行为钉住。"""
     invalidate_calls = calls_in("session_coordinator.py", "SessionCoordinator.invalidate")
-    for callee in ("self._gate.advance", "self._cancel_delay", "self.clear"):
+    for callee in ("self._gate.advance", "self._cancel_delay", "self.clear_session"):
         assert callee in invalidate_calls, f"invalidate 未级联 {callee}"
 
-    clear = method_source("session_coordinator.py", "SessionCoordinator.clear")
-    for frag in ["_events.pop", "_event_at.pop", "_images.pop"]:
-        assert frag in clear, f"clear 必须级联清理 {frag}"
+    clear_session = method_source("session_coordinator.py", "SessionCoordinator.clear_session")
+    assert "self.clear_event(umo)" in clear_session
+    assert "_images.pop" in clear_session
 
 
 # ============================================================================

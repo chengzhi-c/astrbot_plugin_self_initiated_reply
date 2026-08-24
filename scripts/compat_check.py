@@ -173,6 +173,17 @@ def run_contract_checks(*, warn: bool) -> int:
         failures.append(f"denylist 未覆盖 {module_name}: {', '.join(missing)}")
     failures.extend(_handler_signature_gaps())
 
+    from scripts.runtime_dependency_gates import (
+        EXPECTED_RUNTIME_DEPENDENCIES,
+        declared_runtime_dependencies,
+        installed_runtime_dependency_gaps,
+        runtime_api_gaps,
+    )
+
+    if declared_runtime_dependencies() != EXPECTED_RUNTIME_DEPENDENCIES:
+        failures.append("runtime dependency allowlist 与 pyproject.toml 不一致")
+    failures.extend(installed_runtime_dependency_gaps())
+    failures.extend(runtime_api_gaps())
     all_problems = failures + problems
     if not all_problems:
         print("host compat OK")

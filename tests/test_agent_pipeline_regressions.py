@@ -367,7 +367,10 @@ def test_context_send_none_is_delivered_and_writes_history(tmp_path: Path) -> No
         def run_effect(_runner, **_kwargs):
             async def gen():
                 # 模拟生成期间事件被清理：send_reply 走 context 兜底路径
-                plugin._coordinator.clear(UMO)
+                plugin._coordinator.clear_event(
+                    UMO,
+                    expected_active_at=plugin._last_event_at.get(UMO),
+                )
                 yield None
 
             return gen()

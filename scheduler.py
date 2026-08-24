@@ -55,7 +55,7 @@ class SessionScheduler:
         should_run: Callable[[], bool],
         state_for: Callable[[str], SessionState],
         check_session: CheckSessionCallback,
-        clear_cached_event: Callable[[str], None],
+        clear_event: Callable[[str, float], None],
         drop_older_images: Callable[[float], None],
         last_events: dict[str, Any],
         last_event_at: dict[str, float],
@@ -72,7 +72,7 @@ class SessionScheduler:
         self._should_run = should_run
         self._state_for = state_for
         self._check_session = check_session
-        self._clear_cached_event = clear_cached_event
+        self._clear_event = clear_event
         self._drop_older_images = drop_older_images
         self._last_events = last_events
         self._last_event_at = last_event_at
@@ -400,8 +400,8 @@ class SessionScheduler:
             if umo not in live_sessions
         )
         stale = [item for item in removable if now - item[0] >= EVENT_CLEANUP_INTERVAL_SEC]
-        for _, umo in stale:
-            self._clear_cached_event(umo)
+        for active_at, umo in stale:
+            self._clear_event(umo, active_at)
 
         # 只做纯内存的图片索引回收：本方法由 on_message（协程）同步调用，
         # 磁盘遍历会阻塞消息热路径。磁盘侧由 _image_cleanup_loop 经
@@ -414,11 +414,11 @@ class SessionScheduler:
         if len(self._last_events) > MAX_CACHED_EVENTS:
             excess = len(self._last_events) - MAX_CACHED_EVENTS
             removed = 0
-            for _, umo in removable:
+            for active_at, umo in removable:
                 if removed >= excess:
                     break
                 if umo in self._last_events and umo not in live_sessions:
-                    self._clear_cached_event(umo)
+                    self._clear_event(umo, active_at)
                     removed += 1
             if removed:
                 logger.info(

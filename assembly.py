@@ -71,7 +71,7 @@ def assemble_plugin_components(
                 expected_generation=expected_generation,
             )
         ),
-        clear_cached_event=plugin._coordinator.clear,
+        clear_event=plugin._coordinator.clear_event,
         drop_older_images=plugin._coordinator.drop_older_than,
         last_events=plugin._last_events,
         last_event_at=plugin._last_event_at,

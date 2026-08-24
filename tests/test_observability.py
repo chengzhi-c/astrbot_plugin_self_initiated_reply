@@ -144,7 +144,7 @@ def _make_scheduler(tmp_path: Path, scheduler, models):
         should_run=lambda: True,
         state_for=lambda umo: models.SessionState(),
         check_session=check_session,
-        clear_cached_event=lambda umo: None,
+        clear_event=lambda _umo, _active_at: None,
         drop_older_images=lambda cutoff: None,
         last_events={},
         last_event_at={},

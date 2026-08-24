@@ -124,22 +124,33 @@ async def test_clear_only_drops_session_resources() -> None:
     coordinator.record_event("s1", object(), 1.0)
     coordinator.record_event("s2", object(), 2.0)
 
-    coordinator.clear("s1")
+    coordinator.clear_event("s1", expected_active_at=1.0)
 
     assert "s1" not in ctx.events
     assert "s2" in ctx.events  # 其他会话不受影响
 
 
-async def test_reset_all_clears_everything() -> None:
+async def test_clear_event_preserves_images_and_matches_timestamp() -> None:
     _, coordinator, ctx = _make_coordinator()
-    coordinator.record_event("s1", object(), 1.0)
-    coordinator.record_event("s2", object(), 2.0)
+    coordinator.record_event("s1", object(), 100.0)
+    coordinator.capture_images("s1", 100.0, [_Image("a")])
 
-    coordinator.reset_all()
+    coordinator.clear_event("s1", expected_active_at=100.0)
 
-    assert ctx.events == {}
-    assert ctx.event_at == {}
-    assert ctx.images == {}
+    assert "s1" not in ctx.events
+    assert "s1" not in ctx.event_at
+    assert "s1" in ctx.images
+
+
+async def test_stale_clear_event_cannot_remove_new_event() -> None:
+    _, coordinator, ctx = _make_coordinator()
+    coordinator.record_event("s1", "old", 100.0)
+    coordinator.record_event("s1", "new", 200.0)
+
+    coordinator.clear_event("s1", expected_active_at=100.0)
+
+    assert ctx.events["s1"] == "new"
+    assert ctx.event_at["s1"] == 200.0
 
 
 # ============================================================================

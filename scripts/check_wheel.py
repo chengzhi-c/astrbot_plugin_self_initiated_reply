@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import glob
 import sys
+import tomllib
 import zipfile
 from fnmatch import fnmatch
 from pathlib import Path
+
+from packaging.requirements import Requirement
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -84,6 +87,17 @@ def _find_wheel() -> Path:
     return Path(candidates[-1])
 
 
+def _normalize_requirement(raw: str) -> str:
+    requirement = Requirement(raw)
+    return f"{requirement.name}{requirement.specifier}"
+
+
+def _expected_runtime_dependencies() -> set[str]:
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        project = tomllib.load(handle)["project"]
+    return {_normalize_requirement(raw) for raw in project.get("dependencies", [])}
+
+
 def _expected_version() -> str:
     """metadata.yaml 的发布版本（wheel 文件名与 dist-info 的基准）。"""
     import re
@@ -137,7 +151,20 @@ def main() -> int:
     elif f"Version: {expected}" not in dist_text:
         failures.append(f"dist-info 版本与 metadata {expected} 不一致")
 
-    # 体积回归上限：基线 213KB（0.9.3 assets 排除后实测），+30% 缓冲覆盖
+    # 运行时依赖必须进入生产 METADATA；只出现在 dev extra 会导致安装后
+    # Vision 固定地址传输缺包，且此前的零依赖门禁无法发现这种漂移。
+    expected_runtime = _expected_runtime_dependencies()
+    actual_runtime = {
+        line.removeprefix("Requires-Dist: ").split(";", 1)[0].strip()
+        for line in dist_text.splitlines()
+        if line.startswith("Requires-Dist: ") and "; extra ==" not in line
+    }
+    if actual_runtime != expected_runtime:
+        failures.append(
+            f"wheel runtime METADATA 依赖漂移: actual={sorted(actual_runtime)!r} "
+            f"expected={sorted(expected_runtime)!r}"
+        )
+
     # logo/文档微增；超阈值必是新增开发物或大文件泄漏，早于发布拦住。
     size = wheel.stat().st_size
     if size > MAX_WHEEL_BYTES:

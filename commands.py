@@ -192,7 +192,9 @@ async def dispatch_command_action(
             )
         finally:
             if plugin._last_events.get(umo) is event:
-                plugin._coordinator.clear(umo)
+                active_at = plugin._last_event_at.get(umo)
+                if active_at is not None:
+                    plugin._coordinator.clear_event(umo, expected_active_at=active_at)
             if not session_whitelisted(umo, plugin.settings.whitelist):
                 plugin._prune_session(umo)
         return f"主动回复检查结果：{result}"

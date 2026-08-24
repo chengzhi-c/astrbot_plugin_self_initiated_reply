@@ -17,14 +17,34 @@
 
 from __future__ import annotations
 
+import base64
 from collections import deque
 from collections.abc import Callable
 from typing import Any
 
 from astrbot.api import logger
 
-from .models import MAX_CACHED_IMAGE_EVENTS, PLUGIN_ID, now_ts
+from .models import (
+    MAX_CACHED_IMAGE_EVENTS,
+    MAX_IMAGE_MEMORY_BYTES,
+    MAX_SESSION_IMAGE_MEMORY_BYTES,
+    PLUGIN_ID,
+    now_ts,
+)
 from .session_gate import SessionGate
+
+
+def _prepared_memory_size(image: Any) -> int:
+    source = str(getattr(image, "prepared_source", "") or "")
+    if not source.startswith("data:"):
+        return 0
+    _header, separator, encoded = source.partition(",")
+    if not separator:
+        return len(source.encode("utf-8"))
+    try:
+        return len(base64.b64decode(encoded, validate=True))
+    except (ValueError, TypeError):
+        return len(encoded.encode("utf-8"))
 
 
 class SessionCoordinator:
@@ -39,6 +59,8 @@ class SessionCoordinator:
         gate: SessionGate,
         cancel_delay: Callable[[str, bool], None],
         notify_silence: Callable[[str], None],
+        max_image_memory_bytes: int = MAX_IMAGE_MEMORY_BYTES,
+        max_session_image_memory_bytes: int = MAX_SESSION_IMAGE_MEMORY_BYTES,
     ) -> None:
         self._events = events
         self._event_at = event_at
@@ -46,6 +68,8 @@ class SessionCoordinator:
         self._gate = gate
         self._cancel_delay = cancel_delay
         self._notify_silence = notify_silence
+        self._max_image_memory_bytes = max(0, int(max_image_memory_bytes))
+        self._max_session_image_memory_bytes = max(0, int(max_session_image_memory_bytes))
 
     # ------------------------------------------------------------------
     # 写点
@@ -60,10 +84,97 @@ class SessionCoordinator:
         self._event_at[umo] = at
         self._notify_silence(umo)
 
-    def capture_images(self, umo: str, timestamp: float, cached_images: list[Any]) -> None:
-        """写入一批已冻结的图片到会话索引。"""
+    def _memory_bytes_for(self, umo: str | None = None) -> int:
+        events = self._images.items() if umo is None else [(umo, self._images.get(umo))]
+        return sum(
+            _prepared_memory_size(image)
+            for _key, image_events in events
+            if image_events
+            for _timestamp, images in image_events
+            for image in images
+        )
+
+    def _evict_oldest_image_event(self, *, umo: str | None = None) -> bool:
+        candidates = []
+        events = self._images.items() if umo is None else [(umo, self._images.get(umo))]
+        for key, image_events in events:
+            if image_events:
+                candidates.append((image_events[0][0], key, image_events))
+        if not candidates:
+            return False
+        _, key, image_events = min(candidates, key=lambda item: item[0])
+        image_events.popleft()
+        if not image_events:
+            self._images.pop(key, None)
+        return True
+
+    def _append_image_event(self, umo: str, timestamp: float, images: list[Any]) -> None:
         image_events = self._images.setdefault(umo, deque(maxlen=MAX_CACHED_IMAGE_EVENTS))
-        image_events.append((timestamp, cached_images))
+        if len(image_events) >= MAX_CACHED_IMAGE_EVENTS:
+            image_events.popleft()
+        image_events.append((timestamp, images))
+
+    def capture_images(self, umo: str, timestamp: float, cached_images: list[Any]) -> list[Any]:
+        """Write frozen images while enforcing global and per-session byte budgets."""
+        if not cached_images:
+            self._append_image_event(umo, timestamp, [])
+            return []
+
+        accepted: list[Any] = []
+        accepted_bytes = 0
+        session_bytes = self._memory_bytes_for(umo)
+        total_bytes = self._memory_bytes_for()
+        for image in cached_images:
+            image_bytes = _prepared_memory_size(image)
+            if image_bytes > self._max_session_image_memory_bytes:
+                logger.warning(
+                    "[%s] rejected oversized in-memory image session=%s bytes=%d",
+                    PLUGIN_ID,
+                    umo,
+                    image_bytes,
+                )
+                continue
+            if image_bytes > self._max_image_memory_bytes:
+                logger.warning(
+                    "[%s] rejected image over global memory budget session=%s bytes=%d",
+                    PLUGIN_ID,
+                    umo,
+                    image_bytes,
+                )
+                continue
+
+            while (
+                session_bytes + image_bytes > self._max_session_image_memory_bytes
+                and self._evict_oldest_image_event(umo=umo)
+            ):
+                session_bytes = self._memory_bytes_for(umo) + accepted_bytes
+                total_bytes = self._memory_bytes_for() + accepted_bytes
+            while (
+                total_bytes + image_bytes > self._max_image_memory_bytes
+                and self._evict_oldest_image_event()
+            ):
+                total_bytes = self._memory_bytes_for() + accepted_bytes
+                session_bytes = self._memory_bytes_for(umo) + accepted_bytes
+            if (
+                session_bytes + image_bytes > self._max_session_image_memory_bytes
+                or total_bytes + image_bytes > self._max_image_memory_bytes
+            ):
+                logger.warning(
+                    "[%s] image memory budget exhausted session=%s bytes=%d",
+                    PLUGIN_ID,
+                    umo,
+                    image_bytes,
+                )
+                continue
+
+            accepted.append(image)
+            accepted_bytes += image_bytes
+            session_bytes += image_bytes
+            total_bytes += image_bytes
+
+        if accepted:
+            self._append_image_event(umo, timestamp, accepted)
+        return accepted
 
     def drop_older_than(self, cutoff: float, *, umo: str | None = None) -> None:
         """弹出早于 cutoff 的图片事件；umo 为空时扫全表。"""
@@ -85,13 +196,21 @@ class SessionCoordinator:
         """
         generation = self._gate.advance(umo)
         self._cancel_delay(umo, force_cancel)
-        self.clear(umo)
+        self.clear_session(umo)
         return generation
 
-    def clear(self, umo: str) -> None:
-        """清理会话的协作资源（事件/时间/图片）。"""
+    def clear_event(self, umo: str, expected_active_at: float | None = None) -> None:
+        """仅清理最近事件；图片索引由独立保护窗口管理。"""
+        if expected_active_at is not None:
+            current = self._event_at.get(umo)
+            if current != expected_active_at:
+                return
         self._events.pop(umo, None)
         self._event_at.pop(umo, None)
+
+    def clear_session(self, umo: str) -> None:
+        """清理会话全部协作资源，供失效、移除和终止路径使用。"""
+        self.clear_event(umo)
         self._images.pop(umo, None)
 
     def reset_all(self) -> None:

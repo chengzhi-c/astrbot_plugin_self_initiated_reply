@@ -42,6 +42,9 @@ MAX_VISION_IMAGE_AGE_SEC = 86400  # 图片上下文最长保留时间
 MAX_VISION_TIMEOUT_SEC = 120  # 单张图片解析超时上限
 MAX_CACHED_IMAGE_EVENTS = 20  # 每会话临时保留的含图事件数
 MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024  # 图片冻结缓存总容量上限
+MAX_IMAGE_DESCRIPTION_CACHE_BYTES = 512 * 1024  # Vision 描述内存缓存上限
+MAX_IMAGE_MEMORY_BYTES = 64 * 1024 * 1024  # 全局事件图片 data URL 内存上限
+MAX_SESSION_IMAGE_MEMORY_BYTES = 16 * 1024 * 1024  # 单会话图片 data URL 内存上限
 
 # 代次失效时返回给调用方的用户可见文案。两条措辞相近但语义不同，不可互换：
 # 前者用于「发送尚未开始就发现代次已变」（放弃整个任务），后者用于「回复已生成

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 from .test_vision import PACKAGE_NAME, _load_modules
@@ -57,3 +58,70 @@ def test_runtime_containers_honor_budget_caps(tmp_path: Path) -> None:
         )
 
     with_plugin(tmp_path, scenario)
+
+
+class _PreparedImage:
+    def __init__(self, payload: bytes) -> None:
+        self.prepared_source = "data:image/png;base64," + base64.b64encode(payload).decode()
+
+    def cache_key(self) -> str:
+        return self.prepared_source
+
+
+def test_in_memory_image_index_enforces_session_and_global_byte_budgets() -> None:
+    import importlib
+    from types import SimpleNamespace
+
+    _load_modules()
+    module = importlib.import_module(f"{PACKAGE_NAME}.session_coordinator")
+    events: dict[str, object] = {}
+    event_at: dict[str, float] = {}
+    images: dict[str, object] = {}
+    coordinator = module.SessionCoordinator(
+        events=events,
+        event_at=event_at,
+        images=images,
+        gate=SimpleNamespace(advance=lambda _umo: 1),
+        cancel_delay=lambda _umo, _force: None,
+        notify_silence=lambda _umo: None,
+        max_image_memory_bytes=5,
+        max_session_image_memory_bytes=4,
+    )
+
+    accepted = coordinator.capture_images(
+        "s1", 1.0, [_PreparedImage(b"123"), _PreparedImage(b"456")]
+    )
+    assert len(accepted) == 1
+    assert coordinator._memory_bytes_for("s1") == 3
+
+    accepted = coordinator.capture_images("s2", 2.0, [_PreparedImage(b"789")])
+    assert len(accepted) == 1
+    assert coordinator._memory_bytes_for() == 3
+    assert "s1" not in images
+    assert "s2" in images
+
+
+def test_image_budget_recomputes_global_bytes_after_session_eviction() -> None:
+    import importlib
+    from types import SimpleNamespace
+
+    _load_modules()
+    module = importlib.import_module(f"{PACKAGE_NAME}.session_coordinator")
+    images: dict[str, object] = {}
+    coordinator = module.SessionCoordinator(
+        events={},
+        event_at={},
+        images=images,
+        gate=SimpleNamespace(advance=lambda _umo: 1),
+        cancel_delay=lambda _umo, _force: None,
+        notify_silence=lambda _umo: None,
+        max_image_memory_bytes=10,
+        max_session_image_memory_bytes=5,
+    )
+    coordinator.capture_images("s1", 1.0, [_PreparedImage(b"12345")])
+    coordinator.capture_images("s2", 1.0, [_PreparedImage(b"67890")])
+    accepted = coordinator.capture_images("s1", 2.0, [_PreparedImage(b"abc")])
+
+    assert len(accepted) == 1
+    assert coordinator._memory_bytes_for() == 8
+    assert "s2" in images

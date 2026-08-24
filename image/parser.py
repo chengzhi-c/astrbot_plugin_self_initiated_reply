@@ -9,25 +9,27 @@ import ipaddress
 import os
 import re
 import socket
+import ssl
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import httpcore
+import httpx
 from astrbot.api import logger
 
-from ..models import MAX_IMAGE_CACHE_BYTES, PLUGIN_ID
+from ..models import (
+    MAX_IMAGE_CACHE_BYTES,
+    MAX_IMAGE_DESCRIPTION_CACHE_BYTES,
+    PLUGIN_ID,
+)
 from ..utils import response_text
 from .cache import ImageCache
 from .models import ImageInfo
 from .recorder_bridge import MAX_IMAGE_BYTES, MessageRecorderBridge
 from .safety import sniff_image_mime
-
-try:
-    import httpx
-except ImportError:  # pragma: no cover - AstrBot normally bundles httpx
-    httpx = None  # type: ignore[assignment]
-
 
 VISION_PROMPT_VERSION = "v1"
 
@@ -146,17 +148,32 @@ def _remove_empty_cache_directories(directories: list[Path]) -> None:
             pass
 
 
+def _atomic_write(path: Path, content: bytes) -> None:
+    """Write bytes beside the target and publish them with one replacement."""
+    temporary_path: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        os.close(descriptor)
+        temporary_path = Path(temporary_name)
+        temporary_path.write_bytes(content)
+        with temporary_path.open("rb+") as temporary:
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
+
+
 def _redact_url(value: str) -> str:
-    """去掉 query/fragment 后再截断，避免签名 token 进日志。
-
-    图床直链常把凭证放在 query（OSS/COS 的 signature、腾讯 rkey 等），
-    原实现直接打印前 LOG_URL_MAX_CHARS 字符会把凭证写进日志文件。保留
-    scheme+host+path 足以定位失败对象，凭证不落盘。非法 URL（含本地 file
-    路径、data: URL）按裸截断兜底——它们没有 netloc，也不带 query 凭证。
-
-    返回值长度恒 <= LOG_URL_MAX_CHARS：截断预算含 "?<redacted>" 标记，
-    否则超长 path 会让日志行比原实现更宽。
-    """
+    """去掉 query/fragment 后再截断，避免签名 token 进日志。"""
     text = str(value or "").strip()
     if not text:
         return ""
@@ -171,41 +188,180 @@ def _redact_url(value: str) -> str:
     return clean[: LOG_URL_MAX_CHARS - len(suffix)] + suffix
 
 
+def _global_addresses(host: str) -> list[str]:
+    """Resolve a host once and return only globally routable addresses."""
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except OSError:
+            return []
+        addresses: set[str] = set()
+        for info in infos:
+            try:
+                addresses.add(str(ipaddress.ip_address(info[4][0])))
+            except (IndexError, ValueError):
+                continue
+        if not addresses:
+            return []
+        parsed = [ipaddress.ip_address(address) for address in addresses]
+        if not all(address.is_global for address in parsed):
+            return []
+        return sorted(addresses)
+    return [str(literal)] if literal.is_global else []
+
+
 def _host_all_global(host: str) -> bool:
     """Require every DNS result for a host to be globally routable."""
-    try:
-        return ipaddress.ip_address(host).is_global
-    except ValueError:
-        pass
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError:
-        return False
-    addresses = set()
-    for info in infos:
+    return bool(_global_addresses(host))
+
+
+def _resolve_global_address(host: str) -> str | None:
+    """Return one checked address; the caller must connect to this exact value."""
+    addresses = _global_addresses(host)
+    return addresses[0] if addresses else None
+
+
+class _FixedAddressBackend(httpcore.AsyncNetworkBackend):
+    """Delegate sockets while replacing only the TCP destination address."""
+
+    def __init__(self, address: str, wrapped: Any | None = None) -> None:
+        if wrapped is None:
+            if httpcore is None:
+                raise RuntimeError("httpcore is required for fixed-address image downloads")
+            wrapped = httpcore.AnyIOBackend()
+        self._address = address
+        self._wrapped = wrapped
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Any = None,
+    ) -> Any:
+        del host
+        return await self._wrapped.connect_tcp(
+            self._address,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Any = None,
+    ) -> Any:
+        del path, timeout, socket_options
+        raise RuntimeError("fixed-address image downloads do not support unix sockets")
+
+    async def sleep(self, seconds: float) -> Any:
+        return await self._wrapped.sleep(seconds)
+
+
+class _FixedResponseStream(httpx.AsyncByteStream):
+    """Close the one-request pool together with its response body."""
+
+    def __init__(self, stream: Any, pool: Any, release: Any) -> None:
+        self._stream = stream
+        self._pool = pool
+        self._release = release
+        self._closed = False
+
+    async def __aiter__(self):
         try:
-            addresses.add(ipaddress.ip_address(info[4][0]))
-        except (IndexError, ValueError):
-            continue
-    return bool(addresses) and all(address.is_global for address in addresses)
+            async for chunk in self._stream:
+                yield chunk
+        finally:
+            await self.aclose()
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            await self._stream.aclose()
+        finally:
+            await self._pool.aclose()
+            self._release(self._pool)
 
 
-if httpx is not None:
+class _FixedAddressTransport(httpx.AsyncBaseTransport):
+    """HTTPX transport that binds each request to its checked DNS result.
 
-    class _GlobalOnlyTransport(httpx.AsyncBaseTransport):
-        """Re-check DNS immediately before connecting to reduce DNS rebinding risk."""
+    The request URL remains the original hostname, so httpcore still sends the
+    correct Host header and uses that hostname for TLS SNI. Only the TCP
+    backend receives the selected IP address. A new pool is used per request;
+    this makes every redirect a fresh resolve-and-bind decision.
+    """
 
-        def __init__(self, wrapped: Any) -> None:
-            self._wrapped = wrapped
+    def __init__(self, resolver: Any | None = None, address: str | None = None) -> None:
+        self._resolver = resolver
+        self._address = address
+        self._pools: set[Any] = set()
 
-        async def handle_async_request(self, request: Any) -> Any:
-            host = request.url.host
-            if host and not await asyncio.to_thread(_host_all_global, host):
-                raise httpx.ConnectError(f"拒绝连接非公网主机: {host}")
-            return await self._wrapped.handle_async_request(request)
+    async def handle_async_request(self, request: Any) -> Any:
+        """Resolve the request host and issue one directly bound HTTP request."""
+        host = str(request.url.host or "")
+        scheme = str(request.url.scheme or "").lower()
+        port = request.url.port or (443 if scheme == "https" else 80)
+        if scheme not in {"http", "https"} or not host or port not in {80, 443}:
+            raise httpx.ConnectError(f"拒绝连接不安全的图片地址: {host}")
+        resolver = self._resolver or _resolve_global_address
+        address = self._address
+        self._address = None
+        address = address or await asyncio.to_thread(resolver, host)
+        try:
+            checked_address = ipaddress.ip_address(str(address))
+        except ValueError:
+            checked_address = None
+        if checked_address is None or not checked_address.is_global:
+            raise httpx.ConnectError(f"拒绝连接非公网主机: {host}")
 
-        async def aclose(self) -> None:
-            await self._wrapped.aclose()
+        pool = httpcore.AsyncConnectionPool(
+            ssl_context=ssl.create_default_context(),
+            max_connections=1,
+            max_keepalive_connections=0,
+            http1=True,
+            http2=False,
+            network_backend=_FixedAddressBackend(str(address)),
+        )
+        self._pools.add(pool)
+        try:
+            core_request = httpcore.Request(
+                method=request.method,
+                url=httpcore.URL(
+                    scheme=request.url.raw_scheme,
+                    host=request.url.raw_host,
+                    port=port,
+                    target=request.url.raw_path,
+                ),
+                headers=request.headers.raw,
+                content=request.stream,
+                extensions=request.extensions,
+            )
+            response = await pool.handle_async_request(core_request)
+        except Exception:
+            await pool.aclose()
+            self._pools.discard(pool)
+            raise
+        return httpx.Response(
+            status_code=response.status,
+            headers=response.headers,
+            stream=_FixedResponseStream(response.stream, pool, self._pools.discard),
+            extensions=response.extensions,
+        )
+
+    async def aclose(self) -> None:
+        pools = tuple(self._pools)
+        self._pools.clear()
+        for pool in pools:
+            await pool.aclose()
 
 
 class ImageParser:
@@ -224,7 +380,10 @@ class ImageParser:
         self._bridge = bridge
         self._provider_id = str(provider_id or "").strip()
         self._recorder_bridge = recorder_bridge
-        self._cache = ImageCache(max_size=50)
+        self._cache = ImageCache(
+            max_size=50,
+            max_bytes=MAX_IMAGE_DESCRIPTION_CACHE_BYTES,
+        )
         # 同 key 并发解析共享同一次 provider 调用（避免重复计费）
         self._inflight: dict[str, asyncio.Future] = {}
         self._timeout_sec = max(1.0, float(timeout_sec))
@@ -593,14 +752,14 @@ class ImageParser:
                 if not target.is_file():
                     return None
                 # 内容寻址的完整性前提是"文件内容 = 文件名 hash"：
-                # write_bytes 中断会留下半截文件，命中分支先校验大小；
-                # 同大小内容被外部替换时重算哈希兜底，不符即重写。
-                if target.stat().st_size != len(content) or (
+                # 同大小内容被外部替换时重算哈希兜底，不符即原子重写。
+                needs_write = target.stat().st_size != len(content) or (
                     hashlib.sha256(target.read_bytes()).hexdigest() != digest
-                ):
-                    target.write_bytes(content)
+                )
             else:
-                target.write_bytes(content)
+                needs_write = True
+            if needs_write:
+                _atomic_write(target, content)
             # 内容寻址只决定文件身份；mtime 表示最近一次被使用的生命周期。
             # 重复图片复用旧文件时刷新它，避免清理任务按旧时间提前回收。
             os.utime(target, None)
@@ -628,25 +787,33 @@ class ImageParser:
     async def _fetch_image_data_url(self, url: str) -> str | None:
         """下载远程图片并编码为 ``data:`` URL，失败返回 ``None``。
 
-        安全约束（每条都是拒绝理由，不可为兼容性放宽）：仅走
-        ``_GlobalOnlyTransport``（SSRF 防护，内网地址直接拒绝）、强制
-        ``verify=True``、重定向上限 3 跳、体积双重设限（先看 content-length，
-        再在流式读取中累计校验，声明值不可信）、MIME 由**载荷嗅探**决定而非
-        响应头声明。
+        安全约束（每条都是拒绝理由，不可为兼容性放宽）：仅走固定地址传输（SSRF 防护，
+        每跳重新解析并绑定公网 IP）、TLS 证书验证、重定向上限 3 跳、体积双重设限
+        （先看 content-length，再在流式读取中累计校验，声明值不可信）、MIME 由**载荷
+        嗅探**决定而非响应头声明。
 
         失败时全部静默返回 ``None``（调用方据此降级为"本次不带图"）：
-        httpx 缺失、URL 不安全、状态码 >= 400、超限、空响应、嗅探不出图片
-        类型、以及任何异常（仅异常路径记 debug）。返回 ``None`` 的语义是
-        "这张图不可用"，不是"出错了"——因此不向上抛。
+        URL 不安全、状态码 >= 400、超限、空响应、嗅探不出图片类型、以及任何异常
+        （仅异常路径记 debug）。返回 ``None`` 的语义是"这张图不可用"，不是"出错了"，
+        因此不向上抛。
         """
-        if httpx is None or not await self._is_safe_url(url):
+        if httpx is None or httpcore is None:
             return None
         try:
-            transport = _GlobalOnlyTransport(httpx.AsyncHTTPTransport(verify=True))
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                return None
+            if parsed.port is not None and parsed.port not in {80, 443}:
+                return None
+            address = await asyncio.to_thread(_resolve_global_address, parsed.hostname)
+            if not address:
+                return None
+            transport = _FixedAddressTransport(address=address)
             async with httpx.AsyncClient(
                 timeout=15,
                 follow_redirects=True,  # 跟随重定向（QQ 图片 URL 通常会 302）
                 max_redirects=3,
+                trust_env=False,
                 transport=transport,
             ) as client:
                 async with client.stream("GET", url) as response:

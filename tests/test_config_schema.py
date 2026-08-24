@@ -65,6 +65,17 @@ def test_schema_keys_align_with_config_schema_keys() -> None:
     )
 
 
+def test_runtime_dependency_allowlist_is_explicit() -> None:
+    """发布包只允许固定地址图片传输所需的两个直接依赖。"""
+    import tomllib
+
+    from scripts.runtime_dependency_gates import EXPECTED_RUNTIME_DEPENDENCIES
+
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        project = tomllib.load(handle)["project"]
+    assert frozenset(project.get("dependencies", [])) == EXPECTED_RUNTIME_DEPENDENCIES
+
+
 def test_legacy_alias_keys_stay_out_of_schema() -> None:
     """历史兼容别名已于 0.9.2 移除，不得重新进入 _conf_schema.json。"""
     legacy_aliases = {

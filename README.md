@@ -104,7 +104,8 @@
 
 - **两个开关相互独立。** **判断模型识图**在判断是否接话时看图；**主模型识图**在生成正文时看图。判断阶段触发频繁，只开主模型识图更省 token。两者可分别指定 Provider；同一 Provider 下相同图片只描述一次，结果按 Provider 存入运行期内存缓存（约 50 张上限，插件重载 / 重启或超限逐出后重新描述），避免不同 Provider 串用描述。
 - **可跳过表情包识图。** QQ OneBot `subType=1` 的表情包直接排除，不调 Vision。
-- **快照安全可控。** 图片快照进插件自己的 `image_cache`，远程图后台冻结，不依赖会过期的 QQ CDN 链接；按魔数校验真实格式，防 SSRF 与伪造路径。
+- **快照安全可控。** 图片快照进插件自己的 `image_cache`，远程图后台冻结，不依赖会过期的 QQ CDN 链接；按魔数校验真实格式，防 SSRF 与伪造路径。固定地址传输每跳重新解析公网 IP，且不读取环境代理。
+- **图片缓存有界。** Vision 描述缓存同时受条目数和 UTF-8 字节预算限制；磁盘不可用时的内存 data URL 受全局与单会话原始载荷字节预算约束，超限会告警并跳过图片。
 - **仅作不可信上下文。** 描述只作为不可信上下文参与判断，不写入历史与状态，不能触发工具；缓存按有效期与容量上限自动清理，设置页提供「立即清理」按钮。
 
 ---
@@ -274,8 +275,9 @@ whitelisted sessions.
   config.
 - **Commands.** `/selfreply` plus `status`, `add`, `remove`, `list`,
   `check [content]`, `on`, `off`, `debug`.
-- **Requirements.** AstrBot `>=4.23.3,<5`, Python `>=3.12`, and **zero runtime
-  third-party dependencies** — everything reuses the host API.
+- **Requirements.** AstrBot `>=4.23.3,<5`, Python `>=3.12`, and the declared
+  runtime dependencies `httpx>=0.27,<0.29` plus `httpcore>=1,<1.1` for fixed-address
+  HTTPS image downloads. Vision remains optional and disabled by default.
 
 > ⚠️ **Security.** The bundled settings page and its Web API have **no
 > independent authentication**; access control is inherited entirely from the

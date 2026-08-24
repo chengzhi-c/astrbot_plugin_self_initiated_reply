@@ -127,11 +127,12 @@ class VisionService:
                     umo,
                 )
                 return
-            self._coordinator.capture_images(umo, active_at, cached_images)
+            accepted_images = self._coordinator.capture_images(umo, active_at, cached_images)
+            accepted_count = len(cached_images) if accepted_images is None else len(accepted_images)
             logger.debug(
                 "[%s] captured %s/%s images into local vision cache for umo=%s",
                 PLUGIN_ID,
-                len(cached_images),
+                accepted_count,
                 len(images),
                 umo,
             )
