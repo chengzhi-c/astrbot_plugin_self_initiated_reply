@@ -2,7 +2,11 @@ const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
 window.__selfreplyAppStarted = true;
 if (window.__selfreplyBootFailTimer)
 	window.clearTimeout(window.__selfreplyBootFailTimer);
-import { FETCH_TIMEOUT_MS, requestPluginApi } from "./frontend-core.mjs";
+import {
+	FETCH_TIMEOUT_MS,
+	createConfigRequestCoordinator,
+	requestPluginApi,
+} from "./frontend-core.mjs";
 import { renderPromptTemplateHtml } from "./config-form.mjs";
 import { createProviderControl } from "./providers.mjs";
 import {
@@ -87,7 +91,15 @@ getEls();
 let bridgeReady = null;
 let providerOptions = [];
 let providerListAvailable = false;
-const state = { savingConfig: false, configLoaded: false, isDirty: false };
+const state = {
+	savingConfig: false,
+	configLoaded: false,
+	configRevision: "",
+	runtimeEnabled: false,
+	requiresConfigRefresh: false,
+	isDirty: false,
+};
+const configRequestCoordinator = createConfigRequestCoordinator();
 const REFRESH_ARM_MS = 3000;
 const TOAST_MS = 2200;
 const SAVE_ANIM_MS = 1100;
@@ -227,6 +239,7 @@ const configIo = createConfigIo({
 	visionProviderControl,
 	visionJudgeProviderControl,
 	fmtBool,
+	requestCoordinator: configRequestCoordinator,
 	SAVE_ANIM_MS,
 	SAVE_DOT_MS,
 });
@@ -263,9 +276,9 @@ async function loadProviders() {
 	}
 }
 
-async function loadAll() {
+async function loadAll({ force = false } = {}) {
 	await loadProviders();
-	await configIo.loadConfig();
+	await configIo.loadConfig({ force });
 }
 
 let refreshing = false;
@@ -278,7 +291,7 @@ async function doRefresh() {
 	els.refreshBtn.disabled = true;
 	els.refreshBtn.classList.add("is-loading");
 	try {
-		await loadAll();
+		await loadAll({ force: true });
 		showToast("已刷新为最新配置");
 	} catch (err) {
 		showToast(err.message || "刷新失败");

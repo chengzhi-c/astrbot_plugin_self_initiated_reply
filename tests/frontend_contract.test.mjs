@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import {
+  createConfigRequestCoordinator,
   isSuccessfulConfigPayload,
   normalizeApiError,
   providerNeedsManualInput,
@@ -24,6 +25,7 @@ import { THEME_KEY } from "../pages/主动回复设置/theme.mjs";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pageDir = join(root, "pages", "主动回复设置");
 const MAX_SOURCE_LINE = 200;
+const TEST_REVISION = `sha256:${"a".repeat(64)}`;
 
 test("bridge rejection is normalized by the shared API request", async () => {
   const bridge = {
@@ -168,6 +170,21 @@ test("HTTP 200 non-JSON response fails closed", async () => {
   );
 });
 
+test("config request coordinator protects load epochs and unknown writes", () => {
+  const coordinator = createConfigRequestCoordinator();
+  const first = coordinator.beginLoad();
+  const second = coordinator.beginLoad();
+  assert.equal(coordinator.canApplyLoad(first, false), false);
+  assert.equal(coordinator.canApplyLoad(second, true), false);
+  const forced = coordinator.beginLoad(true);
+  coordinator.markEdited();
+  assert.equal(coordinator.canApplyLoad(forced, true, true), false);
+  coordinator.markWriteUnknown();
+  assert.equal(coordinator.writeUnknown, true);
+  coordinator.clearWriteUnknown();
+  assert.equal(coordinator.writeUnknown, false);
+});
+
 test("config payload requires ok true and write-critical fields", () => {
   assert.equal(isSuccessfulConfigPayload(null), false);
   assert.equal(isSuccessfulConfigPayload({}), false);
@@ -181,16 +198,21 @@ test("config payload requires ok true and write-critical fields", () => {
       ok: true,
       enabled: false,
       whitelist_sessions: "not-array",
+      config_revision: TEST_REVISION,
     }),
     false
   );
   assert.equal(
-    isSuccessfulConfigPayload({
-      ok: true,
-      enabled: false,
-      whitelist_sessions: [],
-    }),
-    true
+    isSuccessfulConfigPayload(
+      {
+        ok: true,
+        enabled: true,
+        whitelist_sessions: [],
+        config_revision: TEST_REVISION,
+      },
+      ["cooldown_sec"],
+    ),
+    false,
   );
 });
 
@@ -205,6 +227,7 @@ test("page exposes the accessibility and narrow-layout contracts", async () => {
   ]);
   const fe = [app, chrome, configIo, providers].join("\n");
   assert.match(html, /<main\b[^>]*class="layout"/);
+  assert.match(html, /<form id="configForm"[^>]*\binert/);
   assert.match(html, /class="skip-link"[^>]*href="#selfStat"/);
   assert.match(app, /requestPluginApi\(/);
   assert.match(app, /createProviderControl\(/);
@@ -221,7 +244,7 @@ test("page exposes the accessibility and narrow-layout contracts", async () => {
   assert.match(html, /超时则本次不主动回应/);
   assert.doesNotMatch(html, /超时按默认放行/);
   assert.match(fe, /isSuccessfulConfigPayload\(/);
-  assert.match(fe, /btn\.disabled = loading \|\| !configLoaded/);
+  assert.match(fe, /btn\.disabled = blocked/);
   assert.match(css, /@media \(max-width: 360px\)/);
   assert.match(css, /more-actions-menu\[hidden\]/);
   assert.doesNotMatch(css, /\.master, \.panel, \.form-actions/);
@@ -349,8 +372,14 @@ test("config save path follows the form-declared writable keys", async () => {
     whitelistInput: fields.at(-1),
     whitelistCount: { textContent: "" },
   };
-  const state = { configLoaded: true, savingConfig: false };
+  const state = {
+    configLoaded: true,
+    savingConfig: false,
+    configRevision: TEST_REVISION,
+    isDirty: true,
+  };
   const posts = [];
+  let lastToast = "";
   const provider = (value) => ({ value: () => value, sync() {} });
   const controls = {
     judge: provider("judge"),
@@ -368,9 +397,16 @@ test("config save path follows the form-declared writable keys", async () => {
     },
     apiPost: async (endpoint, body) => {
       posts.push({ endpoint, body });
-      return { ok: true };
+      return {
+        ok: true,
+        enabled: true,
+        whitelist_sessions: [],
+        config_revision: TEST_REVISION,
+      };
     },
-    showToast() {},
+    showToast(message) {
+      lastToast = message;
+    },
     setStatState() {},
     renderPromptPreview() {},
     judgeProviderControl: controls.judge,
@@ -383,10 +419,17 @@ test("config save path follows the form-declared writable keys", async () => {
 
   assert.equal(posts.length, 1);
   assert.equal(posts[0].endpoint, "config");
-  assert.deepEqual(Object.keys(posts[0].body).sort(), configSaveKeys(form).sort());
+  assert.deepEqual(
+    Object.keys(posts[0].body).sort(),
+    [...configSaveKeys(form), "base_revision"].sort(),
+  );
+  assert.equal(posts[0].body.base_revision, TEST_REVISION);
   assert.deepEqual(posts[0].body.whitelist_sessions, ["group:a", "group:b"]);
   assert.equal(posts[0].body.decision_prompt_template, "prompt");
   assert.equal(state.savingConfig, false);
+  assert.equal(state.isDirty, true);
+  assert.equal(state.requiresConfigRefresh, true);
+  assert.match(lastToast, /保存状态未知/);
   assert.equal(form.inert, false);
 });
 

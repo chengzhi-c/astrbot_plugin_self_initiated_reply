@@ -5,7 +5,10 @@ import {
 	summarizeWhitelist,
 	uniqueWhitelistItems,
 } from "./config-form.mjs";
-import { isSuccessfulConfigPayload } from "./frontend-core.mjs";
+import {
+	createConfigRequestCoordinator,
+	isSuccessfulConfigPayload,
+} from "./frontend-core.mjs";
 const WHITELIST_ITEM_MAX_LEN = 200;
 export const WHITELIST_ILLEGAL_RE = /[\x00-\x1f"'\\]/;
 const CONFIG_CONTROL_SELECTOR = "[data-config-key]";
@@ -29,13 +32,15 @@ function configControlValue(control, providerControls) {
 	return configTransform === "trim" ? control.value.trim() : control.value;
 }
 
-export function buildConfigSaveBody(form, providerControls) {
-	return Object.fromEntries(
+export function buildConfigSaveBody(form, providerControls, baseRevision = "") {
+	const body = Object.fromEntries(
 		configControls(form).map((control) => [
 			control.dataset.configKey,
 			configControlValue(control, providerControls),
 		]),
 	);
+	if (baseRevision) body.base_revision = baseRevision;
+	return body;
 }
 
 function loadConfigControls(form, config, providerControls) {
@@ -84,7 +89,9 @@ export function createConfigIo(deps) {
 		visionProviderControl,
 		visionJudgeProviderControl,
 		fmtBool,
+		requestCoordinator,
 	} = deps;
+	const coordinator = requestCoordinator || createConfigRequestCoordinator();
 	let numberFields = [];
 	let saveStateKind = "";
 	function els() {
@@ -137,6 +144,7 @@ export function createConfigIo(deps) {
 		}
 	}
 	function setDirty(dirty = true) {
+		if (dirty) coordinator.markEdited();
 		setState({ isDirty: dirty });
 		const e = els();
 		if (e.saveTopBtn) e.saveTopBtn.classList.toggle("is-dirty", dirty);
@@ -163,16 +171,17 @@ export function createConfigIo(deps) {
 	}
 	function setSaving(loading) {
 		const e = els();
-		const { configLoaded } = getState();
+		const { configLoaded, requiresConfigRefresh } = getState();
+		const blocked = loading || !configLoaded || requiresConfigRefresh;
 		const buttons = [
 			e.saveTopBtn,
-			e.saveMobileBtn,
-			e.configForm ? e.configForm.querySelector('button[type="submit"]') : null,
+		e.saveMobileBtn,
+		e.configForm ? e.configForm.querySelector('button[type="submit"]') : null,
 		];
 		buttons.forEach((btn) => {
 			if (!btn) return;
 			btn.classList.toggle("is-loading", loading);
-			btn.disabled = loading || !configLoaded;
+			btn.disabled = blocked;
 		});
 		if (e.refreshBtn) e.refreshBtn.disabled = loading;
 	}
@@ -291,14 +300,8 @@ export function createConfigIo(deps) {
 		e.whitelistError.textContent = "";
 		return true;
 	}
-	async function loadConfig() {
+	function applyConfigPayload(config) {
 		const e = els();
-		const config = await apiGet("config");
-		if (!isSuccessfulConfigPayload(config)) {
-			setState({ configLoaded: false });
-			setSaving(false);
-			throw new Error(config?.error || "配置加载失败");
-		}
 		const providerControls = {
 			judge: judgeProviderControl,
 			vision: visionProviderControl,
@@ -323,15 +326,68 @@ export function createConfigIo(deps) {
 				: "已暂停（/off）"
 			: "关闭";
 		setStatState(e.selfStat, runtimeOn ? "is-on" : "is-off");
-		setState({ configLoaded: true });
-		setSaving(false);
+		coordinator.clearWriteUnknown();
+		setState({
+			configLoaded: true,
+			configRevision: config.config_revision,
+			runtimeEnabled: runtimeOn,
+			requiresConfigRefresh: false,
+		});
 		setDirty(false);
+		if (e.configForm) e.configForm.inert = false;
+		setSaving(false);
 	}
+
+	async function loadConfig({ force = false } = {}) {
+		const e = els();
+		const requestEpoch = coordinator.beginLoad(getState().isDirty);
+		const initialLoad = !getState().configLoaded;
+		if (initialLoad && e.configForm) e.configForm.inert = true;
+		try {
+			const config = await apiGet("config");
+			if (!isSuccessfulConfigPayload(config, configControls(e.configForm).map((control) => control.dataset.configKey))) {
+				throw new Error(config?.error || "配置加载失败");
+			}
+			if (!coordinator.canApplyLoad(requestEpoch, getState().isDirty, force)) return false;
+			applyConfigPayload(config);
+			return true;
+		} catch (error) {
+			if (coordinator.isCurrentLoad?.(requestEpoch) !== false) {
+				if (!getState().configLoaded) setState({ configLoaded: false });
+				setSaving(false);
+				if (initialLoad && e.configForm) e.configForm.inert = true;
+			}
+			throw error;
+		}
+	}
+	function adjustedFieldLabels(keys) {
+		const form = els().configForm;
+		return keys.map((key) => {
+			const control = configControls(form).find(
+				(item) => item.dataset.configKey === key,
+			);
+			const container = control?.closest(
+				".field, .provider-field, .toggle-row, .master-switch",
+			);
+			const label = container?.querySelector(".field-label") ||
+				(control?.id
+					? [...document.querySelectorAll("label[for]")].find(
+						(item) => item.htmlFor === control.id,
+					)
+					: null);
+			return (label?.textContent || key).replace(/\s+/g, " ").trim();
+		});
+	}
+
 	async function saveConfig(event) {
 		event.preventDefault();
 		const state = getState();
 		if (state.savingConfig) {
 			showToast("正在保存…");
+			return;
+		}
+		if (state.requiresConfigRefresh || coordinator.writeUnknown) {
+			showToast("保存状态未知，请刷新配置后重试");
 			return;
 		}
 		if (!state.configLoaded) {
@@ -353,14 +409,33 @@ export function createConfigIo(deps) {
 		e.configForm.classList.add("is-saving");
 		setSaveState("保存中", "saving");
 		try {
-			const body = buildConfigSaveBody(e.configForm, {
-				judge: judgeProviderControl,
-				vision: visionProviderControl,
-				visionJudge: visionJudgeProviderControl,
-			});
-			const result = await apiPost("config", body);
+			const body = buildConfigSaveBody(
+				e.configForm,
+				{
+					judge: judgeProviderControl,
+					vision: visionProviderControl,
+					visionJudge: visionJudgeProviderControl,
+				},
+				state.configRevision,
+			);
+			let result;
+			try {
+				result = await apiPost("config", body);
+			} catch (error) {
+				coordinator.markWriteUnknown();
+				setState({ requiresConfigRefresh: true });
+				setSaveState("保存状态未知", "error");
+				showToast("保存状态未知，请刷新配置后重试");
+				return;
+			}
 			if (!result || result.ok !== true) {
 				const errorText = result?.error || "保存失败";
+				if (result?.error_code === "STALE_WRITE") {
+					setState({
+						configRevision: result.config_revision || state.configRevision,
+						requiresConfigRefresh: true,
+					});
+				}
 				setSaveState("保存失败", "error");
 				if (
 					String(errorText).includes("非法字符") &&
@@ -375,15 +450,40 @@ export function createConfigIo(deps) {
 				showToast(errorText);
 				return;
 			}
-			setSaveState("已保存", "ok");
-			setDirty(false);
-			e.whitelistCount.textContent = String(body.whitelist_sessions.length);
-			showToast("配置已保存");
-			try {
-				await loadConfig();
-			} catch (error) {
-				showToast("已保存，但刷新显示失败，请点刷新");
+			const savedConfig = {
+				...(result.config || result),
+				ok: true,
+				config_revision:
+					result.config_revision || result.config?.config_revision,
+				runtime_enabled:
+					result.runtime_enabled ??
+					result.config?.runtime_enabled ??
+					getState().runtimeEnabled,
+			};
+			if (!isSuccessfulConfigPayload(
+				savedConfig,
+				configControls(e.configForm).map((control) => control.dataset.configKey),
+			)) {
+				coordinator.markWriteUnknown();
+				setState({ requiresConfigRefresh: true });
+				setSaveState("保存状态未知", "error");
+				showToast("保存状态未知，请刷新配置后重试");
+				return;
 			}
+			const adjusted = Array.isArray(result.adjusted_fields)
+				? result.adjusted_fields
+				: [];
+			applyConfigPayload(savedConfig);
+			setSaveState("已保存", "ok");
+			if (e.whitelistCount && Array.isArray(body.whitelist_sessions)) {
+				e.whitelistCount.textContent = String(body.whitelist_sessions.length);
+			}
+			const labels = adjustedFieldLabels(adjusted);
+			showToast(
+				labels.length
+					? `配置已保存，已规范化：${labels.join("、")}`
+					: "配置已保存",
+			);
 		} finally {
 			setState({ savingConfig: false });
 			e.configForm.classList.remove("is-saving");

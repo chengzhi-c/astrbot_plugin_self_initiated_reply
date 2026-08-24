@@ -566,7 +566,7 @@ def test_api_post_config_returns_normalized_values(tmp_path) -> None:
             == models.CONFIG_SPEC_BY_KEY["decision_temperature"].maximum
         )
         assert len(config["decision_prompt_template"]) == models.MAX_PROMPT_LENGTH
-        assert config["whitelist_sessions"] == sorted(whitelist)[1:]
+        assert config["whitelist_sessions"] == sorted(whitelist)[: models.MAX_WHITELIST_SIZE]
         assert config["whitelist_sessions"] == sorted(config["whitelist_sessions"])
         assert plugin.settings.to_config_dict() == config
 
@@ -598,7 +598,7 @@ def test_api_get_config_exposes_panel_surface_only(tmp_path) -> None:
         webapi = sys.modules[f"{PACKAGE}.webapi"]
         result = await webapi._api_get_config(plugin)
         panel_keys = {spec.key for spec in models.panel_config_specs()}
-        view_keys = {"ok", "runtime_enabled", "decision_prompt_default"}
+        view_keys = {"ok", "runtime_enabled", "config_revision", "decision_prompt_default"}
         assert set(result) == panel_keys | view_keys
         assert "patrol_inactive_after_sec" not in result
         assert result["ok"] is True

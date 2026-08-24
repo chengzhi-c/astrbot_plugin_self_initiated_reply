@@ -143,6 +143,22 @@ exclude = [
   "data/**",
 ]
 
+[tool.hatch.build.targets.sdist]
+# sdist 也必须是可复现的源码发布物；工作树中的浏览器截图、测试、缓存和构建产物
+# 不属于安装输入，尤其不能因本地未跟踪 output/ 被意外带入归档。
+exclude = [
+  "output/**",
+  "tests/**",
+  "dist/**",
+  ".coverage",
+  ".coverage.*",
+  "coverage.*",
+  "**/__pycache__/**",
+  ".pytest_cache/**",
+  ".ruff_cache/**",
+  ".mypy_cache/**",
+]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100

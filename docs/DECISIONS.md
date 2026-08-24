@@ -18,6 +18,16 @@
 
 运行默认以 `CONFIG_SPECS` 为准。README 建议区间不是默认值；文档写建议时同时写默认。
 
+## 设置页配置写入与请求协调
+
+设置页的保存请求属于版本化写入：POST `/config` 总是带当前 GET 返回的
+`base_revision`。Bridge 与 fetch 只是传输路径，不改变 CAS 语义；Bridge 没有取消能力时，
+超时只表示客户端无法确认结果，不能当作服务端未写入。服务端在 `_config_lock` 内拒绝
+过期 revision，旧客户端的无版本调用保留兼容但明确标记为未版本化。
+
+迟到的 GET 不能覆盖已经编辑的表单；初始加载失败或超时也不能解除表单的 inert 状态。
+保存超时、异常或 `STALE_WRITE` 后，页面必须先刷新取得新 revision 才能再次提交完整配置。
+
 ## 私聊主动回复开关
 
 `enabled_private_sessions` 放自定义页与 Dashboard（`surfaces=_PANEL`），默认开。

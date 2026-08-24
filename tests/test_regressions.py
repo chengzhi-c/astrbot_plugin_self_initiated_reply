@@ -856,8 +856,95 @@ def test_r9_timeout_requests_graceful_stop(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# R10：GET enabled 返回持久配置
+# Phase D：配置 revision/CAS 与规范化反馈
 # ============================================================================
+
+
+def test_phase_d_config_revision_rejects_stale_versioned_write(tmp_path: Path) -> None:
+    """版本化 POST 只接受读取时的 revision，冲突不得部分应用。"""
+
+    async def scenario(plugin, main):
+        web = sys.modules["astrbot.api.web"]
+        current = await plugin._api_get_config()
+        original_min_silence = plugin.settings.min_silence_sec
+        assert current["config_revision"].startswith("sha256:")
+
+        web.request.payload = {
+            "cooldown_sec": 111,
+            "base_revision": current["config_revision"],
+        }
+        first = await plugin._api_post_config()
+        assert first["ok"] is True
+        assert first["config_revision"] != current["config_revision"]
+        assert plugin.settings.cooldown_sec == 111
+
+        web.request.payload = {
+            "min_silence_sec": 222,
+            "base_revision": current["config_revision"],
+        }
+        stale = await plugin._api_post_config()
+        assert stale == {
+            "ok": False,
+            "error_code": "STALE_WRITE",
+            "error": "配置已被其他请求修改",
+            "config_revision": first["config_revision"],
+        }
+        assert plugin.settings.min_silence_sec == original_min_silence
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_phase_d_concurrent_versioned_writers_have_one_winner(tmp_path: Path) -> None:
+    """同一 revision 的并发全量写入只能有一个赢家。"""
+
+    async def scenario(plugin, main):
+        webapi = sys.modules[plugin._api_post_config.func.__module__]
+        revision = (await plugin._api_get_config())["config_revision"]
+        payloads = [
+            {"cooldown_sec": 111, "base_revision": revision},
+            {"min_silence_sec": 222, "base_revision": revision},
+        ]
+        original = webapi._request_json
+
+        async def fake_json():
+            payload = payloads.pop(0)
+            await asyncio.sleep(0)
+            return payload
+
+        webapi._request_json = fake_json
+        try:
+            first, second = await asyncio.gather(
+                plugin._api_post_config(), plugin._api_post_config()
+            )
+        finally:
+            webapi._request_json = original
+
+        assert sorted([first["ok"], second["ok"]]) == [False, True]
+        stale = first if first["ok"] is False else second
+        assert stale["error_code"] == "STALE_WRITE"
+        assert plugin.settings.cooldown_sec == 111
+        assert plugin.settings.min_silence_sec != 222
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_phase_d_unversioned_config_write_is_explicit_and_reports_adjustment(
+    tmp_path: Path,
+) -> None:
+    """旧调用仍可写，但必须标记无版本；规范化字段必须返回给前端。"""
+
+    async def scenario(plugin, main):
+        web = sys.modules["astrbot.api.web"]
+        web.request.payload = {
+            "whitelist_sessions": ["a", "a"],
+        }
+        result = await plugin._api_post_config()
+        assert result["ok"] is True
+        assert result["unversioned_write"] is True
+        assert "whitelist_sessions" in result["adjusted_fields"]
+        assert plugin.settings.whitelist == {"a"}
+
+    with_plugin(tmp_path, scenario)
 
 
 def test_r10_get_config_enabled_is_persisted_value(tmp_path: Path) -> None:

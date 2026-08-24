@@ -10,11 +10,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 import time
 from collections import deque
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
@@ -35,6 +37,9 @@ MAX_STRING_LIST_ITEM_LEN = (
 # 与前端 pages/主动回复设置/config-io.mjs 的 WHITELIST_ILLEGAL_RE 同字符集。
 # 控制字符 + 引号 + 反斜杠：过长文案截进 logger.warning 时不能伪造日志行。
 STRING_LIST_ILLEGAL_RE = re.compile(r"[\x00-\x1f\"'\\]")
+MAX_BOT_ALIASES = 64
+MAX_IGNORED_SENDER_IDS = 1000
+MAX_QUIET_HOURS = 24
 MAX_RECENT_MESSAGE_LIMIT = 100  # 历史消息最大缓存数
 MAX_DAILY_REPLIES_LIMIT = 1000  # 每日回复次数上限
 MAX_VISION_IMAGES = 5  # 单次主动回复最多解析的图片数
@@ -654,6 +659,7 @@ class ConfigSpec:
         legacy_keys: 旧版本键名，只在读侧回退；``to_config_dict`` 只写正式键。
         special/editor_mode/editor_language: schema 的 UI 专属字段。
         max_len/max_items: 硬上限（防 OOM 与费用滥用），超限截断并记 warning。
+        item_max_len/item_pattern/empty_policy: list/set 条目的统一规范化规则。
         surfaces: 该键出现在哪些配置面。``host`` 为宿主 schema；
             ``panel`` 为自定义设置页。GET /config 与前端可写键都从此派生。
     """
@@ -674,6 +680,9 @@ class ConfigSpec:
     editor_language: str = ""
     max_len: int | None = None
     max_items: int | None = None
+    item_max_len: int | None = None
+    item_pattern: str = ""
+    empty_policy: str = ""
     surfaces: frozenset[str] = frozenset({"host"})
 
     @property
@@ -733,8 +742,27 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
     ConfigSpec("allow_multiline_reply", "bool", True),
     ConfigSpec("max_reply_chars", "int", 220, 0, 2000, step=10),
     ConfigSpec("log_reply_content", "bool", False),
-    ConfigSpec("bot_aliases", "list", [], container="list"),
-    ConfigSpec("ignored_sender_ids", "list", [], container="set", audited=True),
+    ConfigSpec(
+        "bot_aliases",
+        "list",
+        [],
+        container="list",
+        max_items=MAX_BOT_ALIASES,
+        item_max_len=MAX_STRING_LIST_ITEM_LEN,
+        item_pattern=STRING_LIST_ILLEGAL_RE.pattern,
+        empty_policy="drop",
+    ),
+    ConfigSpec(
+        "ignored_sender_ids",
+        "list",
+        [],
+        container="set",
+        audited=True,
+        max_items=MAX_IGNORED_SENDER_IDS,
+        item_max_len=MAX_STRING_LIST_ITEM_LEN,
+        item_pattern=STRING_LIST_ILLEGAL_RE.pattern,
+        empty_policy="drop",
+    ),
     ConfigSpec(
         "whitelist_sessions",
         "list",
@@ -744,6 +772,9 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         audited=True,
         legacy_keys=("whitelist",),
         max_items=MAX_WHITELIST_SIZE,
+        item_max_len=MAX_STRING_LIST_ITEM_LEN,
+        item_pattern=STRING_LIST_ILLEGAL_RE.pattern,
+        empty_policy="drop",
         surfaces=_PANEL,
     ),
     ConfigSpec("enabled_private_sessions", "bool", True, surfaces=_PANEL),
@@ -772,7 +803,16 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
     ),
     ConfigSpec("max_daily_replies_per_session", "int", 5, 0, MAX_DAILY_REPLIES_LIMIT, step=1),
     ConfigSpec("recent_message_limit", "int", 20, 3, MAX_RECENT_MESSAGE_LIMIT, step=1),
-    ConfigSpec("quiet_hours", "list", [], container="list"),
+    ConfigSpec(
+        "quiet_hours",
+        "list",
+        [],
+        container="list",
+        max_items=MAX_QUIET_HOURS,
+        item_max_len=MAX_STRING_LIST_ITEM_LEN,
+        item_pattern=STRING_LIST_ILLEGAL_RE.pattern,
+        empty_policy="drop",
+    ),
     ConfigSpec("enabled_message_trigger", "bool", True),
     ConfigSpec("enabled_patrol_trigger", "bool", False),
     ConfigSpec("generation_timeout_sec", "float", 60.0, 1, 300, step=1),
@@ -839,6 +879,78 @@ def panel_config_specs() -> tuple[ConfigSpec, ...]:
     return tuple(spec for spec in CONFIG_SPECS if "panel" in spec.surfaces)
 
 
+def _list_items(raw: Any) -> list[Any]:
+    if isinstance(raw, (list, tuple, set, frozenset)):
+        return list(raw)
+    if isinstance(raw, str):
+        return re.split(r"[\n,，]+", raw)
+    raise ValueError("配置列表类型无效")
+
+
+def _normalize_list_item(spec: ConfigSpec, raw: Any, mode: str) -> tuple[str | None, int, int]:
+    """Normalize one list item and return ``(value, dropped, adjusted)``."""
+    text = str(raw).strip()
+    if not text:
+        if spec.empty_policy == "drop":
+            return None, 1, 0
+        return text, 0, 0
+    if spec.item_pattern and re.search(spec.item_pattern, text):
+        if mode == "api":
+            raise ValueError(f"{spec.key} 条目含非法字符")
+        return None, 1, 0
+    if spec.item_max_len is not None and len(text) > spec.item_max_len:
+        if mode == "api":
+            raise ValueError(f"{spec.key} 条目过长")
+        return text[: spec.item_max_len], 0, 1
+    return text, 0, 0
+
+
+def normalize_string_list(
+    spec: ConfigSpec, raw: Any, *, mode: str = "disk"
+) -> list[str] | set[str]:
+    """Normalize one list/set according to its ``ConfigSpec``.
+
+    ``disk`` mode filters and bounds untrusted persisted data while ``api`` mode
+    rejects malformed input. Warnings contain counts only, never user-provided
+    list content.
+    """
+    if mode not in {"disk", "api"}:
+        raise ValueError(f"unknown list normalization mode: {mode}")
+    if mode == "api" and not isinstance(raw, list):
+        raise ValueError(f"{spec.key} 必须是数组")
+
+    items: list[str] = []
+    dropped = 0
+    adjusted = 0
+    for item in _list_items(raw):
+        text, item_dropped, item_adjusted = _normalize_list_item(spec, item, mode)
+        dropped += item_dropped
+        adjusted += item_adjusted
+        if text is not None:
+            items.append(text)
+
+    if spec.container == "set":
+        unique_items = sorted(set(items))
+        dropped += len(items) - len(unique_items)
+        items = unique_items
+    if spec.max_items is not None and len(items) > spec.max_items:
+        if mode == "disk":
+            dropped += len(items) - spec.max_items
+            items = items[: spec.max_items]
+
+    result: list[str] | set[str]
+    result = set(items) if spec.container == "set" and mode == "disk" else items
+    if mode == "disk" and (dropped or adjusted):
+        logger.warning(
+            "[%s] %s list normalized: dropped=%d adjusted=%d",
+            PLUGIN_ID,
+            spec.key,
+            dropped,
+            adjusted,
+        )
+    return result
+
+
 def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
     """按规格把一个原始配置值强制成目标类型并夹取边界。
 
@@ -871,17 +983,14 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
             text = text[: spec.max_len]
         return text
     if spec.kind == "list":
-        items = as_list(raw)
-        if spec.max_items is not None and len(items) > spec.max_items:
-            logger.warning(
-                "[%s] %s 过大 (%d 条目)，已截断到前 %d 条",
-                PLUGIN_ID,
-                spec.key,
-                len(items),
-                spec.max_items,
-            )
-            items = items[: spec.max_items]
-        return set(items) if spec.container == "set" else items
+        try:
+            return normalize_string_list(spec, raw, mode="disk")
+        except ValueError:
+            logger.warning("[%s] %s list value invalid; using fallback", PLUGIN_ID, spec.key)
+            try:
+                return normalize_string_list(spec, fallback, mode="disk")
+            except ValueError:
+                return normalize_string_list(spec, spec.default, mode="disk")
     return str(raw or "").strip()
 
 
@@ -1038,3 +1147,26 @@ class Settings:
             value = getattr(self, spec.attr)
             payload[spec.key] = sorted(value) if spec.container == "set" else value
         return payload
+
+
+def config_revision(config: Mapping[str, Any] | Settings) -> str:
+    """Return a stable digest of canonical persistent configuration fields."""
+    payload = config.to_config_dict() if isinstance(config, Settings) else dict(config)
+
+    def canonical(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {str(key): canonical(item) for key, item in value.items()}
+        if isinstance(value, (set, frozenset)):
+            return sorted((canonical(item) for item in value), key=lambda item: repr(item))
+        if isinstance(value, (list, tuple)):
+            return [canonical(item) for item in value]
+        return value
+
+    encoded = json.dumps(
+        canonical(payload),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()

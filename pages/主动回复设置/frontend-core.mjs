@@ -10,13 +10,53 @@ export function normalizeApiError(error) {
   }
   return error;
 }
-export function isSuccessfulConfigPayload(config) {
+export function createConfigRequestCoordinator() {
+  let loadEpoch = 0;
+  let editEpoch = 0;
+  let loadStartedDirty = false;
+  let loadStartedEditEpoch = 0;
+  let writeUnknown = false;
+  return {
+    beginLoad(isDirty = false) {
+      loadEpoch += 1;
+      loadStartedDirty = isDirty;
+      loadStartedEditEpoch = editEpoch;
+      return loadEpoch;
+    },
+    markEdited() {
+      editEpoch += 1;
+    },
+    isCurrentLoad(requestEpoch) {
+      return requestEpoch === loadEpoch;
+    },
+    canApplyLoad(requestEpoch, isDirty, force = false) {
+      return (
+        requestEpoch === loadEpoch &&
+        editEpoch === loadStartedEditEpoch &&
+        (!isDirty || (force && loadStartedDirty))
+      );
+    },
+    markWriteUnknown() {
+      writeUnknown = true;
+    },
+    clearWriteUnknown() {
+      writeUnknown = false;
+    },
+    get writeUnknown() {
+      return writeUnknown;
+    },
+  };
+}
+
+export function isSuccessfulConfigPayload(config, requiredKeys = []) {
   return (
     !!config &&
     typeof config === "object" &&
     config.ok === true &&
     typeof config.enabled === "boolean" &&
-    Array.isArray(config.whitelist_sessions)
+    Array.isArray(config.whitelist_sessions) &&
+    /^sha256:[0-9a-f]{64}$/.test(config.config_revision || "") &&
+    requiredKeys.every((key) => Object.prototype.hasOwnProperty.call(config, key))
   );
 }
 

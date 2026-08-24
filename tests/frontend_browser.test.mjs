@@ -19,6 +19,8 @@ let server;
 let baseUrl;
 let activeScenario = "";
 
+const TEST_CONFIG_REVISION = `sha256:${"b".repeat(64)}`;
+
 function configPayload(overrides = {}) {
   return {
     ok: true,
@@ -28,6 +30,24 @@ function configPayload(overrides = {}) {
     decision_model_enabled: true,
     decision_prompt_template: "请根据 {latest_message} 判断是否回复",
     decision_prompt_default: "请根据 {latest_message} 判断是否回复",
+    config_revision: TEST_CONFIG_REVISION,
+    enabled_private_sessions: true,
+    judge_provider_id: "",
+    message_delay_sec: 60,
+    min_silence_sec: 45,
+    cooldown_sec: 900,
+    decision_history_min_messages: 5,
+    decision_temperature: 0.2,
+    decision_timeout_sec: 20,
+    proactive_inherit_tools: false,
+    vision_judge_enabled: false,
+    vision_main_enabled: false,
+    vision_provider_id: "",
+    vision_judge_provider_id: "",
+    vision_skip_stickers: false,
+    vision_max_images: 2,
+    vision_image_age_sec: 300,
+    vision_timeout_sec: 20,
     ...overrides,
   };
 }
@@ -90,8 +110,14 @@ async function serveStatic(request, response) {
 
 async function installBridge(page, options = {}) {
   await page.addInitScript(
-    ({ config, providersFail, saveMode, theme }) => {
-      const state = { saveMode, saveAttempts: 0, config };
+    ({ config, providersFail, saveMode, theme, refreshConfigPending }) => {
+      const state = {
+        saveMode,
+        saveAttempts: 0,
+        config,
+        configCalls: 0,
+        refreshConfigPending,
+      };
       window.__bridgeCalls = [];
       window.__bridgeState = state;
       window.AstrBotPluginPage = {
@@ -102,7 +128,15 @@ async function installBridge(page, options = {}) {
             if (providersFail) throw new Error("provider list unavailable");
             return { ok: true, providers: [{ id: "provider-a", label: "Provider A" }] };
           }
-          if (endpoint === "config") return state.config;
+          if (endpoint === "config") {
+            state.configCalls += 1;
+            if (state.refreshConfigPending && state.configCalls > 1) {
+              return new Promise((resolve) => {
+                window.__resolveRefreshConfig = () => resolve(state.config);
+              });
+            }
+            return state.config;
+          }
           if (endpoint === "ui/theme") return { ok: true, theme };
           return { ok: true };
         },
@@ -116,8 +150,18 @@ async function installBridge(page, options = {}) {
             if (state.saveMode === "fail-once" && state.saveAttempts === 1) {
               return { ok: false, error: "write failed" };
             }
-            state.config = { ...state.config, ...body, runtime_enabled: true, ok: true };
-            return { ok: true };
+            state.config = {
+              ...state.config,
+              ...body,
+              runtime_enabled: true,
+              ok: true,
+              config_revision: `sha256:${"c".repeat(64)}`,
+            };
+            return {
+              ok: true,
+              ...state.config,
+              adjusted_fields: state.saveMode === "adjusted" ? ["whitelist_sessions"] : [],
+            };
           }
           return { ok: true, theme: body?.theme || "auto", removed: 0 };
         },
@@ -128,6 +172,7 @@ async function installBridge(page, options = {}) {
       providersFail: Boolean(options.providersFail),
       saveMode: options.saveMode || "success",
       theme: options.theme || "light",
+      refreshConfigPending: Boolean(options.refreshConfigPending),
     }
   );
 }
@@ -201,19 +246,54 @@ test("pending save restores the form and a second save succeeds", async ({ page 
   }, FETCH_TIMEOUT_MS);
   await page.locator("#messageDelayInput").fill("75");
   await page.locator("#saveTopBtn").click();
-  await expect(page.locator("#configSaveState")).toHaveText("保存失败");
+  await expect(page.locator("#toast")).toContainText("保存状态未知");
   await expect(page.locator("#configForm")).not.toHaveAttribute("inert", "");
-  await expect(page.locator("#saveTopBtn")).toBeEnabled();
+  await expect(page.locator("#saveTopBtn")).toBeDisabled();
 
-  await page.locator("#saveTopBtn").click();
-  await expect(page.locator("#configSaveState")).toHaveText("已保存");
+  await page.waitForTimeout(80);
   const posts = await page.evaluate(() =>
     window.__bridgeCalls.filter((call) => call.method === "POST" && call.endpoint === "config")
   );
-  expect(posts).toHaveLength(2);
-  expect(posts[1].body.message_delay_sec).toBe(75);
+  expect(posts).toHaveLength(1);
   expect(errors).toEqual([]);
 });
+
+test("late refresh config does not overwrite a dirty form", async ({ page }) => {
+  await installBridge(page, { refreshConfigPending: true });
+  const errors = await openPage(page);
+  await page.locator("#refreshBtn").click();
+  await expect.poll(() => page.evaluate(() => typeof window.__resolveRefreshConfig)).toBe("function");
+  await page.locator("#messageDelayInput").fill("75");
+  await page.evaluate(() => window.__resolveRefreshConfig());
+  await page.waitForTimeout(80);
+  await expect(page.locator("#messageDelayInput")).toHaveValue("75");
+  await expect(page.locator("#navSaveState")).toContainText("有未保存改动");
+  expect(errors).toEqual([]);
+});
+
+test("forced refresh also preserves edits made after the request starts", async ({ page }) => {
+  await installBridge(page, { refreshConfigPending: true });
+  const errors = await openPage(page);
+  await page.locator("#messageDelayInput").fill("75");
+  await page.locator("#refreshBtn").click();
+  await page.locator("#refreshBtn").click();
+  await expect.poll(() => page.evaluate(() => typeof window.__resolveRefreshConfig)).toBe("function");
+  await page.locator("#messageDelayInput").fill("80");
+  await page.evaluate(() => window.__resolveRefreshConfig());
+  await page.waitForTimeout(80);
+  await expect(page.locator("#messageDelayInput")).toHaveValue("80");
+  expect(errors).toEqual([]);
+});
+
+test("adjusted fields are surfaced with a field label", async ({ page }) => {
+  await installBridge(page, { saveMode: "adjusted" });
+  const errors = await openPage(page);
+  await page.locator("#whitelistInput").fill("a\na");
+  await page.locator("#saveTopBtn").click();
+  await expect(page.locator("#toast")).toContainText("白名单");
+  expect(errors).toEqual([]);
+});
+
 
 test("provider failure enables manual input for all provider controls", async ({ page }) => {
   await installBridge(page, { providersFail: true });

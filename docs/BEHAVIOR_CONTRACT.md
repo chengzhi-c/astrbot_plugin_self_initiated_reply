@@ -100,8 +100,10 @@
 - 全部数值经 `as_int`/`as_float` 夹取（min/max），布尔严格化；白名单、提示词、
   历史缓存、日配额均有硬上限，防止垃圾配置造成 OOM/费用爆炸。
 - webapi 未知配置键 fail loud（列出未知键拒绝），绝不静默吞掉。
-- 判断提示词变量全部经注入清理；不可信用户内容不能改变任务边界或触发工具；
-  JSON 输出契约防伪造（双引号改写等）。
+- 由 `ConfigSpec` 唯一拥有数值、枚举和字符串列表的机器规则。每个 list/set 必须声明最大条目数、条目长度、非法字符规则和空值策略；set 条目先去重并按 canonical 顺序排序，再执行容量上限，避免输入排列改变实际保留值。Web API 对非法条目拒绝，对容量/数值边界按规格归一化并在 `adjusted_fields` 返回实际被调整的键；磁盘加载使用同一规则过滤并只记录计数型 WARNING。正式键类型损坏时沿既有 legacy fallback 读取。
+- GET `/config` 返回 `config_revision`：它是持久配置 canonical JSON（UTF-8、固定键排序、紧凑分隔符、集合排序）的 `sha256:<hex>` 摘要，不包含 `runtime_enabled`、Provider 列表或其他运行态；相同配置在重启后摘要稳定。
+- POST `/config` 若带 `base_revision`，必须在 `_config_lock` 内先与当前摘要比较；不一致返回 `error_code=STALE_WRITE` 和当前 `config_revision`，不得应用部分更新。成功响应返回完整 `config`、新的 `config_revision` 和 `adjusted_fields`。不带 `base_revision` 的旧调用继续串行写入，但响应标记 `unversioned_write=true`，不承诺防止迟到旧写覆盖。
+- 设置页初始配置加载完成前表单保持 `inert`。配置读取带请求 epoch，迟到或用户已编辑后的响应不得覆盖控件；保存始终携带当前 `base_revision`。Bridge/fetch 保存超时或异常时进入“状态未知”，禁止带旧 revision 的第二次全量写入，必须刷新取得新 revision；`STALE_WRITE` 同样要求刷新。成功响应中的 `adjusted_fields` 显示对应字段标签。
 
 ## 7.1 本地图片读取与错误回显（0.9.3 阶段 1）
 

@@ -76,6 +76,63 @@ def test_runtime_dependency_allowlist_is_explicit() -> None:
     assert frozenset(project.get("dependencies", [])) == EXPECTED_RUNTIME_DEPENDENCIES
 
 
+def test_phase_d_list_specs_declare_one_machine_normalization_contract() -> None:
+    """每个字符串 list/set 都必须声明容量、条目规则和空值策略。"""
+    models = _models()
+    list_specs = [spec for spec in models.CONFIG_SPECS if spec.kind == "list"]
+    assert list_specs
+    for spec in list_specs:
+        assert spec.max_items is not None, spec.key
+        assert spec.item_max_len is not None, spec.key
+        assert spec.item_pattern, spec.key
+        assert spec.empty_policy in {"drop", "keep"}, spec.key
+
+
+def test_phase_d_config_revision_is_canonical_and_restart_stable() -> None:
+    """集合顺序不影响摘要，运行态不进入持久配置 revision。"""
+    models = _models()
+    first = models.Settings.from_config(
+        {"ignored_sender_ids": ["b", "a"], "whitelist_sessions": ["group-b", "group-a"]}
+    )
+    second = models.Settings.from_config(
+        {"ignored_sender_ids": ["a", "b"], "whitelist_sessions": ["group-a", "group-b"]}
+    )
+    assert models.config_revision(first) == models.config_revision(second)
+    assert models.config_revision(first).startswith("sha256:")
+
+
+def test_sdist_excludes_worktree_artifacts() -> None:
+    """sdist 不能把本地截图、测试、缓存或构建物带入源码发布物。"""
+    import tomllib
+
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        project = tomllib.load(handle)
+    excludes = set(project["tool"]["hatch"]["build"]["targets"]["sdist"]["exclude"])
+    assert {"output/**", "tests/**", "dist/**", "**/__pycache__/**"} <= excludes
+
+
+def test_phase_d_set_normalization_deduplicates_before_capacity() -> None:
+    """set 容器的重复项不能消耗容量，排列变化不得改变保留集合。"""
+    models = _models()
+    spec = models.CONFIG_SPEC_BY_KEY["whitelist_sessions"]
+    limit = int(spec.max_items)
+    unique = [f"session-{index:04d}" for index in range(limit + 2)]
+    first = models.normalize_string_list(spec, unique + [unique[0]], mode="disk")
+    second = models.normalize_string_list(spec, list(reversed(unique)) + [unique[-1]], mode="disk")
+    assert first == second
+    assert len(first) == limit
+    assert first == set(sorted(unique)[:limit])
+
+
+def test_phase_d_malformed_formal_list_uses_legacy_fallback() -> None:
+    """正式 list 键损坏时仍沿用既有 legacy migration 语义。"""
+    models = _models()
+    settings = models.Settings.from_config(
+        {"whitelist_sessions": None, "whitelist": ["legacy-session"]}
+    )
+    assert settings.whitelist == {"legacy-session"}
+
+
 def test_legacy_alias_keys_stay_out_of_schema() -> None:
     """历史兼容别名已于 0.9.2 移除，不得重新进入 _conf_schema.json。"""
     legacy_aliases = {

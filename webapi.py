@@ -46,13 +46,13 @@ from .models import (
     CONFIG_SPEC_BY_KEY,
     CONFIG_SPECS,
     DEFAULT_DECISION_PROMPT_TEMPLATE,
-    MAX_STRING_LIST_ITEM_LEN,
     PLUGIN_ID,
-    STRING_LIST_ILLEGAL_RE,
     CheckTrigger,
     ConfigSpec,
     Settings,
+    config_revision,
     normalize_config_updates,
+    normalize_string_list,
     panel_config_specs,
 )
 from .storage import _write_json_atomic
@@ -169,6 +169,7 @@ async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "ok": True,
             "runtime_enabled": plugin.runtime_enabled,
+            "config_revision": config_revision(plugin.settings),
             "decision_prompt_default": DEFAULT_DECISION_PROMPT_TEMPLATE,
         }
         for spec in panel_config_specs():
@@ -267,24 +268,9 @@ def _strict_int(value: Any, field: str) -> int:
 
 
 def _string_list(data: dict[str, Any], key: str) -> list[str]:
-    """规范化字符串列表：strip、去空，条目长度/字符规则与白名单共用。"""
-    raw = data[key]
-    if not isinstance(raw, list):
-        raise ValueError(f"{key} 必须是数组")
-    items: list[str] = []
-    for item in raw:
-        text = str(item).strip()
-        if not text:
-            continue
-        # 先查非法字符再查长度：过长文案会把 text[:20] 带进
-        # logger.warning，若其中含 \n / 控制字符即可伪造日志行。收窄顺序后，
-        # 能进日志的片段必然已通过控制字符过滤。
-        if STRING_LIST_ILLEGAL_RE.search(text):
-            raise ValueError(f"{key} 条目含非法字符")
-        if len(text) > MAX_STRING_LIST_ITEM_LEN:
-            raise ValueError(f"{key} 条目过长: {text[:20]}…")
-        items.append(text)
-    return items
+    """规范化字符串列表；机器规则由对应 ``ConfigSpec`` 唯一拥有。"""
+    value = normalize_string_list(CONFIG_SPEC_BY_KEY[key], data[key], mode="api")
+    return sorted(value) if isinstance(value, set) else value
 
 
 def _strict_float(value: Any, field: str) -> float:
@@ -329,11 +315,34 @@ async def _api_post_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
 
 
 async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """更新配置。"""
+    """更新配置，并在锁内执行可选的 revision 前置条件。"""
     try:
         data = await _request_json()
-        updates = _parse_config_updates(data)
-        return await _apply_config_updates(plugin, updates)
+        if not isinstance(data, dict):
+            raise ValueError("请求体必须是 JSON 对象")
+        base_revision = data.get("base_revision")
+        if base_revision is not None and (
+            not isinstance(base_revision, str) or not base_revision.strip()
+        ):
+            raise ValueError("base_revision 必须是非空字符串")
+        config_data = {key: value for key, value in data.items() if key != "base_revision"}
+        current_revision = config_revision(plugin.settings)
+        if base_revision is not None and base_revision != current_revision:
+            return {
+                "ok": False,
+                "error_code": "STALE_WRITE",
+                "error": "配置已被其他请求修改",
+                "config_revision": current_revision,
+            }
+        updates = _parse_config_updates(config_data)
+        result = await _apply_config_updates(
+            plugin,
+            updates,
+            submitted=config_data,
+        )
+        if base_revision is None:
+            result["unversioned_write"] = True
+        return result
     except ValueError as exc:
         # 校验失败的文案要回显：它由本模块自己构造，只含字段名与
         # 规则（"cooldown_sec 必须是整数"），不含内部路径/栈信息，且前端表单
@@ -418,7 +427,15 @@ def _config_update_was_adjusted(
 ) -> bool:
     actual = normalized[spec.key]
     if spec.container == "set":
-        return set(submitted) != set(actual)
+        if not isinstance(submitted, list):
+            return submitted != actual
+        raw_items = [str(item) for item in submitted]
+        trimmed_items = [item.strip() for item in raw_items if item.strip()]
+        return (
+            raw_items != trimmed_items
+            or len(trimmed_items) != len(set(trimmed_items))
+            or set(trimmed_items) != set(actual)
+        )
     return submitted != actual
 
 
@@ -488,7 +505,10 @@ async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict
 
 
 async def _apply_config_updates(
-    plugin: SelfInitiatedReplyPlugin, updates: dict[str, Any]
+    plugin: SelfInitiatedReplyPlugin,
+    updates: dict[str, Any],
+    *,
+    submitted: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """应用配置变更；任何失败回滚全部运行态后重新抛出。"""
     snapshot = _snapshot_plugin_state(plugin)
@@ -535,9 +555,19 @@ async def _apply_config_updates(
         adjusted_fields = sorted(
             key
             for key, value in updates.items()
-            if _config_update_was_adjusted(CONFIG_SPEC_BY_KEY[key], value, config)
+            if _config_update_was_adjusted(
+                CONFIG_SPEC_BY_KEY[key],
+                (submitted or {}).get(key, value),
+                config,
+            )
         )
-        return {"ok": True, "config": config, "adjusted_fields": adjusted_fields}
+        result = {
+            "ok": True,
+            "config": config,
+            "config_revision": config_revision(config),
+            "adjusted_fields": adjusted_fields,
+        }
+        return result
     except Exception:
         await _restore_plugin_state(plugin, snapshot)
         raise
