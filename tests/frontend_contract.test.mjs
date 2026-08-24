@@ -15,6 +15,10 @@ import {
   configSaveKeys,
   createConfigIo,
 } from "../pages/主动回复设置/config-io.mjs";
+import {
+  summarizeWhitelist,
+  uniqueWhitelistItems,
+} from "../pages/主动回复设置/config-form.mjs";
 import { THEME_KEY } from "../pages/主动回复设置/theme.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -384,6 +388,26 @@ test("config save path follows the form-declared writable keys", async () => {
   assert.equal(posts[0].body.decision_prompt_template, "prompt");
   assert.equal(state.savingConfig, false);
   assert.equal(form.inert, false);
+});
+
+test("whitelist format collapses a group UMO onto its bare group id", () => {
+  const raw = [
+    "1076958977",
+    "1568455",
+    "272372284",
+    "阿c:FriendMessage:2381289480",
+    "阿c:GroupMessage:272372284",
+  ].join("\n");
+  assert.deepEqual(uniqueWhitelistItems(raw), [
+    "1076958977",
+    "1568455",
+    "272372284",
+    "阿c:FriendMessage:2381289480",
+  ]);
+  assert.equal(
+    summarizeWhitelist(raw),
+    "已识别 4 个有效会话（3 个纯群号，1 个完整 UMO） · 存在 1 处重复",
+  );
 });
 
 test("settings page JS sources keep lines under the maintainability cap", async () => {

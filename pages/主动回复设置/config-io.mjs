@@ -3,6 +3,7 @@ import {
 	num,
 	parseWhitelist,
 	summarizeWhitelist,
+	uniqueWhitelistItems,
 } from "./config-form.mjs";
 import { isSuccessfulConfigPayload } from "./frontend-core.mjs";
 const WHITELIST_ITEM_MAX_LEN = 200;
@@ -187,8 +188,7 @@ export function createConfigIo(deps) {
 	function formatWhitelist() {
 		const e = els();
 		if (!e.whitelistInput) return;
-		const items = parseWhitelist(e.whitelistInput.value);
-		const unique = Array.from(new Set(items));
+		const unique = uniqueWhitelistItems(e.whitelistInput.value);
 		e.whitelistInput.value = unique.join("\n");
 		updateWhitelistFeedback();
 		setDirty(true);

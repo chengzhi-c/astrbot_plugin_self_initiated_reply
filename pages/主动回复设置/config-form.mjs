@@ -20,9 +20,30 @@ export function parseWhitelist(text) {
     .map((item) => item.trim())
     .filter(Boolean);
 }
+function whitelistGroupId(item) {
+  const parts = String(item || "").split(":");
+  if (parts.length === 3 && parts[1].toLowerCase().includes("group")) {
+    return parts[2].trim();
+  }
+  return "";
+}
+export function uniqueWhitelistItems(text) {
+  const items = parseWhitelist(text);
+  const bareIds = new Set(items.filter((item) => /^\d+$/.test(item)));
+  const seen = new Set();
+  const unique = [];
+  for (const item of items) {
+    const groupId = whitelistGroupId(item);
+    if (groupId && bareIds.has(groupId)) continue;
+    if (seen.has(item)) continue;
+    seen.add(item);
+    unique.push(item);
+  }
+  return unique;
+}
 export function summarizeWhitelist(text) {
   const items = parseWhitelist(text);
-  const unique = Array.from(new Set(items));
+  const unique = uniqueWhitelistItems(text);
   if (unique.length === 0) return "未配置会话（留空则不主动回复任何会话）";
   const pureNumbers = unique.filter((i) => /^\d+$/.test(i)).length;
   const umos = unique.length - pureNumbers;
@@ -57,7 +78,7 @@ export function escapeHtml(str) {
 export function renderPromptTemplateHtml(template, values = PROMPT_PREVIEW_VALUES) {
   const escapedTemplate = escapeHtml(template);
   return escapedTemplate.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, key) => {
-    if (Object.prototype.hasOwnProperty.call(values, key)) {
+    if (Object.hasOwn(values, key)) {
       const val = escapeHtml(values[key]);
       return `<span class="prompt-var-tag" title="变量 {${key}}">${val}</span>`;
     }
