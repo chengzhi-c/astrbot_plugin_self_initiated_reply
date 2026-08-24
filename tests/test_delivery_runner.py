@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -66,7 +67,7 @@ def _make_runner(
     sender_status: str | None = None,
     hook: FakeHook | None = None,
     context_send: FakeContextSend | None = None,
-    save: FakeSave | None = None,
+    save: FakeSave | Callable[[], Awaitable[None]] | None = None,
     gate_current: bool = True,
     local_gate: str = "",
     config: dict | None = None,
@@ -224,12 +225,29 @@ async def test_record_stale_generation_skips_observation_advance(tmp_path: Path)
     assert state.last_proactive_observed_at == 50.0  # 观察窗口未推进
 
 
-async def test_record_save_failure_returns_false(tmp_path: Path) -> None:
-    _, models, runner, _ = _make_runner(tmp_path, save=FakeSave(fail=True))
+async def test_apply_then_persist_retry_does_not_duplicate_state(tmp_path: Path) -> None:
+    """Save-only retries never increment quota or append history twice."""
+    writes: list[str] = []
+    failures = 1
+
+    async def save() -> None:
+        nonlocal failures
+        writes.append("save")
+        if failures:
+            failures -= 1
+            raise OSError("disk unavailable")
+
+    _, models, runner, _ = _make_runner(tmp_path, save=save)
     state = _state(models)
-    ok = await runner.record_proactive_state("s1", state, "你好", 0)
-    assert ok is False
-    assert state.daily_count == 1  # 内存状态仍记录，仅持久化失败
+    runner.apply_proactive_state("s1", state, "你好", 0, observed_active_at=100.0)
+
+    assert state.daily_count == 1
+    assert len(state.recent) == 1
+    assert await runner.persist_proactive_state() is False
+    assert await runner.persist_proactive_state() is True
+    assert writes == ["save", "save"]
+    assert state.daily_count == 1
+    assert len(state.recent) == 1
 
 
 async def test_record_proactive_state_persists_every_record(tmp_path: Path) -> None:

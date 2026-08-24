@@ -18,6 +18,7 @@ UNKNOWN 语义（不自动重试、不触发 after-send 钩子、仍消耗冷却
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -28,6 +29,7 @@ from .models import (
     PLUGIN_ID,
     STALE_REPLY_MESSAGE,
     STALE_TASK_MESSAGE,
+    AttemptLedger,
     LocalGateCallback,
     SendOutcome,
     SendStatus,
@@ -89,12 +91,16 @@ class DeliveryRunner:
         reply: str,
         direct_send_count: int,
         *,
+        ledger: AttemptLedger | None = None,
         expected_generation: int | None,
         observed_active_at: float | None,
         force: bool,
         trigger: str,
     ) -> str:
         """发送前门卫与发送状态机；返回结果消息。"""
+        record_legacy_state = ledger is None
+        if ledger is None:
+            ledger = AttemptLedger()
         gate = "" if self._gate.is_current(umo, expected_generation) else STALE_TASK_MESSAGE
         if not gate:
             gate = self._local_gate(state, force=force)
@@ -113,12 +119,18 @@ class DeliveryRunner:
                     direct_send_count,
                     expected_generation=expected_generation,
                     observed_active_at=observed_active_at,
+                    record_state=record_legacy_state,
                 )
                 return f"工具主动回复已完成；{gate}"
             return gate
 
         if reply:
-            sent = await self.send_reply(umo, reply, expected_generation=expected_generation)
+            sent = await self._send_final_reply(
+                umo,
+                reply,
+                ledger,
+                expected_generation=expected_generation,
+            )
             if not sent.delivered:
                 if sent.status is SendStatus.UNKNOWN:
                     # 可能已经提交：不自动重试；消耗冷却与日配额并推进观察窗口
@@ -132,6 +144,7 @@ class DeliveryRunner:
                         expected_generation=expected_generation,
                         observed_active_at=observed_active_at,
                         confirmed=False,
+                        record_state=record_legacy_state,
                     )
                     return "主动发送状态未知，未自动重试。"
                 if direct_send_count:
@@ -141,6 +154,7 @@ class DeliveryRunner:
                         direct_send_count,
                         expected_generation=expected_generation,
                         observed_active_at=observed_active_at,
+                        record_state=record_legacy_state,
                     )
                 if not self._gate.is_current(umo, expected_generation):
                     return STALE_REPLY_MESSAGE
@@ -175,18 +189,56 @@ class DeliveryRunner:
                 direct_send_count,
             )
 
-        await self.record_proactive_state(
-            umo,
-            state,
-            reply,
-            direct_send_count,
-            expected_generation=expected_generation,
-            observed_active_at=observed_active_at,
-        )
+        if record_legacy_state:
+            await self.record_proactive_state(
+                umo,
+                state,
+                reply,
+                direct_send_count,
+                expected_generation=expected_generation,
+                observed_active_at=observed_active_at,
+            )
         return "已通过工具主动回复。" if direct_send_count and not reply else "已主动回复。"
 
+    async def _send_final_reply(
+        self,
+        umo: str,
+        reply: str,
+        ledger: AttemptLedger,
+        *,
+        expected_generation: int | None,
+    ) -> SendOutcome:
+        """Send the final text and bridge old send_reply overrides into the ledger."""
+        send_reply_kwargs: dict[str, Any] = {
+            "expected_generation": expected_generation,
+        }
+        try:
+            send_parameters = dict(inspect.signature(self.send_reply).parameters)
+        except (TypeError, ValueError):
+            send_parameters = {}
+        ledger_forwarded = "ledger" in send_parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in send_parameters.values()
+        )
+        if ledger_forwarded:
+            send_reply_kwargs["ledger"] = ledger
+        sent = await self.send_reply(umo, reply, **send_reply_kwargs)
+        if not ledger_forwarded:
+            attempt = ledger.reserve("final_reply", reply)
+            if sent.status in {SendStatus.DELIVERED, SendStatus.UNKNOWN}:
+                ledger.mark_in_flight(attempt)
+                ledger.resolve(attempt, sent.status)
+            else:
+                ledger.finish_before_submit(attempt, sent.status)
+        return sent
+
     async def send_reply(
-        self, umo: str, reply: str, *, expected_generation: int | None = None
+        self,
+        umo: str,
+        reply: str,
+        *,
+        ledger: AttemptLedger | None = None,
+        expected_generation: int | None = None,
     ) -> SendOutcome:
         """Send one proactive reply without retrying an unknown submission.
 
@@ -206,12 +258,27 @@ class DeliveryRunner:
         last_event = self._last_events.get(umo)
         if last_event:
             return await self._send_via_event(
-                umo, reply, last_event, expected_generation=expected_generation
+                umo,
+                reply,
+                last_event,
+                ledger=ledger,
+                expected_generation=expected_generation,
             )
-        return await self._send_via_context(umo, reply, expected_generation=expected_generation)
+        return await self._send_via_context(
+            umo,
+            reply,
+            ledger=ledger,
+            expected_generation=expected_generation,
+        )
 
     async def _send_via_event(
-        self, umo: str, reply: str, last_event: Any, *, expected_generation: int | None
+        self,
+        umo: str,
+        reply: str,
+        last_event: Any,
+        *,
+        ledger: AttemptLedger | None,
+        expected_generation: int | None,
     ) -> SendOutcome:
         """事件路径投递：装饰钩子 → 代次复核 → 事件 send → 发送后钩子。
 
@@ -263,7 +330,7 @@ class DeliveryRunner:
                 len(reply),
                 len(getattr(result, "chain", []) or []),
             )
-            outbound = OutboundGateway(last_event.send)
+            outbound = OutboundGateway(last_event.send, ledger=ledger)
             # 悲观默认：send 调用一旦开始，消息就可能已提交。gateway 内部虽把
             # adapter 异常转成 UNKNOWN，但其 except 块自身仍可能抛（异常对象的
             # ``__str__`` 坏掉时 ``str(exc)`` 二次抛），此时异常逃出 gateway 而
@@ -316,7 +383,12 @@ class DeliveryRunner:
             return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, str(exc))
 
     async def _send_via_context(
-        self, umo: str, reply: str, *, expected_generation: int | None
+        self,
+        umo: str,
+        reply: str,
+        *,
+        ledger: AttemptLedger | None,
+        expected_generation: int | None,
     ) -> SendOutcome:
         """context 兜底投递：事件已不在手边时经宿主 ``Context.send_message`` 发送。
 
@@ -347,6 +419,7 @@ class DeliveryRunner:
                 # False 已被单独区分为 FAILED_BEFORE_SUBMIT；未抛异常即视为已
                 # 提交，记 DELIVERED 才能写入 assistant 历史供后续决策参考。
                 none_status=SendStatus.DELIVERED,
+                ledger=ledger,
             )
             chain = MessageChain().message(reply)
             # 悲观默认，理由见事件路径同处注释。
@@ -387,8 +460,11 @@ class DeliveryRunner:
         expected_generation: int | None,
         observed_active_at: float | None,
         confirmed: bool = True,
+        record_state: bool = True,
     ) -> bool:
         """工具直发的状态记录（无文本回复路径共用；0.9.0 低垂果实合并重复调用）。"""
+        if not record_state:
+            return True
         return await self.record_proactive_state(
             umo,
             state,
@@ -399,7 +475,7 @@ class DeliveryRunner:
             confirmed=confirmed,
         )
 
-    async def record_proactive_state(
+    def apply_proactive_state(
         self,
         umo: str,
         state: SessionState,
@@ -409,15 +485,8 @@ class DeliveryRunner:
         expected_generation: int | None = None,
         observed_active_at: float | None = None,
         confirmed: bool = True,
-    ) -> bool:
-        """Persist the outcome of one proactive send attempt.
-
-        ``confirmed=False`` models an UNKNOWN submission that may have reached
-        the platform: it consumes the cooldown and the daily quota so later
-        triggers do not immediately retry the same conversation, and it also
-        advances the observed window (the attempt is treated as done, matching
-        the no-retry policy). It does not write an assistant history entry.
-        """
+    ) -> None:
+        """Apply one outbound fact to memory without starting persistence."""
         at = now_ts()
         text = reply.strip() or f"[工具主动发送 x{direct_send_count}]"
         state.record_proactive_attempt(confirmed=confirmed, text=text, at=at)
@@ -443,11 +512,35 @@ class DeliveryRunner:
             state.last_proactive_observed_at = (
                 state.last_active_at if observed_active_at is None else observed_active_at
             )
-        # 逐次落盘（见 SaveStorageCallback）：写盘经 to_thread + 原子写，
-        # try/except 兜回调自身抛错，失败仅影响持久化不影响已发送事实。
+
+    async def persist_proactive_state(self) -> bool:
+        """Persist already-applied state without mutating it again."""
         try:
             await self._save_storage()
             return True
         except Exception as exc:
             logger.warning("[%s] proactive state save failed: %s", PLUGIN_ID, exc)
             return False
+
+    async def record_proactive_state(
+        self,
+        umo: str,
+        state: SessionState,
+        reply: str,
+        direct_send_count: int = 0,
+        *,
+        expected_generation: int | None = None,
+        observed_active_at: float | None = None,
+        confirmed: bool = True,
+    ) -> bool:
+        """Apply and persist one proactive send attempt for legacy callers."""
+        self.apply_proactive_state(
+            umo,
+            state,
+            reply,
+            direct_send_count,
+            expected_generation=expected_generation,
+            observed_active_at=observed_active_at,
+            confirmed=confirmed,
+        )
+        return await self.persist_proactive_state()

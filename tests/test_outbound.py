@@ -181,3 +181,27 @@ def test_missing_sender_fails_before_submit() -> None:
 
     assert result.outcome.status is outbound.SendStatus.FAILED_BEFORE_SUBMIT
     assert result.submitted is False
+
+
+def test_tool_direct_unknown_is_retained_in_the_attempt_ledger() -> None:
+    """A tool send that enters the adapter retains UNKNOWN evidence for the pipeline."""
+    outbound = _load_gateway()
+    models = load_package(PACKAGE_NAME, "models")
+
+    async def sender(_message):
+        raise RuntimeError("adapter disconnected")
+
+    class Message:
+        type = "tool_direct_result"
+
+        def get_plain_text(self) -> str:
+            return "tool result"
+
+    ledger = models.AttemptLedger()
+    gateway = outbound.OutboundGateway(sender, max_direct_sends=1, ledger=ledger)
+    result = asyncio.run(gateway.send(Message(), kind="tool_direct"))
+
+    assert result.outcome.status is models.SendStatus.UNKNOWN
+    assert ledger.direct_send_count == 1
+    assert ledger.direct_texts == ("tool result",)
+    assert ledger.attempts[0].state is models.AttemptState.UNKNOWN

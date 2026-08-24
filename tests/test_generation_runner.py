@@ -366,8 +366,10 @@ async def test_generate_inherit_tools_skips_boundary(tmp_path: Path) -> None:
 
 async def test_generate_no_last_event_returns_empty(tmp_path: Path) -> None:
     _, models, runner, _, _, _ = _make_runner(tmp_path)
-    result = await runner.generate("s1", _state(models), force=True)
+    ledger = models.AttemptLedger()
+    result = await runner.generate("s1", _state(models), ledger=ledger, force=True)
     assert result.text == ""
+    assert result.ledger is ledger
     assert result.direct_send_count == 0
 
 
@@ -426,6 +428,29 @@ async def test_generate_tracks_direct_sends_within_budget(tmp_path: Path) -> Non
     assert result.direct_send_count == 2
     assert result.text == "你好呀"
     assert len(result.direct_texts) == 2
+
+
+async def test_generate_tracks_tool_direct_evidence_in_pipeline_ledger(tmp_path: Path) -> None:
+    """Generation returns the caller-owned ledger rather than parallel direct-send facts."""
+    _, models, runner, runtime, _, _ = _make_runner(tmp_path)
+    event = FakeEvent()
+    runner._last_events["s1"] = event
+    ledger = models.AttemptLedger()
+
+    def run_with_direct(_runner, **_kwargs):
+        async def gen():
+            await _direct_send(event, "ledger direct")
+            yield None
+
+        return gen()
+
+    runtime.run = run_with_direct
+    result = await runner.generate("s1", _state(models), ledger=ledger, force=True)
+
+    assert result.ledger is ledger
+    assert result.direct_send_count == 1
+    assert result.direct_texts == ("ledger direct",)
+    assert ledger.attempts[0].state is models.AttemptState.DELIVERED
 
 
 async def test_generate_passes_non_tool_messages_through_untouched(tmp_path: Path) -> None:

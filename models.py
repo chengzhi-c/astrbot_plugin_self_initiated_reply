@@ -372,11 +372,18 @@ class LocalGateCallback(Protocol):
 
 @dataclass(frozen=True)
 class PipelineReply:
-    """Result of one main-Agent run, including tool-side direct sends."""
+    """Result of one main-Agent run with its outbound evidence ledger."""
 
     text: str = ""
-    direct_send_count: int = 0
-    direct_texts: tuple[str, ...] = ()
+    ledger: AttemptLedger | None = None
+
+    @property
+    def direct_send_count(self) -> int:
+        return self.ledger.direct_send_count if self.ledger is not None else 0
+
+    @property
+    def direct_texts(self) -> tuple[str, ...]:
+        return self.ledger.direct_texts if self.ledger is not None else ()
 
 
 class CheckTrigger(StrEnum):
@@ -399,6 +406,158 @@ class SendStatus(StrEnum):
     FAILED_BEFORE_SUBMIT = "failed_before_submit"
     UNKNOWN = "unknown"
     SUPPRESSED = "suppressed"
+
+
+class AttemptState(StrEnum):
+    """Lifecycle evidence for one outbound adapter attempt."""
+
+    RESERVED = "reserved"
+    IN_FLIGHT = "in_flight"
+    DELIVERED = "delivered"
+    UNKNOWN = "unknown"
+    FAILED_BEFORE_SUBMIT = "failed_before_submit"
+    SUPPRESSED = "suppressed"
+    ABANDONED = "abandoned"
+
+
+@dataclass
+class SendAttempt:
+    """One outbound call tracked by a pipeline-owned ledger."""
+
+    attempt_id: int
+    kind: str
+    text: str = ""
+    state: AttemptState = AttemptState.RESERVED
+
+
+@dataclass
+class AttemptLedger:
+    """Single source of outbound submission evidence for one pipeline run.
+
+    All mutators are synchronous and contain no await points, so separate
+    asyncio tasks cannot interleave a state transition on the event loop.
+    """
+
+    _attempts: list[SendAttempt] = field(default_factory=list)
+    _next_attempt_id: int = 1
+    _record_task: object | None = field(default=None, init=False, repr=False)
+    phase: str = "open"
+    record_failure: str = ""
+
+    @property
+    def attempts(self) -> tuple[SendAttempt, ...]:
+        return tuple(self._attempts)
+
+    @property
+    def record_task(self) -> object | None:
+        return self._record_task
+
+    @property
+    def has_submission(self) -> bool:
+        return any(
+            attempt.state in {AttemptState.DELIVERED, AttemptState.UNKNOWN}
+            for attempt in self._attempts
+        )
+
+    @property
+    def has_unknown(self) -> bool:
+        return any(attempt.state is AttemptState.UNKNOWN for attempt in self._attempts)
+
+    @property
+    def direct_send_count(self) -> int:
+        return sum(
+            1
+            for attempt in self._attempts
+            if attempt.kind == "tool_direct"
+            and attempt.state in {AttemptState.DELIVERED, AttemptState.UNKNOWN}
+        )
+
+    @property
+    def direct_texts(self) -> tuple[str, ...]:
+        return tuple(
+            attempt.text
+            for attempt in self._attempts
+            if attempt.kind == "tool_direct"
+            and attempt.text
+            and attempt.state in {AttemptState.DELIVERED, AttemptState.UNKNOWN}
+        )
+
+    def reserve(self, kind: str, text: str = "") -> SendAttempt:
+        if self.phase != "open":
+            raise RuntimeError("cannot reserve an attempt after the ledger is sealed")
+        attempt = SendAttempt(self._next_attempt_id, kind, text)
+        self._next_attempt_id += 1
+        self._attempts.append(attempt)
+        return attempt
+
+    def mark_in_flight(self, attempt: SendAttempt) -> None:
+        if self.phase != "open" or attempt not in self._attempts:
+            raise RuntimeError("cannot start an attempt outside an open ledger")
+        if attempt.state is not AttemptState.RESERVED:
+            raise RuntimeError("only a reserved attempt can enter the adapter")
+        attempt.state = AttemptState.IN_FLIGHT
+
+    def resolve(self, attempt: SendAttempt, status: SendStatus) -> bool:
+        """Apply an adapter outcome, returning false for a sealed late result."""
+        if self.phase != "open" or attempt not in self._attempts:
+            return False
+        if attempt.state is not AttemptState.IN_FLIGHT:
+            raise RuntimeError("only an in-flight attempt can receive an adapter outcome")
+        states = {
+            SendStatus.DELIVERED: AttemptState.DELIVERED,
+            SendStatus.UNKNOWN: AttemptState.UNKNOWN,
+            SendStatus.FAILED_BEFORE_SUBMIT: AttemptState.FAILED_BEFORE_SUBMIT,
+        }
+        try:
+            attempt.state = states[status]
+        except KeyError as exc:
+            raise ValueError(f"invalid in-flight outcome: {status}") from exc
+        return True
+
+    def finish_before_submit(self, attempt: SendAttempt, status: SendStatus) -> None:
+        if self.phase != "open" or attempt not in self._attempts:
+            raise RuntimeError("cannot finish an attempt outside an open ledger")
+        if attempt.state is not AttemptState.RESERVED:
+            raise RuntimeError("only a reserved attempt can finish before adapter entry")
+        states = {
+            SendStatus.FAILED_BEFORE_SUBMIT: AttemptState.FAILED_BEFORE_SUBMIT,
+            SendStatus.SUPPRESSED: AttemptState.SUPPRESSED,
+        }
+        try:
+            attempt.state = states[status]
+        except KeyError as exc:
+            raise ValueError(f"invalid pre-submit outcome: {status}") from exc
+
+    def start_recording(self, task: object) -> bool:
+        """Register the ledger's sole persistence task after sealing evidence."""
+        if self.phase != "sealed" or self._record_task is not None:
+            return False
+        self._record_task = task
+        self.phase = "recording"
+        return True
+
+    def mark_recorded(self) -> None:
+        if self.phase != "recording":
+            raise RuntimeError("only a recording ledger can become recorded")
+        self.phase = "recorded"
+
+    def mark_record_failed(self, detail: str) -> None:
+        if self.phase != "recording":
+            raise RuntimeError("only a recording ledger can fail persistence")
+        self.record_failure = detail
+        self.phase = "record_failed"
+
+    def seal(self) -> tuple[SendAttempt, ...]:
+        """Freeze evidence; any in-flight adapter call is pessimistically UNKNOWN."""
+        if self.phase != "open":
+            return self.attempts
+        for attempt in self._attempts:
+            if attempt.state is AttemptState.RESERVED:
+                attempt.state = AttemptState.ABANDONED
+            elif attempt.state is AttemptState.IN_FLIGHT:
+                attempt.state = AttemptState.UNKNOWN
+        self.phase = "sealed"
+        return self.attempts
 
 
 @dataclass(frozen=True)

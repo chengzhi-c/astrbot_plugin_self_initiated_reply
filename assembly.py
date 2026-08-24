@@ -127,7 +127,7 @@ def assemble_plugin_components(
 
     plugin._whitelist = WhitelistManager(
         settings=plugin.settings,
-        sync_whitelist=lambda: plugin._sync_whitelist(),
+        sync_whitelist=lambda: bool(plugin._sync_whitelist()),
         save_storage=lambda: plugin._save_storage(),
         ensure_state=lambda key: plugin._state_for(key),
         invalidate=lambda umo: plugin._coordinator.invalidate(umo),
@@ -153,4 +153,5 @@ def assemble_plugin_components(
         decision=plugin._decision,
         last_events=plugin._last_events,
         last_decisions=plugin._last_decisions,
+        track_critical_task=plugin._track_critical_task,
     )

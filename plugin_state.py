@@ -73,6 +73,18 @@ def refresh_admin_ids(plugin: SelfInitiatedReplyPlugin) -> set[str]:
     return plugin._admin_ids
 
 
+def track_critical_task(
+    plugin: SelfInitiatedReplyPlugin, coro: Coroutine[Any, Any, Any]
+) -> asyncio.Task[Any]:
+    """Register a persistence task even while shutdown is already stopping."""
+    task: asyncio.Task[Any] = asyncio.create_task(coro)
+    plugin._background_tasks.add(task)
+    plugin._critical_tasks.add(task)
+    task.add_done_callback(plugin._background_tasks.discard)
+    task.add_done_callback(plugin._critical_tasks.discard)
+    return task
+
+
 def state_for(plugin: SelfInitiatedReplyPlugin, umo: str) -> SessionState:
     state = plugin.sessions.get(umo)
     if state is None:
@@ -156,9 +168,10 @@ async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
             raise OSError(f"状态文件写入失败：{plugin._storage_path}")
 
 
-def sync_whitelist(plugin: SelfInitiatedReplyPlugin) -> None:
+def sync_whitelist(plugin: SelfInitiatedReplyPlugin) -> bool:
     if not sync_config_whitelist(plugin._config_path, plugin.config, plugin.settings):
         raise OSError(f"配置文件写入失败：{plugin._config_path}")
+    return True
 
 
 async def persist_enabled(plugin: SelfInitiatedReplyPlugin, enabled: bool) -> None:

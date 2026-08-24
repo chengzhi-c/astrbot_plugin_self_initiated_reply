@@ -17,6 +17,7 @@ import os
 import sys
 import types
 from pathlib import Path
+from typing import Any
 
 from .host_stubs import with_plugin
 from .source_contract import calls_in, logger_levels_for, method_source
@@ -646,6 +647,104 @@ def test_r7_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) ->
             assert state.last_proactive_at >= state.last_active_at
         finally:
             plugin._delivery.send_reply = original_send_reply
+            main._AGENT_RUNTIME = original_runtime
+
+    with_plugin(tmp_path, scenario)
+
+
+# ============================================================================
+# R7b：发送已提交后 after-send 取消仍须保留一次性状态记录
+# ============================================================================
+
+
+def test_r7_after_send_cancellation_records_delivered_attempt(tmp_path: Path) -> None:
+    """Cancellation after a delivered send cannot erase the external side effect."""
+    from types import SimpleNamespace
+
+    from .host_stubs import FakeBuildResult, _FakeResetCoro
+
+    async def scenario(plugin, main):
+        event = _make_event()
+        plugin._last_events[UMO] = event
+        plugin._last_event_at[UMO] = 1.0
+        state = plugin._state_for(UMO)
+        state.last_active_at = main.now_ts() - 300
+
+        class Runner:
+            def reset(self, **_):
+                return _FakeResetCoro()
+
+            def get_final_llm_resp(self):
+                return SimpleNamespace(completion_text="after-send reply", result_chain=None)
+
+            def close(self):
+                pass
+
+        async def build_effect(kwargs, result):
+            return FakeBuildResult(
+                agent_runner=Runner(),
+                provider_request=kwargs["req"],
+                provider=None,
+                reset_coro=_FakeResetCoro(),
+            )
+
+        def run_effect(_runner, **_kwargs):
+            async def gen():
+                yield None
+
+            return gen()
+
+        original_runtime = main._AGENT_RUNTIME
+        original_hook = main.call_event_hook
+        save_calls: list[int] = []
+        original_save = plugin._save_storage
+
+        async def counting_save() -> None:
+            save_calls.append(1)
+            await original_save()
+
+        plugin._save_storage = counting_save
+        original_finalize = plugin._pipeline._finalize_ledger
+        captured_ledger: dict[str, Any] = {}
+
+        async def capture_finalize(umo_arg, state_arg, ledger_arg, reply_arg, **kwargs):
+            captured_ledger["value"] = ledger_arg
+            return await original_finalize(umo_arg, state_arg, ledger_arg, reply_arg, **kwargs)
+
+        plugin._pipeline._finalize_ledger = capture_finalize
+        main._AGENT_RUNTIME = _PipelineTestAdapter(
+            original_runtime, build_effect=build_effect, run_effect=run_effect
+        )
+
+        async def cancel_after_send(event_obj, event_type, *args, **kwargs):
+            if event_type.name == "OnAfterMessageSentEvent":
+                task = asyncio.current_task()
+                assert task is not None
+                task.cancel()
+                await asyncio.sleep(0)
+            return await original_hook(event_obj, event_type, *args, **kwargs)
+
+        main.call_event_hook = cancel_after_send
+        try:
+            task = asyncio.create_task(
+                plugin._pipeline.check_session(UMO, trigger="patrol", force=True)
+            )
+            try:
+                await task
+                raise AssertionError("expected cancellation from the after-send hook")
+            except asyncio.CancelledError:
+                pass
+
+            assert state.daily_count == 1
+            assert state.last_proactive_observed_at >= state.last_active_at
+            assert state.last_proactive_text == "after-send reply"
+            assert state.recent[-1].text == "after-send reply"
+            assert len(save_calls) == 1
+            ledger = captured_ledger["value"]
+            assert ledger.phase == "recorded"
+            assert [attempt.state.value for attempt in ledger.attempts] == ["delivered"]
+        finally:
+            main.call_event_hook = original_hook
             main._AGENT_RUNTIME = original_runtime
 
     with_plugin(tmp_path, scenario)

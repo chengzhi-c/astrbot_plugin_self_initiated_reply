@@ -95,6 +95,7 @@ from .plugin_state import (
     state_for,
     sync_whitelist,
     track_background_task,
+    track_critical_task,
 )
 from .storage import (
     load_config_data,
@@ -148,9 +149,10 @@ class SelfInitiatedReplyPlugin(Star):
     _state_for: Callable[[str], SessionState]
     _save_storage_sync: Callable[[], None]
     _save_storage: Callable[[], Awaitable[None]]
-    _sync_whitelist: Callable[[], None]
+    _sync_whitelist: Callable[[], Any]
     _persist_enabled: Callable[[bool], Awaitable[None]]
     _track_background_task: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any] | None]
+    _track_critical_task: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any]]
     _resolve_paths: Callable[[Any], tuple[Path, Path]]
 
     def __init__(
@@ -205,6 +207,7 @@ class SelfInitiatedReplyPlugin(Star):
         # token 永远小于会话当前 token，任何 check 点都会拒绝它。
         self._gate = SessionGate()
         self._background_tasks: set[asyncio.Task[Any]] = set()
+        self._critical_tasks: set[asyncio.Task[Any]] = set()
         self._stopping = False
         self._save_lock = asyncio.Lock()
         self._config_lock = asyncio.Lock()
@@ -224,6 +227,7 @@ class SelfInitiatedReplyPlugin(Star):
         self._sync_whitelist = partial(sync_whitelist, self)
         self._persist_enabled = partial(persist_enabled, self)
         self._track_background_task = partial(track_background_task, self)
+        self._track_critical_task = partial(track_critical_task, self)
         self._refresh_admin_ids()
 
         self._assemble_components()
@@ -460,7 +464,7 @@ class SelfInitiatedReplyPlugin(Star):
     def _cancel_background_tasks(self) -> None:
         current = asyncio.current_task()
         for task in list(self._background_tasks):
-            if task is current or task.done():
+            if task is current or task.done() or task in self._critical_tasks:
                 continue
             task.cancel()
 

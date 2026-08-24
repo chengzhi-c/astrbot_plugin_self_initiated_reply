@@ -30,6 +30,7 @@ from .models import (
     MIN_RECENT_TEXT_RECORDS,
     PLUGIN_ID,
     PROACTIVE_ALLOWED_TOOL_IDS,
+    AttemptLedger,
     ImageContextCallback,
     LocalGateCallback,
     PipelineReply,
@@ -145,8 +146,7 @@ class _GenerateRun:
         "prompt",
         "expected_generation",
         "force",
-        "direct_send_count",
-        "direct_send_texts",
+        "ledger",
         "tool_boundary_state",
         "reset_coro",
         "original_send",
@@ -169,6 +169,7 @@ class _GenerateRun:
         prompt: str,
         expected_generation: int | None,
         force: bool,
+        ledger: AttemptLedger,
     ) -> None:
         self.umo = umo
         self.state = state
@@ -177,8 +178,7 @@ class _GenerateRun:
         self.prompt = prompt
         self.expected_generation = expected_generation
         self.force = force
-        self.direct_send_count = 0
-        self.direct_send_texts: list[str] = []
+        self.ledger = ledger
         self.tool_boundary_state: dict[str, Any] | None = None
         # finally 是唯一回收点；build 前必须占位，避免 UnboundLocalError。
         self.reset_coro: Any = None
@@ -192,10 +192,7 @@ class _GenerateRun:
         self.build_result: Any = None
 
     def partial_reply(self) -> PipelineReply:
-        return PipelineReply(
-            direct_send_count=self.direct_send_count,
-            direct_texts=tuple(self.direct_send_texts),
-        )
+        return PipelineReply(ledger=self.ledger)
 
     def abort(self, pending: Any = None) -> PipelineReply:
         """中止生成：eager close reset，带回已发生直发计数（finally 仍会兜底）。"""
@@ -268,13 +265,15 @@ class GenerationRunner:
         state: SessionState,
         *,
         expected_generation: int | None = None,
+        ledger: AttemptLedger | None = None,
         force: bool = False,
     ) -> PipelineReply:
         """Run AstrBot's main Agent and account for tool-side direct sends."""
+        ledger = ledger or AttemptLedger()
         last_event = self._last_events.get(umo)
         if not last_event:
             logger.warning("[%s] no last event for session=%s", PLUGIN_ID, umo)
-            return PipelineReply()
+            return PipelineReply(ledger=ledger)
 
         # 一次运行一个工具语义：入口快照，避免运行中改配置导致 install 与
         # enforce 读到不同开关值（False→True 方向会留下未清理的工具集）。
@@ -291,6 +290,7 @@ class GenerationRunner:
             prompt=prompt,
             expected_generation=expected_generation,
             force=force,
+            ledger=ledger,
         )
         try:
             early = self._prepare_outbound_tracker(run)
@@ -336,6 +336,7 @@ class GenerationRunner:
                 self._gate.is_current(run.umo, run.expected_generation)
                 and not self._local_gate(run.state, force=run.force)
             ),
+            ledger=run.ledger,
         )
         run.outbound = outbound
 
@@ -345,8 +346,6 @@ class GenerationRunner:
                 assert original_send is not None
                 return await original_send(message)
             result = await outbound.send(message, kind="tool_direct")
-            run.direct_send_count = outbound.direct_send_count
-            run.direct_send_texts[:] = outbound.direct_texts
             if not result.submitted:
                 logger.info(
                     "[%s] suppress tool direct send session=%s reason=%s",
@@ -359,7 +358,7 @@ class GenerationRunner:
         run.tracked_send = tracked_send
         if not callable(original_send):
             logger.warning("[%s] event send tracker unavailable session=%s", PLUGIN_ID, run.umo)
-            return PipelineReply()
+            return run.partial_reply()
         try:
             last_event.send = tracked_send
             run.tracker_installed = True
@@ -370,7 +369,7 @@ class GenerationRunner:
                 run.umo,
                 exc,
             )
-            return PipelineReply()
+            return run.partial_reply()
         return None
 
     async def _build_and_bound_tools(self, run: _GenerateRun) -> PipelineReply | None:
@@ -457,11 +456,7 @@ class GenerationRunner:
                 allow_multiline=self.settings.allow_multiline_reply,
                 max_chars=self.settings.max_reply_chars,
             )
-        return PipelineReply(
-            text=reply_text,
-            direct_send_count=run.direct_send_count,
-            direct_texts=tuple(run.direct_send_texts),
-        )
+        return PipelineReply(text=reply_text, ledger=run.ledger)
 
     def _cleanup_generation_state(self, run: _GenerateRun) -> None:
         """四段独立静默清理：reset → 摘 send → 工具边界 → provider_request。"""
