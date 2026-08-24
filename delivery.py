@@ -101,13 +101,15 @@ class DeliveryRunner:
         record_legacy_state = ledger is None
         if ledger is None:
             ledger = AttemptLedger()
+        ledger_id = ledger.ledger_id
         gate = "" if self._gate.is_current(umo, expected_generation) else STALE_TASK_MESSAGE
         if not gate:
             gate = self._local_gate(state, force=force)
         if gate:
             logger.debug(
-                "[%s] skip before send session=%s trigger=%s reason=%s",
+                "[%s] skip before send ledger_id=%s session=%s trigger=%s reason=%s",
                 PLUGIN_ID,
+                ledger_id,
                 umo,
                 trigger,
                 gate,
@@ -173,8 +175,10 @@ class DeliveryRunner:
         if self.settings.log_reply_content and reply:
             preview = reply if len(reply) <= 80 else reply[:80] + "…"
             logger.debug(
-                "[%s] proactive reply sent session=%s chars=%d direct_tools=%d text=%s",
+                "[%s] proactive reply sent ledger_id=%s session=%s chars=%d "
+                "direct_tools=%d text=%s",
                 PLUGIN_ID,
+                ledger_id,
                 umo,
                 len(reply),
                 direct_send_count,
@@ -182,8 +186,9 @@ class DeliveryRunner:
             )
         else:
             logger.debug(
-                "[%s] proactive reply sent session=%s chars=%d direct_tools=%d",
+                "[%s] proactive reply sent ledger_id=%s session=%s chars=%d direct_tools=%d",
                 PLUGIN_ID,
+                ledger_id,
                 umo,
                 len(reply),
                 direct_send_count,
@@ -251,8 +256,14 @@ class DeliveryRunner:
         # 复核点 1/4（真实窗口）：expected_generation 是生成前 advance 拿到的 token，
         # 到此已隔整轮 LLM 生成（多个 await），代次极可能已被新消息推进。此处尚未
         # set_result，无需 _clear_result。
+        ledger = ledger or AttemptLedger()
         if not self._gate.is_current(umo, expected_generation):
-            logger.info("[%s] suppress stale reply before hooks session=%s", PLUGIN_ID, umo)
+            logger.info(
+                "[%s] suppress stale reply before hooks ledger_id=%s session=%s",
+                PLUGIN_ID,
+                ledger.ledger_id,
+                umo,
+            )
             return SendOutcome(SendStatus.SUPPRESSED, "generation changed before hooks")
 
         last_event = self._last_events.get(umo)
@@ -286,6 +297,8 @@ class DeliveryRunner:
         本方法是唯一会 ``set_result`` 的路径，故所有出口都必须经 ``_clear_result``
         回收（防结果泄漏到宿主后续流程）。
         """
+        ledger = ledger or AttemptLedger()
+        ledger_id = ledger.ledger_id
         send_started = False
         try:
             last_event.set_result(
@@ -300,8 +313,9 @@ class DeliveryRunner:
             if not self._gate.is_current(umo, expected_generation):
                 self._clear_result(last_event)
                 logger.info(
-                    "[%s] suppress stale reply after decorating hook session=%s",
+                    "[%s] suppress stale reply after decorating hook ledger_id=%s session=%s",
                     PLUGIN_ID,
+                    ledger_id,
                     umo,
                 )
                 return SendOutcome(SendStatus.SUPPRESSED, "generation changed after decorating")
@@ -320,12 +334,16 @@ class DeliveryRunner:
             if not self._gate.is_current(umo, expected_generation):
                 self._clear_result(last_event)
                 logger.info(
-                    "[%s] suppress stale reply before event send session=%s", PLUGIN_ID, umo
+                    "[%s] suppress stale reply before event send ledger_id=%s session=%s",
+                    PLUGIN_ID,
+                    ledger_id,
+                    umo,
                 )
                 return SendOutcome(SendStatus.SUPPRESSED, "generation changed before send")
             logger.debug(
-                "[%s] event send begin session=%s chars=%d chain_items=%d",
+                "[%s] event send begin ledger_id=%s session=%s chars=%d chain_items=%d",
                 PLUGIN_ID,
+                ledger_id,
                 umo,
                 len(reply),
                 len(getattr(result, "chain", []) or []),
@@ -344,9 +362,10 @@ class DeliveryRunner:
                 self._clear_result(last_event)
                 return send_result.outcome
             logger.debug(
-                "[%s] event send completed session=%s chars=%d;"
+                "[%s] event send completed ledger_id=%s session=%s chars=%d;"
                 " platform adapter completion is not a delivery receipt",
                 PLUGIN_ID,
+                ledger_id,
                 umo,
                 len(reply),
             )
@@ -359,8 +378,9 @@ class DeliveryRunner:
                     )
                 except Exception as exc:
                     logger.warning(
-                        "[%s] after-send hook failed session=%s error=%s",
+                        "[%s] after-send hook failed ledger_id=%s session=%s error=%s",
                         PLUGIN_ID,
+                        ledger_id,
                         umo,
                         exc,
                     )
@@ -371,8 +391,9 @@ class DeliveryRunner:
             raise
         except Exception as exc:
             logger.warning(
-                "[%s] event send reply failed session=%s error=%s",
+                "[%s] event send reply failed ledger_id=%s session=%s error=%s",
                 PLUGIN_ID,
+                ledger_id,
                 umo,
                 exc,
                 exc_info=True,
@@ -395,12 +416,19 @@ class DeliveryRunner:
         仅由 ``send_reply`` 在 ``last_event`` 为假时调用。本路径不 ``set_result``、
         不触发装饰与发送后钩子，故无 ``_clear_result`` 义务。
         """
+        ledger = ledger or AttemptLedger()
+        ledger_id = ledger.ledger_id
         # 复核点 4/4（结构防线）：与复核点 1 之间没有真实挂起点——
         # ``await self._send_via_context(...)`` 只是进入协程，不向事件循环让出，
         # 故 的拆分没有新开竞态窗口。性质同复核点 3：
         # 为日后此路径插入异步查询预留拦截位。此路径未 set_result，无需 _clear_result。
         if not self._gate.is_current(umo, expected_generation):
-            logger.info("[%s] suppress stale reply before context send session=%s", PLUGIN_ID, umo)
+            logger.info(
+                "[%s] suppress stale reply before context send ledger_id=%s session=%s",
+                PLUGIN_ID,
+                ledger_id,
+                umo,
+            )
             return SendOutcome(SendStatus.SUPPRESSED, "generation changed before context send")
         # send_started 取自 ``OutboundResult.submitted``（DELIVERED/UNKNOWN 为真），
         # 与事件路径上方那处同源：是否已提交由 gateway 的分类结果决定，不靠此处
@@ -428,8 +456,9 @@ class DeliveryRunner:
             send_started = send_result.submitted
             if send_result.outcome.status is SendStatus.UNKNOWN:
                 logger.warning(
-                    "[%s] context send result unknown session=%s detail=%s",
+                    "[%s] context send result unknown ledger_id=%s session=%s detail=%s",
                     PLUGIN_ID,
+                    ledger_id,
                     umo,
                     send_result.outcome.detail,
                 )
@@ -437,8 +466,10 @@ class DeliveryRunner:
                 # False = no reachable platform target; the message was not
                 # submitted, so it must not consume cooldown/quota.
                 logger.warning(
-                    "[%s] context send rejected (no reachable platform) session=%s detail=%s",
+                    "[%s] context send rejected (no reachable platform) "
+                    "ledger_id=%s session=%s detail=%s",
                     PLUGIN_ID,
+                    ledger_id,
                     umo,
                     send_result.outcome.detail,
                 )
@@ -446,7 +477,13 @@ class DeliveryRunner:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("[%s] send reply failed session=%s error=%s", PLUGIN_ID, umo, exc)
+            logger.warning(
+                "[%s] send reply failed ledger_id=%s session=%s error=%s",
+                PLUGIN_ID,
+                ledger_id,
+                umo,
+                exc,
+            )
             if send_started:
                 return SendOutcome(SendStatus.UNKNOWN, str(exc))
             return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, str(exc))

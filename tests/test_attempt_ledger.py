@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from .host_stubs import install_astrbot_stubs, load_package
 
 PACKAGE_NAME = "selfreply_attempt_ledger_test_package"
@@ -9,6 +11,17 @@ PACKAGE_NAME = "selfreply_attempt_ledger_test_package"
 
 def _models():
     return load_package(PACKAGE_NAME, "models")
+
+
+def test_each_ledger_has_explicit_unique_id() -> None:
+    """每次 logical attempt 都有可记录且不依赖全局计数器的身份。"""
+    models = _models()
+    first = models.AttemptLedger()
+    second = models.AttemptLedger()
+
+    assert isinstance(first.ledger_id, str)
+    assert UUID(hex=first.ledger_id).version == 4
+    assert first.ledger_id != second.ledger_id
 
 
 def test_seal_marks_inflight_attempt_unknown_and_ignores_late_delivery() -> None:

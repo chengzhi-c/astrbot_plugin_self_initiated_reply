@@ -741,6 +741,8 @@ def test_r7_after_send_cancellation_records_delivered_attempt(tmp_path: Path) ->
             assert state.recent[-1].text == "after-send reply"
             assert len(save_calls) == 1
             ledger = captured_ledger["value"]
+            assert isinstance(ledger.ledger_id, str)
+            assert ledger.ledger_id
             assert ledger.phase == "recorded"
             assert [attempt.state.value for attempt in ledger.attempts] == ["delivered"]
         finally:
@@ -1068,9 +1070,9 @@ _DEBUG_LOG_CONTRACTS = [
     # scheduler.py 那条已是 INFO 的 `check result session=` 在常见路径上 1:1
     # 同频（都在一次 check_session 收敛点各打一次），不引入新的刷屏量级。
     # 现由 tests/test_observability.py 的 _INFO_WHITELIST 看守。
-    ("delivery.py", "[%s] skip before send session=", 1),
-    ("delivery.py", "[%s] proactive reply sent session=", 2),
-    ("delivery.py", "[%s] event send completed session=", 1),
+    ("delivery.py", "[%s] skip before send ledger_id=", 1),
+    ("delivery.py", "[%s] proactive reply sent ledger_id=%s session=", 2),
+    ("delivery.py", "[%s] event send completed ledger_id=%s session=", 1),
     ("image/parser.py", "image frozen to local cache: %s", 1),
     ("image/parser.py", "image frozen as in-memory data URL", 1),
 ]

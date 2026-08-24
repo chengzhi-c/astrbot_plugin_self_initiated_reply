@@ -195,6 +195,14 @@ class SessionPipeline:
         observed_active_at: float | None,
     ) -> bool:
         """Apply one ledger outcome and retry only persistence, never state mutation."""
+        logger.debug(
+            "[%s] record proactive ledger_id=%s session=%s submissions=%s unknown=%s",
+            PLUGIN_ID,
+            ledger.ledger_id,
+            umo,
+            ledger.has_submission,
+            ledger.has_unknown,
+        )
         try:
             if not ledger.has_submission:
                 ledger.mark_recorded()
@@ -226,7 +234,20 @@ class SessionPipeline:
             for attempt_no in range(_MAX_RECORD_SAVE_ATTEMPTS):
                 if await self._delivery.persist_proactive_state():
                     ledger.mark_recorded()
+                    logger.debug(
+                        "[%s] record proactive completed ledger_id=%s session=%s",
+                        PLUGIN_ID,
+                        ledger.ledger_id,
+                        umo,
+                    )
                     return True
+                logger.warning(
+                    "[%s] record proactive persistence failed ledger_id=%s session=%s attempt=%d",
+                    PLUGIN_ID,
+                    ledger.ledger_id,
+                    umo,
+                    attempt_no + 1,
+                )
                 if attempt_no + 1 < _MAX_RECORD_SAVE_ATTEMPTS:
                     await asyncio.sleep(0)
             ledger.mark_record_failed("state persistence retries exhausted")
@@ -239,8 +260,9 @@ class SessionPipeline:
             if ledger.phase == "recording":
                 ledger.mark_record_failed(str(exc))
             logger.error(
-                "[%s] proactive ledger finalizer failed session=%s error=%s",
+                "[%s] proactive ledger finalizer failed ledger_id=%s session=%s error=%s",
                 PLUGIN_ID,
+                ledger.ledger_id,
                 umo,
                 exc,
             )

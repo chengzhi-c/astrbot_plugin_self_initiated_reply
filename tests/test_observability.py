@@ -23,11 +23,11 @@ PACKAGE_NAME = "selfreply_observability_test_package"
 # 高频成功路径（生成成功/发送成功/巡检通过/清理例程）一律走 DEBUG。
 _INFO_WHITELIST = {
     # 代次失效抑制：竞态异常路径，运维需要可见
-    "[%s] suppress stale reply before hooks session=%s",
-    "[%s] suppress stale reply after decorating hook session=%s",
-    "[%s] suppress stale reply before event send session=%s",
-    "[%s] suppress stale reply before context send session=%s",
-    "[%s] suppress tool direct send session=%s reason=%s",
+    "[%s] suppress stale reply before hooks ledger_id=%s session=%s",
+    "[%s] suppress stale reply after decorating hook ledger_id=%s session=%s",
+    "[%s] suppress stale reply before event send ledger_id=%s session=%s",
+    "[%s] suppress stale reply before context send ledger_id=%s session=%s",
+    "[%s] suppress tool direct send ledger_id=%s session=%s reason=%s",
     "[%s] suppress duplicate final text after tool direct send session=%s",
     # 未确认/过期代次记录：异常状态
     "[%s] record unconfirmed proactive send session=%s (submission status unknown)",

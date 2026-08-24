@@ -272,7 +272,12 @@ class GenerationRunner:
         ledger = ledger or AttemptLedger()
         last_event = self._last_events.get(umo)
         if not last_event:
-            logger.warning("[%s] no last event for session=%s", PLUGIN_ID, umo)
+            logger.warning(
+                "[%s] no last event ledger_id=%s session=%s",
+                PLUGIN_ID,
+                ledger.ledger_id,
+                umo,
+            )
             return PipelineReply(ledger=ledger)
 
         # 一次运行一个工具语义：入口快照，避免运行中改配置导致 install 与
@@ -303,16 +308,18 @@ class GenerationRunner:
             return self._finalize_text(run)
         except TimeoutError:
             logger.warning(
-                "[%s] main-agent generation timeout session=%s timeout=%.1fs",
+                "[%s] main-agent generation timeout ledger_id=%s session=%s timeout=%.1fs",
                 PLUGIN_ID,
+                ledger.ledger_id,
                 umo,
                 self.settings.generation_timeout_sec,
             )
             return run.partial_reply()
         except Exception as exc:
             logger.warning(
-                "[%s] main-agent generation failed session=%s error=%s",
+                "[%s] main-agent generation failed ledger_id=%s session=%s error=%s",
                 PLUGIN_ID,
+                ledger.ledger_id,
                 umo,
                 exc,
                 exc_info=True,
@@ -348,8 +355,9 @@ class GenerationRunner:
             result = await outbound.send(message, kind="tool_direct")
             if not result.submitted:
                 logger.info(
-                    "[%s] suppress tool direct send session=%s reason=%s",
+                    "[%s] suppress tool direct send ledger_id=%s session=%s reason=%s",
                     PLUGIN_ID,
+                    run.ledger.ledger_id,
                     run.umo,
                     result.outcome.detail,
                 )
@@ -357,15 +365,21 @@ class GenerationRunner:
 
         run.tracked_send = tracked_send
         if not callable(original_send):
-            logger.warning("[%s] event send tracker unavailable session=%s", PLUGIN_ID, run.umo)
+            logger.warning(
+                "[%s] event send tracker unavailable ledger_id=%s session=%s",
+                PLUGIN_ID,
+                run.ledger.ledger_id,
+                run.umo,
+            )
             return run.partial_reply()
         try:
             last_event.send = tracked_send
             run.tracker_installed = True
         except Exception as exc:
             logger.warning(
-                "[%s] event send tracker unavailable session=%s error=%s",
+                "[%s] event send tracker unavailable ledger_id=%s session=%s error=%s",
                 PLUGIN_ID,
+                run.ledger.ledger_id,
                 run.umo,
                 exc,
             )

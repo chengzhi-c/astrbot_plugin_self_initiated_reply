@@ -34,8 +34,11 @@
 关了只挡自动路径（入口 / 非 force 门卫 / 巡检），不挡 `/selfreply check`。
 不新增独立私聊模式，也不做第二套白名单。
 
-## 图片传输与生命周期
+## 发送证据账本身份
 
+每次主动检查由 pipeline 创建一个带 UUID4 hex `ledger_id` 的 `AttemptLedger`。生成、投递和唯一 record task 传递同一 ledger 引用；`ledger_id` 只用于日志、任务关联和一次性记账诊断，不进入持久配置或 `config_revision`，也不依赖进程级计数器。
+
+## 图片传输与生命周期
 远程图片使用 `httpx` + `httpcore` 的固定地址传输：DNS 只在每个请求入口解析一次，
 TCP 连接使用已验证 IP，原 hostname 继续承担 Host/SNI；环境代理关闭，重定向由 HTTPX
 逐跳重新进入传输层。图片描述 LRU 同时受条目数和字节预算约束，磁盘不可用时的 data URL

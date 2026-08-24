@@ -15,6 +15,7 @@ import json
 import math
 import re
 import time
+import uuid
 from collections import deque
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
@@ -446,6 +447,7 @@ class AttemptLedger:
     asyncio tasks cannot interleave a state transition on the event loop.
     """
 
+    ledger_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     _attempts: list[SendAttempt] = field(default_factory=list)
     _next_attempt_id: int = 1
     _record_task: object | None = field(default=None, init=False, repr=False)
