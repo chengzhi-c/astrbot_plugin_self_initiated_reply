@@ -75,7 +75,13 @@ class DecisionMaker:
     # 局部闸门判定（发送前重查；force 跳过全部闸门）
     # ------------------------------------------------------------------
 
-    def local_gate(self, state: SessionState, *, force: bool) -> str:
+    def local_gate(
+        self,
+        state: SessionState,
+        *,
+        force: bool,
+        silence_active_at: float | None = None,
+    ) -> str:
         if force:
             return ""
         if self.in_quiet_hours():
@@ -84,8 +90,13 @@ class DecisionMaker:
             state.daily_count >= self.settings.max_daily_replies_per_session
         ):
             return "今日主动回复次数已达上限。"
-        silence_left = state.remaining_silence_sec(self.settings.min_silence_sec, self._clock())
-        if silence_left > 0 or not state.last_active_at:
+        active_for_silence = (
+            state.last_active_at if silence_active_at is None else silence_active_at
+        )
+        silence_left = state.remaining_silence_sec(
+            self.settings.min_silence_sec, self._clock(), active_at=active_for_silence
+        )
+        if silence_left > 0 or not active_for_silence:
             # max(0, ...)：silence_left 可以大于 min_silence_sec
             # ——载入时时间戳被钳到 now + MAX_CLOCK_SKEW_SEC，最多仍能超出一个偏移量，
             # 差值为负会向运营者显示「静默时间不足：-300s / 45s」这种自相矛盾的文案。

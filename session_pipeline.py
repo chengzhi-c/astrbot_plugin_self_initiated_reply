@@ -135,6 +135,7 @@ class SessionPipeline:
                 expected_generation=expected_generation,
                 ledger=ledger,
                 force=force,
+                silence_active_at=observed_active_at,
             )
             if pipeline_reply.ledger is not None and pipeline_reply.ledger is not ledger:
                 raise RuntimeError("generation returned a different attempt ledger")
@@ -163,6 +164,7 @@ class SessionPipeline:
                 expected_generation=expected_generation,
                 force=force,
                 trigger=trigger,
+                silence_active_at=observed_active_at,
             )
         finally:
             finalizer = self._create_critical_task(

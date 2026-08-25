@@ -297,6 +297,7 @@ test("script load failure fallback does not depend on the module", async () => {
 
 test("config save path follows the form-declared writable keys", async () => {
   const expectedKeys = [
+    "abandon_stale_on_new_message",
     "cooldown_sec",
     "decision_history_min_messages",
     "decision_model_enabled",
@@ -341,6 +342,7 @@ test("config save path follows the form-declared writable keys", async () => {
   const fields = [
     checkbox("enabled", true),
     checkbox("enabled_private_sessions", true),
+    checkbox("abandon_stale_on_new_message", false),
     checkbox("decision_model_enabled", true),
     providerField("judge_provider_id", "judge"),
     number("decision_temperature", "0.3"),

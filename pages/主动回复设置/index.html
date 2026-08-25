@@ -540,6 +540,17 @@
               默认开启。关闭后只对群聊主动开口；私聊仍可用
               <code>/selfreply check</code> 手动测试。
             </p>
+            <label class="toggle-row">
+              <input
+                type="checkbox"
+                id="abandonStaleOnNewMessageInput"
+                data-config-key="abandon_stale_on_new_message"
+              />
+              <span>新消息到达时放弃未发出的旧回复</span>
+            </label>
+            <p class="muted">
+              默认关闭。开启后，同一会话里任何新消息都会让正在生成、尚未发出的主动回复作废（包括表情包、单独符号）。关闭后旧回复仍会发出，新消息只刷新延迟与下一轮静默计时。白名单移除、手动检查和插件停止仍会作废旧任务。
+            </p>
             <p class="muted">
               日常建议用 <code>/selfreply add</code> 和
               <code>/selfreply remove</code> 管理当前会话，这里适合批量编辑。

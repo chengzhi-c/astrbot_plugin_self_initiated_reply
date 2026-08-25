@@ -96,6 +96,7 @@ class DeliveryRunner:
         expected_generation: int | None,
         force: bool,
         trigger: str,
+        silence_active_at: float | None = None,
     ) -> str:
         """发送前门卫与发送状态机；返回结果消息。记账由 pipeline 的 ledger 收口。"""
         ledger_id = ledger.ledger_id
@@ -109,7 +110,7 @@ class DeliveryRunner:
             return "插件未启用。"
         gate = "" if self._gate.is_current(umo, expected_generation) else STALE_TASK_MESSAGE
         if not gate:
-            gate = self._local_gate(state, force=force)
+            gate = self._local_gate(state, force=force, silence_active_at=silence_active_at)
         if gate:
             logger.debug(
                 "[%s] skip before send ledger_id=%s session=%s trigger=%s reason=%s",

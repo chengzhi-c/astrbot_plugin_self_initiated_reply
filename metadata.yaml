@@ -11,7 +11,7 @@ help: |
   /selfreply on: 启用（重启后保持）
   /selfreply off: 暂停（重启后保持）
   /selfreply debug: 查看当前会话识别信息
-version: 1.3.1
+version: 1.3.2
 astrbot_version: ">=4.23.3,<5"
 author: chengzhi-c
 repo: "https://github.com/chengzhi-c/astrbot_plugin_self_initiated_reply"

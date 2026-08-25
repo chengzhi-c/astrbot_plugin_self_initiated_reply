@@ -32,6 +32,7 @@ function configPayload(overrides = {}) {
     decision_prompt_default: "请根据 {latest_message} 判断是否回复",
     config_revision: TEST_CONFIG_REVISION,
     enabled_private_sessions: true,
+    abandon_stale_on_new_message: false,
     judge_provider_id: "",
     message_delay_sec: 60,
     min_silence_sec: 45,

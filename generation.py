@@ -146,6 +146,7 @@ class _GenerateRun:
         "prompt",
         "expected_generation",
         "force",
+        "silence_active_at",
         "ledger",
         "tool_boundary_state",
         "reset_coro",
@@ -170,6 +171,7 @@ class _GenerateRun:
         expected_generation: int | None,
         force: bool,
         ledger: AttemptLedger,
+        silence_active_at: float | None = None,
     ) -> None:
         self.umo = umo
         self.state = state
@@ -178,6 +180,7 @@ class _GenerateRun:
         self.prompt = prompt
         self.expected_generation = expected_generation
         self.force = force
+        self.silence_active_at = silence_active_at
         self.ledger = ledger
         self.tool_boundary_state: dict[str, Any] | None = None
         # finally 是唯一回收点；build 前必须占位，避免 UnboundLocalError。
@@ -288,6 +291,7 @@ class GenerationRunner:
         expected_generation: int | None = None,
         ledger: AttemptLedger | None = None,
         force: bool = False,
+        silence_active_at: float | None = None,
     ) -> PipelineReply:
         """Run AstrBot's main Agent and account for tool-side direct sends."""
         ledger = ledger or AttemptLedger()
@@ -317,6 +321,7 @@ class GenerationRunner:
             expected_generation=expected_generation,
             force=force,
             ledger=ledger,
+            silence_active_at=silence_active_at,
         )
         try:
             early = self._prepare_outbound_tracker(run)
@@ -363,7 +368,11 @@ class GenerationRunner:
             allow_direct=lambda: (
                 self._gate.is_current(run.umo, run.expected_generation)
                 and not self._is_stopping()
-                and not self._local_gate(run.state, force=run.force)
+                and not self._local_gate(
+                    run.state,
+                    force=run.force,
+                    silence_active_at=run.silence_active_at,
+                )
             ),
             ledger=run.ledger,
         )

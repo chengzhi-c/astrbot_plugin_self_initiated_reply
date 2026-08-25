@@ -34,6 +34,13 @@
 关了只挡自动路径（入口 / 非 force 门卫 / 巡检），不挡 `/selfreply check`。
 不新增独立私聊模式，也不做第二套白名单。
 
+## 新消息放弃旧回复开关
+
+`abandon_stale_on_new_message` 放自定义页与 Dashboard，默认关。关了只挡入口推进代次；
+白名单移除、`/selfreply check` 和插件停止仍走 `invalidate`。不按消息类型拆第二套代次策略，
+也不为表情包/单独符号单独加过滤。关开关时，在途检查的静默按检查开始时的活动时间算，
+途中新消息只刷新下一轮静默，不得拦下本轮已通过的发送。
+
 ## 非协作任务隔离
 
 生命周期由插件 owner 持有 `RUNNING`、`STOPPING`、`DEGRADED` 三态。停止等待使用硬时间边界；仍吞取消的生成、patrol 或最终状态保存 task 进入 quarantine 并触发 `DEGRADED`，后续 spawn、巡检、force check、工具直发和最终回复全部拒绝。`MAX_QUARANTINED_TASKS` 是代码容量上限，不提供在线恢复命令；任务结束后仅从注册表移除，恢复仍依赖插件重载或宿主重启。

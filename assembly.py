@@ -108,7 +108,9 @@ def assemble_plugin_components(
         context=plugin.context,
         runtime=lambda: get_runtime(),
         gate=plugin._gate,
-        local_gate=lambda state, force: plugin._decision.local_gate(state, force=force),
+        local_gate=lambda state, force, silence_active_at=None: plugin._decision.local_gate(
+            state, force=force, silence_active_at=silence_active_at
+        ),
         call_hook=lambda event, event_type, req: get_call_hook()(event, event_type, req),
         grace_stop_sec=lambda: grace(),
         background_tasks=plugin._background_tasks,
@@ -123,7 +125,9 @@ def assemble_plugin_components(
     plugin._delivery = DeliveryRunner(
         settings=plugin.settings,
         gate=plugin._gate,
-        local_gate=lambda state, force: plugin._decision.local_gate(state, force=force),
+        local_gate=lambda state, force, silence_active_at=None: plugin._decision.local_gate(
+            state, force=force, silence_active_at=silence_active_at
+        ),
         last_events=plugin._last_events,
         call_hook=lambda event, event_type: get_call_hook()(event, event_type),
         context_send=lambda umo, message: plugin.context.send_message(umo, message),

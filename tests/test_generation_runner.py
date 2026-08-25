@@ -236,7 +236,7 @@ def _make_runner(
         context=SimpleNamespace(astrbot_config={}, get_config=None),
         runtime=lambda: fake_runtime,
         gate=gate,
-        local_gate=lambda state, force: "",
+        local_gate=lambda state, force, silence_active_at=None: "",
         call_hook=hook,
         grace_stop_sec=lambda: grace_sec,
         background_tasks=background_tasks,

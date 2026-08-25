@@ -93,7 +93,7 @@ def _make_runner(
     delivered = delivery_mod.DeliveryRunner(
         settings=settings,
         gate=gate,
-        local_gate=lambda state, force: local_gate,
+        local_gate=lambda state, force, silence_active_at=None: local_gate,
         last_events=last_events,
         call_hook=hook if hook is not None else FakeHook(),
         context_send=context_send if context_send is not None else FakeContextSend(),

@@ -25,7 +25,7 @@ from typing import Any, Protocol
 from astrbot.api import logger
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "1.3.1"
+PLUGIN_VERSION = "1.3.2"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -376,7 +376,13 @@ class ImageContextCallback(Protocol):
 class LocalGateCallback(Protocol):
     """局部闸门回调（state 位置 + force 关键字调用，返回跳过原因或空串）。"""
 
-    def __call__(self, state: SessionState, *, force: bool) -> str: ...
+    def __call__(
+        self,
+        state: SessionState,
+        *,
+        force: bool,
+        silence_active_at: float | None = None,
+    ) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -631,11 +637,18 @@ class SessionState:
             )
         )
 
-    def remaining_silence_sec(self, min_silence_sec: float, now: float) -> float:
-        """距上次活跃的剩余静默时间（从未活跃按 0 计，调用方自行决定特例）。"""
-        if not self.last_active_at:
+    def remaining_silence_sec(
+        self,
+        min_silence_sec: float,
+        now: float,
+        *,
+        active_at: float | None = None,
+    ) -> float:
+        """距指定活动时间的剩余静默（默认上次活跃；从未活跃按 0 计）。"""
+        stamp = self.last_active_at if active_at is None else active_at
+        if not stamp:
             return 0.0
-        return max(0.0, min_silence_sec - (now - self.last_active_at))
+        return max(0.0, min_silence_sec - (now - stamp))
 
     def age_sec(self, now: float) -> float:
         """距上次活跃的经过秒数（从未活跃按 0 计）。"""
@@ -788,6 +801,12 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         surfaces=_PANEL,
     ),
     ConfigSpec("enabled_private_sessions", "bool", True, surfaces=_PANEL),
+    ConfigSpec(
+        "abandon_stale_on_new_message",
+        "bool",
+        False,
+        surfaces=_PANEL,
+    ),
     ConfigSpec("check_interval_sec", "int", 300, 30, 86400, step=30),
     ConfigSpec("patrol_inactive_after_sec", "int", 1800, 0, 604800, step=3600),
     ConfigSpec(
@@ -1058,6 +1077,7 @@ class Settings:
     bot_aliases: list[str]
     whitelist: set[str]
     enabled_private_sessions: bool
+    abandon_stale_on_new_message: bool
     ignored_sender_ids: set[str]
     recent_message_limit: int
     message_delay_sec: int

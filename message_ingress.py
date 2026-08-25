@@ -71,14 +71,16 @@ def _accepted_content(
         vision_has_images=has_images,
         ignored_sender_ids=plugin.settings.ignored_sender_ids,
     ):
-        plugin._coordinator.invalidate(umo)
+        if plugin.settings.abandon_stale_on_new_message:
+            plugin._coordinator.invalidate(umo)
         if not is_self_message(event) and is_explicit_direct_call(event, text):
             state = plugin._state_for(state_key)
             state.last_active_at = now_ts()
             state.last_active_sender_id = event_sender_id(event)
         return None
     if not clean_text and not has_images:
-        plugin._coordinator.invalidate(umo)
+        if plugin.settings.abandon_stale_on_new_message:
+            plugin._coordinator.invalidate(umo)
         return None
     return clean_text or "[图片]", has_images
 
@@ -91,7 +93,10 @@ def _record_message(
     state_key: str,
     clean_text: str,
 ) -> tuple[int, float]:
-    generation = plugin._gate.advance(umo)
+    if plugin.settings.abandon_stale_on_new_message or not plugin._gate.current(umo):
+        generation = plugin._gate.advance(umo)
+    else:
+        generation = plugin._gate.current(umo)
     active_at = append_recent_user_message(
         plugin,
         event,

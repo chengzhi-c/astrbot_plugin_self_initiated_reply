@@ -332,6 +332,21 @@ def test_enabled_private_sessions_defaults_on_and_dual_panel() -> None:
     assert schema["enabled_private_sessions"]["default"] is True
 
 
+def test_abandon_stale_on_new_message_defaults_off_and_dual_panel() -> None:
+    """新消息放弃旧任务默认关；自定义页与 Dashboard 共用同一键。"""
+    models = _models()
+    settings = models.Settings.from_config({})
+    assert getattr(settings, "abandon_stale_on_new_message", None) is False
+    spec = models.CONFIG_SPEC_BY_KEY.get("abandon_stale_on_new_message")
+    assert spec is not None
+    assert spec.kind == "bool"
+    assert spec.default is False
+    assert spec.surfaces == frozenset({"host", "panel"})
+    schema = _schema()
+    assert schema["abandon_stale_on_new_message"]["type"] == "bool"
+    assert schema["abandon_stale_on_new_message"]["default"] is False
+
+
 def test_spec_table_reproduces_python_defaults() -> None:
     """规格表逐键驱动的解析结果必须等于 Settings.from_config({})。
 

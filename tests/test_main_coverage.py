@@ -154,6 +154,7 @@ def test_on_message_schedules_private_when_enabled(tmp_path: Path) -> None:
 
 def test_on_message_ignored_sender_invalidates_session(tmp_path: Path) -> None:
     async def scenario(plugin, main):
+        plugin.settings.abandon_stale_on_new_message = True
         event = _make_event(message_str="忽略我", sender_id="spammer")
         plugin._coordinator.record_event(UMO, event, 1.0)
         plugin.settings.ignored_sender_ids = {"spammer"}
@@ -180,6 +181,7 @@ def test_on_message_ignored_direct_call_still_tracks_activity(tmp_path: Path) ->
 
 def test_on_message_empty_text_and_no_images_invalidates(tmp_path: Path) -> None:
     async def scenario(plugin, main):
+        plugin.settings.abandon_stale_on_new_message = True
         event = _make_event(message_str="   ")
         plugin._coordinator.record_event(UMO, event, 1.0)
         await plugin.on_message(event)
@@ -196,6 +198,109 @@ def test_on_message_image_only_event_records_placeholder(tmp_path: Path) -> None
         await plugin.on_message(event)
         state = plugin._state_for(UMO)
         assert state.recent[-1].text == "[图片]"
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_on_message_period_keeps_inflight_generation_by_default(tmp_path: Path) -> None:
+    """默认关掉「新消息放弃旧任务」：句号不推进代次，在途任务仍可发。"""
+
+    async def scenario(plugin, main):
+        assert plugin.settings.abandon_stale_on_new_message is False
+        token = plugin._gate.advance(UMO)
+        plugin._gate.mark_running(UMO)
+        await plugin.on_message(_make_event(message_str="。"))
+        assert plugin._gate.current(UMO) == token
+        assert plugin._gate.is_current(UMO, token)
+        plugin._gate.unmark_running(UMO)
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_period_during_generation_does_not_silence_skip_when_abandon_off(
+    tmp_path: Path,
+) -> None:
+    """关开关时，生成途中的句号只刷新下一轮静默，不得拦下本轮已通过的发送。"""
+
+    async def scenario(plugin, main):
+        models = importlib.import_module(main.__package__ + ".models")
+        plugin.settings.min_silence_sec = 25
+        plugin.settings.cooldown_sec = 0
+        state = plugin._state_for(UMO)
+        started = main.now_ts() - 30
+        state.last_active_at = started
+        plugin._coordinator.record_event(UMO, _make_event(message_str="阿c回我一下"), started)
+        token = plugin._gate.advance(UMO)
+
+        async def fake_decide(*_args, **_kwargs):
+            return {"should_reply": True, "reason": "点名", "elapsed_sec": 0.0}
+
+        async def fake_generate(_umo, _state, **kwargs):
+            await plugin.on_message(_make_event(message_str="。"))
+            ledger = kwargs.get("ledger") or models.AttemptLedger()
+            return models.PipelineReply(text="一直在呢", ledger=ledger)
+
+        plugin._decision.decide = fake_decide
+        plugin._generation.generate = fake_generate
+        result = await plugin._pipeline.check_session_locked(
+            UMO, trigger="message_delay", force=False, expected_generation=token
+        )
+        assert result == "已主动回复。"
+        assert "静默时间不足" not in result
+
+    with_plugin(tmp_path, scenario, min_silence_sec=25, cooldown_sec=0)
+
+
+def test_on_message_period_abandons_inflight_when_enabled(tmp_path: Path) -> None:
+    """开开关后句号也推进代次，旧任务代次失效。"""
+
+    async def scenario(plugin, main):
+        plugin.settings.abandon_stale_on_new_message = True
+        token = plugin._gate.advance(UMO)
+        plugin._gate.mark_running(UMO)
+        await plugin.on_message(_make_event(message_str="。"))
+        assert plugin._gate.current(UMO) > token
+        assert not plugin._gate.is_current(UMO, token)
+        plugin._gate.unmark_running(UMO)
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_on_message_empty_keeps_observation_by_default(tmp_path: Path) -> None:
+    """默认关开关：空内容/表情不清观察素材、不推进代次。"""
+
+    async def scenario(plugin, main):
+        token = plugin._gate.advance(UMO)
+        prior = _make_event(message_str="上一句")
+        plugin._coordinator.record_event(UMO, prior, 1.0)
+        await plugin.on_message(_make_event(message_str="   "))
+        assert plugin._last_events.get(UMO) is prior
+        assert plugin._gate.current(UMO) == token
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_on_message_mention_only_invalidates_when_enabled(tmp_path: Path) -> None:
+    """开开关后，纯 @ 别人（无文本）仍走空内容失效。"""
+
+    async def scenario(plugin, main):
+        plugin.settings.abandon_stale_on_new_message = True
+        prior = _make_event(message_str="上一句")
+        plugin._coordinator.record_event(UMO, prior, 1.0)
+        await plugin.on_message(_make_event(message_str="[At:someone]"))
+        assert UMO not in plugin._last_events
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_on_message_mention_only_keeps_observation_by_default(tmp_path: Path) -> None:
+    """默认关开关：纯 @ 别人也不清观察素材。"""
+
+    async def scenario(plugin, main):
+        prior = _make_event(message_str="上一句")
+        plugin._coordinator.record_event(UMO, prior, 1.0)
+        await plugin.on_message(_make_event(message_str="[At:someone]"))
+        assert plugin._last_events.get(UMO) is prior
 
     with_plugin(tmp_path, scenario)
 

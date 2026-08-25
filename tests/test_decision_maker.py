@@ -319,6 +319,15 @@ async def test_local_gate_silence(tmp_path: Path) -> None:
     assert maker.local_gate(state, force=False) == "静默时间不足：10s / 60s。"
 
 
+async def test_local_gate_silence_uses_check_start_activity(tmp_path: Path) -> None:
+    """在途检查的静默按检查开始时的活动时间算，不被后来的句号刷新。"""
+    _, models, maker, clock_value, _ = _make_decision(tmp_path, {"min_silence_sec": 25})
+    clock_value[0] = 1000.0
+    state = _state(models, active_at=999.0)
+    assert maker.local_gate(state, force=False) == "静默时间不足：1s / 25s。"
+    assert maker.local_gate(state, force=False, silence_active_at=970.0) == ""
+
+
 async def test_local_gate_silence_never_reports_negative_elapsed(tmp_path: Path) -> None:
     """静默不足文案里的已过秒数不得为负（0.9.4 阶段 1.4）。
 
