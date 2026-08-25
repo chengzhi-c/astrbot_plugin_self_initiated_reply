@@ -1,14 +1,3 @@
-export const DEFAULT_CONFIG = {
-  decision_temperature: 0.2,
-  decision_timeout_sec: 20,
-  decision_history_min_messages: 5,
-  message_delay_sec: 60,
-  min_silence_sec: 45,
-  cooldown_sec: 900,
-  vision_max_images: 2,
-  vision_image_age_sec: 300,
-  vision_timeout_sec: 20,
-};
 export function num(value, fallback) {
   if (value === "" || value === undefined || value === null) return fallback;
   const parsed = Number(value);

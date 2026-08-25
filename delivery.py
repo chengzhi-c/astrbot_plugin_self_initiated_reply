@@ -6,9 +6,9 @@ UNKNOWN 语义（不自动重试、不触发 after-send 钩子、仍消耗冷却
 并推进观察窗口）、主动状态记录（冷却、日配额、观察窗口、历史条目）。
 
 对外暴露三个入口：
-- ``deliver_reply``：投递一次回复（发送前门卫 + 状态机 + 结果分类 + 记录）
+- ``deliver_reply``：投递一次回复（发送前门卫 + 状态机 + 结果分类）
 - ``send_reply``：发送一条文本回复（钩子装饰与代次复核 + 事件/context 发送）
-- ``record_proactive_state``：记录一次主动发送尝试的状态
+- ``apply_proactive_state`` / ``persist_proactive_state``：pipeline 记账入口
 
 宿主交互经注入回调执行：钩子调用与 context 发送运行时查找
 （测试替换 ``main.call_event_hook`` / ``plugin.context.send_message``
@@ -18,7 +18,6 @@ UNKNOWN 语义（不自动重试、不触发 after-send 钩子、仍消耗冷却
 from __future__ import annotations
 
 import asyncio
-import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -93,16 +92,12 @@ class DeliveryRunner:
         reply: str,
         direct_send_count: int,
         *,
-        ledger: AttemptLedger | None = None,
+        ledger: AttemptLedger,
         expected_generation: int | None,
-        observed_active_at: float | None,
         force: bool,
         trigger: str,
     ) -> str:
-        """发送前门卫与发送状态机；返回结果消息。"""
-        record_legacy_state = ledger is None
-        if ledger is None:
-            ledger = AttemptLedger()
+        """发送前门卫与发送状态机；返回结果消息。记账由 pipeline 的 ledger 收口。"""
         ledger_id = ledger.ledger_id
         if self._is_stopping():
             logger.info(
@@ -111,14 +106,6 @@ class DeliveryRunner:
                 ledger_id,
                 umo,
             )
-            if direct_send_count and record_legacy_state:
-                await self._record_direct_sends(
-                    umo,
-                    state,
-                    direct_send_count,
-                    expected_generation=expected_generation,
-                    observed_active_at=observed_active_at,
-                )
             return "插件未启用。"
         gate = "" if self._gate.is_current(umo, expected_generation) else STALE_TASK_MESSAGE
         if not gate:
@@ -133,22 +120,14 @@ class DeliveryRunner:
                 gate,
             )
             if direct_send_count:
-                await self._record_direct_sends(
-                    umo,
-                    state,
-                    direct_send_count,
-                    expected_generation=expected_generation,
-                    observed_active_at=observed_active_at,
-                    record_state=record_legacy_state,
-                )
                 return f"工具主动回复已完成；{gate}"
             return gate
 
         if reply:
-            sent = await self._send_final_reply(
+            sent = await self.send_reply(
                 umo,
                 reply,
-                ledger,
+                ledger=ledger,
                 expected_generation=expected_generation,
             )
             if not sent.delivered:
@@ -157,25 +136,7 @@ class DeliveryRunner:
                     # （视为已尝试），防止巡检或新消息立刻对同一事件重复处理。
                     # 注意：即使工具已直发也必须记录——否则观察窗口不推进，
                     # 同一事件会被再次处理并可能再次直发。
-                    await self._record_direct_sends(
-                        umo,
-                        state,
-                        direct_send_count,
-                        expected_generation=expected_generation,
-                        observed_active_at=observed_active_at,
-                        confirmed=False,
-                        record_state=record_legacy_state,
-                    )
                     return "主动发送状态未知，未自动重试。"
-                if direct_send_count:
-                    await self._record_direct_sends(
-                        umo,
-                        state,
-                        direct_send_count,
-                        expected_generation=expected_generation,
-                        observed_active_at=observed_active_at,
-                        record_state=record_legacy_state,
-                    )
                 if not self._gate.is_current(umo, expected_generation):
                     return STALE_REPLY_MESSAGE
                 if sent.status is SendStatus.SUPPRESSED:
@@ -212,48 +173,7 @@ class DeliveryRunner:
                 direct_send_count,
             )
 
-        if record_legacy_state:
-            await self.record_proactive_state(
-                umo,
-                state,
-                reply,
-                direct_send_count,
-                expected_generation=expected_generation,
-                observed_active_at=observed_active_at,
-            )
         return "已通过工具主动回复。" if direct_send_count and not reply else "已主动回复。"
-
-    async def _send_final_reply(
-        self,
-        umo: str,
-        reply: str,
-        ledger: AttemptLedger,
-        *,
-        expected_generation: int | None,
-    ) -> SendOutcome:
-        """Send the final text and bridge old send_reply overrides into the ledger."""
-        send_reply_kwargs: dict[str, Any] = {
-            "expected_generation": expected_generation,
-        }
-        try:
-            send_parameters = dict(inspect.signature(self.send_reply).parameters)
-        except (TypeError, ValueError):
-            send_parameters = {}
-        ledger_forwarded = "ledger" in send_parameters or any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            for parameter in send_parameters.values()
-        )
-        if ledger_forwarded:
-            send_reply_kwargs["ledger"] = ledger
-        sent = await self.send_reply(umo, reply, **send_reply_kwargs)
-        if not ledger_forwarded:
-            attempt = ledger.reserve("final_reply", reply)
-            if sent.status in {SendStatus.DELIVERED, SendStatus.UNKNOWN}:
-                ledger.mark_in_flight(attempt)
-                ledger.resolve(attempt, sent.status)
-            else:
-                ledger.finish_before_submit(attempt, sent.status)
-        return sent
 
     async def send_reply(
         self,
@@ -523,30 +443,6 @@ class DeliveryRunner:
             if send_started:
                 return SendOutcome(SendStatus.UNKNOWN, str(exc))
             return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, str(exc))
-
-    async def _record_direct_sends(
-        self,
-        umo: str,
-        state: SessionState,
-        direct_send_count: int,
-        *,
-        expected_generation: int | None,
-        observed_active_at: float | None,
-        confirmed: bool = True,
-        record_state: bool = True,
-    ) -> bool:
-        """工具直发的状态记录（无文本回复路径共用；0.9.0 低垂果实合并重复调用）。"""
-        if not record_state:
-            return True
-        return await self.record_proactive_state(
-            umo,
-            state,
-            "",
-            direct_send_count,
-            expected_generation=expected_generation,
-            observed_active_at=observed_active_at,
-            confirmed=confirmed,
-        )
 
     def apply_proactive_state(
         self,

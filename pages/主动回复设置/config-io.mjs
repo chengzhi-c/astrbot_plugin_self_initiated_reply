@@ -1,5 +1,4 @@
 import {
-	DEFAULT_CONFIG,
 	num,
 	parseWhitelist,
 	summarizeWhitelist,
@@ -22,21 +21,25 @@ export function configSaveKeys(form) {
 	return configControls(form).map((control) => control.dataset.configKey);
 }
 
-function configControlValue(control, providerControls) {
+function configControlValue(control, providerControls, lastKnown = {}) {
 	const { configControl, configKey, configTransform } = control.dataset;
 	if (configControl) return providerControls[configControl].value();
 	if (configTransform === "whitelist") return parseWhitelist(control.value);
 	if (control.type === "checkbox") return control.checked;
-	if (control.type === "number")
-		return num(control.value, DEFAULT_CONFIG[configKey]);
+	if (control.type === "number") return num(control.value, lastKnown[configKey]);
 	return configTransform === "trim" ? control.value.trim() : control.value;
 }
 
-export function buildConfigSaveBody(form, providerControls, baseRevision = "") {
+export function buildConfigSaveBody(
+	form,
+	providerControls,
+	baseRevision = "",
+	lastKnown = {},
+) {
 	const body = Object.fromEntries(
 		configControls(form).map((control) => [
 			control.dataset.configKey,
-			configControlValue(control, providerControls),
+			configControlValue(control, providerControls, lastKnown),
 		]),
 	);
 	if (baseRevision) body.base_revision = baseRevision;
@@ -64,13 +67,10 @@ function loadConfigControls(form, config, providerControls) {
 					? config[configKey] !== false
 					: Boolean(config[configKey]);
 		} else if (control.type === "number") {
-			control.value = config[configKey] ?? DEFAULT_CONFIG[configKey];
+			control.value = config[configKey] ?? "";
 		} else {
 			control.value =
-				config[configKey] ||
-				config[configFallbackKey] ||
-				DEFAULT_CONFIG[configKey] ||
-				"";
+				config[configKey] || config[configFallbackKey] || "";
 		}
 	}
 }
@@ -94,6 +94,7 @@ export function createConfigIo(deps) {
 	const coordinator = requestCoordinator || createConfigRequestCoordinator();
 	let numberFields = [];
 	let saveStateKind = "";
+	let lastKnownConfig = {};
 	function els() {
 		return getEls();
 	}
@@ -319,6 +320,7 @@ export function createConfigIo(deps) {
 			setStatState(e.decisionModelStat, decisionOn ? "is-on" : "is-off");
 		}
 		renderPromptPreview();
+		lastKnownConfig = { ...config };
 		const runtimeOn = config.runtime_enabled !== false;
 		e.selfStatus.textContent = config.enabled
 			? runtimeOn
@@ -417,6 +419,7 @@ export function createConfigIo(deps) {
 					visionJudge: visionJudgeProviderControl,
 				},
 				state.configRevision,
+				lastKnownConfig,
 			);
 			let result;
 			try {

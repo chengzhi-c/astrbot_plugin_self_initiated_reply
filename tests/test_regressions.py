@@ -633,7 +633,7 @@ def test_r7_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) ->
         )
         original_send_reply = plugin._delivery.send_reply
 
-        async def unknown_send_reply(umo, reply, expected_generation=None):
+        async def unknown_send_reply(umo, reply, expected_generation=None, **_kwargs):
             models = importlib.import_module(f"{main.__package__}.models")
             return models.SendOutcome(models.SendStatus.UNKNOWN, "adapter raised after submit")
 

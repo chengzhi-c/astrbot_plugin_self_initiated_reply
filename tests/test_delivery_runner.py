@@ -1,10 +1,10 @@
 """DeliveryRunner 独立单测（ticket 05 验收）：注入假门卫/发送器/钩子，脱离插件实例。
 
 覆盖验收项：
-- UNKNOWN 投递不自动重试、不触发 after-send 钩子、消耗冷却与日配额并推进观察窗口
-- 发送成功后代次未变则观察窗口必推进；代次已变则跳过记录（不推进观察窗口）
-- 工具直发与文本回复的混合出口（直发无文本/纯文本/两者都有）语义不变
-- 发送前门卫拦截时：有直发则仍记录并提示，无直发则纯跳过不记录
+- UNKNOWN 投递不自动重试、不触发 after-send 钩子；会话记账由 pipeline 收口
+- apply/persist 分开：保存重试不得重复改配额或历史
+- 工具直发与文本回复的混合出口（直发无文本/纯文本/两者都有）返回文案不变
+- 发送前门卫拦截时：有直发仍返回完成提示，无直发则纯跳过
 """
 
 from __future__ import annotations
@@ -36,7 +36,13 @@ class FakeSender:
         self.outcome = outcome
         self.calls: list[tuple[str, str, object]] = []
 
-    async def __call__(self, umo: str, reply: str, expected_generation: object) -> object:
+    async def __call__(
+        self,
+        umo: str,
+        reply: str,
+        expected_generation: object = None,
+        **_kwargs: object,
+    ) -> object:
         self.calls.append((umo, reply, expected_generation))
         return self.outcome
 
@@ -166,17 +172,15 @@ async def test_deliver_unknown_consumes_state_without_retry(tmp_path: Path) -> N
         state,
         "你好",
         0,
+        ledger=models.AttemptLedger(),
         expected_generation=1,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
 
     assert "未自动重试" in result
-    assert state.daily_count == 1
-    assert state.last_proactive_at > 0
-    assert state.last_proactive_observed_at == 100.0  # 视为已尝试，推进观察窗口
-    assert state.last_proactive_text == ""  # 不写确认文本
+    assert state.daily_count == 0
+    assert state.last_proactive_at == 0.0
     assert all(record.role != "assistant" for record in state.recent)
 
 
@@ -235,17 +239,16 @@ async def test_deliver_delivered_advances_observation_and_history(tmp_path: Path
         state,
         "你好",
         0,
+        ledger=models.AttemptLedger(),
         expected_generation=1,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
 
     assert result == "已主动回复。"
-    assert state.last_proactive_observed_at == 100.0
-    assert state.last_proactive_text == "你好"
-    assert state.recent[-1].role == "assistant"
-    assert state.daily_count == 1
+    assert state.daily_count == 0
+    assert state.last_proactive_observed_at == 50.0
+    assert state.last_proactive_text == ""
 
 
 async def test_record_stale_generation_skips_observation_advance(tmp_path: Path) -> None:
@@ -323,16 +326,15 @@ async def test_deliver_direct_only_no_text_send(tmp_path: Path) -> None:
         state,
         "",
         2,
+        ledger=models.AttemptLedger(),
         expected_generation=1,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
 
     assert result == "已通过工具主动回复。"
-    assert state.daily_count == 1
-    assert state.last_proactive_text == "[工具主动发送 x2]"
-    assert state.last_proactive_observed_at == 100.0
+    assert state.daily_count == 0
+    assert state.last_proactive_text == ""
 
 
 async def test_deliver_text_only_sends_once(tmp_path: Path) -> None:
@@ -344,14 +346,14 @@ async def test_deliver_text_only_sends_once(tmp_path: Path) -> None:
         state,
         "你好",
         0,
+        ledger=models.AttemptLedger(),
         expected_generation=1,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
 
     assert result == "已主动回复。"
-    assert state.last_proactive_text == "你好"
+    assert state.last_proactive_text == ""
 
 
 async def test_deliver_both_text_and_directs(tmp_path: Path) -> None:
@@ -363,14 +365,14 @@ async def test_deliver_both_text_and_directs(tmp_path: Path) -> None:
         state,
         "补充文本",
         3,
+        ledger=models.AttemptLedger(),
         expected_generation=1,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
 
     assert result == "已主动回复。"
-    assert state.last_proactive_text == "补充文本"
+    assert state.last_proactive_text == ""
 
 
 async def test_deliver_failed_before_submit_no_directs_no_record(tmp_path: Path) -> None:
@@ -382,8 +384,8 @@ async def test_deliver_failed_before_submit_no_directs_no_record(tmp_path: Path)
         state,
         "你好",
         0,
+        ledger=models.AttemptLedger(),
         expected_generation=1,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
@@ -402,14 +404,14 @@ async def test_deliver_suppressed_with_directs_records(tmp_path: Path) -> None:
         state,
         "你好",
         2,
+        ledger=models.AttemptLedger(),
         expected_generation=1,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
 
     assert result == "会话已更新，放弃旧回复。"
-    assert state.daily_count == 1  # 直发发生了，消耗配额
+    assert state.daily_count == 0
 
 
 # ============================================================================
@@ -425,15 +427,15 @@ async def test_deliver_gate_block_with_directs_records(tmp_path: Path) -> None:
         state,
         "",
         2,
+        ledger=models.AttemptLedger(),
         expected_generation=999,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
 
     assert "工具主动回复已完成" in result
     assert "会话已经更新" in result
-    assert state.daily_count == 1
+    assert state.daily_count == 0
 
 
 async def test_deliver_gate_block_without_directs_no_record(tmp_path: Path) -> None:
@@ -444,8 +446,8 @@ async def test_deliver_gate_block_without_directs_no_record(tmp_path: Path) -> N
         state,
         "你好",
         0,
+        ledger=models.AttemptLedger(),
         expected_generation=999,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
@@ -463,18 +465,16 @@ async def test_deliver_local_gate_block_with_directs_records(tmp_path: Path) -> 
         state,
         "",
         1,
+        ledger=models.AttemptLedger(),
         expected_generation=1,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
 
     assert "工具主动回复已完成；冷却中。" == result
-    assert state.daily_count == 1
-    # confirmed 语义守卫（0.9.0 低垂果实复审）：非 UNKNOWN 路径的直发记录
-    # 必须写历史条目与文本；若误用 confirmed=False 则既无文本也无 assistant 条目
-    assert state.last_proactive_text == "[工具主动发送 x1]"
-    assert [item.role for item in state.recent] == ["assistant"]
+    assert state.daily_count == 0
+    assert state.last_proactive_text == ""
+    assert [item.role for item in state.recent] == []
 
 
 async def test_deliver_send_failure_with_directs_records_confirmed(tmp_path: Path) -> None:
@@ -486,16 +486,16 @@ async def test_deliver_send_failure_with_directs_records_confirmed(tmp_path: Pat
         state,
         "正文",
         2,
+        ledger=models.AttemptLedger(),
         expected_generation=1,
-        observed_active_at=100.0,
         force=False,
         trigger="message_delay",
     )
 
     assert result == "主动发送失败。"
-    assert state.daily_count == 1
-    assert state.last_proactive_text == "[工具主动发送 x2]"
-    assert [item.role for item in state.recent] == ["assistant"]
+    assert state.daily_count == 0
+    assert state.last_proactive_text == ""
+    assert [item.role for item in state.recent] == []
 
 
 # ============================================================================

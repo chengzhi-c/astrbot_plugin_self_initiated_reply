@@ -197,16 +197,15 @@ async def test_deliver_context_cancellation_records_unknown_state(tmp_path: Path
         state,
         "hello",
         0,
+        ledger=models.AttemptLedger(),
         expected_generation=1,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
 
     assert "状态未知" in result
-    assert state.daily_count == 1
-    assert state.last_proactive_at > 0
-    assert state.last_proactive_observed_at == 100.0
+    assert state.daily_count == 0
+    assert state.last_proactive_at == 0.0
     assert all(record.role != "assistant" for record in state.recent)
     assert hook.calls == []
 
@@ -232,16 +231,15 @@ async def test_deliver_event_cancellation_records_unknown_state(tmp_path: Path) 
         state,
         "hello",
         0,
+        ledger=models.AttemptLedger(),
         expected_generation=1,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
 
     assert "状态未知" in result
-    assert state.daily_count == 1
-    assert state.last_proactive_at > 0
-    assert state.last_proactive_observed_at == 100.0
+    assert state.daily_count == 0
+    assert state.last_proactive_at == 0.0
     assert all(record.role != "assistant" for record in state.recent)
     assert _hook_names(hook) == ["OnDecoratingResultEvent"]
 
@@ -269,15 +267,15 @@ async def test_deliver_cancel_after_send_start_no_retry(tmp_path: Path) -> None:
         state,
         "hello",
         0,
+        ledger=models.AttemptLedger(),
         expected_generation=1,
-        observed_active_at=100.0,
         force=False,
         trigger="patrol",
     )
 
     assert "状态未知" in result
     assert send_calls == 1
-    assert state.daily_count == 1
+    assert state.daily_count == 0
 
 
 # ============================================================================
@@ -286,17 +284,17 @@ async def test_deliver_cancel_after_send_start_no_retry(tmp_path: Path) -> None:
 
 
 async def test_deliver_failure_with_directs_and_gate_flip(tmp_path: Path) -> None:
-    """发送失败且有工具直发：先记录，再撞代次翻转 → 放弃旧回复文案。"""
+    """发送失败后代次已变：返回放弃旧回复，不改成发送失败。"""
     _, models, runner, _ = _make_runner(tmp_path, sender_status="failed_before_submit")
-    runner._gate = _FlipGate(true_times=2)
+    runner._gate = _FlipGate(true_times=1)
     state = _state(models)
     result = await runner.deliver_reply(
         "s1",
         state,
         "hello",
         1,
+        ledger=models.AttemptLedger(),
         expected_generation=7,
-        observed_active_at=100.0,
         force=False,
         trigger="message_delay",
     )
@@ -314,8 +312,8 @@ async def test_deliver_log_reply_content_preview(tmp_path: Path) -> None:
         state,
         "长" * 100,
         0,
+        ledger=models.AttemptLedger(),
         expected_generation=None,
-        observed_active_at=100.0,
         force=False,
         trigger="message_delay",
     )
@@ -325,8 +323,8 @@ async def test_deliver_log_reply_content_preview(tmp_path: Path) -> None:
         state,
         "短回复",
         0,
+        ledger=models.AttemptLedger(),
         expected_generation=None,
-        observed_active_at=100.0,
         force=False,
         trigger="message_delay",
     )

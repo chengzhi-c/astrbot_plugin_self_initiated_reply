@@ -161,7 +161,6 @@ class SessionPipeline:
                 direct_send_count,
                 ledger=ledger,
                 expected_generation=expected_generation,
-                observed_active_at=observed_active_at,
                 force=force,
                 trigger=trigger,
             )

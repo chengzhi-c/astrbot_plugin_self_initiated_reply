@@ -433,6 +433,17 @@ test("config save path follows the form-declared writable keys", async () => {
   assert.equal(form.inert, false);
 });
 
+test("empty number fields reuse last loaded values", () => {
+  const field = {
+    dataset: { configKey: "cooldown_sec" },
+    type: "number",
+    value: "",
+  };
+  const form = { querySelectorAll: () => [field] };
+  const body = buildConfigSaveBody(form, {}, "", { cooldown_sec: 777 });
+  assert.equal(body.cooldown_sec, 777);
+});
+
 test("whitelist format collapses a group UMO onto its bare group id", () => {
   const raw = [
     "1076958977",
