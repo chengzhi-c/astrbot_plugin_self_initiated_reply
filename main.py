@@ -172,9 +172,10 @@ class SelfInitiatedReplyPlugin(Star):
             get_config_path=get_astrbot_config_path,
             get_plugin_data_path=get_astrbot_plugin_data_path,
         )
-        # state.json 位于 <data>/plugin_data/<plugin_id>/state.json
-        _STATE_DEPTH_FROM_DATA = 2
-        self._data_path = self._storage_path.parents[_STATE_DEPTH_FROM_DATA]
+        # state.json 位于 <data>/plugin_data/<plugin_id>/state.json；
+        # <data> 根是 storage_path.parents 的第 2 项（0=插件目录，1=plugin_data）。
+        _DATA_ROOT_PARENTS_INDEX = 2
+        self._data_path = self._storage_path.parents[_DATA_ROOT_PARENTS_INDEX]
 
         config_data = load_config_data(self._config_path, self.config)
         self.settings = Settings.from_config(config_data)
