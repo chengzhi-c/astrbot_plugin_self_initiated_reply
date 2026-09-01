@@ -217,9 +217,8 @@ async def test_send_reply_delivered_triggers_after_send_hook(tmp_path: Path) -> 
 async def test_record_unconfirmed_sets_state_fields(tmp_path: Path) -> None:
     _, models, runner, _ = _make_runner(tmp_path)
     state = _state(models)
-    ok = await runner.record_proactive_state(
-        "s1", state, "", 0, observed_active_at=100.0, confirmed=False
-    )
+    runner.apply_proactive_state("s1", state, "", 0, observed_active_at=100.0, confirmed=False)
+    ok = await runner.persist_proactive_state()
     assert ok is True
     assert state.daily_count == 1
     assert state.last_proactive_observed_at == 100.0
@@ -255,9 +254,10 @@ async def test_record_stale_generation_skips_observation_advance(tmp_path: Path)
     """代次已变：冷却仍记录，但观察窗口不得推进（避免覆盖新会话语义）。"""
     _, models, runner, _ = _make_runner(tmp_path, gate_current=False)
     state = _state(models)
-    ok = await runner.record_proactive_state(
+    runner.apply_proactive_state(
         "s1", state, "你好", 0, expected_generation=999, observed_active_at=200.0
     )
+    ok = await runner.persist_proactive_state()
     assert ok is True
     assert state.last_proactive_at > 0  # 冷却与配额仍消耗
     assert state.daily_count == 1
@@ -289,8 +289,8 @@ async def test_apply_then_persist_retry_does_not_duplicate_state(tmp_path: Path)
     assert len(state.recent) == 1
 
 
-async def test_record_proactive_state_persists_every_record(tmp_path: Path) -> None:
-    """落盘契约：每条记录调用返回时状态已持久化，无延迟窗口。
+async def test_apply_then_persist_persists_every_record(tmp_path: Path) -> None:
+    """落盘契约：每次 apply+persist 返回时状态已持久化，无延迟窗口。
 
     0.9.3 删除 DebouncedStateSaver 后，注入的回调即 ``_save_storage``
     本体（串行锁 + to_thread 原子写）。本测试锁定"记录即落盘"：
@@ -304,11 +304,13 @@ async def test_record_proactive_state_persists_every_record(tmp_path: Path) -> N
     _, models, runner, _ = _make_runner(tmp_path, save=save)
     state = _state(models)
 
-    ok = await runner.record_proactive_state("s1", state, "你好", 0)
+    runner.apply_proactive_state("s1", state, "你好", 0)
+    ok = await runner.persist_proactive_state()
     assert ok is True
     assert writes == ["save"], "记录即落盘，不得延迟"
 
-    await runner.record_proactive_state("s1", state, "第二条", 0)
+    runner.apply_proactive_state("s1", state, "第二条", 0)
+    await runner.persist_proactive_state()
     assert writes == ["save", "save"], "每条记录各自落盘"
 
 
@@ -536,7 +538,7 @@ async def test_context_send_pre_submit_failure_is_not_unknown(tmp_path: Path, mo
     """context 路径提交前失败必须记 FAILED_BEFORE_SUBMIT，不得白吃冷却与日配额。
 
     ``MessageChain`` 构造失败发生在 ``outbound.send`` 调用之前，adapter 从未
-    被触及。返回 UNKNOWN 会经 ``record_proactive_state(confirmed=False)`` 消耗
+    被触及。返回 UNKNOWN 会经 apply_proactive_state(confirmed=False) 消耗
     冷却与日配额，等于为一条从未发出的回复付费。
 
     本条只钉「提交前误记 UNKNOWN」这一侧；反向（已提交误降为提交前失败）

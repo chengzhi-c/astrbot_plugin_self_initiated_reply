@@ -390,7 +390,7 @@ class DeliveryRunner:
         # send_started 取自 ``OutboundResult.submitted``（DELIVERED/UNKNOWN 为真），
         # 与事件路径上方那处同源：是否已提交由 gateway 的分类结果决定，不靠此处
         # 枚举失败场景。下方 ``except`` 必须条件式归类，两个方向的代价不对称——
-        # 提交前记 UNKNOWN 会经 record_proactive_state(confirmed=False) 白吃冷却
+        # 提交前误记 UNKNOWN 会经 apply_proactive_state(confirmed=False) 白吃冷却
         # 与日配额；已提交记 FAILED_BEFORE_SUBMIT 会不消耗冷却而重发，制造重复
         # 消息。三条测试各钉一侧：提交前失败、提交后失败、异常逃出 gateway。
         # OutboundGateway 会把 adapter 调用期间的 CancelledError 归类为 UNKNOWN，
@@ -491,26 +491,3 @@ class DeliveryRunner:
         except Exception as exc:
             logger.warning("[%s] proactive state save failed: %s", PLUGIN_ID, exc)
             return False
-
-    async def record_proactive_state(
-        self,
-        umo: str,
-        state: SessionState,
-        reply: str,
-        direct_send_count: int = 0,
-        *,
-        expected_generation: int | None = None,
-        observed_active_at: float | None = None,
-        confirmed: bool = True,
-    ) -> bool:
-        """Apply and persist one proactive send attempt for legacy callers."""
-        self.apply_proactive_state(
-            umo,
-            state,
-            reply,
-            direct_send_count,
-            expected_generation=expected_generation,
-            observed_active_at=observed_active_at,
-            confirmed=confirmed,
-        )
-        return await self.persist_proactive_state()
