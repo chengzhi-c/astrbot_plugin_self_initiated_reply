@@ -73,26 +73,18 @@ _ENVELOPE_TAG_RE = re.compile(rf"<\s*/?\s*{_ENVELOPE_TAG}\s*>", re.IGNORECASE)
 def neutralize_envelope_tags(text: str) -> str:
     """把用户内容里伪造的 ``<recent_chat>`` 标签换成全角尖括号。
 
-    实测的攻击面：``format_message_records`` 原样拼接 ``MessageRecord.text``，
-    该文本直接被插进 ``<recent_chat>`` 信封。用户只要发一条含 ``</recent_chat>``
-    的消息，信封就提前闭合，其后的文字落到信封**之外**——与插件自己的尾部指令
-    同一层级（实测：注入位于首个闭合标签之后，模型看到的信封外内容含攻击者指令）。
+    攻击面：历史拼接把 ``MessageRecord.text`` 原样放进 ``<recent_chat>`` 信封，
+    用户消息里出现 ``</recent_chat>`` 就能提前闭合信封，让其后的文字落到信封
+    **之外**、与插件自己的尾部指令同层级（tests/test_generation_runner.py 钉住）。
 
-    不复用 ``sanitize_prompt_variable`` 的两个实测理由：
-    1. 它只改写 ``"`` 与控制字符，``</recent_chat>`` 原样穿透（字节不变）；
-    2. 它按 ``max_length`` 截断——2000 上限把 3579 字符的历史砍到 2003，
-       会吃掉聊天记录。本函数不截断，长度另由 ``recent_message_limit`` 约束。
+    不复用 ``sanitize_prompt_variable``：它只改写引号与控制字符，信封标签原样
+    穿透；且按 ``max_length`` 截断，会吃掉聊天记录——长度另由
+    ``recent_message_limit`` 约束。改用全角而非删除：保留攻击痕迹可读，等长、
+    不影响长度预算。
 
-    改用全角而非删除：保留攻击痕迹可读，运营者事后翻提示词能看出发生了什么，
-    且与 ``sanitize_prompt_variable`` 把 ``"`` 改成中文引号的既有手法一致。
-    全角替换是等长的，不影响任何长度预算。
-
-    只中和信封标签、不做全局尖括号转义：信封**内部**出现 ``<system>`` 之类
-    伪造标签并不构成越权（仍在不可信区内，且提示词已声明该区不可信），真正的
-    提权只有"闭合信封"这一条路。范围收窄到此，避免把正常代码内容打成乱码。
-
-    不记日志：本函数被 ``build_proactive_prompt`` 用作纯函数（无共享可变状态），
-    加 I/O 会破坏该性质；且中和后已无残留风险，日志对运营者无可行动性。
+    只中和信封标签、不做全局尖括号转义：信封**内部**出现伪造标签并不构成越权
+    （仍在不可信区内），真正的提权只有"闭合信封"一条路；范围收窄避免把正常
+    代码内容打成乱码。本函数是纯函数（无共享状态、无 I/O），加日志会破坏该性质。
     """
     return _ENVELOPE_TAG_RE.sub(
         lambda match: match.group(0).replace("<", "＜").replace(">", "＞"), text

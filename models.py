@@ -151,13 +151,12 @@ MAX_RELEASE_WAIT_ROUNDS = 20
 # 最大延迟 = 窗口长，探测失败不变更缓存、窗口后重试。
 ADMIN_REFRESH_WINDOW_SEC = 30.0
 # 外部时间戳的容许时钟偏移：状态文件是可被手工编辑的外部输入，
-# 而 _finite_float 只挡 NaN/inf，负值与远未来原样穿透（实测）。两个方向危害不同：
+# 而 _finite_float 只挡 NaN/inf，负值与远未来原样穿透。两个方向危害不同：
 #
-# - 远未来（now+1e9）：remaining_silence_sec 实测 1000000045 秒 ≈ 31.69 年，
-#   该会话永久锁死；延迟检查以该值为 timeout 停放，notify_activity 唤醒后重算
-#   仍是巨值又停回去（实测连续 3~4 次），成为不死任务；且巡检的
-#   now - last_active_at 为负，永远不大于 patrol_inactive_after_sec，
-#   于是巡检永不跳过这个已锁死的会话，每轮都白跑一次。
+# - 远未来（now+1e9）：remaining_silence_sec 变成数十年，该会话永久锁死；
+#   延迟检查以巨值为 timeout 停放，唤醒后重算仍是巨值又停回去，成为不死任务；
+#   且巡检的 now - last_active_at 为负，永不大于 patrol_inactive_after_sec，
+#   巡检每轮都白跑一次这个已锁死的会话。
 # - 负值：单独毒 last_active_at 会被「这条消息之后已经主动回复过」拦住，但把
 #   last_proactive_observed_at 一并毒成更负即可放行——全新会话被拦、毒过的放行，
 #   是真实的能力提升。

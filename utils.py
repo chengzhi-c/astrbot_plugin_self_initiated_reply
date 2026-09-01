@@ -233,19 +233,11 @@ def session_whitelisted(umo: str, whitelist: set[str]) -> bool:
 def whitelist_storage_key(umo: str) -> str:
     """状态键就是完整 UMO 本身——本函数刻意是个恒等式（仅去空白）。
 
-    诚实说明：原文写「Return a platform-aware state key」，
-    并称"裸群号仍作为遗留通配白名单项被接受"。两句都不是本函数做的事——
-    它没有任何平台感知逻辑，裸群号通配是**邻居** ``session_whitelisted``
-    的行为（见上方 ``session_group_id`` 回退分支）。文档描述了邻居的职责，
-    读者会以为这里有归一化逻辑而去找，找不到。
-
-    它的价值不在做了什么，而在它作为**唯一命名接缝**存在：9 个调用点
-    （main / scheduler / storage / whitelist）全部经由它取状态键，于是
-    「状态键 = 完整 UMO」这个决定只有一处可改。
-
-    为什么绝不能把它退化成裸群号：``session_whitelisted`` 接受裸群号作为
-    通配匹配，若状态键也退化到群号，两个平台上**同号**的群会共用一条状态
-    记录，配额与冷却互相污染（``tests/test_security.py`` 就钉这一条）。
+    它的价值不在做了什么，而在作为**唯一命名接缝**存在：所有调用点经它取
+    状态键，「状态键 = 完整 UMO」这个决定只有一处可改。绝不能把它退化成裸
+    群号：``session_whitelisted`` 接受裸群号通配，状态键若同样退化，两个平台
+    上同号的群会共用一条状态记录，配额与冷却互相污染（``tests/test_security.py``
+    钉住）。
     """
     return str(umo or "").strip()
 

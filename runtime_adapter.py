@@ -426,7 +426,7 @@ class AstrBotRuntimeAdapter:
     ) -> bool:
         """Filter ``req.func_tool`` down to ``keep`` minus ``drop``.
 
-        One of two modes is used per call:
+        Two modes per call:
         - ``keep`` is not None: allowlist mode. Removes every tool not in
           ``keep`` (the default proactive policy: empty allowlist removes all).
         - ``keep`` is None: denylist mode. Removes only tools in ``drop`` and
@@ -439,25 +439,14 @@ class AstrBotRuntimeAdapter:
         set cannot be enumerated or a removal fails; callers must then abort
         the proactive run (fail closed).
 
-        「``func_tool`` 属性缺失」与「显式 ``None``」走反方向：
-
-        - 显式 ``None``：宿主声明本次无工具集，天然无工具可调用，放行；
-        - 属性缺失：读不到工具边界本身，无法枚举、无法移除、也无法事后核验，
-          唯一正确动作是中止（fail closed）。此前两者共用 ``getattr(..., None)``
-          一个出口，都返回 ``True``——实测「缺属性」与「显式 None」结果相同，
-          等于宿主一旦改名该字段，工具策略连白名单模式都会整次放行。
-
-        该缺属性分支在生产上**不可达**：``func_tool`` 在 ``_PROVIDER_REQUEST_FIELDS``
-        中被加载期硬断言（实测改名后 ``validate()`` raise
-        「ProviderRequest 缺少字段：func_tool」，而 ``validate()`` 是
-        ``SelfInitiatedReplyPlugin.__init__`` 第一条无 try 包裹的语句），且 dataclass 实例
-        ``del`` 掉字段后仍回落到类默认 ``None``（实测 ``hasattr`` 仍为 ``True``）。
-        保留本分支是纵深防御 + 适配层自身契约完整（本方法是公共接缝，接受任意
-        ``req``），不是在修一个可利用的活漏洞。
-
-        这份「不可达」是有前提的，前提由
-        ``test_func_tool_stays_in_load_time_contract_assertion`` 守护：一旦
-        ``func_tool`` 被移出该清单，加载期防线消失，本分支即恢复可达。
+        「``func_tool`` 属性缺失」与「显式 ``None``」走反方向：显式 ``None`` 是
+        宿主声明本次无工具集，天然放行；属性缺失是读不到工具边界本身，无法枚举
+        也无法事后核验，唯一正确动作是中止。该缺属性分支在生产上**不可达**：
+        ``func_tool`` 由 ``_PROVIDER_REQUEST_FIELDS`` 加载期硬断言（缺失即拒载），
+        dataclass 实例 ``del`` 字段后仍回落类默认 ``None``；前提一旦失效（字段被
+        移出清单）分支即恢复可达，由
+        ``test_func_tool_stays_in_load_time_contract_assertion`` 守护。
+        保留分支是纵深防御——本方法是公共接缝，接受任意 ``req``。
         """
         # 显式 ``Any``：三参 getattr 的类型是 ``Any | _T``，
         # 默认值换成哨兵后 ``_T`` 是 ``object``，联合坍缩成 ``object``，下面的
