@@ -284,7 +284,7 @@ def test_validate_soft_green_silent() -> None:
 
 
 def test_narrow_symbol_accessors() -> None:
-    """适配层窄方法：事件结果/请求/事件类型/钩子/路径经适配层唯一出口。"""
+    """适配层窄方法：事件结果/内容类型/事件类型/请求构造经适配层唯一出口。"""
     adapter = _runtime_adapter()
     runtime = adapter.AstrBotRuntimeAdapter(_full_capabilities(adapter))
     result = runtime.new_event_result()
@@ -293,8 +293,6 @@ def test_narrow_symbol_accessors() -> None:
     assert runtime.event_type.OnLLMRequestEvent == "OnLLMRequestEvent"
     req = runtime.new_provider_request()
     assert req.session_id == ""
-    assert runtime.config_path() == "/tmp/config"
-    assert runtime.plugin_data_path() == "/tmp/data"
 
 
 async def test_call_event_hook_awaits_async_callback() -> None:

@@ -369,37 +369,10 @@ class AstrBotRuntimeAdapter:
             return await maybe_await(hook(event, event_type))
         return await maybe_await(hook(event, event_type, req))
 
-    # 以下两个方法零生产调用：main.py:57-58 在 import 期把 capabilities.config_path_fn /
-    # plugin_data_path_fn 绑成模块级名字，_resolve_paths 用的是那两个名字。绕过是为了
-    # 测试接缝：host_stubs 与 test_main_coverage 靠替换 main.get_astrbot_config_path
-    # 把路径导进 tmp 树，走适配层方法就没有这个替换点。
-    #
-    # 不删：test_host_contract.test_narrow_symbol_accessors 的 docstring 明写「路径经
-    # 适配层唯一出口」，删方法等于把这条原则连同断言一起删掉。
-    #
-    # 也不把 main.py 接过来：这两个方法吞异常返回 None（旧版回退），而 _resolve_paths
-    # 让异常传播、加载期即崩。宿主抛点极窄（get_astrbot_root 三条分支里只有走
-    # os.getcwd() 的那条会抛），而静默回退代价更高：瞬时失败时状态写到回退路径，
-    # 下次成功时读真实路径，那次状态无声丢失。
-    def config_path(self) -> str | None:
-        """宿主配置目录（None = 旧版回退路径）。"""
-        fn = self.capabilities.config_path_fn
-        if not callable(fn):
-            return None
-        try:
-            return str(fn())
-        except Exception:
-            return None
-
-    def plugin_data_path(self) -> str | None:
-        """宿主插件数据目录（None = 旧版回退路径）。"""
-        fn = self.capabilities.plugin_data_path_fn
-        if not callable(fn):
-            return None
-        try:
-            return str(fn())
-        except Exception:
-            return None
+    # 路径函数（config_path_fn / plugin_data_path_fn）不经本类方法出口：main.py 在
+    # import 期把 capabilities 里的两个函数绑成模块级名字（供 _resolve_paths 使用，
+    # 也是测试替换点），路径解析失败由 resolve_paths 让异常传播、加载期即崩——
+    # 吞异常静默回退会让状态写到错误路径后无声丢失。结构决策见 docs/DECISIONS.md。
 
     def final_tool_ids(self, req: Any) -> list[str] | None:
         """Enumerate the tool ids that would actually reach the provider.

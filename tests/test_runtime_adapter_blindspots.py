@@ -139,21 +139,6 @@ def test_validate_non_callable_path_fn_and_signature_probe_error() -> None:
     assert "build_main_agent" not in joined  # 签名探测失败不记问题
 
 
-def test_path_fallbacks_return_none() -> None:
-    """路径函数缺失/抛错：回退 None（旧版宿主降级路径）。"""
-    runtime = _load_adapter()
-    adapter = _adapter(runtime, config_path_fn=None, plugin_data_path_fn=None)
-    assert adapter.config_path() is None
-    assert adapter.plugin_data_path() is None
-
-    def boom() -> str:
-        raise OSError("path broken")
-
-    adapter = _adapter(runtime, config_path_fn=boom, plugin_data_path_fn=boom)
-    assert adapter.config_path() is None
-    assert adapter.plugin_data_path() is None
-
-
 # ============================================================================
 # 直通出口：run_agent 属性与 run 包装、build_config 缺失
 # ============================================================================
