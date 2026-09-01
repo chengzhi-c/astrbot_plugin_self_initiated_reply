@@ -176,8 +176,8 @@ export function createConfigIo(deps) {
 		const blocked = loading || !configLoaded || requiresConfigRefresh;
 		const buttons = [
 			e.saveTopBtn,
-		e.saveMobileBtn,
-		e.configForm ? e.configForm.querySelector('button[type="submit"]') : null,
+			e.saveMobileBtn,
+			e.configForm ? e.configForm.querySelector('button[type="submit"]') : null,
 		];
 		buttons.forEach((btn) => {
 			if (!btn) return;

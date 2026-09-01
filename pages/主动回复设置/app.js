@@ -429,7 +429,6 @@ window.addEventListener("beforeunload", (e) => {
 	}
 });
 
-getEls();
 configIo.setSaving(false);
 
 const bootTimeout = window.setTimeout(() => {
