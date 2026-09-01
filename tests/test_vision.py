@@ -855,28 +855,34 @@ def test_image_parser_does_not_fallback_to_expiring_raw_url() -> None:
 
 
 def test_image_parser_rejects_private_network_targets() -> None:
+    """私网目标经真实下载入口拒绝：解析器只交出公网地址，无地址即返回 None。"""
     _, image, _ = _load_modules()
+    parser = image.ImageParser(object())
 
-    assert not asyncio.run(image.ImageParser._is_safe_url("http://127.0.0.1/private.png"))
-    assert not asyncio.run(image.ImageParser._is_safe_url("http://[::1]/private.png"))
-    assert not asyncio.run(image.ImageParser._is_safe_url("file:///etc/passwd"))
+    assert asyncio.run(parser._fetch_image_data_url("http://127.0.0.1/private.png")) is None
+    assert asyncio.run(parser._fetch_image_data_url("http://[::1]/private.png")) is None
 
 
 def test_image_parser_rejects_non_http_schemes() -> None:
     """非 http/https scheme（即使主机是公网 IP）必须拒绝，SSRF 面收缩。"""
     _, image, _ = _load_modules()
+    parser = image.ImageParser(object())
 
-    assert not asyncio.run(image.ImageParser._is_safe_url("ftp://8.8.8.8/x.png"))
+    assert asyncio.run(parser._fetch_image_data_url("ftp://8.8.8.8/x.png")) is None
+    assert asyncio.run(parser._fetch_image_data_url("file:///etc/passwd")) is None
 
 
 def test_image_parser_rejects_non_standard_ports() -> None:
-    """图片下载仅允许 80/443 端口，收缩公网主机任意端口可达的 SSRF 面。"""
-    _, image, _ = _load_modules()
+    """图片下载仅允许 80/443 端口，收缩公网主机任意端口可达的 SSRF 面。
 
-    assert not asyncio.run(image.ImageParser._is_safe_url("http://8.8.8.8:8080/x.png"))
-    assert not asyncio.run(image.ImageParser._is_safe_url("https://8.8.8.8:8443/x.png"))
-    assert asyncio.run(image.ImageParser._is_safe_url("http://8.8.8.8/x.png"))
-    assert asyncio.run(image.ImageParser._is_safe_url("https://8.8.8.8:443/x.png"))
+    标准端口的放行由 test_fetch_success_returns_data_url 等 443 默认端口的
+    成功用例覆盖，此处不发起真实网络请求。
+    """
+    _, image, _ = _load_modules()
+    parser = image.ImageParser(object())
+
+    assert asyncio.run(parser._fetch_image_data_url("http://8.8.8.8:8080/x.png")) is None
+    assert asyncio.run(parser._fetch_image_data_url("https://8.8.8.8:8443/x.png")) is None
 
 
 def test_bridge_direct_vision_call_forwards_images_without_context_hooks() -> None:

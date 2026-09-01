@@ -212,13 +212,12 @@ def _global_addresses(host: str) -> list[str]:
     return [str(literal)] if literal.is_global else []
 
 
-def _host_all_global(host: str) -> bool:
-    """Require every DNS result for a host to be globally routable."""
-    return bool(_global_addresses(host))
-
-
 def _resolve_global_address(host: str) -> str | None:
-    """Return one checked address; the caller must connect to this exact value."""
+    """Return one checked address; the caller must connect to this exact value.
+
+    ``_global_addresses`` 只有在**全部**解析结果都是公网地址时才返回非空列表，
+    因此 None 即"存在私网/保留地址或解析失败"，调用方据此拒绝连接。
+    """
     addresses = _global_addresses(host)
     return addresses[0] if addresses else None
 
@@ -840,19 +839,6 @@ class ImageParser:
         except Exception as exc:
             logger.debug("[%s] image download failed: %s", PLUGIN_ID, exc)
             return None
-
-    @staticmethod
-    async def _is_safe_url(url: str) -> bool:
-        try:
-            parsed = urlparse(url)
-        except Exception:
-            return False
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            return False
-        if parsed.port is not None and parsed.port not in {80, 443}:
-            # 仅允许标准 Web 端口，收缩公网主机任意端口可达的 SSRF 面
-            return False
-        return await asyncio.to_thread(_host_all_global, parsed.hostname)
 
     @staticmethod
     def _is_unable_to_describe(content: str) -> bool:

@@ -81,11 +81,12 @@ def _make_response(status_code: int = 200, headers: dict | None = None, chunks=(
 
 
 # ============================================================================
-# _host_all_global / _GlobalOnlyTransport（DNS 与传输层守卫）
+# _resolve_global_address / _FixedAddressTransport（DNS 与传输层守卫）
 # ============================================================================
 
 
-def test_host_all_global_dns_resolution_branches(monkeypatch) -> None:
+def test_resolver_dns_resolution_branches(monkeypatch) -> None:
+    """解析器把"非全公网"收敛为 None：固定地址传输只允许绑定公网 IP。"""
     _, image, _ = _load_modules()
     parser_mod = _parser_module()
 
@@ -94,14 +95,14 @@ def test_host_all_global_dns_resolution_branches(monkeypatch) -> None:
         "getaddrinfo",
         lambda *args: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
     )
-    assert parser_mod._host_all_global("public.example") is True
+    assert parser_mod._resolve_global_address("public.example") is not None
 
     monkeypatch.setattr(
         parser_mod.socket,
         "getaddrinfo",
         lambda *args: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 0))],
     )
-    assert parser_mod._host_all_global("private.example") is False
+    assert parser_mod._resolve_global_address("private.example") is None
 
     monkeypatch.setattr(
         parser_mod.socket,
@@ -111,20 +112,20 @@ def test_host_all_global_dns_resolution_branches(monkeypatch) -> None:
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.1", 0)),
         ],
     )
-    assert parser_mod._host_all_global("mixed.example") is False
+    assert parser_mod._resolve_global_address("mixed.example") is None
 
     def raise_oserror(*_args):
         raise OSError("nxdomain")
 
     monkeypatch.setattr(parser_mod.socket, "getaddrinfo", raise_oserror)
-    assert parser_mod._host_all_global("nx.example") is False
+    assert parser_mod._resolve_global_address("nx.example") is None
 
     monkeypatch.setattr(
         parser_mod.socket,
         "getaddrinfo",
         lambda *args: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("not-an-ip", 0))],
     )
-    assert parser_mod._host_all_global("bad-addr.example") is False
+    assert parser_mod._resolve_global_address("bad-addr.example") is None
 
 
 def test_fixed_transport_rejects_non_global_bound_address() -> None:
@@ -1079,7 +1080,7 @@ def test_materialize_publishes_with_atomic_replace(tmp_path: Path, monkeypatch) 
 
 
 # ============================================================================
-# _file_to_data_url() / _is_safe_url()：本地读取与 URL 守卫
+# _file_to_data_url()：本地读取 allowlist 与 URL 下载守卫
 # ============================================================================
 
 
@@ -1089,7 +1090,8 @@ def test_file_to_data_url_rejects_missing_path(tmp_path: Path) -> None:
     assert parser._file_to_data_url(tmp_path / "missing.png", trusted=True) is None
 
 
-def test_is_safe_url_tolerates_urlparse_failure(monkeypatch) -> None:
+def test_fetch_tolerates_urlparse_failure(monkeypatch) -> None:
+    """畸形 URL 的 urlparse 抛错被下载入口收敛为 None，不向外传播。"""
     _, image, _ = _load_modules()
     parser_mod = _parser_module()
 
@@ -1097,7 +1099,7 @@ def test_is_safe_url_tolerates_urlparse_failure(monkeypatch) -> None:
         raise ValueError("malformed url")
 
     monkeypatch.setattr(parser_mod, "urlparse", boom)
-    assert asyncio.run(image.ImageParser._is_safe_url("http://x")) is False
+    assert asyncio.run(image.ImageParser(object())._fetch_image_data_url("http://x")) is None
 
 
 # ============================================================================
