@@ -109,9 +109,8 @@ class SessionCoordinator:
         return True
 
     def _append_image_event(self, umo: str, timestamp: float, images: list[Any]) -> None:
+        # deque(maxlen=MAX_CACHED_IMAGE_EVENTS) 满员时自动逐出最旧事件，无需手工 popleft。
         image_events = self._images.setdefault(umo, deque(maxlen=MAX_CACHED_IMAGE_EVENTS))
-        if len(image_events) >= MAX_CACHED_IMAGE_EVENTS:
-            image_events.popleft()
         image_events.append((timestamp, images))
 
     def capture_images(self, umo: str, timestamp: float, cached_images: list[Any]) -> list[Any]:
