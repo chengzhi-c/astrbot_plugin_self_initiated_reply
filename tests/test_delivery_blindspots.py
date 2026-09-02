@@ -1,8 +1,7 @@
-"""DeliveryRunner 覆盖率补盲（0.9.0 轴 D）：send_reply 异常与分支路径。
+"""DeliveryRunner send_reply 异常与分支路径。
 
-盲区背景（补盲前 delivery.py 75%）：装饰钩子空结果、代次三连复核的
-各失效点、外发未提交、after-send 钩子异常、context 兜底的 UNKNOWN/False
-语义。全部经注入假门卫/钩子/发送器直接驱动（补盲前 75%）。
+装饰钩子空结果、代次三连复核的各失效点、外发未提交、after-send 钩子异常、
+context 兜底的 UNKNOWN/False 语义。经注入假门卫/钩子/发送器直接驱动。
 """
 
 from __future__ import annotations

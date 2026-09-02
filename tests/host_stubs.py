@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 MAIN_PACKAGE_NAME = "selfreply_main_test_package"
 
-# 单源守卫的扫描面（0.9.4 阶段 1.6）：此前多处用 ROOT.glob("*.py")（非递归），
+# 单源守卫的扫描面：此前多处用 ROOT.glob("*.py")（非递归），
 # image/ 子包完全在视野外——而 0.8.8 恰好是从 image/parser.py 收敛掉一处
 # response_text 镜像的。用 rglob 并在此单点声明排除目录，避免各守卫各写一套。
 _NON_PRODUCTION_DIRS = frozenset(

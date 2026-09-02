@@ -1,4 +1,4 @@
-"""配置热更新一致性红灯测试（0.9.0 轴 A）。
+"""配置热更新一致性红灯测试。
 
 缺陷链：webapi._apply_config_updates 对 plugin.settings 做整体替换，
 而 decision/delivery/generation/scheduler/whitelist 五组件在构造时各存
@@ -202,7 +202,7 @@ def test_config_rollback_preserves_container_identity(tmp_path) -> None:
     对象引用 → 一次失败的配置 POST 后协作对象继续写孤儿容器、main 从新容器
     读，该会话主动回复静默停止直到重启。
 
-    与 Settings 身份断言（0.9.0 轴 A）同构：容器身份必须存活。
+    与 Settings 身份断言同构：容器身份必须存活。
     """
 
     async def scenario(plugin, main):
@@ -376,7 +376,7 @@ def test_session_gate_restore_is_in_place_only() -> None:
 
     历史形态是三次属性重绑定（``self._session_generation = snap[...]``），与 B1
     的缺陷写法同构；当时"安全"的唯一理由是"没有外部持有者"这个易失前提，且该
-    前提对 release 表根本不成立——等待者持有具体 Event 对象（0.9.4 阶段 1.1）。
+    前提对 release 表根本不成立——等待者持有具体 Event 对象。
     改为原地恢复后 B1 合规由**结构**保证，本守卫钉死这一点。
     """
     restore_node = _gate_restore_node()
@@ -409,10 +409,10 @@ def test_session_gate_tables_have_no_external_holders() -> None:
     """三张恢复表不得被外部直取——绕过 ``mark_running`` 的 release 语义。
 
     restore 已改原地（见上一条守卫），孤儿表风险消除；但外部直取仍会绕过
-    ``mark_running``/``unmark_running`` 对 release 表的成对维护，制造与 0.9.4 阶段 1.1
+    ``mark_running``/``unmark_running`` 对 release 表的成对维护，制造
     同类的闸门失同步。外界只应经 ``*_view`` property 或语义方法访问。
 
-    ``rglob`` 而非 ``glob``（0.9.4 阶段 1.6）：image/ 子包 1234 行此前完全在视野外。
+    ``rglob`` 而非 ``glob``：image/ 子包 1234 行此前完全在视野外。
     """
     leaked: list[str] = []
     for path in production_py_files():
@@ -426,5 +426,5 @@ def test_session_gate_tables_have_no_external_holders() -> None:
                 leaked.append(f"{path.relative_to(ROOT).as_posix()}: {owner}.{node.attr}")
     assert not leaked, (
         f"SessionGate 内部表被外部直取 {leaked}：绕过 mark_running/unmark_running 的 "
-        f"release 成对维护会制造闸门失同步（0.9.4 阶段 1.1 同类缺陷）。改经 view property 读。"
+        f"release 成对维护会制造闸门失同步。改经 view property 读。"
     )

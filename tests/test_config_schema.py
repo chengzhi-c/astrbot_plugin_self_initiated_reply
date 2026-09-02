@@ -220,7 +220,7 @@ def test_schema_options_match_python_choices() -> None:
 
 
 # ============================================================================
-# 阶段 2：CONFIG_SPECS 规格表必须能完整表达 _conf_schema.json
+# CONFIG_SPECS 规格表必须能完整表达 _conf_schema.json
 #
 # 这是替换四个消费者（Settings 字段/from_config/to_config_dict/
 # CONFIG_SCHEMA_KEYS/_parse_config_updates）的前提证明：若表表达不了现有
@@ -443,7 +443,7 @@ def test_wheel_required_files_covered_by_pyproject() -> None:
 
 
 def test_wheel_forbidden_patterns_are_excluded_by_pyproject() -> None:
-    """check_wheel 禁止的每类开发物，pyproject 都必须真的排掉（0.9.4 阶段 2.3）。
+    """check_wheel 禁止的每类开发物，pyproject 都必须真的排掉。
 
     这是 ``test_wheel_required_files_covered_by_pyproject`` 的反方向。两份名单
     分居两个文件、各自手工维护，漂移方向决定后果：
@@ -453,8 +453,8 @@ def test_wheel_forbidden_patterns_are_excluded_by_pyproject() -> None:
     - check_wheel 禁了、pyproject 没排：**每次构建都红**，且只在 CI build 作业
       才暴露。
 
-    真实复发史：``.coverage.*``（0.9.3 阶段 4）与 ``coverage.json``（0.9.4 阶段
-    2.3，实测 220KB 被打进 wheel 而守卫仍报"无泄漏"）都是"两侧不同步"的产物。
+    真实复发史：``.coverage.*`` 与 ``coverage.json``（实测 220KB 被打进
+    wheel 而守卫仍报"无泄漏"）都是"两侧不同步"的产物。
     本断言把两侧钉在一起，让漏一侧在 test 作业就红。
 
     比对方式刻意**不比字符串**：两侧语法不同（hatchling 用 ``tests/**``，
@@ -598,7 +598,7 @@ def test_wheel_artifacts_do_not_override_excludes() -> None:
 
 
 def test_tool_versions_agree_across_config_sources() -> None:
-    """ruff 版本在 ci.yml / .pre-commit-config.yaml / pyproject 三处必须一致（阶段 2.4）。
+    """ruff 版本在 ci.yml / .pre-commit-config.yaml / pyproject 三处必须一致。
 
     这条不变量此前只写在 ci.yml 的注释里（"钉版本与 .pre-commit-config.yaml 的
     ruff-pre-commit rev 对齐"），没有任何断言。改一处忘另一处的后果是本地 pre-commit
@@ -616,7 +616,7 @@ def test_tool_versions_agree_across_config_sources() -> None:
 
 
 # ============================================================================
-# 阶段 2.1：反向断言——前端页面 ↔ webapi 配置契约
+# 反向断言——前端页面 ↔ webapi 配置契约
 #
 # 已有守卫覆盖 CONFIG_SPECS ↔ _conf_schema.json（双向、逐字段）。但链条到
 # webapi 就断了：自定义面板 pages/ 是**手写** JS，它读 GET 响应、构造 POST

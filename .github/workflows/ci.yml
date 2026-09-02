@@ -21,7 +21,7 @@ jobs:
       - name: Install
         # 钉版本与 .pre-commit-config.yaml 的 ruff-pre-commit rev、pyproject 的
         # [dev] 三处对齐。该对齐由下面的 Version cross-source gate 断言，不再只靠本注释
-        # （0.9.4 阶段 2.4：此前三处一致仅由注释声明，改一处忘另一处无人发现）。
+        # （此前三处一致仅由注释声明，改一处忘另一处无人发现）。
         run: pip install ruff==0.16.1
       - name: Version cross-source gate
         # --cross-only 只比对配置之间，纯 stdlib、不探测本机，故能挂在这个

@@ -1,9 +1,7 @@
-"""runtime_adapter.py 覆盖率补盲（0.9.0 P2）：降级宿主分支与工具过滤边界。
+"""runtime_adapter.py 降级宿主分支与工具过滤边界。
 
-盲区背景（补盲前全量口径 86%，32 行未覆盖）：validate 的降级宿主告警分支、
-路径函数回退、final_tool_ids/filter_final_tools 的 fail-closed 边界、
-run_agent 直通出口。宿主兼容层最容易在宿主升级时出问题，本文件为其
-补上模块级门禁前的行为覆盖（捕获力经门禁入库后由 CI 守护）。
+validate 的降级宿主告警分支、路径函数回退、
+final_tool_ids/filter_final_tools 的 fail-closed 边界、run_agent 直通出口。
 """
 
 from __future__ import annotations
@@ -276,7 +274,7 @@ def test_missing_func_tool_attribute_fails_closed_not_open(caplog: object) -> No
 
 
 def test_final_tool_ids_separates_unreadable_from_empty() -> None:
-    """枚举器把「读不到 ``func_tool``」与「查过了、是空的」分开（0.9.4 阶段 1.5）。
+    """枚举器把「读不到 ``func_tool``」与「查过了、是空的」分开。
 
     与上一个用例刻意分开：那个盯 ``filter_final_tools`` 的决策出口，这个盯
     ``final_tool_ids`` 的枚举出口。两处的 ``getattr`` 默认值各改一处都会被

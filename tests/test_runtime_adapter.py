@@ -12,7 +12,7 @@ def _load_adapter():
 
 
 def _base_caps(runtime, **overrides):
-    """完整契约 capabilities：ticket 13 后 validate 覆盖全部私有入口。"""
+    """完整契约 capabilities：validate 覆盖全部私有入口。"""
     base = dict(
         import_error=None,
         tool_set=object,

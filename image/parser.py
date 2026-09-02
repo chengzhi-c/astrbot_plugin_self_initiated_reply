@@ -693,7 +693,7 @@ class ImageParser:
             # 本地路径一律走 allowlist：image_info.trusted_local_path
             # 由提取层从「组件不是 Mapping」推断，而对端可控的 OneBot file 值
             # 恰好装配成非 Mapping 的 pydantic Image，该推断可被伪造。
-            # 相对路径经录制桥解析后同样不升 trusted（复审补漏）：resolver 的入参
+            # 相对路径经录制桥解析后同样不升 trusted：resolver 的入参
             # 就是这里的 file_value —— 对端可控，`../../..` 不受 is_absolute 检查
             # 拦截，朴素拼接的 resolver 会交出媒体目录之外的路径。
             if not path.is_absolute() and self._recorder_bridge:

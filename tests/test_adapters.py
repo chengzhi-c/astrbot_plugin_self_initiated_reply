@@ -1,4 +1,4 @@
-"""AstrBotBridge 补盲测试（0.8.4 批次3：低覆盖模块）。
+"""AstrBotBridge 兼容分支。
 
 覆盖 adapters.py 的全部兼容分支：_supported_kwargs 异常回退、_call_compat
 的 minimal 降级语义、_call_first_supported 的调用形态探测、
@@ -483,7 +483,7 @@ async def test_resolve_provider_id_propagates_current_provider_errors(bridge) ->
 
 
 async def test_resolve_provider_id_ignores_get_using_provider_id(bridge) -> None:
-    """``get_using_provider_id`` 不再被探测（0.9.3 阶段 3 删死分支）。
+    """``get_using_provider_id`` 不再被探测。
 
     宿主 4.23.3 Context 无此方法。若未来某个第三方 Context 提供它，本插件
     也不再调用它——落到 ``get_using_provider`` 兜底或返回空串。

@@ -80,7 +80,7 @@ artifacts = [
   # 面向用户的两份文档必须随包（0.9.5）：下方 exclude 的 `*.md` 原本把它们一起
   # 排掉了，装完插件的目录里没有任何说明文件。artifacts 优先于 exclude，故这里
   # 显式收回这两个，其余 .md（docs/ 下的维护者文档）仍被排除——
-  # 那些写的是内部批次标记与开发约定，对使用者无意义。
+  # 那些写的是维护者文档，对使用者无意义。
   # 注意锚点同时修掉了另一个静默缺口：不带 `/` 时 `docs/README.md` 也会命中，
   # 把维护者文档拉进包（实测 True → 加锚后 False）。
   "/README.md",
@@ -187,7 +187,6 @@ omit = ["tests/*", "scripts/*"]
 
 [tool.coverage.report]
 # 门槛 89%：生产口径（omit tests/）实测 94.47% 后按“实测 − 5%”留缓冲定档
-# （0.9.0 D1 三盲区补盲：scheduler 76→98 / delivery 74→94 / storage 72→95）。
 # 门槛调整一律以生产口径覆盖率工件实测为准，杜绝拍脑袋定数；口径本身为何
 # 排除 tests/ 见上方 [tool.coverage.run] 的说明。
 fail_under = 89

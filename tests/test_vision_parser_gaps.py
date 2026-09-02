@@ -1,4 +1,4 @@
-"""图片解析链路覆盖补盲（ticket 09）：parser 错误分支与边界行为。
+"""图片解析链路：parser 错误分支与边界行为。
 
 与 test_vision.py 复用同一宿主桩与包加载方式；新增用例只补分支，不改源。
 """
@@ -874,7 +874,7 @@ def test_resolve_uses_prepared_data_url(tmp_path: Path) -> None:
 
 
 def test_resolve_uses_recorder_local_path(tmp_path: Path) -> None:
-    # 生产装配等价（阶段 1.1 复审）：recorder 的媒体目录在
+    # 生产装配等价：recorder 的媒体目录在
     # <data>/plugin_data/astrbot_plugin_message_recorder/ 下，故注入 data_root。
     # recorder 交回的路径同样要过 allowlist——它的入参 local_path 来自对端可控
     # 的消息组件，resolver 又是第三方插件函数，不能无条件当可信。
@@ -891,12 +891,12 @@ def test_resolve_uses_recorder_local_path(tmp_path: Path) -> None:
 
 
 def test_resolve_rejects_recorder_path_outside_data_root(tmp_path: Path) -> None:
-    """recorder 解析出的越界路径必须被拒（阶段 1.1 复审补漏）。
+    """recorder 解析出的越界路径必须被拒。
 
     攻击链：对端把 ``local_path`` 设成 ``../../../secrets/x.png``（相对路径，
     绕过 ``is_absolute`` 检查）→ 若第三方 recorder 的 resolver 是朴素
     ``root / value``，就会交回 <data> 之外的绝对路径。修复前该分支直接
-    ``trusted=True`` 全量放行，与阶段 1.1 要关的攻击面同型。
+    ``trusted=True`` 全量放行，与要关的攻击面同型。
     """
     _, image, _ = _load_modules()
     data_root = tmp_path / "data"
@@ -975,7 +975,7 @@ def test_resolve_relative_path_via_recorder(tmp_path: Path) -> None:
 
 
 def test_recorder_resolved_path_outside_roots_is_rejected(tmp_path: Path) -> None:
-    """录制桥交回的路径也必须过 allowlist（阶段 1.1 复审补漏）。
+    """录制桥交回的路径也必须过 allowlist。
 
     这条曾被我判为"不由消息内容决定"而放行，是错的：``resolve_relative_path``
     的入参就是对端可控的 OneBot ``file`` / ``local_path``，而 resolver 是第三方

@@ -1,4 +1,4 @@
-"""MessageRecorderBridge 补盲测试（0.8.4 批次3：低覆盖模块）。
+"""MessageRecorderBridge 分支。
 
 覆盖 image/recorder_bridge.py 的全部分支：_ensure_api 的探测回退链、
 get_local_image_path / resolve_relative_path / image_to_data_url 的

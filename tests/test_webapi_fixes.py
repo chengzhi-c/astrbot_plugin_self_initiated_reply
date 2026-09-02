@@ -1,4 +1,4 @@
-"""webapi 边界测试补盲（0.8.1 阶段 C）。
+"""webapi 拒绝路径与分支。
 
 覆盖 webapi.py 的拒绝路径与分支：strict 校验、provider 收集链、
 cleanup/status/theme API、回滚 dropped 分支与 _request_json 回退。
@@ -245,7 +245,7 @@ def test_api_status(tmp_path) -> None:
         assert status["whitelist_count"] == len(plugin.settings.whitelist)
         assert status["decision_model_enabled"] is plugin.settings.decision_model_enabled
         assert "pipeline_mode" not in status
-        # 调试面板导出（ticket 14）：代次/运行中/任务数/缓存规模/最近裁决
+        # 调试面板导出：代次/运行中/任务数/缓存规模/最近裁决
         assert "gate" in status and "generation" in status["gate"]
         assert set(status["tasks"]) == {"delay", "running_check", "background"}
         assert set(status["caches"]) == {"events", "image_events", "sessions"}
@@ -264,7 +264,7 @@ def test_api_status(tmp_path) -> None:
 
 
 def test_api_status_contains_failure_and_hides_details(tmp_path) -> None:
-    """状态端点失败时返回结构化错误，且不回显异常细节（0.9.4 阶段 1.7）。
+    """状态端点失败时返回结构化错误，且不回显异常细节。
 
     补这条 except 前，本端点是唯一没有兜底的 ``_api_*`` 处理器。补的当时并无
     可达异常（见该函数 docstring），故这里用删属性人工制造失败——不是模拟宿主
@@ -287,13 +287,13 @@ def test_api_status_contains_failure_and_hides_details(tmp_path) -> None:
 
 
 def test_bound_api_handlers_match_class_declarations() -> None:
-    """``bind_api_handlers`` 绑定的名字集合 == 主类里的裸注解声明（0.9.4 阶段 2.2）。
+    """``bind_api_handlers`` 绑定的名字集合 == 主类里的裸注解声明。
 
     这四个处理器不在类里 ``def``，而是运行时以 ``partial(...)`` 挂到实例上（供约 30 处
     测试与外部以 ``plugin._api_*`` 调用）。主类新增了对应的裸注解，让读者在类里搜得到
     这些名字。两侧各自手工维护，漂移方向决定后果：
 
-    - 绑了没声明：读者在类里搜不到，回到阶段 2.2 之前的状态（声明白写）；
+    - 绑了没声明：读者在类里搜不到，声明白写；
     - 声明了没绑：注解承诺了一个运行时不存在的属性，比没有注解更误导——读者会以为
       ``plugin._api_xxx`` 可调用，实际 ``AttributeError``。
 

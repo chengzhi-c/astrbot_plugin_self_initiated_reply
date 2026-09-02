@@ -1,7 +1,6 @@
 """Agent 管线回归测试：主动回复生成与发送路径的历史缺陷固化验证
 
-每个测试断言"期望的正确行为"，修复前应当失败（红灯），修复后转绿
-（历史红灯测试阶段 0 去阶段化更名，2026-08-07）：
+每个测试断言"期望的正确行为"，修复前应当失败（红灯），修复后转绿：
 - run_task 孤儿泄漏：force cancel 后 run_task 被收敛、request_stop 被调
 - context 兜底发送：返回 None（成功）记 DELIVERED 且写入 assistant 历史
 - 只读命令：status/list/help/debug 不得失效会话（延迟任务与缓存保留）
@@ -516,7 +515,7 @@ def test_gate_restore_clears_stale_release_for_still_running(tmp_path: Path) -> 
     ``unmark_running`` 只 set 不 pop，所以回滚把运行标记恢复成快照态后，表里
     那个事件仍是已 set 的。此时 scheduler 的 ``while is_running: await
     release_event(umo).wait()`` 每轮立即返回——紧密空转独占事件循环，整个 bot
-    卡死（0.9.4 阶段 1.1）。
+    卡死。
 
     变异锚定：删除 ``restore`` 中的 ``release.clear()`` 分支后本测试必须变红。
     """

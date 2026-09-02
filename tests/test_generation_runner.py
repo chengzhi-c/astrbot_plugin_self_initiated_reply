@@ -1,6 +1,6 @@
-"""GenerationRunner 独立单测（ticket 04 验收）：注入假运行时适配器，脱离插件实例。
+"""GenerationRunner 独立单测：注入假运行时适配器，脱离插件实例。
 
-覆盖验收项：
+覆盖：
 - 生成入口可独立单测：工具集快照（new_tool_set）与边界安装/恢复配对
 - 工具直发预算与代次闸门自洽，直发文本回传语义
 - 超时/取消/失败三类出口的直发计数与文本不丢失
@@ -260,7 +260,7 @@ def _state(models, *, recent=None):
 
 
 # ============================================================================
-# 工具集快照与边界安装/恢复配对（验收项 1）
+# 工具集快照与边界安装/恢复配对
 # ============================================================================
 
 
@@ -405,7 +405,7 @@ async def test_install_boundary_raises_when_assignment_fails(tmp_path: Path) -> 
 
 
 # ============================================================================
-# 直发预算与代次闸门（验收项 2）
+# 直发预算与代次闸门
 # ============================================================================
 
 
@@ -489,7 +489,7 @@ async def test_generate_tracks_tool_direct_evidence_in_pipeline_ledger(tmp_path:
 
 
 async def test_generate_passes_non_tool_messages_through_untouched(tmp_path: Path) -> None:
-    """非工具消息由 ``tracked_send`` 原样转交宿主 ``original_send``（0.9.4 阶段 4）。
+    """非工具消息由 ``tracked_send`` 原样转交宿主 ``original_send``。
 
     补的是生成管线此前缺测的 2 行（`generation.py`
     `tracked_send` 的透传分支）。它是生产常态路径——agent 发的普通消息全走这里——
@@ -573,7 +573,7 @@ async def test_generate_gate_suppresses_direct_send(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# 超时/取消/失败三类出口不丢失直发（验收项 3）
+# 超时/取消/失败三类出口不丢失直发
 # ============================================================================
 
 
@@ -767,12 +767,12 @@ async def test_generate_hook_early_exit_restores_event(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# 0.9.4 阶段 1.3：reset 协程在异常出口的兜底回收（配对 generation.py 同名标记）
+# reset 协程在异常出口的兜底回收（配对 generation.py 同名标记）
 # ============================================================================
 
 
 async def test_generate_closes_reset_coro_when_hook_raises(tmp_path: Path) -> None:
-    """hook 抛异常（而非返回真早退）时，reset 协程必须仍被回收（0.9.4 阶段 1.3）。
+    """hook 抛异常（而非返回真早退）时，reset 协程必须仍被回收。
 
     修复前：三个早退点经 _abort 关闭、成功路径 await，但工具策略/调用钩子
     抛异常时控制流直奔 except Exception，那里的 return 不碰 reset_coro，finally 的三段
@@ -802,9 +802,9 @@ async def test_generate_closes_reset_coro_when_hook_raises(tmp_path: Path) -> No
 
 
 async def test_generate_closes_reset_coro_when_hook_raises_timeout(tmp_path: Path) -> None:
-    """hook 抛 TimeoutError 时同样回收：兜底段与「走哪个 except」无关（0.9.4 阶段 1.3）。
+    """hook 抛 TimeoutError 时同样回收：兜底段与「走哪个 except」无关。
 
-    本用例存在的理由是复审中纠正的一处事实：插件自己装的生成超时（``wait_for``
+    插件自己装的生成超时（``wait_for``
     在 reset 之后）**不可能**泄漏 reset 协程，因为那时它已被 await 掉。
     `except asyncio.TimeoutError` 成为泄漏出口只有一条间接路径——hook 内部让
     `wait_for` 的 TimeoutError 逃逸。两个 except 各有自己的 return，所以要分别钉住。
@@ -966,7 +966,7 @@ def test_prompt_forbids_fabricated_tool_calls_and_length_modes() -> None:
 
 
 # ============================================================================
-# 0.9.4 阶段 1.2：信封不可被内容闭合（配对 generation.neutralize_envelope_tags）
+# 信封不可被内容闭合（配对 generation.neutralize_envelope_tags）
 # ============================================================================
 
 
@@ -1050,7 +1050,7 @@ def test_envelope_tag_constant_drives_both_envelope_and_neutralizer() -> None:
 
 
 # ============================================================================
-# 阶段 1.3：历史损坏必须显性告警（否则表现为"机器人失忆接话"且无日志线索）
+# 历史损坏必须显性告警（否则表现为"机器人失忆接话"且无日志线索）
 # ============================================================================
 
 

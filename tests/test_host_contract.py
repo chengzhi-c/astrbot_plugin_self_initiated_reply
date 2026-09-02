@@ -1,6 +1,6 @@
-"""宿主符号收敛契约（ticket 13）：私有 core 符号只允许出现在适配层与宿主桩。
+"""宿主符号收敛契约：私有 core 符号只允许出现在适配层与宿主桩。
 
-验收项：
+覆盖：
 - 全仓库 grep：宿主私有符号只出现在适配层与宿主桩两处（文本收敛断言）
 - 契约断言覆盖全部私有入口（构建/运行/会话装载/事件结果/请求/钩子），缺失即红
 - 兼容检查软模式（最新版漂移预警）收集告警不阻塞，硬模式（锁定版）首错即红
@@ -52,7 +52,7 @@ def test_callback_protocols_single_source() -> None:
 
 
 def test_history_budget_single_shape() -> None:
-    """复审 S2：历史补全形状收敛到 utils.build_history_text，无镜像与硬编码。"""
+    """历史补全形状收敛到 utils.build_history_text，无镜像与硬编码。"""
     assert defines("utils.py", "build_history_text")
     assert callers_of("generation.py", "build_history_text") == [
         "GenerationRunner.build_context_text"
@@ -65,13 +65,13 @@ def test_history_budget_single_shape() -> None:
 
 
 def test_build_config_type_dead_property_removed() -> None:
-    """复审 S3：无调用的死 property（build_config_type）应移除。"""
+    """无调用的死 property（build_config_type）应移除。"""
     adapter = _runtime_adapter()
     assert not hasattr(adapter.AstrBotRuntimeAdapter, "build_config_type")
 
 
 def test_host_symbol_table_single_source() -> None:
-    """复审 S4：compat 符号表单源——表定义之后的代码不得散落宿主模块字面量。"""
+    """compat 符号表单源——表定义之后的代码不得散落宿主模块字面量。"""
     import ast
 
     src = (ROOT / "runtime_adapter.py").read_text(encoding="utf-8")
@@ -113,7 +113,7 @@ def test_host_symbol_table_single_source() -> None:
 
 
 def test_delivery_clear_result_single_shape() -> None:
-    """复审 S4：事件结果回收统一经 _clear_result，出口处不得内联 try/except。"""
+    """事件结果回收统一经 _clear_result，出口处不得内联 try/except。"""
     assert defines("delivery.py", "DeliveryRunner._clear_result")
     assert callers_of("delivery.py", "last_event.clear_result") == [
         "DeliveryRunner._clear_result"
@@ -121,7 +121,7 @@ def test_delivery_clear_result_single_shape() -> None:
 
 
 def test_generation_graceful_stop_single_shape() -> None:
-    """复审 S4：超时/取消两分支收敛为 _graceful_stop，request_stop 只出现一处。"""
+    """超时/取消两分支收敛为 _graceful_stop，request_stop 只出现一处。"""
     assert defines("generation.py", "GenerationRunner._graceful_stop")
     assert callers_of("generation.py", "request_stop") == ["GenerationRunner._graceful_stop"], (
         "宿主 request_stop 被在 _graceful_stop 之外调用（宽限等待语义会分叉）"
@@ -129,7 +129,7 @@ def test_generation_graceful_stop_single_shape() -> None:
 
 
 def test_silence_remaining_on_state() -> None:
-    """复审 S4：静默/活跃时间归属 SessionState，decision/scheduler 不得内联计算形状。"""
+    """静默/活跃时间归属 SessionState，decision/scheduler 不得内联计算形状。"""
     assert defines("models.py", "SessionState.remaining_silence_sec")
     assert defines("models.py", "SessionState.age_sec")
     # decision 必须问 state 要剩余静默，而不是自己拿时钟减

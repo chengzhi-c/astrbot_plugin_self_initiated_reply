@@ -1,8 +1,7 @@
-"""storage.py 覆盖率补盲（0.9.0 轴 D）：配置对象多态、原子写异常与容错分支。
+"""storage.py 配置对象多态、原子写异常与容错分支。
 
-盲区背景（补盲前 storage.py 72%）：_config_to_dict/_update_config_obj/
-_persist_config_obj 的多态宿主对象分支、原子写未预期异常、加载容错的
-未预期异常与会话级异常路径、迁移/同步的持久化失败出口。
+_config_to_dict/_update_config_obj/_persist_config_obj 的多态宿主对象分支、
+原子写未预期异常、加载容错与会话级异常路径、迁移/同步的持久化失败出口。
 """
 
 from __future__ import annotations

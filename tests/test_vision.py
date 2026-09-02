@@ -544,7 +544,7 @@ def test_normalized_host_image_is_marked_as_trusted_local_source(tmp_path: Path)
 def test_trusted_host_image_is_snapshotted_into_plugin_cache(tmp_path: Path) -> None:
     """事件临时文件必须在 handler 生命周期内复制到插件缓存。
 
-    生产装配等价（阶段 1.1）：宿主写裸绝对路径的合法生产者都落在 ``<data>``
+    生产装配等价：宿主写裸绝对路径的合法生产者都落在 ``<data>``
     下（wecom 是 ``<data>/temp``，webchat 是 ``<data>/webchat``），main 因此把
     ``<data>`` 注入 ``data_root``。放行判据是「路径在允许根内」，不再是提取层
     推断的 ``trusted_local_path``——后者可被对端伪造。
@@ -567,7 +567,7 @@ def test_trusted_host_image_is_snapshotted_into_plugin_cache(tmp_path: Path) -> 
 
 
 def test_forged_trusted_absolute_path_outside_data_root_is_rejected(tmp_path: Path) -> None:
-    """对端伪造的 host-trusted 绝对路径不得绕过 allowlist（阶段 1.1 安全守卫）。
+    """对端伪造的 host-trusted 绝对路径不得绕过 allowlist。
 
     攻击面：宿主 aiocqhttp 适配器用通用分支 ``ComponentTypes[t](**m["data"])``
     装配 ``Image``，其 ``file`` 是对端可控的 OneBot 原始值；``Image`` 是 pydantic
@@ -1327,7 +1327,7 @@ def test_extract_images_swaps_url_and_file_by_scheme() -> None:
     assert extracted[0].url == "", "非 http 的 url 未清空，会被当成可下载地址"
 
 
-# 阶段 1.1 收尾核查（2026-08-09）：对锁定版宿主 AstrBot 4.23.3 的
+# 对锁定版宿主 AstrBot 4.23.3 的
 # core/platform/sources 下全部 18 个平台适配器逐个核过入站图片的装配形态。
 # 结论：会落到本地磁盘的适配器全部写在 <data> 子树内，因此 main 注入的
 # data_root=<data> 覆盖了所有合法生产者，不存在「真图片被 allowlist 误拒」
@@ -1361,7 +1361,7 @@ _HOST_INBOUND_IMAGE_SOURCES: dict[str, tuple[str, str]] = {
 
 
 def test_all_host_local_image_roots_are_inside_data_root(tmp_path: Path) -> None:
-    """宿主全部落盘型适配器的图片根都必须被 allowlist 放行（阶段 1.1 收尾）。
+    """宿主全部落盘型适配器的图片根都必须被 allowlist 放行。
 
     这条守卫的价值在于「不误拒」方向：`test_forged_trusted_absolute_path_...`
     证明了 allowlist 能拦住伪造路径，但拦得太宽会让 wecom/webchat 等平台的

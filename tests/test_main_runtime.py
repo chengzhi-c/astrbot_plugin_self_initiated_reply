@@ -1,4 +1,4 @@
-"""main.py 行为测试基线（0.7.14 P0/P1 修复）。
+"""main.py 行为测试：插件实例上的主链与闸门。
 
 这些测试真实导入并实例化 SelfInitiatedReplyPlugin，验证：
 - 工具 fail closed 与共享 platform_meta 零写入
@@ -47,7 +47,7 @@ def _make_event(umo: str = UMO, **kwargs):
 
 
 def test_prune_clears_last_decisions(tmp_path: Path) -> None:
-    """复审 S1：会话回收必须同步清理调试面板的最近裁决，防同形态泄漏。"""
+    """会话回收必须同步清理调试面板的最近裁决，防同形态泄漏。"""
 
     async def scenario(plugin, main):
         umo = UMO
@@ -66,7 +66,7 @@ def test_prune_clears_last_decisions(tmp_path: Path) -> None:
 
 
 def test_skipped_decision_recorded_in_last_decisions(tmp_path: Path) -> None:
-    """复审 P2：跳过决策（静默不足等早退原因）也进入调试面板。"""
+    """跳过决策（静默不足等早退原因）也进入调试面板。"""
 
     class _FakeDecision:
         async def decide(self, umo, state, *, trigger, force):
@@ -967,7 +967,7 @@ def test_version_consistency_across_metadata() -> None:
         import tomli as tomllib  # type: ignore[no-redef]
     pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
 
-    # 0.9.4 阶段 2.3：pyproject 不再写死版本号，改由 hatchling 从 models.py 读取。
+    # pyproject 不再写死版本号，改由 hatchling 从 models.py 读取。
     # 故这里不再比对两处字面量（已无第二处），改为核验**取值机制真的能取到值**：
     # 若 path 指错文件或 pattern 与常量名不再匹配，hatchling 构建期会失败——
     # 但那要等到 CI 的 build 作业，而本用例让它在 test 作业就红。

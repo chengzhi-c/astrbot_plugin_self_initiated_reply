@@ -1,11 +1,11 @@
-"""安全与健壮性边界测试（历史红灯测试合并：round3 RL-1~3 图片/净化安全 + 原 security 边界）。
+"""安全与健壮性边界测试。
 
 覆盖：
 - 图片安全：本地文件读取防护（扩展名白名单 + 魔数嗅探 + 路径约束）
 - 提示词净化：多行结构保留、反斜杠/控制字符清理、注入防御
 - 健壮性边界：超时/限额/畸形输入/状态损坏/UMO 碰撞/白名单绕过
 - 单源守卫：response_text / 命令别名表必须单源定义（0.8.8 收敛成果锁定）
-- webapi 配置边界 / 白名单回收 / 管理员热读（原 phase5 补测试合并，2026-08-07）
+- webapi 配置边界 / 白名单回收 / 管理员热读
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 # ============================================================================
-# round3 RL-1~3：图片安全与提示词净化（0.7.0 审查缺陷）
+# 图片安全与提示词净化
 # ============================================================================
 
 PACKAGE_NAME_R3 = "selfreply_round3_package"
@@ -709,7 +709,7 @@ if __name__ == "__main__":
 def test_response_text_single_source_behavior() -> None:
     """response_text 必须只在 utils.py 定义一次（0.8.8 收敛 decision/generation/parser
     三处镜像）；行为契约：completion_text 优先、result_chain 兜底、异常兜底为空串。"""
-    # rglob 扫描面（0.9.4 阶段 1.6）：0.8.8 收敛掉的三处镜像之一就在 image/parser.py，
+    # rglob 扫描面：0.8.8 收敛掉的三处镜像之一就在 image/parser.py，
     # 而原先的 ROOT.glob("*.py") 看不见子包——守卫对它要防的位置恰好失明。
     hits = [
         path.relative_to(ROOT).as_posix()
@@ -812,7 +812,7 @@ def test_command_aliases_single_source() -> None:
 
 
 # ============================================================================
-# webapi 配置边界 / 白名单回收 / 管理员热读（原 phase5 补测试合并，2026-08-07）
+# webapi 配置边界 / 白名单回收 / 管理员热读
 # ============================================================================
 
 
@@ -1096,12 +1096,12 @@ def test_provider_change_emits_audit_log(tmp_path: Path, caplog: object) -> None
 
 
 # ============================================================================
-# 阶段 1.2：异常回显收口——内部细节只进服务端日志，不回客户端
+# 异常回显收口——内部细节只进服务端日志，不回客户端
 # ============================================================================
 
 
 def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplog: object) -> None:
-    """内部异常的 str() 不得进入 HTTP 响应；详情只落服务端日志（阶段 1.2）。
+    """内部异常的 str() 不得进入 HTTP 响应；详情只落服务端日志。
 
     攻击面：``_save_storage`` 的 ``OSError`` 文本带绝对路径，回显即泄露磁盘布局；
     provider 枚举异常常带上游 SDK 原文。此处用一个含可识别路径的异常做探针，

@@ -204,7 +204,7 @@ class GenerationRunner:
     ) -> None:
         """request_stop 后宽限等待，超时或被再次取消才兜底取消。
 
-        取消与超时分支共用同一形状（复审 S4），仅取消时机不同：
+        取消与超时分支共用同一形状，仅取消时机不同：
         ``cancel_first=True``（调用方已取消）立即注入取消再等收敛窗口；
         ``cancel_first=False``（超时）先给宿主 run_agent 优雅清理窗口。
         宽限耗尽仍未收敛都注入兜底取消，避免 run_agent 吞掉取消后留下

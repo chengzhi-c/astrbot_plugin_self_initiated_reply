@@ -195,7 +195,7 @@ def test_malformed_session_record_does_not_abort_load(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# 0.9.4 阶段 1.4：外部时间戳两侧钳位（配对 models.MAX_CLOCK_SKEW_SEC）
+# 外部时间戳两侧钳位（配对 models.MAX_CLOCK_SKEW_SEC）
 # ============================================================================
 
 
@@ -220,7 +220,7 @@ def test_as_timestamp_clamps_both_directions() -> None:
 
 
 def test_far_future_timestamp_cannot_lock_session_forever(tmp_path: Path) -> None:
-    """状态文件里的远未来时间戳不得让会话永久锁死（0.9.4 阶段 1.4）。
+    """状态文件里的远未来时间戳不得让会话永久锁死。
 
     修复前实测：``last_active_at = now + 1e9`` 使 ``remaining_silence_sec`` 得到
     1000000045 秒 ≈ 31.69 年，该会话永久不可主动发言；延迟检查还会以该值为
@@ -254,7 +254,7 @@ def test_far_future_timestamp_cannot_lock_session_forever(tmp_path: Path) -> Non
 
 
 def test_negative_timestamps_cannot_bypass_proactive_gate(tmp_path: Path) -> None:
-    """负值时间戳不得成为「已回复过」判据的旁路（0.9.4 阶段 1.4）。
+    """负值时间戳不得成为「已回复过」判据的旁路。
 
     修复前实测：只毒 ``last_active_at`` 会被「这条消息之后已经主动回复过」拦住，
     但把 ``last_proactive_observed_at`` 一并毒成更负（-1e10 < -1e9）即可放行——
@@ -289,7 +289,7 @@ def test_negative_timestamps_cannot_bypass_proactive_gate(tmp_path: Path) -> Non
 
 
 def test_recent_record_timestamps_are_clamped(tmp_path: Path) -> None:
-    """``recent[].at`` 同样来自外部文件，同样要钳（0.9.4 阶段 1.4）。"""
+    """``recent[].at`` 同样来自外部文件，同样要钳。"""
     import time
 
     models, _, storage = _load_modules()

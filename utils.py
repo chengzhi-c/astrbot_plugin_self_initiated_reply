@@ -74,7 +74,7 @@ async def build_history_text(
 ) -> str:
     """本地文本记录不足阈值时回宿主补历史，去重后按 limit 格式化。
 
-    决策（decision.py）与生成（generation.py）共用同一形状（复审 S2），
+    决策（decision.py）与生成（generation.py）共用同一形状，
     阈值与 limit 由调用方按各自配置决定。
     """
     records = local_records
@@ -472,7 +472,7 @@ def should_ignore_event(
     vision_has_images: bool,
     ignored_sender_ids: set[str],
 ) -> bool:
-    """判定一条消息是否应被忽略（不进主动回复观察）。（0.9.0 B4 自 events.py 并入）
+    """判定一条消息是否应被忽略（不进主动回复观察）。
 
     - 机器人自己的消息忽略
     - 以 ``/`` 开头的命令消息忽略

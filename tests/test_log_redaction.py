@@ -103,7 +103,7 @@ def test_redaction_degrades_on_non_url_shapes() -> None:
 def test_redacted_length_never_exceeds_budget() -> None:
     """输出长度恒 <= LOG_URL_MAX_CHARS——标记必须计入截断预算。
 
-    复审实测缺陷：早期实现写成 clean[:80] + "?<redacted>"，超长 path 时
+    早期缺陷：早期实现写成 clean[:80] + "?<redacted>"，超长 path 时
     产出 91 字符，比它要替换的原实现（url[:80]）更宽，日志行反而变长。
     """
     parser_mod = _load_parser()

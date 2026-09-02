@@ -73,7 +73,7 @@
 - 终止路径对最终状态保存只等待一个 `TERMINATE_TASK_TIMEOUT_SEC` 硬窗口；写入若超时则保留 critical task 在 quarantine、标记 `DEGRADED` 并让 terminate 返回，不能把未完成写入报告为成功。立即失败只记录 WARNING，不阻塞宿主停止。
 - 延迟检查等待前次检查结束使用 release 事件；运行标记与 release 成对维护。等待必须**有界**：
   超时 + 轮次上限，闸门失同步只能降级为一次延迟或一次丢弃（丢弃记 WARNING），
-  不得永久挂起（0.9.4 阶段 1.1，与 §11 B3 同源）。
+  不得永久挂起（与 §11 B3 同源）。
 
 ## 6. 白名单变更与回滚
 
@@ -123,7 +123,7 @@
 - POST `/config` 若带 `base_revision`，必须在 `_config_lock` 内先与当前摘要比较；不一致返回 `error_code=STALE_WRITE` 和当前 `config_revision`，不得应用部分更新。成功响应返回完整 `config`、新的 `config_revision` 和 `adjusted_fields`。不带 `base_revision` 的旧调用继续串行写入，但响应标记 `unversioned_write=true`，不承诺防止迟到旧写覆盖。
 - 设置页初始配置加载完成前表单保持 `inert`。配置读取带请求 epoch，迟到或用户已编辑后的响应不得覆盖控件；保存始终携带当前 `base_revision`。Bridge/fetch 保存超时或异常时进入“状态未知”，禁止带旧 revision 的第二次全量写入，必须刷新取得新 revision；`STALE_WRITE` 同样要求刷新。成功响应中的 `adjusted_fields` 显示对应字段标签。
 
-## 7.1 本地图片读取与错误回显（0.9.3 阶段 1）
+## 7.1 本地图片读取与错误回显
 
 - 本地图片放行的**唯一判据**是路径落在允许根内（`<data>` 与插件 image_cache），
   在 `_file_to_data_url` 一处收口。提取层的 `trusted_local_path` 只作分流提示，
@@ -160,7 +160,7 @@
 - INFO：仅异常与运维状态（启用/终止、白名单变更、清理结果、未知投递）。
 - WARNING：**静默降级但用户可感知**的数据异常。判据是「不记则无从定位」：
   会话历史 JSON 损坏 → `req.contexts` 留默认值 → 机器人带空上下文接话，
-  表现为「失忆」而非报错，必须 WARNING（0.9.3 阶段 1.3）。
+  表现为「失忆」而非报错，必须 WARNING。
   相对地，会话本身取不到属可接受降级，保持 DEBUG，避免噪音淹没告警通道。
 
 ## 10. 宿主兼容面
@@ -169,7 +169,7 @@
   （AstrBot >= 4.23.3），绝不回退 None 后深层崩溃。
 - 兼容检查锁定版本为硬门禁，最新版为漂移预警（不阻塞）。
 
-## 11. 共享容器身份（0.9.3 阶段 0 / 阶段 5，B3 为 0.9.4 阶段 1.1）
+## 11. 共享容器身份
 
 main 在装配段把若干可变容器（dict/set）的**引用**交给协作对象
 （scheduler / session_coordinator / whitelist / gate）。这些对象在构造时捕获的是

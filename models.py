@@ -1144,7 +1144,7 @@ class Settings:
 
         运行组件（decision/generation/delivery/scheduler/whitelist/pipeline）
         构造时各存 self.settings 引用；配置热更新/回滚若整体替换
-        plugin.settings，组件会读到过期配置（0.9.0 轴 A 修复的分裂缺陷）。
+        plugin.settings，组件会读到过期配置（整体替换 Settings 会造成组件读旧值）。
         本方法让全部持有者经既有引用即时可见新值。Settings 是普通
         dataclass（无 __slots__/frozen），__dict__.update 即全字段同步。
         """

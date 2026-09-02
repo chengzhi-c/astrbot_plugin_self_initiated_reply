@@ -1,6 +1,6 @@
-"""事件忽略判定单测（ticket 06 验收）：should_ignore_event 纯函数行为不变。
+"""事件忽略判定单测：should_ignore_event 纯函数行为不变。
 
-覆盖验收项：消息忽略判定（自消息/命令/纯图无识图/忽略名单/直接点名）。
+覆盖：消息忽略判定（自消息/命令/纯图无识图/忽略名单/直接点名）。
 """
 
 from __future__ import annotations

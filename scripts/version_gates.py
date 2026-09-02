@@ -9,7 +9,7 @@
 2. **声明之间**（``--cross-only`` 也会跑，且不需要装任何工具）：ruff 在 ci.yml、
    .pre-commit-config.yaml、pyproject 三处必须同版。管的是"配置互相漂移"。
 
-第 2 类是 0.9.4 阶段 2.4 补的缺口：ci.yml 里原本只有一句注释声明"与
+第 2 类补的缺口：ci.yml 里原本只有一句注释声明"与
 .pre-commit-config.yaml 的 rev 对齐"，没有任何断言核验，改一处忘另一处不会有人发现——
 后果是本地 pre-commit 全绿而 CI 的 lint 作业变红（或反之，本地被旧版拦下）。
 

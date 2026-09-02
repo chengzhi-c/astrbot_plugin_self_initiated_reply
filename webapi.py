@@ -457,7 +457,7 @@ def _snapshot_plugin_state(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
 async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict[str, Any]) -> None:
     """恢复配置应用前快照，重建被取消的延迟检查并恢复任务拓扑。"""
     # 原地恢复（保持 Settings 对象身份）：组件构造时各存 self.settings
-    # 引用，整体替换会让它们读到过期配置（0.9.0 轴 A）。
+    # 引用，整体替换会让它们读到过期配置。
     plugin.settings.apply(snapshot["settings"])
     plugin.runtime_enabled = snapshot["runtime_enabled"]
     # 容器也必须原地恢复（B1）：scheduler/coordinator/whitelist 构造时
@@ -521,7 +521,7 @@ async def _apply_config_updates(
             if spec.key.startswith("vision_")
         )
         # 原地应用（保持 Settings 对象身份）：五个组件构造时各存
-        # self.settings 引用，整体替换会造成热更新后组件读旧值（0.9.0 轴 A）。
+        # self.settings 引用，整体替换会造成热更新后组件读旧值。
         plugin.settings.apply(new_settings)
         if "whitelist_sessions" in updates:
             plugin._whitelist.replace(new_settings.whitelist)

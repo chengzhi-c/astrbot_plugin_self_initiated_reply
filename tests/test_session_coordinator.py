@@ -1,6 +1,6 @@
-"""SessionCoordinator 独立单测（ticket 07 验收）：失效级联单点与阶段投影。
+"""SessionCoordinator 独立单测：失效级联单点与阶段投影。
 
-覆盖验收项：
+覆盖：
 - 失效单点：invalidate 级联推进代次、取消延迟任务、清理事件/时间/图片/阶段
 - 任意清理路径（clear/terminate reset_all）都收敛经协调器，不散落 main
 - FSM 状态投影（IDLE/OBSERVING/DECIDING 推导）与显式标记优先级
@@ -81,7 +81,7 @@ def _images_for(coordinator, umo: str, *, age_sec: float = 3600.0):
 
 
 # ============================================================================
-# 失效级联单点（验收项 1）
+# 失效级联单点
 # ============================================================================
 
 
@@ -100,7 +100,7 @@ async def test_invalidate_cascades_all_resources() -> None:
 
 
 async def test_record_event_notifies_silence_reset() -> None:
-    """活动写点 = 静默重置通知点：新消息到达唤醒静默等待的延迟检查（ticket 11）。"""
+    """活动写点 = 静默重置通知点：新消息到达唤醒静默等待的延迟检查。"""
     _, coordinator, ctx = _make_coordinator()
 
     coordinator.record_event("s1", object(), 100.0)

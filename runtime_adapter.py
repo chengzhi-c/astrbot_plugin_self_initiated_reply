@@ -108,7 +108,7 @@ class _HostEntry(NamedTuple):
     core: bool  # 主 Agent API 必需项：缺失即整包 import_error
 
 
-# 宿主私有符号单一来源表（复审 S4）：增删符号只需改此处。
+# 宿主私有符号单一来源表：增删符号只需改此处。
 # core 组是主 Agent API 必需项（任一缺失 → 整包不可用）；probe 组
 # 单符号缺失 → 对应能力为 None（旧版宿主降级路径）。
 _HOST_CONTRACT: tuple[_HostEntry, ...] = (
@@ -143,7 +143,7 @@ def _import_symbols(entry: _HostEntry) -> dict[str, Any]:
 class AstrBotRuntimeAdapter:
     """Keep private AstrBot Agent imports and compatibility checks in one place.
 
-    Ticket 13: 宿主私有符号（astrbot.core.*）全量收敛于此——探测、调用与
+    宿主私有符号（astrbot.core.*）全量收敛于此——探测、调用与
     契约断言都只经本类发生；delivery/generation/main 不得再直接 import。
     """
 
