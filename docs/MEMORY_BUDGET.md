@@ -4,7 +4,8 @@
 实测数据（CPython 3.14 / x64）。数值为上限估算：deque 容器随
 `maxlen` 预分配，深度计算含嵌套对象，实测见下文表。
 
-公式由 `tests/test_memory_budget.py` 对 deque / 缓存容量的行为测试锁实施。
+KB 数字是历史 `sys.getsizeof` 深度求和，没有公式测试钉住。
+图片字节预算的行为由会话协调器与图片缓存测试锁定。
 
 ## 每会话内存组成
 
@@ -55,10 +56,18 @@ N = 活跃会话数（白名单上限 MAX_WHITELIST_SIZE = 1000）
 | ImageInfo（含 prepared_source） | 0.21 KB |
 | 图片索引满（20 事件 × 2 张） | 5.7 KB |
 
-## 常数与公式的对应（锁定测试）
+## 常数与行为测试
 
-- `MAX_CACHED_IMAGE_EVENTS × MAX_VISION_IMAGES` = 每会话图片索引张数上限
+- `MAX_CACHED_IMAGE_EVENTS × vision_max_images` = 每会话图片索引张数上限
 - `MAX_SESSION_IMAGE_MEMORY_BYTES` = 单会话 data URL 原始载荷字节上限
 - `MAX_IMAGE_MEMORY_BYTES` = 全局 data URL 原始载荷字节上限
 - `MAX_RECENT_MESSAGE_LIMIT` = 每会话历史消息条数上限（recent deque maxlen）
-- 上述关系由 `tests/test_memory_budget.py` 与图片缓存测试锁定，常数调整时必须同步文档
+- `MAX_IMAGE_BYTES` = 单张图片输入上限（`image/recorder_bridge.py`）
+
+字节预算行为：
+
+- 会话 / 全局 data URL：`tests/test_session_coordinator.py`
+- Vision 描述 LRU：`tests/test_image_cache.py`
+- 单张输入上限：`tests/test_vision_parser_gaps.py`
+
+改常数时同步本页；不要为 KB 估算补公式测试。
