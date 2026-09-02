@@ -157,6 +157,8 @@ class DecisionMaker:
             if item.at <= state.last_proactive_observed_at or now - item.at > window_sec:
                 break
             if looks_like_reply_request(item.text, self.settings.bot_aliases):
+                # reason 面向运营者（INFO 日志与 GET /status），允许引用 40 字用户原文。
+                # 与 log_reply_content（回复正文）不是同一开关：state.json 本就持久化 recent 全文。
                 return f"最近 {int(now - item.at)}s 内有人明确让 Bot 接话：{item.text[:40]}"
         return ""
 

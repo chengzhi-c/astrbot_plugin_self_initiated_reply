@@ -19,7 +19,6 @@ import asyncio
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from functools import partial
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -154,7 +153,6 @@ class SelfInitiatedReplyPlugin(Star):
     _persist_enabled: Callable[[bool], Awaitable[None]]
     _track_background_task: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any] | None]
     _track_critical_task: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any]]
-    _resolve_paths: Callable[[Any], tuple[Path, Path]]
 
     def __init__(
         self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None
@@ -219,11 +217,6 @@ class SelfInitiatedReplyPlugin(Star):
         self._admin_ids: set[str] = set()
         self._admin_probe_ts = 0.0  # 探测窗口起点：0 保证首次调用必探
         self._last_decisions: dict[str, dict[str, Any]] = {}
-        self._resolve_paths = lambda config_obj: resolve_paths(
-            config_obj,
-            get_config_path=get_astrbot_config_path,
-            get_plugin_data_path=get_astrbot_plugin_data_path,
-        )
         self._refresh_admin_ids = partial(refresh_admin_ids, self)
         self._state_for = partial(state_for, self)
         self._save_storage_sync = partial(save_storage_sync, self)
@@ -337,9 +330,7 @@ class SelfInitiatedReplyPlugin(Star):
             context=self.context,
             runtime=lambda: _AGENT_RUNTIME,
             gate=self._gate,
-            local_gate=lambda state, force, silence_active_at=None: self._decision.local_gate(
-                state, force=force, silence_active_at=silence_active_at
-            ),
+            local_gate=self._local_gate,
             call_hook=lambda event, event_type, req: call_event_hook(event, event_type, req),
             grace_stop_sec=lambda: GRACEFUL_STOP_GRACE_SEC,
             background_tasks=self._background_tasks,
@@ -354,9 +345,7 @@ class SelfInitiatedReplyPlugin(Star):
         self._delivery = DeliveryRunner(
             settings=self.settings,
             gate=self._gate,
-            local_gate=lambda state, force, silence_active_at=None: self._decision.local_gate(
-                state, force=force, silence_active_at=silence_active_at
-            ),
+            local_gate=self._local_gate,
             last_events=self._last_events,
             call_hook=lambda event, event_type: call_event_hook(event, event_type),
             context_send=lambda umo, message: self.context.send_message(umo, message),
@@ -395,6 +384,20 @@ class SelfInitiatedReplyPlugin(Star):
             last_decisions=self._last_decisions,
             track_critical_task=self._track_critical_task,
         )
+
+    def _local_gate(
+        self,
+        state: SessionState,
+        *,
+        force: bool,
+        silence_active_at: float | None = None,
+    ) -> str:
+        """generation/delivery 共用的局部闸门回调（``LocalGateCallback`` 形状）。
+
+        经实例属性惰性查找 ``self._decision``：测试替换 _decision 后仍指向最新实现，
+        与装配层其余回调的测试缝一致。
+        """
+        return self._decision.local_gate(state, force=force, silence_active_at=silence_active_at)
 
     @property
     def lifecycle_state(self) -> str:

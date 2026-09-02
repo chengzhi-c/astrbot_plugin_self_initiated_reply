@@ -49,7 +49,6 @@ class WhitelistManager:
         self._invalidate = invalidate
         self._prune = prune
         self._sessions = sessions
-        self._session_group_id = session_group_id
         self._tracked_umos = tracked_umos
         self._runtime_umos = runtime_umos
 
@@ -76,7 +75,7 @@ class WhitelistManager:
         pruned: dict[str, Any] = {}
         for umo in invalid_sessions:
             # 先快照再销毁：_prune 从 sessions 弹掉 umo 与群组键，回滚需要复活。
-            group_key = self._session_group_id(umo)
+            group_key = session_group_id(umo)
             for key in (umo, group_key):
                 if key in self._sessions:
                     pruned[key] = self._sessions[key]
@@ -144,7 +143,7 @@ class WhitelistManager:
         existed = session_whitelisted(umo, self.settings.whitelist)
         old_whitelist = set(self.settings.whitelist)
         targets = {str(umo or "").strip()}
-        group_id = self._session_group_id(umo)
+        group_id = session_group_id(umo)
         if group_id:
             targets.add(group_id)
         pruned = self.replace(old_whitelist - targets)

@@ -370,7 +370,7 @@ class AstrBotRuntimeAdapter:
         return await maybe_await(hook(event, event_type, req))
 
     # 路径函数（config_path_fn / plugin_data_path_fn）不经本类方法出口：main.py 在
-    # import 期把 capabilities 里的两个函数绑成模块级名字（供 _resolve_paths 使用，
+    # import 期把 capabilities 里的两个函数绑成模块级名字（供 resolve_paths 使用，
     # 也是测试替换点），路径解析失败由 resolve_paths 让异常传播、加载期即崩——
     # 吞异常静默回退会让状态写到错误路径后无声丢失。结构决策见 docs/DECISIONS.md。
 

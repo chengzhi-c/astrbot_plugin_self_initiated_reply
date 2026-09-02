@@ -342,6 +342,10 @@ class SessionPipeline:
     ) -> bool:
         """Seal one run and await its single record task, including cancellation."""
         ledger.seal()
+        # seal() 只把 open→sealed。recorded / record_failed 只能从 recording
+        # 经 mark_* 到达。finalize 是唯一 seal/record 调用点，每次检查只进一次
+        # finally，故下面两支今天不可达。保留是二次进入的纵深：重入时直接返回
+        # 终态，避免再挂一条 record task。同 delivery 复核点 3/4。
         if ledger.phase == "recorded":
             return True
         if ledger.phase == "record_failed":

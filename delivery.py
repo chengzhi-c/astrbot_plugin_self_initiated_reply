@@ -284,9 +284,9 @@ class DeliveryRunner:
                 )
             # 复核点 3/4（结构防线）：与复核点 2 之间零 await（get_result 同步），
             # 当前代码下代次不可能在此变化，覆盖靠 test_delivery_blindspots 的
-            # _FlipGate(true_times=2) 数调用次数翻转。保留理由是结构性：
-            # test_storage_and_umo 锁「钩子后、send 前必须有复核」（ 拆分后
-            # 该断言指向本方法），此处紧贴 outbound.send；上方一旦插入任何 await，
+            # _FlipGate(true_times=2) 按调用次数翻转。保留理由是结构性：
+            # test_storage_and_umo 锁「钩子后、send 前必须有复核」（``send_reply``
+            # 拆分后该断言指向本方法），此处紧贴 outbound.send；上方一旦插入任何 await，
             # 这道防线立即变实。
             if not self._gate.is_current(umo, expected_generation):
                 self._clear_result(last_event)
@@ -377,7 +377,7 @@ class DeliveryRunner:
         ledger_id = ledger.ledger_id
         # 复核点 4/4（结构防线）：与复核点 1 之间没有真实挂起点——
         # ``await self._send_via_context(...)`` 只是进入协程，不向事件循环让出，
-        # 故 的拆分没有新开竞态窗口。性质同复核点 3：
+        # 故 ``send_reply`` 的拆分没有新开竞态窗口。性质同复核点 3：
         # 为日后此路径插入异步查询预留拦截位。此路径未 set_result，无需 _clear_result。
         if not self._gate.is_current(umo, expected_generation):
             logger.info(

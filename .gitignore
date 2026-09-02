@@ -16,8 +16,10 @@ dist/
 data/
 node_modules/
 output/playwright/
+output/preview/
 playwright-report/
 test-results/
+uv.lock
 
 README.html
 README.en.html
