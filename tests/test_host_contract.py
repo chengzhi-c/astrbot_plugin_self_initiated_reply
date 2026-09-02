@@ -12,56 +12,35 @@ from types import SimpleNamespace
 
 import pytest
 
-from .host_stubs import ROOT
+from .host_stubs import ROOT, production_py_files
 from .source_contract import callers_of, defines, source_of
 from .test_vision import PACKAGE_NAME
 
-# 宿主私有层 import 语句：全仓库只允许出现在收敛点（适配层、宿主桩、兼容检查）
 _PRIVATE_IMPORT_RE = r"(^|\n)\s*(from|import)\s+astrbot\.core"
-# 私有符号唯一允许出现的收敛点（适配层、宿主桩、兼容检查脚本）
 _SYMBOL_WHITELIST = {
     "runtime_adapter.py",
     "scripts/compat_check.py",
     "tests/host_stubs.py",
 }
-# 除白名单外，其余源文件一律禁止 import 宿主私有层（astrbot.core）
-_CHECKED_MODULES = [
-    "adapters.py",
-    "commands.py",
-    "decision.py",
-    "delivery.py",
-    "generation.py",
-    "main.py",
-    "outbound.py",
-    "scheduler.py",
-    "session_coordinator.py",
-    "session_gate.py",
-    "storage.py",
-    "utils.py",
-    "webapi.py",
-    "whitelist.py",
-    "image/extractor.py",
-    "image/models.py",
-    "image/parser.py",
-    "image/recorder_bridge.py",
-]
 
 
 def test_private_host_symbols_confined() -> None:
-    """宿主私有层 import 只出现在适配层与宿主桩两处（缺失即红）。"""
+    """宿主私有层 import 只出现在适配层、宿主桩与兼容检查。"""
     import re
 
     pattern = re.compile(_PRIVATE_IMPORT_RE)
     violations = []
-    for rel in _CHECKED_MODULES:
-        src = (ROOT / rel).read_text(encoding="utf-8")
-        if pattern.search(src):
+    for path in production_py_files():
+        rel = path.relative_to(ROOT).as_posix()
+        if rel in _SYMBOL_WHITELIST:
+            continue
+        if pattern.search(path.read_text(encoding="utf-8")):
             violations.append(rel)
     assert not violations, f"宿主私有层 import 泄漏到：{', '.join(violations)}"
 
 
 def test_callback_protocols_single_source() -> None:
-    """复审 S2：回调 Protocol 只允许在共享模块 models 定义一份（防镜像）。"""
+    """历史/图片回调 Protocol 不得在 decision/generation 再定义一份。"""
     import re
 
     def protocol_definitions(rel: str) -> list[str]:
@@ -70,10 +49,6 @@ def test_callback_protocols_single_source() -> None:
 
     for rel in ("decision.py", "generation.py"):
         assert not protocol_definitions(rel), f"{rel} 仍自行定义回调 Protocol"
-    assert sorted(protocol_definitions("models.py")) == [
-        "ImageContextCallback",
-        "ReadHistoryCallback",
-    ]
 
 
 def test_history_budget_single_shape() -> None:

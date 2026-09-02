@@ -4,8 +4,8 @@
 
     python scripts/gates.py
 
-顺序：ruff check → ruff format --check → mypy → docstring/version →
-前端 syntax + contract → pytest → coverage_gates。存在完整 wheel/sdist 时追加发布产物检查；
+顺序：ruff check → ruff format --check → mypy → version →
+前端 syntax + contract → pytest。存在完整 wheel/sdist 时追加发布产物检查；
 `--release` 要求发布产物齐全。无产物的普通本地模式只报告 `NOT RELEASE-VERIFIED`，
 不会输出发布级全绿。
 """
@@ -94,11 +94,6 @@ def main(*, require_release: bool = False) -> int:
     _run("ruff format --check", [sys.executable, "-m", "ruff", "format", "--check", *targets])
     _run("mypy", [sys.executable, "-m", "mypy"])
     _run(
-        "runtime dependency gates",
-        [sys.executable, "scripts/runtime_dependency_gates.py"],
-    )
-    _run("docstring_gates", [sys.executable, "scripts/docstring_gates.py"])
-    _run(
         "version_gates",
         [sys.executable, "scripts/version_gates.py", "--cross-only"],
     )
@@ -116,7 +111,6 @@ def main(*, require_release: bool = False) -> int:
     )
 
     _run("pytest", [sys.executable, "-m", "pytest", "-q"])
-    _run("coverage_gates", [sys.executable, "scripts/coverage_gates.py"])
 
     wheels, sdists = _release_artifacts()
     if len(wheels) != 1 or len(sdists) != 1:

@@ -21,14 +21,13 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from functools import partial
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.event.filter import PermissionType, permission_type
 from astrbot.api.star import Context, Star, register
 
-from .assembly import assemble_plugin_components
 from .message_ingress import handle_incoming_message
 from .runtime_adapter import AstrBotRuntimeAdapter
 from .session_gate import SessionGate
@@ -75,6 +74,9 @@ from .commands import (
     list_text,
     status_text,
 )
+from .decision import DECISION_MAX_TOKENS, DECISION_SYSTEM_PROMPT, DecisionMaker
+from .delivery import DeliveryRunner
+from .generation import GenerationRunner
 from .image import ImageInfo
 from .image.vision_runtime import VisionService
 from .models import (
@@ -101,6 +103,9 @@ from .plugin_state import (
     track_background_task,
     track_critical_task,
 )
+from .scheduler import SessionScheduler
+from .session_coordinator import SessionCoordinator
+from .session_pipeline import SessionPipeline
 from .storage import (
     load_config_data,
     load_sessions,
@@ -117,15 +122,7 @@ from .utils import (
     whitelist_storage_key,
 )
 from .webapi import bind_api_handlers, load_ui_theme, register_web_apis
-
-if TYPE_CHECKING:
-    from .decision import DecisionMaker
-    from .delivery import DeliveryRunner
-    from .generation import GenerationRunner
-    from .scheduler import SessionScheduler
-    from .session_coordinator import SessionCoordinator
-    from .session_pipeline import SessionPipeline
-    from .whitelist import WhitelistManager
+from .whitelist import WhitelistManager
 
 
 @register(
@@ -271,12 +268,132 @@ class SelfInitiatedReplyPlugin(Star):
 
     def _assemble_components(self) -> None:
         """接线协作对象。须在 gate/状态容器就绪之后、ensure_task 之前调用。"""
-        assemble_plugin_components(
-            self,
-            get_runtime=lambda: _AGENT_RUNTIME,
-            get_call_hook=lambda: call_event_hook,
-            get_grace_stop_sec=lambda: GRACEFUL_STOP_GRACE_SEC,
-            get_stop_timeout=lambda: TERMINATE_TASK_TIMEOUT_SEC,
+        self._coordinator = SessionCoordinator(
+            events=self._last_events,
+            event_at=self._last_event_at,
+            images=self._recent_image_events,
+            gate=self._gate,
+            cancel_delay=lambda umo, force: self._scheduler.cancel_delay(umo, force=force),
+            notify_silence=lambda umo: self._scheduler.notify_activity(umo),
+        )
+        self._vision = VisionService(
+            settings=self.settings,
+            bridge=self.bridge,
+            context=self.context,
+            source_cache_dir=self._image_cache_dir,
+            data_root=self._data_path,
+            coordinator=self._coordinator,
+            gate=self._gate,
+            is_stopping=lambda: self._stopping,
+            track_background_task=self._track_background_task,
+        )
+        self._scheduler = SessionScheduler(
+            settings=self.settings,
+            gate=self._gate,
+            image_cache_dir=self._image_cache_dir,
+            spawn=self._track_background_task,
+            should_run=lambda: self._can_start_tasks() and self.runtime_enabled,
+            state_for=lambda umo: self._state_for(umo),
+            check_session=lambda umo, trigger, force, expected_generation: (
+                self._pipeline.check_session(
+                    umo,
+                    trigger=trigger,
+                    force=force,
+                    expected_generation=expected_generation,
+                )
+            ),
+            clear_event=self._coordinator.clear_event,
+            drop_older_images=self._coordinator.drop_older_than,
+            last_events=self._last_events,
+            last_event_at=self._last_event_at,
+            recent_image_events=self._recent_image_events,
+            whitelist_runtime_umos=self._whitelist_runtime_umos,
+            delay_tasks=self._delay_tasks,
+            running_check_tasks=self._running_check_tasks,
+            background_tasks=self._background_tasks,
+            stop_timeout=lambda: TERMINATE_TASK_TIMEOUT_SEC,
+            quarantine_task=self._quarantine_task,
+        )
+        self._scheduler.last_cleanup_at = now_ts()
+
+        self._decision = DecisionMaker(
+            settings=self.settings,
+            resolve_provider=lambda umo: self.bridge.resolve_provider_id(
+                umo, self.settings.judge_provider_id
+            ),
+            llm_generate=lambda provider_id, prompt: self.bridge.llm_generate(
+                provider_id=provider_id,
+                prompt=prompt,
+                system_prompt=DECISION_SYSTEM_PROMPT,
+                temperature=self.settings.decision_temperature,
+                max_tokens=DECISION_MAX_TOKENS,
+            ),
+            read_history=lambda umo, limit: self.bridge.read_astrbot_history(umo, limit=limit),
+            build_image_context=self._vision.build_context,
+        )
+
+        self._generation = GenerationRunner(
+            settings=self.settings,
+            context=self.context,
+            runtime=lambda: _AGENT_RUNTIME,
+            gate=self._gate,
+            local_gate=lambda state, force, silence_active_at=None: self._decision.local_gate(
+                state, force=force, silence_active_at=silence_active_at
+            ),
+            call_hook=lambda event, event_type, req: call_event_hook(event, event_type, req),
+            grace_stop_sec=lambda: GRACEFUL_STOP_GRACE_SEC,
+            background_tasks=self._background_tasks,
+            discard_background=self._background_tasks.discard,
+            read_history=lambda umo, limit: self.bridge.read_astrbot_history(umo, limit=limit),
+            build_image_context=self._vision.build_context,
+            last_events=self._last_events,
+            is_stopping=lambda: self._stopping,
+            quarantine_task=self._quarantine_task,
+        )
+
+        self._delivery = DeliveryRunner(
+            settings=self.settings,
+            gate=self._gate,
+            local_gate=lambda state, force, silence_active_at=None: self._decision.local_gate(
+                state, force=force, silence_active_at=silence_active_at
+            ),
+            last_events=self._last_events,
+            call_hook=lambda event, event_type: call_event_hook(event, event_type),
+            context_send=lambda umo, message: self.context.send_message(umo, message),
+            save_storage=lambda: self._save_storage(),
+            runtime=lambda: _AGENT_RUNTIME,
+            is_stopping=lambda: self._stopping,
+        )
+
+        self._whitelist = WhitelistManager(
+            settings=self.settings,
+            sync_whitelist=lambda: bool(self._sync_whitelist()),
+            save_storage=lambda: self._save_storage(),
+            ensure_state=lambda key: self._state_for(key),
+            invalidate=lambda umo: self._coordinator.invalidate(umo),
+            prune=lambda umo: self._prune_session(umo),
+            sessions=self.sessions,
+            tracked_umos=lambda: (
+                set(self._last_events)
+                | set(self._delay_tasks)
+                | set(self._running_sessions)
+                | set(self._session_locks)
+            ),
+            runtime_umos=self._whitelist_runtime_umos,
+        )
+
+        self._pipeline = SessionPipeline(
+            state_for=lambda umo: self._state_for(umo),
+            generation=self._generation,
+            delivery=self._delivery,
+            is_stopping=lambda: self._stopping,
+            is_enabled=lambda: self.runtime_enabled,
+            settings=self.settings,
+            gate=self._gate,
+            decision=self._decision,
+            last_events=self._last_events,
+            last_decisions=self._last_decisions,
+            track_critical_task=self._track_critical_task,
         )
 
     @property

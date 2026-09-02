@@ -1,6 +1,6 @@
 """Wheel 内容断言：开发物不得泄漏，运行时必需文件必须存在。
 
-与 coverage_gates.py 同模式，由 CI build 作业在 `hatch build` 之后强制。
+由 CI build 作业在 `hatch build` 之后强制。
 依据（2026-08-07 实测）：整目录打包会把 tests/.scratch/scripts/docs/.github
 与开发配置全部打进生产 wheel（原 0.8.3 wheel 102 文件 / 2.8MB），
 pyproject 的 exclude 修复后必须由本脚本断言闭环，防止配置漂移复发。

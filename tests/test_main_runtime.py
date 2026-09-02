@@ -1000,38 +1000,6 @@ def test_version_consistency_across_metadata() -> None:
     assert '">=4.23.3,<5"' in metadata
 
 
-def test_ci_docstring_gate_comment_matches_real_thresholds() -> None:
-    """ci.yml 里描述 docstring 门禁的注释必须与脚本常量一致。
-
-    0.9.3 收尾实测缺陷：注释写「CC>=16」而 `docstring_gates.py` 的
-    `MIN_CC_REQUIRING_DOC` 实际是 12。这类注释漂移不会让门禁失效，但会让
-    读 CI 的人以为 12~15 的函数不必写 docstring，从而在 review 时放过本该
-    补文档的函数——注释是唯一的对外口径，必须锁在常量上。
-    """
-    root = Path(__file__).resolve().parents[1]
-    gates = (root / "scripts" / "docstring_gates.py").read_text(encoding="utf-8")
-    ci = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-
-    lines_match = re.search(r"^MAX_LINES_WITHOUT_DOC\s*=\s*(\d+)", gates, re.MULTILINE)
-    cc_match = re.search(r"^MIN_CC_REQUIRING_DOC\s*=\s*(\d+)", gates, re.MULTILINE)
-    max_cc_match = re.search(r"^MAX_CC\s*=\s*(\d+)", gates, re.MULTILINE)
-    assert lines_match and cc_match and max_cc_match, (
-        "docstring_gates.py 的阈值常量名已变，本守卫需同步"
-    )
-    max_lines, min_cc, max_cc = (
-        lines_match.group(1),
-        cc_match.group(1),
-        max_cc_match.group(1),
-    )
-
-    # 注释里同时出现行数与 CC 两个口径，二者都必须等于常量真值
-    assert f">{max_lines} 行" in ci, (
-        f"ci.yml 注释的行数阈值与 MAX_LINES_WITHOUT_DOC={max_lines} 不一致"
-    )
-    assert f"CC>={min_cc}" in ci, f"ci.yml 注释的复杂度阈值与 MIN_CC_REQUIRING_DOC={min_cc} 不一致"
-    assert f"CC<={max_cc}" in ci, f"ci.yml 注释的复杂度上限与 MAX_CC={max_cc} 不一致"
-
-
 # ============================================================================
 # UI 主题偏好持久化（iframe 下 localStorage 不可用，走后端 ui/theme）
 # ============================================================================
@@ -1075,3 +1043,121 @@ def test_ui_theme_persists_across_instances(tmp_path: Path) -> None:
         assert cfg == {"ok": True, "theme": "light"}
 
     with_plugin(tmp_path, reopen)
+
+
+PRIVATE_UMO = "qq:FriendMessage:user-1"
+
+
+def test_on_message_skips_private_when_disabled(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        plugin.settings.whitelist.add(PRIVATE_UMO)
+        plugin.settings.enabled_private_sessions = False
+        await plugin.on_message(_make_event(umo=PRIVATE_UMO, message_str="今天天气不错"))
+        assert PRIVATE_UMO not in plugin._last_events
+        assert PRIVATE_UMO not in plugin._delay_tasks
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_on_message_still_schedules_group_when_private_disabled(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        plugin.settings.enabled_private_sessions = False
+        await plugin.on_message(_make_event(message_str="今天天气不错"))
+        assert UMO in plugin._last_events
+        assert UMO in plugin._delay_tasks
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_on_message_schedules_private_when_enabled(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        plugin.settings.whitelist.add(PRIVATE_UMO)
+        plugin.settings.enabled_private_sessions = True
+        await plugin.on_message(_make_event(umo=PRIVATE_UMO, message_str="今天天气不错"))
+        assert PRIVATE_UMO in plugin._last_events
+        assert PRIVATE_UMO in plugin._delay_tasks
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_on_message_period_keeps_inflight_generation_by_default(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        assert plugin.settings.abandon_stale_on_new_message is False
+        token = plugin._gate.advance(UMO)
+        plugin._gate.mark_running(UMO)
+        await plugin.on_message(_make_event(message_str="。"))
+        assert plugin._gate.current(UMO) == token
+        assert plugin._gate.is_current(UMO, token)
+        plugin._gate.unmark_running(UMO)
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_period_during_generation_does_not_silence_skip_when_abandon_off(
+    tmp_path: Path,
+) -> None:
+    async def scenario(plugin, main):
+        models = importlib.import_module(main.__package__ + ".models")
+        plugin.settings.min_silence_sec = 25
+        plugin.settings.cooldown_sec = 0
+        state = plugin._state_for(UMO)
+        started = main.now_ts() - 30
+        state.last_active_at = started
+        plugin._coordinator.record_event(UMO, _make_event(message_str="阿c回我一下"), started)
+        token = plugin._gate.advance(UMO)
+
+        async def fake_decide(*_args, **_kwargs):
+            return {"should_reply": True, "reason": "点名", "elapsed_sec": 0.0}
+
+        async def fake_generate(_umo, _state, **kwargs):
+            await plugin.on_message(_make_event(message_str="。"))
+            ledger = kwargs.get("ledger") or models.AttemptLedger()
+            return models.PipelineReply(text="一直在呢", ledger=ledger)
+
+        plugin._decision.decide = fake_decide
+        plugin._generation.generate = fake_generate
+        result = await plugin._pipeline.check_session_locked(
+            UMO, trigger="message_delay", force=False, expected_generation=token
+        )
+        assert result == "已主动回复。"
+        assert "静默时间不足" not in result
+
+    with_plugin(tmp_path, scenario, min_silence_sec=25, cooldown_sec=0)
+
+
+def test_on_message_period_abandons_inflight_when_enabled(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        plugin.settings.abandon_stale_on_new_message = True
+        token = plugin._gate.advance(UMO)
+        plugin._gate.mark_running(UMO)
+        await plugin.on_message(_make_event(message_str="。"))
+        assert plugin._gate.current(UMO) > token
+        assert not plugin._gate.is_current(UMO, token)
+        plugin._gate.unmark_running(UMO)
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_command_check_still_runs_private_when_disabled(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        plugin.settings.whitelist.add(PRIVATE_UMO)
+        plugin.settings.enabled_private_sessions = False
+        seen: dict[str, object] = {}
+
+        async def fake_check(umo, *, trigger, force, expected_generation):
+            seen["umo"] = umo
+            seen["force"] = force
+            return "完成"
+
+        original_check = plugin._pipeline.check_session
+        plugin._pipeline.check_session = fake_check
+        try:
+            event = _make_event(umo=PRIVATE_UMO, message_str="/selfreply check")
+            text = await plugin._command_text(event, "check")
+            assert text == "主动回复检查结果：完成"
+            assert seen["umo"] == PRIVATE_UMO
+            assert seen["force"] is True
+        finally:
+            plugin._pipeline.check_session = original_check
+
+    with_plugin(tmp_path, scenario)

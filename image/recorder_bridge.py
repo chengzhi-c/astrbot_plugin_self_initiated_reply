@@ -10,7 +10,7 @@ from astrbot.api import logger
 
 from ..models import PLUGIN_ID
 from ..utils import maybe_await
-from .safety import sniff_image_mime
+from ._support import sniff_image_mime
 
 RECORDER_PLUGIN_NAME = "astrbot_plugin_message_recorder"
 MAX_IMAGE_BYTES = 10 * 1024 * 1024

@@ -26,10 +26,8 @@ from ..models import (
     PLUGIN_ID,
 )
 from ..utils import response_text
-from .cache import ImageCache
-from .models import ImageInfo
+from ._support import ImageCache, ImageInfo, sniff_image_mime
 from .recorder_bridge import MAX_IMAGE_BYTES, MessageRecorderBridge
-from .safety import sniff_image_mime
 
 VISION_PROMPT_VERSION = "v1"
 

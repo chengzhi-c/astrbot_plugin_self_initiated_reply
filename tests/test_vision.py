@@ -1179,7 +1179,7 @@ def test_image_context_declares_untrusted_before_descriptions() -> None:
 def test_image_context_sanitizes_each_description() -> None:
     """每条描述都必须过净化：控制字符清除、超长截断、双引号中文化。"""
     _, image, _ = _load_modules()
-    context = load_package(PACKAGE_NAME, "image.context")
+    context = load_package(PACKAGE_NAME, "image._support")
     text = image.format_image_context(['带\x00控制符和"引号"的描述'])
 
     assert "\x00" not in text, "控制字符未被清理"

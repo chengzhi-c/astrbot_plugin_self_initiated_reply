@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from astrbot.api import logger
 
 from ..models import PLUGIN_ID
-from .models import ImageInfo
+from ._support import ImageInfo
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent

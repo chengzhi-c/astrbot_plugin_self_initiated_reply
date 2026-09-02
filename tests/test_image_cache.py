@@ -9,7 +9,7 @@ from .test_vision import PACKAGE_NAME, _load_modules
 
 def _cache_class():
     _load_modules()
-    module = importlib.import_module(f"{PACKAGE_NAME}.image.cache")
+    module = importlib.import_module(f"{PACKAGE_NAME}.image._support")
     return module.ImageCache
 
 

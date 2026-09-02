@@ -74,7 +74,7 @@ MAX_DIRECT_TOOL_SENDS = 2  # 每次主动回复最多允许工具直接发出的
 # 正常清理内部任务（如 stop_watcher），宽限过后仍未退出才兜底取消。
 GRACEFUL_STOP_GRACE_SEC = 3.0
 # terminate() 等待后台/关键任务的硬窗口；与宽限同值但是两条语义，
-# 不能合成一个常数。assembly 的 stop_timeout fallback 必须引用这里，禁止再写 3.0。
+# 不能合成一个常数。stop_timeout fallback 必须引用这里，禁止再写 3.0。
 TERMINATE_TASK_TIMEOUT_SEC = 3.0
 # 指令动作集合：help/status/list/debug 为只读，不触碰会话任务；
 # add/remove/check/on/off 为写操作，各自内部处理会话失效语义。

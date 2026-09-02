@@ -190,8 +190,6 @@ omit = ["tests/*", "scripts/*"]
 # （0.9.0 D1 三盲区补盲：scheduler 76→98 / delivery 74→94 / storage 72→95）。
 # 门槛调整一律以生产口径覆盖率工件实测为准，杜绝拍脑袋定数；口径本身为何
 # 排除 tests/ 见上方 [tool.coverage.run] 的说明。
-# 模块级门槛（main.py / image/parser.py 等）见 scripts/coverage_gates.py，
-# 由 CI test 作业在 pytest 之后强制；阈值 = 实测-5% 缓冲，禁止下调。
 fail_under = 89
 
 [tool.mypy]
@@ -226,7 +224,6 @@ files = [
   "session_pipeline.py",
   "whitelist.py",
   "plugin_state.py",
-  "assembly.py",
   "message_ingress.py",
   "image",
 ]

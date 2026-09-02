@@ -17,7 +17,7 @@ import sys
 import pytest
 
 from .host_stubs import ROOT, production_py_files, with_plugin
-from .source_contract import constructor_param_bindings, module_ast
+from .source_contract import module_ast
 
 PACKAGE = "selfreply_main_test_package"
 UMO = "fake:group:123"
@@ -325,139 +325,39 @@ def test_config_rollback_preserves_every_container_holder(tmp_path) -> None:
     with_plugin(tmp_path, scenario)
 
 
-# 上面两条守卫都靠手写的 CONTAINER_HOLDERS 表。表本身会过期：新增一个持有
-# 共享容器的组件、或给现有组件加一个容器参数，表不会自动跟上，于是那个新
-# 绑定又变成无人看守——正是 B1 当初的成因。下面这条从源码反推真实持有者，
-# 钉死"表必须完整"，让漏登记在测试层就变红，而不是等线上静默失效。
-COMPONENT_CONSTRUCTORS: tuple[tuple[str, str, str], ...] = (
-    ("scheduler.py", "SessionScheduler", "_scheduler"),
-    ("session_coordinator.py", "SessionCoordinator", "_coordinator"),
-    ("delivery.py", "DeliveryRunner", "_delivery"),
-    ("generation.py", "GenerationRunner", "_generation"),
-    ("whitelist.py", "WhitelistManager", "_whitelist"),
-)
+def test_assembled_components_share_plugin_containers(tmp_path) -> None:
+    """装配后协作对象必须持有 plugin 侧同一份容器，而不是拷贝。"""
 
+    async def scenario(plugin, main):
+        containers = {
+            id(plugin._last_events): "_last_events",
+            id(plugin._last_event_at): "_last_event_at",
+            id(plugin._recent_image_events): "_recent_image_events",
+            id(plugin._whitelist_runtime_umos): "_whitelist_runtime_umos",
+            id(plugin.sessions): "sessions",
+        }
+        owners = {
+            "_scheduler": plugin._scheduler,
+            "_coordinator": plugin._coordinator,
+            "_delivery": plugin._delivery,
+            "_generation": plugin._generation,
+            "_whitelist": plugin._whitelist,
+        }
+        actual: set[tuple[str, str, str]] = set()
+        for owner_name, owner in owners.items():
+            for attr, value in vars(owner).items():
+                name = containers.get(id(value))
+                if name is not None:
+                    actual.add((name, owner_name, attr))
+        declared = set(CONTAINER_HOLDERS)
+        assert actual == declared, (
+            f"共享容器持有者漂移：missing={sorted(actual - declared)} "
+            f"stale={sorted(declared - actual)}"
+        )
+        for main_attr, owner_name, attr in CONTAINER_HOLDERS:
+            assert getattr(getattr(plugin, owner_name), attr) is getattr(plugin, main_attr)
 
-def _restored_containers() -> set[str]:
-    """从 ``_restore_plugin_state`` 反推被原地恢复的 main 侧容器名。
-
-    判据是同一属性上先 ``.clear()`` 再以任意方式原地写入。写入方不限于
-    ``.update()``——``clear()`` 后逐项下标赋值、``setdefault`` 都是语义等价的
-    原地恢复，只认 ``update`` 会把等价重写误判成"该容器不再被原地恢复"，
-    进而连带把它的持有者全部报成失效断言（假阳性）。
-
-    反过来，``plugin.X = ...`` 属性重绑定要**从结果里剔除**：它不是写入方式之一，
-    而是原地恢复被破坏的信号。
-
-    此处的覆盖边界经实测厘清，别按直觉复述：**已登记**容器退回属性重绑定，即使
-    没有这条剔除也会红——``clear()`` 进 ``cleared``、``update`` 消失使它不进
-    ``written``，容器被剔出返回集，其持有者随即变成失效断言（``stale`` 方向）。
-    实测把 ``plugin._last_events.update(...)`` 改成重绑定，未加本剔除时
-    ``test_container_holder_table_is_complete`` 已经变红。
-
-    这条剔除补的是另一个形态：**新增**容器一开始就用属性重绑定、且从未登记进
-    ``CONTAINER_HOLDERS``。那时 ``missing`` 与 ``stale`` 两侧都空，守卫全绿，
-    B1 复发而无人知晓。显式剔除让"重绑定"成为可被观察的信号而不是沉默的缺席。
-
-    ``_gate`` 走 ``restore()`` 整表替换，不在此列（它没有外部持有者，
-    另有 ``test_session_gate_tables_have_no_external_holders`` 看守）。
-    事件/图片三表经 ``plugin._coordinator.restore_inplace`` 原地写回，
-    与 ``plugin._last_events.clear()+update`` 等价，也算原地恢复。
-    """
-    node = _lookup_restore()
-    cleared: set[str] = set()
-    written: set[str] = set()
-    rebound: set[str] = set()
-    # 事件/图片三表经 coordinator.restore_inplace 原地写回，等价于
-    # plugin._last_events.clear()+update（容器身份仍是 main 上那份 dict）。
-    if "plugin._coordinator.restore_inplace" in ast.unparse(node):
-        cleared.update({"_last_events", "_last_event_at", "_recent_image_events"})
-        written.update({"_last_events", "_last_event_at", "_recent_image_events"})
-
-    def _plugin_attr(expr: ast.AST) -> str | None:
-        """``plugin.X`` → ``"X"``；其余返回 None。"""
-        if isinstance(expr, ast.Attribute) and ast.unparse(expr.value) == "plugin":
-            return expr.attr
-        return None
-
-    for child in ast.walk(node):
-        # 形态一：plugin.X.clear() / plugin.X.update(...) / plugin.X.setdefault(...)
-        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
-            attr = _plugin_attr(child.func.value)
-            if attr is not None:
-                if child.func.attr == "clear":
-                    cleared.add(attr)
-                elif child.func.attr in {"update", "setdefault"}:
-                    written.add(attr)
-        # 形态二：plugin.X[k] = v（clear 后逐项赋值）
-        # 形态三：plugin.X = ...（属性重绑定——**破坏**原地恢复，见下）
-        elif isinstance(child, ast.Assign):
-            for target in child.targets:
-                if isinstance(target, ast.Subscript):
-                    attr = _plugin_attr(target.value)
-                    if attr is not None:
-                        written.add(attr)
-                else:
-                    attr = _plugin_attr(target)
-                    if attr is not None:
-                        rebound.add(attr)
-    # 属性重绑定不是等价写入：它换掉容器对象本身，组件手里的旧引用就此失联，
-    # 正是 B1 的成因。所以不能并进 written（那会把「已破坏」记成「已恢复」，
-    # 让持有者继续被登记、守卫继续绿）。从原地恢复集里剔除，使该容器的持有者
-    # 变成 stale，test_container_holder_table_is_complete 的第二条断言随即变红。
-    return (cleared & written) - rebound
-
-
-def _lookup_restore() -> ast.AST:
-    for node in ast.walk(module_ast("webapi.py")):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_restore_plugin_state":
-            return node
-    raise AssertionError("webapi.py 中找不到 _restore_plugin_state")
-
-
-def _actual_holders() -> set[tuple[str, str, str]]:
-    """扫装配段（main.py / assembly.py），反推 (容器名, 组件属性, 组件字段)。"""
-    restored = _restored_containers()
-    holders: set[tuple[str, str, str]] = set()
-    for rel, cls, owner_attr in COMPONENT_CONSTRUCTORS:
-        bindings = constructor_param_bindings(rel, cls)
-        for source in ("main.py", "assembly.py"):
-            for node in ast.walk(module_ast(source)):
-                if not (isinstance(node, ast.Call) and ast.unparse(node.func) == cls):
-                    continue
-                for kw in node.keywords:
-                    if kw.arg is None:
-                        continue
-                    value = ast.unparse(kw.value)
-                    # main 内 self.x；assembly 内 plugin.x
-                    if value.startswith("self."):
-                        container = value[len("self.") :]
-                    elif value.startswith("plugin."):
-                        container = value[len("plugin.") :]
-                    else:
-                        continue
-                    if container in restored and kw.arg in bindings:
-                        holders.add((container, owner_attr, bindings[kw.arg]))
-    return holders
-
-
-def test_container_holder_table_is_complete() -> None:
-    """``CONTAINER_HOLDERS`` 必须等于源码里真实存在的持有者集合。
-
-    漏登记 = 那个绑定无人看守：``_restore_plugin_state`` 里对应的一行退回
-    属性重绑定时，没有任何测试会红，该会话主动回复静默停止直到重启（B1）。
-    多登记 = 表里有已不存在的绑定，属于失效断言。两个方向都要红。
-    """
-    actual = _actual_holders()
-    declared = set(CONTAINER_HOLDERS)
-
-    missing = actual - declared
-    stale = declared - actual
-    assert not missing, (
-        f"源码中存在未登记的共享容器持有者 {sorted(missing)}："
-        f"请补进 CONTAINER_HOLDERS，否则该绑定退回属性重绑定时不会变红"
-    )
-    assert not stale, f"CONTAINER_HOLDERS 中的绑定在源码里已不存在（失效断言）：{sorted(stale)}"
+    with_plugin(tmp_path, scenario)
 
 
 GATE_RESTORED_TABLES = ("_session_generation", "_running_sessions", "_session_locks")

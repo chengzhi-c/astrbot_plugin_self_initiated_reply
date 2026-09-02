@@ -16,8 +16,7 @@ from ..adapters import AstrBotBridge
 from ..models import PLUGIN_ID, Settings
 from ..session_coordinator import SessionCoordinator
 from ..session_gate import SessionGate
-from . import format_image_context
-from .models import ImageInfo
+from ._support import ImageInfo, format_image_context
 from .parser import ImageParser
 from .recorder_bridge import MessageRecorderBridge
 

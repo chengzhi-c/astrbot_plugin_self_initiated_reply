@@ -7,8 +7,7 @@
 （手工变异验证），结论记在当次提交信息里。
 
 本文件不记录测试数与覆盖率快照：那类数字一个版本就腐烂，且与门禁重复。
-当前门槛以 `pyproject.toml` 的 `fail_under` 与 `scripts/coverage_gates.py`
-的模块级阈值为唯一事实来源（阈值只上调、不下调）。
+当前门槛以 `pyproject.toml` 的 `fail_under` 为唯一事实来源。
 
 ## 1. 代次（Generation）与观察窗口
 

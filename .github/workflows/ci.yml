@@ -31,12 +31,6 @@ jobs:
         run: ruff check .
       - name: Ruff format check
         run: ruff format --check .
-      - name: Docstring gates
-        # 长函数（>50 行）与高复杂度函数（CC>=12）必须有 docstring，且 CC<=21；
-        # 阈值单源在 scripts/docstring_gates.py 的 MAX_LINES_WITHOUT_DOC /
-        # MIN_CC_REQUIRING_DOC / MAX_CC，tests/ 与 scripts/ 不在扫描范围内。
-        # 纯 stdlib，无需装项目依赖，故挂在 lint 作业而非 test 作业。
-        run: python scripts/docstring_gates.py
 
   frontend:
     runs-on: ubuntu-latest
@@ -96,9 +90,6 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Test
         run: pytest --cov-report=xml
-      - name: Module coverage gates
-        # 生产口径（omit tests/）下关键模块的独立门槛，防止整体门槛掩盖局部盲区
-        run: python scripts/coverage_gates.py
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:

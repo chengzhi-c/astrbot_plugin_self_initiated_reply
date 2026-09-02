@@ -56,7 +56,6 @@ _INFO_WHITELIST = {
 
 _CHECKED_MODULES = [
     "adapters.py",
-    "assembly.py",
     "commands.py",
     "decision.py",
     "delivery.py",

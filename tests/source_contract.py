@@ -18,7 +18,6 @@ __all__ = [
     "call_names",
     "callers_of",
     "calls_in",
-    "constructor_param_bindings",
     "defines",
     "logger_levels_for",
     "method_source",
@@ -112,33 +111,6 @@ def callers_of(rel: str, call_name: str) -> list[str]:
     return sorted(
         name for name in owners if not any(other.startswith(f"{name}.") for other in owners)
     )
-
-
-def constructor_param_bindings(rel: str, cls: str) -> dict[str, str]:
-    """``__init__`` 里 ``self.<attr> = <param>`` 的 ``{形参名: 属性名}`` 映射。
-
-    用途是证明「共享容器持有者表是完整的」：手工维护的持有者清单会随新增
-    协作对象而过期（B1 就是漏了 6 个绑定），而这里从源码枚举，漏一个即可
-    被交叉核对发现。只认裸形参赋值——``dict(param)`` 之类是拷贝、不是共享
-    引用，本就不该进持有者表。
-    """
-    init = _lookup(rel, f"{cls}.__init__")
-    args = init.args  # type: ignore[attr-defined]
-    param_names = {a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
-    bindings: dict[str, str] = {}
-    for stmt in ast.walk(init):
-        if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
-            continue
-        target, value = stmt.targets[0], stmt.value
-        if (
-            isinstance(target, ast.Attribute)
-            and isinstance(target.value, ast.Name)
-            and target.value.id == "self"
-            and isinstance(value, ast.Name)
-            and value.id in param_names
-        ):
-            bindings[value.id] = target.attr
-    return bindings
 
 
 def logger_levels_for(rel: str, template: str) -> list[str]:
