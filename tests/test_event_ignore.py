@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib
+import sys
 
 from .test_vision import PACKAGE_NAME
 
@@ -87,3 +88,36 @@ async def test_keep_normal_message() -> None:
     events = _events_module()
     event = _FakeEvent()
     assert _should_ignore(events, event, "普通消息", vision=False) is False
+
+
+def test_handle_incoming_message_blindspots(tmp_path) -> None:
+    """覆盖 message_ingress: 指令消息直接返回、忽略消息时更新活跃时间/作废旧任务。"""
+    from .host_stubs import with_plugin
+
+    async def scenario(plugin, main):
+        from .test_main_runtime import _make_event
+
+        ingress = sys.modules[f"{main.__package__}.message_ingress"]
+
+        # 1. 已处理的指令事件直接返回
+        handled_event = _make_event(message_str="anything")
+        setattr(handled_event, main.COMMAND_HANDLED_KEY, True)
+        await ingress.handle_incoming_message(plugin, handled_event)
+
+        # 2. 内联指令解析并处理
+        cmd_event = _make_event(message_str="/selfreply status")
+        await ingress.handle_incoming_message(plugin, cmd_event)
+
+        # 3. 开启 abandon_stale_on_new_message 时收到 @Bot 直接点名
+        plugin.settings.abandon_stale_on_new_message = True
+        direct_event = _make_event(message_str="@Bot 出来聊聊")
+        direct_event.is_at_or_wake_command = True
+        await ingress.handle_incoming_message(plugin, direct_event)
+        state = plugin._state_for(main.whitelist_storage_key(main.event_umo(direct_event)))
+        assert state.last_active_at > 0
+
+        # 4. 开启 abandon_stale_on_new_message 且纯空格消息
+        empty_event = _make_event(message_str="   ")
+        await ingress.handle_incoming_message(plugin, empty_event)
+
+    with_plugin(tmp_path, scenario)

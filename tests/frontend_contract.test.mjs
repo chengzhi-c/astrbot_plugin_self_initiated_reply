@@ -19,6 +19,7 @@ import {
 import {
   summarizeWhitelist,
   uniqueWhitelistItems,
+  validateWhitelistLines,
 } from "../pages/主动回复设置/config-form.mjs";
 import { THEME_KEY } from "../pages/主动回复设置/theme.mjs";
 
@@ -573,6 +574,21 @@ test("whitelist format collapses a group UMO onto its bare group id", () => {
     summarizeWhitelist(raw),
     "已识别 4 个有效会话（3 个纯群号，1 个完整 UMO） · 存在 1 处重复",
   );
+});
+
+test("validateWhitelistLines reports line numbers and reasons for malformed whitelist input", () => {
+  const input = [
+    "valid_session_1",
+    'illegal_session_"with_quotes"',
+    "valid_session_2",
+    "x".repeat(205),
+  ].join("\n");
+  const errors = validateWhitelistLines(input);
+  assert.equal(errors.length, 2);
+  assert.equal(errors[0].line, 2);
+  assert.ok(errors[0].reason.includes("非法字符"));
+  assert.equal(errors[1].line, 4);
+  assert.ok(errors[1].reason.includes("字符上限"));
 });
 
 test("settings page JS sources keep lines under the maintainability cap", async () => {

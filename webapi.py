@@ -495,7 +495,7 @@ async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict
         plugin._scheduler.ensure_patrol()
         plugin._scheduler.ensure_image_cleanup()
     try:
-        plugin._sync_whitelist()
+        plugin._persist_config()
         await plugin._save_storage()
     except Exception as rollback_exc:
         logger.error("[%s] config rollback persistence failed: %s", PLUGIN_ID, rollback_exc)
@@ -528,7 +528,7 @@ async def _apply_config_updates(
         if vision_changed:
             plugin._vision.clear_parsers()
         if updates:
-            plugin._sync_whitelist()
+            plugin._persist_config()
             await plugin._save_storage()
 
         # 持久 enabled 真正变化才重置运行态并同步任务拓扑；全量表单重复提交

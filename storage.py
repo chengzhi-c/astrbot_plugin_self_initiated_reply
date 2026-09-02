@@ -303,9 +303,13 @@ def migrate_config_file(path: Path, config_obj: Any, settings: Settings) -> bool
     return _update_config_obj(config_obj, data) and _persist_config_obj(config_obj, data)
 
 
-def sync_config_whitelist(path: Path, config_obj: Any, settings: Settings) -> bool:
+def persist_settings_config(path: Path, config_obj: Any, settings: Settings) -> bool:
+    """原子落盘当前 Settings 的全部配置（包含白名单）并同步宿主配置对象。"""
     data = settings.to_config_dict()
     data["whitelist_sessions"] = sorted(settings.whitelist)
     if not _write_json_atomic(path, data):
         return False
     return _update_config_obj(config_obj, data) and _persist_config_obj(config_obj, data)
+
+
+sync_config_whitelist = persist_settings_config

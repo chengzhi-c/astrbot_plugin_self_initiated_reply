@@ -56,10 +56,12 @@ export function createProviderControl(refs, deps) {
       if (manual) {
         sync(refs.input ? refs.input.value.trim() : "");
         if (manual) showToast("当前 Provider 不在列表中，继续保留手动输入");
+        else if (deps.onDirty) deps.onDirty();
         return;
       }
       if (refs.input) refs.input.value = refs.select ? refs.select.value || "" : "";
       setManual(true, true);
+      if (deps.onDirty) deps.onDirty();
     });
   }
   if (refs.select) {

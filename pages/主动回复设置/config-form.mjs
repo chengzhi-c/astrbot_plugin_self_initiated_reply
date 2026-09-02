@@ -71,6 +71,32 @@ export function renderPromptTemplateHtml(template, values = PROMPT_PREVIEW_VALUE
       const val = escapeHtml(values[key]);
       return `<span class="prompt-var-tag" title="变量 {${key}}">${val}</span>`;
     }
-    return match;
   });
+}
+
+export const WHITELIST_ITEM_MAX_LEN = 200;
+export const WHITELIST_ILLEGAL_RE = /[\x00-\x1f"'\\]/;
+
+export function validateWhitelistLines(text) {
+  const lines = String(text || "").split("\n");
+  const errors = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const raw = lines[i];
+    const line = raw.trim();
+    if (!line) continue;
+    if (WHITELIST_ILLEGAL_RE.test(line)) {
+      errors.push({
+        line: i + 1,
+        item: line,
+        reason: "含非法字符（引号/反斜杠/控制字符）",
+      });
+    } else if (line.length > WHITELIST_ITEM_MAX_LEN) {
+      errors.push({
+        line: i + 1,
+        item: line,
+        reason: `超出 ${WHITELIST_ITEM_MAX_LEN} 字符上限`,
+      });
+    }
+  }
+  return errors;
 }

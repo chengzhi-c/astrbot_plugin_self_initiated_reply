@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from .host_stubs import ROOT, install_astrbot_stubs, load_package
 from .source_contract import calls_in
 
@@ -1543,3 +1545,71 @@ def test_host_platform_adapters_do_not_use_system_tmp_path() -> None:
         f"平台适配器开始使用系统临时目录落盘：{offenders}；这些路径在 <data> 外，"
         "会被 allowlist 拒绝，需要把该根加入 ImageParser 的允许表"
     )
+
+
+@pytest.mark.asyncio
+async def test_vision_service_blindspots() -> None:
+    """覆盖 vision_runtime: build_context、_freeze_images 与本地快照异常分支。"""
+    import asyncio
+    from types import SimpleNamespace
+
+    _, image, _ = _load_modules()
+    vr = load_package(PACKAGE_NAME, "image.vision_runtime")
+
+    settings = SimpleNamespace(
+        vision_timeout_sec=5,
+        vision_image_age_sec=300,
+        vision_skip_stickers=False,
+        vision_max_images=3,
+    )
+    coordinator = SimpleNamespace(
+        images_for=lambda *args, **kwargs: [],
+        capture_images=lambda *args, **kwargs: [],
+    )
+    gate = SimpleNamespace(is_current=lambda *args: True)
+
+    def make_service(parser=None):
+        srv = vr.VisionService(
+            settings=settings,
+            bridge=None,
+            context=None,
+            source_cache_dir=Path("/tmp"),
+            data_root=Path("/tmp"),
+            coordinator=coordinator,
+            gate=gate,
+            is_stopping=lambda: False,
+            track_background_task=lambda coro: coro.close(),
+        )
+        srv.get_image_parser = lambda *args: parser
+        return srv
+
+    service = make_service(None)
+
+    # 1. build_context 当 enabled=False
+    assert await service.build_context("u1", enabled=False) == ""
+
+    # 2. build_context 当 parser is None
+    assert await service.build_context("u1", enabled=True) == ""
+
+    # 3. _freeze_images 当 parser is None
+    await service._freeze_images("u1", generation=1, active_at=1.0, images=[])
+
+    async def fake_prepare(images, **kw):
+        return [False] * len(images)
+
+    fake_parser = SimpleNamespace(
+        prepare_batch=fake_prepare,
+        snapshot_local_sources=lambda images, **kw: asyncio.sleep(0),
+    )
+    service_with_parser = make_service(fake_parser)
+    # 4. _freeze_images 当提取出图片但无一成功冻结
+    img = image.ImageInfo(url="http://example.com/test.png")
+    await service_with_parser._freeze_images("u1", generation=1, active_at=1.0, images=[img])
+
+    async def failing_snapshot(*a, **kw):
+        raise RuntimeError("snapshot disk error")
+
+    boom_parser = SimpleNamespace(snapshot_local_sources=failing_snapshot)
+    service_boom = make_service(boom_parser)
+    # 5. capture 本地快照抛异常时被隔离并记录 debug，不阻断任务派发
+    await service_boom.capture("u1", generation=1, active_at=1.0, images=[img])

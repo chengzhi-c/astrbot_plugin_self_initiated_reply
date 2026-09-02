@@ -40,7 +40,9 @@ export async function restoreTheme(apiGet) {
     const result = await apiGet("ui/theme");
     const saved =
       result && result.ok !== false ? String(result.theme || "auto").trim() : "auto";
-    return saved === "light" || saved === "dark" ? saved : "auto";
+    const resolved = saved === "light" || saved === "dark" ? saved : "auto";
+    cacheThemeLocally(resolved);
+    return resolved;
   } catch {
     return currentTheme();
   }

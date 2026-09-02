@@ -94,19 +94,19 @@ class SessionCoordinator:
             for image in images
         )
 
-    def _evict_oldest_image_event(self, *, umo: str | None = None) -> bool:
+    def _evict_oldest_image_event(self, *, umo: str | None = None) -> tuple[int, str]:
         candidates = []
         events = self._images.items() if umo is None else [(umo, self._images.get(umo))]
         for key, image_events in events:
             if image_events:
                 candidates.append((image_events[0][0], key, image_events))
         if not candidates:
-            return False
+            return 0, ""
         _, key, image_events = min(candidates, key=lambda item: item[0])
-        image_events.popleft()
+        _timestamp, evicted_images = image_events.popleft()
         if not image_events:
             self._images.pop(key, None)
-        return True
+        return sum(_prepared_memory_size(image) for image in evicted_images), key
 
     def _append_image_event(self, umo: str, timestamp: float, images: list[Any]) -> None:
         # deque(maxlen=MAX_CACHED_IMAGE_EVENTS) 满员时自动逐出最旧事件，无需手工 popleft。
@@ -142,18 +142,21 @@ class SessionCoordinator:
                 )
                 continue
 
-            while (
-                session_bytes + image_bytes > self._max_session_image_memory_bytes
-                and self._evict_oldest_image_event(umo=umo)
-            ):
-                session_bytes = self._memory_bytes_for(umo) + accepted_bytes
-                total_bytes = self._memory_bytes_for() + accepted_bytes
-            while (
-                total_bytes + image_bytes > self._max_image_memory_bytes
-                and self._evict_oldest_image_event()
-            ):
-                total_bytes = self._memory_bytes_for() + accepted_bytes
-                session_bytes = self._memory_bytes_for(umo) + accepted_bytes
+            while session_bytes + image_bytes > self._max_session_image_memory_bytes:
+                freed, _ = self._evict_oldest_image_event(umo=umo)
+                if not freed:
+                    break
+                session_bytes -= freed
+                total_bytes -= freed
+
+            while total_bytes + image_bytes > self._max_image_memory_bytes:
+                freed, evicted_key = self._evict_oldest_image_event()
+                if not freed:
+                    break
+                total_bytes -= freed
+                if evicted_key == umo:
+                    session_bytes -= freed
+
             if (
                 session_bytes + image_bytes > self._max_session_image_memory_bytes
                 or total_bytes + image_bytes > self._max_image_memory_bytes

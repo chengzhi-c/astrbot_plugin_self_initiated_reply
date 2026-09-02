@@ -172,6 +172,7 @@ class SessionScheduler:
             )
             return
         self._delay_tasks.pop(umo, None)
+        self._silence_events.pop(umo, None)
         if task and not task.done():
             task.cancel()
         if force and running_task and not running_task.done() and running_task is not task:

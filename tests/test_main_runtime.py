@@ -1161,3 +1161,16 @@ def test_command_check_still_runs_private_when_disabled(tmp_path: Path) -> None:
             plugin._pipeline.check_session = original_check
 
     with_plugin(tmp_path, scenario)
+
+
+def test_command_debug_returns_diagnostic_info(tmp_path: Path) -> None:
+    """/selfreply debug 指令输出诊断文本，覆盖 commands.debug_text 分支。"""
+
+    async def scenario(plugin, main):
+        event = _make_event(message_str="/selfreply debug")
+        text = await plugin._command_text(event, "debug")
+        assert "主动回复调试信息" in text
+        assert "归一化 UMO:" in text
+        assert "is_at_or_wake_command:" in text
+
+    with_plugin(tmp_path, scenario)

@@ -1,4 +1,4 @@
-﻿<p align="center">
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/banner-dark.jpg">
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/banner-light.jpg">
@@ -10,7 +10,7 @@
 
 <p align="center">
   让 AstrBot 在白名单会话里学会"自然接话"的插件。<br>
-  <img alt="版本" src="https://img.shields.io/badge/版本-1.3.2-4a5580">
+  <img alt="版本" src="https://img.shields.io/badge/版本-1.3.3-4a5580">
   <img alt="AstrBot 插件" src="https://img.shields.io/badge/AstrBot-插件-7b86ab">
 </p>
 

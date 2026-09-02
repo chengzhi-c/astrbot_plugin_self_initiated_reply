@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
-from functools import partial
 from types import MappingProxyType
 from typing import Any
 
@@ -145,14 +144,6 @@ class SelfInitiatedReplyPlugin(Star):
     _scheduler: SessionScheduler
     _vision: VisionService
     _whitelist: WhitelistManager
-    _refresh_admin_ids: Callable[[], set[str]]
-    _state_for: Callable[[str], SessionState]
-    _save_storage_sync: Callable[[], None]
-    _save_storage: Callable[[], Awaitable[None]]
-    _sync_whitelist: Callable[[], Any]
-    _persist_enabled: Callable[[bool], Awaitable[None]]
-    _track_background_task: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any] | None]
-    _track_critical_task: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any]]
 
     def __init__(
         self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None
@@ -217,14 +208,6 @@ class SelfInitiatedReplyPlugin(Star):
         self._admin_ids: set[str] = set()
         self._admin_probe_ts = 0.0  # 探测窗口起点：0 保证首次调用必探
         self._last_decisions: dict[str, dict[str, Any]] = {}
-        self._refresh_admin_ids = partial(refresh_admin_ids, self)
-        self._state_for = partial(state_for, self)
-        self._save_storage_sync = partial(save_storage_sync, self)
-        self._save_storage = partial(save_storage, self)
-        self._sync_whitelist = partial(sync_whitelist, self)
-        self._persist_enabled = partial(persist_enabled, self)
-        self._track_background_task = partial(track_background_task, self)
-        self._track_critical_task = partial(track_critical_task, self)
         self._refresh_admin_ids()
 
         self._assemble_components()
@@ -398,6 +381,33 @@ class SelfInitiatedReplyPlugin(Star):
         与装配层其余回调的测试缝一致。
         """
         return self._decision.local_gate(state, force=force, silence_active_at=silence_active_at)
+
+    def _state_for(self, umo: str) -> SessionState:
+        return state_for(self, umo)
+
+    def _refresh_admin_ids(self) -> set[str]:
+        return refresh_admin_ids(self)
+
+    def _save_storage_sync(self) -> None:
+        save_storage_sync(self)
+
+    async def _save_storage(self) -> None:
+        await save_storage(self)
+
+    def _persist_config(self) -> bool:
+        return self._sync_whitelist()
+
+    def _sync_whitelist(self) -> bool:
+        return sync_whitelist(self)
+
+    async def _persist_enabled(self, enabled: bool) -> None:
+        await persist_enabled(self, enabled)
+
+    def _track_background_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any] | None:
+        return track_background_task(self, coro)
+
+    def _track_critical_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        return track_critical_task(self, coro)
 
     @property
     def lifecycle_state(self) -> str:

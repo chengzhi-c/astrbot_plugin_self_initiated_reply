@@ -3,6 +3,7 @@ import {
 	parseWhitelist,
 	summarizeWhitelist,
 	uniqueWhitelistItems,
+	validateWhitelistLines,
 } from "./config-form.mjs";
 import {
 	createConfigRequestCoordinator,
@@ -281,17 +282,11 @@ export function createConfigIo(deps) {
 	function validateWhitelist() {
 		const e = els();
 		if (!e.whitelistInput || !e.whitelistError) return true;
-		const lines = parseWhitelist(e.whitelistInput.value);
-		const bad = lines.find(
-			(item) =>
-				item.length > WHITELIST_ITEM_MAX_LEN || WHITELIST_ILLEGAL_RE.test(item),
-		);
-		if (bad) {
+		const errors = validateWhitelistLines(e.whitelistInput.value);
+		if (errors.length > 0) {
+			const first = errors[0];
 			e.whitelistInput.setAttribute("aria-invalid", "true");
-			e.whitelistError.textContent =
-				bad.length > WHITELIST_ITEM_MAX_LEN
-					? `条目过长（>${WHITELIST_ITEM_MAX_LEN}）：${bad.slice(0, 24)}…`
-					: `条目含非法控制字符：${bad.slice(0, 24)}`;
+			e.whitelistError.textContent = `第 ${first.line} 行${first.reason}：${first.item.slice(0, 24)}`;
 			e.whitelistError.classList.add("show");
 			e.whitelistInput.focus();
 			return false;

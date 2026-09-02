@@ -183,12 +183,15 @@ async def handle_incoming_message(
         clean_text=clean_text,
     )
     if has_images:
-        await _capture_images(
-            plugin,
-            event,
-            umo=umo,
-            generation=generation,
-            active_at=active_at,
-        )
+        try:
+            await _capture_images(
+                plugin,
+                event,
+                umo=umo,
+                generation=generation,
+                active_at=active_at,
+            )
+        except Exception as exc:
+            logger.warning("[%s] image capture failed session=%s: %s", PLUGIN_ID, umo, exc)
     plugin._scheduler.cleanup_events_if_needed()
     _schedule_message_check(plugin, umo, clean_text, generation)
