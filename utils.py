@@ -118,7 +118,8 @@ def parse_decision_json(text: str) -> dict[str, Any] | None:
     if "should_reply" not in parsed:
         return None
 
-    # 规范化 should_reply 为布尔值
+    # 规范化 should_reply 为布尔值。集合刻意窄于 models.as_bool：
+    # 配置面认 on/启用/开启，判断模型 JSON 不认，避免模型措辞变宽后更积极接话。
     raw_reply = parsed["should_reply"]
     if isinstance(raw_reply, bool):
         should_reply = raw_reply

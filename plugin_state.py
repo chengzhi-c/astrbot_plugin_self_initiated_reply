@@ -14,7 +14,6 @@ from astrbot.api import logger
 from .models import (
     ADMIN_REFRESH_WINDOW_SEC,
     PLUGIN_ID,
-    STALE_TASK_MESSAGE,
     MessageRecord,
     SessionState,
     now_ts,
@@ -210,57 +209,3 @@ def track_background_task(
     plugin._background_tasks.add(task)
     task.add_done_callback(plugin._background_tasks.discard)
     return task
-
-
-def record_decision(
-    last_decisions: dict[str, Any],
-    umo: str,
-    trigger: str,
-    *,
-    should_reply: bool,
-    reason: str,
-) -> None:
-    last_decisions[umo] = {
-        "at": round(now_ts(), 3),
-        "trigger": trigger,
-        "should_reply": should_reply,
-        "reason": reason,
-    }
-
-
-async def decide_session_reply(
-    decision: Any,
-    gate: Any,
-    last_decisions: dict[str, Any],
-    umo: str,
-    state: SessionState,
-    *,
-    trigger: str,
-    force: bool,
-    expected_generation: int | None,
-) -> dict[str, Any] | str:
-    result = await decision.decide(umo, state, trigger=trigger, force=force)
-    if isinstance(result, str):
-        record_decision(last_decisions, umo, trigger, should_reply=False, reason=result)
-        return result
-    if not gate.is_current(umo, expected_generation):
-        return STALE_TASK_MESSAGE
-    record_decision(
-        last_decisions,
-        umo,
-        trigger,
-        should_reply=bool(result.get("should_reply")),
-        reason=str(result.get("reason") or ""),
-    )
-    logger.info(
-        "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
-        PLUGIN_ID,
-        umo,
-        trigger,
-        result.get("should_reply"),
-        float(result.get("elapsed_sec") or 0.0),
-        result.get("reason") or "-",
-    )
-    if not result.get("should_reply"):
-        return f"判断不回复：{result.get('reason') or '未说明'}"
-    return result

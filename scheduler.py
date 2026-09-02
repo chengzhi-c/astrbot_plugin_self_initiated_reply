@@ -26,6 +26,7 @@ from .models import (
     PATROL_BACKOFF_DELAY_SEC,
     PLUGIN_ID,
     RELEASE_WAIT_TIMEOUT_SEC,
+    TERMINATE_TASK_TIMEOUT_SEC,
     CheckTrigger,
     SessionState,
     Settings,
@@ -83,7 +84,7 @@ class SessionScheduler:
         self._delay_tasks = delay_tasks
         self._running_check_tasks = running_check_tasks
         self._background_tasks = background_tasks
-        self._stop_timeout = stop_timeout or (lambda: 3.0)
+        self._stop_timeout = stop_timeout or (lambda: TERMINATE_TASK_TIMEOUT_SEC)
         self._quarantine_task = quarantine_task
         self._silence_events: dict[str, asyncio.Event] = {}
         self._leak_warned: set[str] = set()

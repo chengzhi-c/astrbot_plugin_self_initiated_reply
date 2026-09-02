@@ -48,7 +48,9 @@ MAX_CC = 21
 # .scratch/ 是 git 忽略的本地草稿区（报告、临时探针），不是交付物：
 # 实测它此前会被 rglob 收进来，一个 60 行的临时探针就能让门禁 FAIL，
 # 且 ast.parse 不传 filename，报错定位显示为 <unknown> 难以溯源。
-EXCLUDED_PREFIXES = ("tests/", "scripts/", ".scratch/")
+# .venv/ / venv/ 同理：仓库内本地虚拟环境会被 rglob 扫进生产口径，
+# 第三方库函数 CC 远超 MAX_CC，本地门禁会红而 CI（无 .venv）仍绿。
+EXCLUDED_PREFIXES = ("tests/", "scripts/", ".scratch/", ".venv/", "venv/")
 
 # 圈复杂度粗估计入的分支节点。口径固定，避免换算法导致阈值失去可比性。
 _BRANCH_NODES = (

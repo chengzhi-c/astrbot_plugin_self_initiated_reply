@@ -69,9 +69,6 @@ from .storage import _write_json_atomic
 # _parse_config_updates 六处，漏一处即静默失效（漏本名单 → 面板提交被 400 拒）。
 CONFIG_SCHEMA_KEYS = frozenset(spec.key for spec in CONFIG_SPECS)
 
-# 枚举型字符串键 → 合法取值集合（schema options 的运行时镜像，同样派生自规格表）
-_REPLY_LENGTH_MODES = set(CONFIG_SPEC_BY_KEY["reply_length_mode"].options)
-
 
 def _config_value(config: Any, key: str, default: Any = "") -> Any:
     if isinstance(config, dict):

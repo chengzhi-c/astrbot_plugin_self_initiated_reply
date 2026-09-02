@@ -13,7 +13,7 @@ from .decision import DECISION_MAX_TOKENS, DECISION_SYSTEM_PROMPT, DecisionMaker
 from .delivery import DeliveryRunner
 from .generation import GenerationRunner
 from .image.vision_runtime import VisionService
-from .models import GRACEFUL_STOP_GRACE_SEC, now_ts
+from .models import GRACEFUL_STOP_GRACE_SEC, TERMINATE_TASK_TIMEOUT_SEC, now_ts
 from .scheduler import SessionScheduler
 from .session_coordinator import SessionCoordinator
 from .session_pipeline import SessionPipeline
@@ -38,7 +38,7 @@ def assemble_plugin_components(
     不在装配后回填私有属性。
     """
     grace = get_grace_stop_sec or (lambda: GRACEFUL_STOP_GRACE_SEC)
-    stop_timeout = get_stop_timeout or (lambda: 3.0)
+    stop_timeout = get_stop_timeout or (lambda: TERMINATE_TASK_TIMEOUT_SEC)
     plugin._coordinator = SessionCoordinator(
         events=plugin._last_events,
         event_at=plugin._last_event_at,

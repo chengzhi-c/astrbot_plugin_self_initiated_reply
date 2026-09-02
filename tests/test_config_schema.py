@@ -212,10 +212,11 @@ def test_schema_slider_bounds_match_python_clamps() -> None:
 
 
 def test_schema_options_match_python_choices() -> None:
-    """枚举型键的 schema options 必须等于 Python/webapi 侧接受的取值集合。"""
+    """枚举型键的 schema options 必须等于规格表。"""
     schema = _schema()
-    webapi = _webapi()
-    assert set(schema["reply_length_mode"]["options"]) == set(webapi._REPLY_LENGTH_MODES)
+    assert set(schema["reply_length_mode"]["options"]) == set(
+        _models().CONFIG_SPEC_BY_KEY["reply_length_mode"].options
+    )
 
 
 # ============================================================================

@@ -56,7 +56,6 @@ from .session_gate import SessionGate
 CommandReply = AsyncGenerator[Any, None]
 
 MAX_QUARANTINED_TASKS = 8
-TERMINATE_TASK_TIMEOUT_SEC = 3.0
 
 _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
 
@@ -85,6 +84,7 @@ from .models import (
     PLUGIN_ID,
     PLUGIN_VERSION,
     SESSION_CANCEL_COMMAND_ACTIONS,
+    TERMINATE_TASK_TIMEOUT_SEC,
     PluginLifecycle,
     SessionState,
     Settings,

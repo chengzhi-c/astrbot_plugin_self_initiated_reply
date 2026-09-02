@@ -6,6 +6,8 @@
 
 `CONFIG_SPECS.surfaces` 区分官方 Dashboard（`host`）与自定义设置页（`panel`）。常用键上自定义页；巡检、勿扰、回复长度、日上限、`log_reply_content` 等只在 Dashboard。两套面板读写同一份配置。前端可写键必须等于 panel 面，由 `test_fe_writable_keys_match_panel_surfaces` 锁定。
 
+GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decision_prompt_default` / `config_revision`。POST `/config` 接受全部 schema 键，测试与旧客户端可改巡检、勿扰、日上限；无 `base_revision` 的调用标记 `unversioned_write`。官方 Dashboard 走宿主配置文件，自定义页走本 API。
+
 ## 装配模块
 
 协作对象接线留在 `assembly.py`。循环依赖与宿主热替换用调用期查找。容器持有者守卫同时扫描 `main.py` 与 `assembly.py`。

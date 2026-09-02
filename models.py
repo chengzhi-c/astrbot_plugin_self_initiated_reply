@@ -73,6 +73,9 @@ MAX_DIRECT_TOOL_SENDS = 2  # 每次主动回复最多允许工具直接发出的
 # 生成超时后留给 run_agent 优雅退出的宽限秒数：request_stop 后宿主会
 # 正常清理内部任务（如 stop_watcher），宽限过后仍未退出才兜底取消。
 GRACEFUL_STOP_GRACE_SEC = 3.0
+# terminate() 等待后台/关键任务的硬窗口；与宽限同值但是两条语义，
+# 不能合成一个常数。assembly 的 stop_timeout fallback 必须引用这里，禁止再写 3.0。
+TERMINATE_TASK_TIMEOUT_SEC = 3.0
 # 指令动作集合：help/status/list/debug 为只读，不触碰会话任务；
 # add/remove/check/on/off 为写操作，各自内部处理会话失效语义。
 ADMIN_COMMAND_ACTIONS = {"status", "list", "add", "remove", "check", "on", "off", "debug"}
@@ -230,6 +233,11 @@ def duration(seconds: float) -> str:
 
 
 def as_bool(value: Any, default: bool = False) -> bool:
+    """Parse a persisted/host config flag. Broader than ``parse_decision_json``.
+
+    Config values come from Dashboard/JSON files and historically used on/启用/开启.
+    Decision-model JSON only accepts true/yes/1/是 — do not reuse this set there.
+    """
     if isinstance(value, bool):
         return value
     if value is None:
@@ -941,6 +949,10 @@ def normalize_string_list(
     ``disk`` mode filters and bounds untrusted persisted data while ``api`` mode
     rejects malformed input. Warnings contain counts only, never user-provided
     list content.
+
+    ``api`` is only for ``webapi._string_list`` (400 on illegal input).
+    ``coerce_config_value`` / ``from_config`` always use ``disk`` so a bad
+    on-disk list cannot refuse plugin load.
     """
     if mode not in {"disk", "api"}:
         raise ValueError(f"unknown list normalization mode: {mode}")

@@ -552,8 +552,8 @@ def test_decide_session_reply_early_reason_passthrough(tmp_path: Path) -> None:
         plugin._decision.decide = fake_decide
         try:
             state = plugin._state_for(UMO)
-            plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
-            result = await plugin_state.decide_session_reply(
+            pipeline = importlib.import_module(main.__package__ + ".session_pipeline")
+            result = await pipeline.decide_session_reply(
                 plugin._decision,
                 plugin._gate,
                 plugin._last_decisions,
@@ -575,8 +575,8 @@ def test_decide_session_reply_stale_generation_rejected(tmp_path: Path) -> None:
         token = plugin._gate.advance(UMO)
         plugin._gate.advance(UMO)
         state = plugin._state_for(UMO)
-        plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
-        result = await plugin_state.decide_session_reply(
+        pipeline = importlib.import_module(main.__package__ + ".session_pipeline")
+        result = await pipeline.decide_session_reply(
             plugin._decision,
             plugin._gate,
             plugin._last_decisions,
@@ -596,8 +596,8 @@ def test_decide_session_reply_no_reply_returns_reason(tmp_path: Path) -> None:
 
     async def scenario(plugin, main):
         state = plugin._state_for(UMO)
-        plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
-        result = await plugin_state.decide_session_reply(
+        pipeline = importlib.import_module(main.__package__ + ".session_pipeline")
+        result = await pipeline.decide_session_reply(
             plugin._decision,
             plugin._gate,
             plugin._last_decisions,
@@ -608,6 +608,46 @@ def test_decide_session_reply_no_reply_returns_reason(tmp_path: Path) -> None:
             expected_generation=None,
         )
         assert result.startswith("判断不回复：")
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_decide_session_reply_log_folds_reason_newlines(tmp_path: Path) -> None:
+    """判断理由写 INFO 时不得把换行原样打进日志行。"""
+
+    async def scenario(plugin, main):
+        original_decide = plugin._decision.decide
+        captured: list[str] = []
+        pipeline = importlib.import_module(main.__package__ + ".session_pipeline")
+        original_logger_info = pipeline.logger.info
+
+        async def fake_decide(*args, **kwargs):
+            return {"should_reply": True, "reason": "ok\nINFO fake", "elapsed_sec": 0.0}
+
+        def capture_info(template, *args):
+            captured.append(template % args if args else str(template))
+
+        plugin._decision.decide = fake_decide
+        pipeline.logger.info = capture_info
+        try:
+            result = await pipeline.decide_session_reply(
+                plugin._decision,
+                plugin._gate,
+                plugin._last_decisions,
+                UMO,
+                plugin._state_for(UMO),
+                trigger="message_delay",
+                force=True,
+                expected_generation=None,
+            )
+            assert result["should_reply"] is True
+            lines = [line for line in captured if "decision session=" in line]
+            assert lines, captured
+            assert "\n" not in lines[-1]
+            assert "INFO fake" in lines[-1]
+        finally:
+            plugin._decision.decide = original_decide
+            pipeline.logger.info = original_logger_info
 
     with_plugin(tmp_path, scenario)
 
@@ -1083,8 +1123,8 @@ def test_decide_session_reply_dict_no_reply(tmp_path: Path) -> None:
         plugin._decision.decide = fake_decide
         try:
             state = plugin._state_for(UMO)
-            plugin_state = importlib.import_module(main.__package__ + ".plugin_state")
-            result = await plugin_state.decide_session_reply(
+            pipeline = importlib.import_module(main.__package__ + ".session_pipeline")
+            result = await pipeline.decide_session_reply(
                 plugin._decision,
                 plugin._gate,
                 plugin._last_decisions,

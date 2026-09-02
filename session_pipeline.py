@@ -19,8 +19,8 @@ from .models import (
     AttemptState,
     SessionState,
     Settings,
+    now_ts,
 )
-from .plugin_state import decide_session_reply
 from .session_gate import SessionGate
 from .utils import (
     collapse_whitespace,
@@ -30,6 +30,60 @@ from .utils import (
 )
 
 _MAX_RECORD_SAVE_ATTEMPTS = 2
+
+
+def record_decision(
+    last_decisions: dict[str, Any],
+    umo: str,
+    trigger: str,
+    *,
+    should_reply: bool,
+    reason: str,
+) -> None:
+    last_decisions[umo] = {
+        "at": round(now_ts(), 3),
+        "trigger": trigger,
+        "should_reply": should_reply,
+        "reason": reason,
+    }
+
+
+async def decide_session_reply(
+    decision: Any,
+    gate: Any,
+    last_decisions: dict[str, Any],
+    umo: str,
+    state: SessionState,
+    *,
+    trigger: str,
+    force: bool,
+    expected_generation: int | None,
+) -> dict[str, Any] | str:
+    result = await decision.decide(umo, state, trigger=trigger, force=force)
+    if isinstance(result, str):
+        record_decision(last_decisions, umo, trigger, should_reply=False, reason=result)
+        return result
+    if not gate.is_current(umo, expected_generation):
+        return STALE_TASK_MESSAGE
+    record_decision(
+        last_decisions,
+        umo,
+        trigger,
+        should_reply=bool(result.get("should_reply")),
+        reason=str(result.get("reason") or ""),
+    )
+    logger.info(
+        "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
+        PLUGIN_ID,
+        umo,
+        trigger,
+        result.get("should_reply"),
+        float(result.get("elapsed_sec") or 0.0),
+        collapse_whitespace(result.get("reason") or "-"),
+    )
+    if not result.get("should_reply"):
+        return f"判断不回复：{result.get('reason') or '未说明'}"
+    return result
 
 
 class SessionPipeline:
@@ -48,7 +102,7 @@ class SessionPipeline:
         decision: DecisionMaker,
         last_events: dict[str, AstrMessageEvent],
         last_decisions: dict[str, Any],
-        track_critical_task: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any]] | None = None,
+        track_critical_task: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any]],
     ) -> None:
         self._state_for = state_for
         self._generation = generation
@@ -270,13 +324,11 @@ class SessionPipeline:
             return False
 
     def _create_critical_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
-        if self._track_critical_task is not None:
-            task = self._track_critical_task(coro)
-            if task is None:
-                coro.close()
-                raise RuntimeError("critical task registration was rejected")
-            return task
-        return asyncio.create_task(coro)
+        task = self._track_critical_task(coro)
+        if task is None:
+            coro.close()
+            raise RuntimeError("critical task registration was rejected")
+        return task
 
     async def _finalize_ledger(
         self,

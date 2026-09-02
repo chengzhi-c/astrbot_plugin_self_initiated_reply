@@ -1,6 +1,7 @@
 const MORE_ACTIONS_MEDIA = "(max-width: 460px)";
 const DIM_KEY = "selfreply-dim";
 const BOLD_KEY = "selfreply-bold";
+// Keep in sync with index.html mobile tabbar data-target values.
 const TAB_GROUPS = {
   selfStat: "selfStat", "sec-scope": "sec-scope", "sec-triggers": "sec-scope", "sec-decision": "sec-decision", "sec-runtime": "sec-runtime", "sec-vision": "sec-runtime",
 };
