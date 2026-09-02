@@ -75,9 +75,9 @@
   <img src="https://raw.githubusercontent.com/chengzhi-c/astrbot_plugin_self_initiated_reply/main/assets/审判之司.jpg" alt="深色主题 · 审判之司" width="49%">
 </p>
 
-### 常用配置
+### 常用配置项
 
-| 字段 | 建议值 | 说明 |
+| 配置项 | 推荐值 | 说明 |
 | --- | --- | --- |
 | 启用判断模型 | 开启 | 主动接话的核心开关 |
 | 判断模型 Provider | 留空或轻量模型 | 默认跟随会话模型，也可配置 `gpt-4o-mini` 等模型 |
