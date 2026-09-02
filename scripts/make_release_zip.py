@@ -29,15 +29,39 @@ import zipfile
 from pathlib import Path
 
 try:
-    from scripts.release_artifacts import ArtifactError, resolve_artifact
+    from scripts.release_artifacts import (
+        ArtifactError,
+        expected_project_name,
+        resolve_artifact,
+        validate_archive_member,
+    )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    from release_artifacts import ArtifactError, resolve_artifact
+    from release_artifacts import (
+        ArtifactError,
+        expected_project_name,
+        resolve_artifact,
+        validate_archive_member,
+    )
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR_NAME = "astrbot_plugin_self_initiated_reply"
 # 缺任何一条即拒绝出包：宿主靠 main.py 找入口、靠 metadata.yaml 认插件，
 # 缺了不会报错只会"装上却不工作"。
-REQUIRED = ("main.py", "metadata.yaml", "_conf_schema.json", "__init__.py")
+REQUIRED = (
+    "main.py",
+    "metadata.yaml",
+    "_conf_schema.json",
+    "__init__.py",
+    "pages/主动回复设置/index.html",
+    "pages/主动回复设置/style.css",
+    "pages/主动回复设置/app.js",
+    "pages/主动回复设置/frontend-core.mjs",
+    "pages/主动回复设置/config-form.mjs",
+    "pages/主动回复设置/config-io.mjs",
+    "pages/主动回复设置/providers.mjs",
+    "pages/主动回复设置/theme.mjs",
+    "pages/主动回复设置/chrome.mjs",
+)
 # 与 check_wheel.py 的 FORBIDDEN_PREFIXES 同源的开发物前缀。这里再查一遍不是
 # 冗余：wheel 与 zip 之间还有本脚本这一层转写，转写逻辑写错时 check_wheel 已经
 # 跑完了。
@@ -52,7 +76,8 @@ def main(wheel_path: str | Path | None = None) -> int:
             kind="wheel",
             explicit=wheel_path,
         )
-    except ArtifactError as exc:
+        expected_name = expected_project_name(ROOT)
+    except (ArtifactError, OSError) as exc:
         print(f"FAIL: {exc}")
         return 1
     source_wheel = wheel.path
@@ -60,29 +85,51 @@ def main(wheel_path: str | Path | None = None) -> int:
     version = str(wheel.version)
     out_path = ROOT / "dist" / f"{PLUGIN_DIR_NAME}-{version}-deploy.zip"
     copied: list[str] = []
+    payloads: dict[str, bytes] = {}
     skipped = 0
+    failures: list[str] = []
 
-    with (
-        zipfile.ZipFile(source_wheel) as src,
-        zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as dst,
-    ):
+    if wheel.name != expected_name:
+        failures.append(f"wheel 项目名 {wheel.name} 与 pyproject {expected_name} 不一致")
+
+    try:
+        src = zipfile.ZipFile(source_wheel)
+    except (OSError, zipfile.BadZipFile) as exc:
+        print(f"FAIL: cannot read wheel: {exc}")
+        return 1
+    with src:
         for entry in src.infolist():
             name = entry.filename.replace("\\", "/")
+            try:
+                name = validate_archive_member(name)
+            except ArtifactError as exc:
+                failures.append(str(exc))
+                continue
             if name.endswith("/"):
                 continue
-            if ".dist-info/" in name:
+            if name.split("/", 1)[0].endswith(".dist-info"):
                 skipped += 1
                 continue
             rel = name.removeprefix("./")
-            dst.writestr(f"{PLUGIN_DIR_NAME}/{rel}", src.read(entry))
             copied.append(rel)
+            payloads[rel] = src.read(entry)
 
-    failures = [f"缺少必需文件: {item}" for item in REQUIRED if item not in copied]
+    failures.extend(f"缺少必需文件: {item}" for item in REQUIRED if item not in copied)
     failures += [f"开发物泄漏: {name}" for name in copied if name.startswith(DEV_PREFIXES)]
     if failures:
+        out_path.unlink(missing_ok=True)
         print("FAIL:")
         for line in failures:
             print(f"  - {line}")
+        return 1
+
+    try:
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as dst:
+            for rel in copied:
+                dst.writestr(f"{PLUGIN_DIR_NAME}/{rel}", payloads[rel])
+    except (OSError, zipfile.BadZipFile, KeyError) as exc:
+        out_path.unlink(missing_ok=True)
+        print(f"FAIL: cannot write deploy zip: {exc}")
         return 1
 
     size_kb = out_path.stat().st_size // 1024

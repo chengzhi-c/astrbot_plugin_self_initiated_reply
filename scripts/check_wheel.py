@@ -22,9 +22,9 @@ from packaging.requirements import Requirement
 from packaging.version import InvalidVersion, Version
 
 try:
-    from scripts.release_artifacts import ArtifactError, resolve_artifact
+    from scripts.release_artifacts import ArtifactError, expected_project_name, resolve_artifact
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    from release_artifacts import ArtifactError, resolve_artifact
+    from release_artifacts import ArtifactError, expected_project_name, resolve_artifact
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -44,6 +44,7 @@ FORBIDDEN_PREFIXES = (
     "package.json",
     "package-lock.json",
     "playwright.config.mjs",
+    "uv.lock",
 )
 # 必须存在的运行时文件（相对 wheel 内路径）
 # README.md / CHANGELOG.md 自 0.9.5 起是必需项：exclude 的 `*.md` 曾把它们一起排掉，
@@ -57,6 +58,15 @@ REQUIRED_FILES = (
     "pages/",
     "README.md",
     "CHANGELOG.md",
+    "pages/主动回复设置/index.html",
+    "pages/主动回复设置/style.css",
+    "pages/主动回复设置/app.js",
+    "pages/主动回复设置/frontend-core.mjs",
+    "pages/主动回复设置/config-form.mjs",
+    "pages/主动回复设置/config-io.mjs",
+    "pages/主动回复设置/providers.mjs",
+    "pages/主动回复设置/theme.mjs",
+    "pages/主动回复设置/chrome.mjs",
 )
 # 开发配置类：wheel 内不应出现
 FORBIDDEN_SUFFIXES = (".pre-commit-config.yaml", ".pyc")
@@ -138,13 +148,14 @@ def _has_required_file(names: list[str], required: str) -> bool:
 
 def main(wheel_path: str | Path | None = None) -> int:
     wheel = _find_wheel(wheel_path)
-    wheel_version = resolve_artifact(
+    target = resolve_artifact(
         ROOT,
         pattern="*.whl",
         kind="wheel",
         explicit=wheel,
-    ).version
+    )
     expected = _expected_version()
+    expected_name = expected_project_name(ROOT)
     print(f"检查 wheel: {wheel.name} ({wheel.stat().st_size / 1024:.0f} KB)")
     with zipfile.ZipFile(wheel) as zf:
         names = zf.namelist()
@@ -172,8 +183,11 @@ def main(wheel_path: str | Path | None = None) -> int:
     except InvalidVersion:
         print(f"FAIL: invalid metadata version: {expected}")
         return 1
-    if wheel_version != expected_version:
-        failures.append(f"wheel 文件名版本 {wheel_version} 与 metadata {expected_version} 不一致")
+    if target.version != expected_version:
+        failures.append(f"wheel 文件名版本 {target.version} 与 metadata {expected_version} 不一致")
+
+    if target.name != expected_name:
+        failures.append(f"wheel 项目名 {target.name} 与 pyproject {expected_name} 不一致")
 
     if not dist_meta:
         failures.append("wheel 内缺少 .dist-info/METADATA")

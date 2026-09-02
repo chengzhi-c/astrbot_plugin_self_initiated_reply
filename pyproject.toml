@@ -106,6 +106,7 @@ exclude = [
   "package.json",
   "package-lock.json",
   "playwright.config.mjs",
+  "uv.lock",
   "*.md",
   ".gitignore",
   ".pre-commit-config.yaml",

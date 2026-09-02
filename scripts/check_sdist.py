@@ -12,9 +12,9 @@ from pathlib import Path
 from packaging.version import InvalidVersion, Version
 
 try:
-    from scripts.release_artifacts import ArtifactError, resolve_artifact
+    from scripts.release_artifacts import ArtifactError, expected_project_name, resolve_artifact
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    from release_artifacts import ArtifactError, resolve_artifact
+    from release_artifacts import ArtifactError, expected_project_name, resolve_artifact
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_FILES = (
@@ -99,6 +99,7 @@ def main(sdist_path: str | Path | None = None) -> int:
             explicit=sdist_path,
         )
         expected = _expected_version()
+        expected_name = expected_project_name(ROOT)
     except (ArtifactError, OSError, ValueError) as exc:
         print(f"FAIL: {exc}")
         return 1
@@ -157,6 +158,8 @@ def main(sdist_path: str | Path | None = None) -> int:
             "sdist filename version "
             f"{target.version} differs from metadata version {expected_version}"
         )
+    if target.name != expected_name:
+        failures.append(f"sdist 项目名 {target.name} 与 pyproject {expected_name} 不一致")
 
     if failures:
         print("FAIL:")

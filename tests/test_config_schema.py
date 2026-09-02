@@ -496,6 +496,7 @@ def test_wheel_forbidden_patterns_are_excluded_by_pyproject() -> None:
         "package.json": ["package.json"],
         "package-lock.json": ["package-lock.json"],
         "playwright.config.mjs": ["playwright.config.mjs"],
+        "uv.lock": ["uv.lock"],
         ".gitignore": [".gitignore"],
         "assets/": ["assets/probe.jpg"],
         ".coverage": [".coverage"],

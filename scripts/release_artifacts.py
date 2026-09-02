@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import re
+import tomllib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from packaging.utils import (
     InvalidSdistFilename,
     InvalidWheelFilename,
+    canonicalize_name,
     parse_sdist_filename,
     parse_wheel_filename,
 )
@@ -23,20 +26,47 @@ class ArtifactTarget:
     """A uniquely selected and filename-validated release artifact."""
 
     path: Path
+    name: str
     version: Version
 
 
-def _parse_version(path: Path, kind: str) -> Version:
+def expected_project_name(root: Path) -> str:
+    """Return the canonical project name from pyproject.toml."""
+    try:
+        with (root / "pyproject.toml").open("rb") as handle:
+            name = tomllib.load(handle)["project"]["name"]
+    except (OSError, KeyError, TypeError) as exc:
+        raise ArtifactError("pyproject.toml 缺少 project.name") from exc
+    if not isinstance(name, str) or not name.strip():
+        raise ArtifactError("pyproject.toml 缺少 project.name")
+    return canonicalize_name(name)
+
+
+def validate_archive_member(name: str) -> str:
+    """Return a relative archive path and reject traversal or absolute paths."""
+    normalized = name.replace("\\", "/")
+    if (
+        not normalized
+        or "\x00" in normalized
+        or normalized.startswith("/")
+        or re.match(r"^[A-Za-z]:", normalized)
+        or ".." in PurePosixPath(normalized).parts
+    ):
+        raise ArtifactError(f"unsafe archive member path: {name!r}")
+    return normalized.removeprefix("./")
+
+
+def _parse_artifact(path: Path, kind: str) -> tuple[str, Version]:
     try:
         if kind == "wheel":
-            _, version, _, _ = parse_wheel_filename(path.name)
+            name, version, _, _ = parse_wheel_filename(path.name)
         elif kind == "sdist":
-            _, version = parse_sdist_filename(path.name)
+            name, version = parse_sdist_filename(path.name)
         else:
             raise ArtifactError(f"unsupported artifact kind: {kind}")
     except (InvalidSdistFilename, InvalidWheelFilename, ValueError) as exc:
         raise ArtifactError(f"invalid {kind} filename: {path.name}") from exc
-    return version
+    return canonicalize_name(name), version
 
 
 def resolve_artifact(
@@ -66,4 +96,5 @@ def resolve_artifact(
     path = candidates[0]
     if not path.is_file():
         raise ArtifactError(f"{kind} artifact is not a file: {path}")
-    return ArtifactTarget(path=path, version=_parse_version(path, kind))
+    name, version = _parse_artifact(path, kind)
+    return ArtifactTarget(path=path, name=name, version=version)
