@@ -91,6 +91,8 @@ jobs:
       - name: Test
         run: pytest --cov-report=xml
       - name: Upload coverage artifact
+        # 覆盖率产物只留 3.12 一份：无 job 消费它，三份全传只是占存储。
+        if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.python-version }}

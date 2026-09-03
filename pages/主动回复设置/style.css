@@ -151,8 +151,6 @@
 }
 :root[data-theme="dark"] {
 	color-scheme: dark;
-}
-:root[data-theme="dark"] {
 	--accent: var(--accent-dark);
 	--accent-text: var(--accent-text-dark);
 	--accent-soft: var(--accent-soft-dark);
@@ -2118,11 +2116,6 @@ textarea {
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.01ms !important;
 		scroll-behavior: auto !important;
-	}
-	.topbar,
-	.mobile-savebar,
-	.mobile-tabbar {
-		background: var(--bg);
 	}
 	.toast {
 		background: var(--toast-bg);

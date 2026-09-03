@@ -60,6 +60,8 @@ export function isSuccessfulConfigPayload(config, requiredKeys = []) {
   );
 }
 
+/* 三档超时分工（值不同是有意的，不收敛）：内联 8s 是无 bridge 时的失败兜底
+   （index.html），12s 是应用启动 deadline（app.js），15s 是单次 API 上限（此处）。 */
 export const FETCH_TIMEOUT_MS = 15000;
 const REQUEST_TIMEOUT_MESSAGE = "请求超时，请稍后重试";
 
