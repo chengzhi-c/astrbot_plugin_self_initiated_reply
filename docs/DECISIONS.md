@@ -12,9 +12,11 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 
 协作对象接线在 `main._assemble_components`。循环依赖与宿主热替换用调用期查找。
 
+`webapi` 用 `TYPE_CHECKING` 导入 `SelfInitiatedReplyPlugin`，避免与 `main` 运行时成环。注解只给编辑器跳转：函数都经 `partial` 再注册，宿主看不到 `__annotations__`。`ignore_missing_imports` 下 mypy 把 `Star` 子类看成 `Any`，这些注解不产生类型检查力。
+
 ## 设置页 chrome
 
-浅/深/跟随系统主题经 `GET/POST ui/theme` 写入 `ui_prefs.json`（页面在 Dashboard iframe 内，localStorage 不可靠）。压暗与粗体是页面能力，浏览器测试覆盖。主题落盘与状态文件共用 `storage` 原子写。
+浅/深/跟随系统与压暗/粗体均经 `GET/POST ui/theme` 写入 `ui_prefs.json`（页面在 Dashboard iframe 内，localStorage 不可靠）。保存必须带齐三字段，禁止只写主题抹掉压暗/粗体。落盘与状态文件共用 `storage` 原子写。
 
 ## 默认值
 
