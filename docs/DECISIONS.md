@@ -55,6 +55,12 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 新抽象必须已有第二个实现或第二个调用方。新门禁必须证明现有 ruff/pytest 抓不到。
 不为覆盖率补行，不为文件变少合并领域模块。
 
+## 阈值分工
+
+安全上限（防 OOM/费用爆炸/性能降级）在 `models.py` 顶部常量；行为调参（静默等待余量、
+清理周期、冻结预算、裁决 token）在各模块本地常量并附一行取值理由。不把后者搬进
+`models.py`，避免依赖图叶子继续膨胀。
+
 
 发布脚本不再按文件名字典序猜测目标 wheel。`release_artifacts.py` 使用 `packaging` 解析 wheel/sdist 文件名中的 PEP 440 版本；默认发现多个候选或坏文件名直接失败，只有显式路径能消除歧义。`check_wheel.py`、`check_sdist.py` 与部署 zip 共享同一解析器。`gates.py` 的普通本地模式在缺 wheel/sdist 时只报告 `NOT RELEASE-VERIFIED`，`--release` 则非零退出；CI build 独立检查 wheel、sdist 和 deploy zip。
 

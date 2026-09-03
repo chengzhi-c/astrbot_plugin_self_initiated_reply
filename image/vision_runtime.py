@@ -113,6 +113,7 @@ class VisionService:
                 return
             prepared = await asyncio.wait_for(
                 parser.prepare_batch(images, max_concurrent=2),
+                # 冻结预算取单图超时的 2 倍（5–30s 夹取）：批量可比单图慢，但不得拖住消息主链。
                 timeout=max(5.0, min(30.0, float(self._settings.vision_timeout_sec) * 2)),
             )
             if self._is_stopping() or not self._gate.is_current(umo, generation):

@@ -279,6 +279,16 @@ test("theme localStorage key stays single-sourced with the HTML bootstrap", asyn
   const html = await readFile(join(pageDir, "index.html"), "utf8");
   const htmlKey = html.match(/localStorage\.getItem\("([^"]+)"\)/)?.[1];
   assert.equal(htmlKey, THEME_KEY);
+  assert.equal(html.split(THEME_KEY).length - 1, 1);
+});
+
+test("frontend plugin id matches the backend package identity", async () => {
+  const app = await readFile(join(pageDir, "app.js"), "utf8");
+  const models = await readFile(join(root, "models.py"), "utf8");
+  const feId = app.match(/const PLUGIN_ID = "([^"]+)"/)?.[1];
+  const beId = models.match(/PLUGIN_ID = "([^"]+)"/)?.[1];
+  assert.equal(feId, "astrbot_plugin_self_initiated_reply");
+  assert.equal(feId, beId);
 });
 
 test("dark accent tokens are declared once and reused", async () => {

@@ -93,9 +93,13 @@ def test_frontend_has_no_handwritten_default_config() -> None:
 
 
 def _fe_whitelist_illegal_pattern() -> str:
-    text = (ROOT / "pages" / "主动回复设置" / "config-io.mjs").read_text(encoding="utf-8")
+    text = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
     match = re.search(r"export const WHITELIST_ILLEGAL_RE = /(.+)/;", text)
     assert match, "WHITELIST_ILLEGAL_RE not found"
+    io_text = (ROOT / "pages" / "主动回复设置" / "config-io.mjs").read_text(encoding="utf-8")
+    assert "WHITELIST_ILLEGAL_RE = /" not in io_text, (
+        "config-io.mjs must re-export WHITELIST_ILLEGAL_RE, not redefine it"
+    )
     return match.group(1)
 
 

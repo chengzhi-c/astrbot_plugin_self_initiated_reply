@@ -40,6 +40,7 @@ from .utils import (
 )
 
 DECISION_SYSTEM_PROMPT = "你是群聊主动回复时机判断器。只输出严格 JSON，不要输出解释。"
+# 裁决只输出短 JSON，120 token 足够且把判断调用成本封顶。
 DECISION_MAX_TOKENS = 120
 
 

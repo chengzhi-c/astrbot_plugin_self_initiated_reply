@@ -6,6 +6,10 @@
 不拥有任何 I/O 与业务判断：落盘属 ``storage``，宿主字段读取属 ``utils``，
 是否接话属 ``decision``。本模块是依赖图的叶子（只依赖标准库与宿主 logger），
 19 个生产模块从这里取形状，反向依赖会立刻成环。
+
+分区目录：安全上限常量 → 危险工具清单 → 提示词模板 → 通用纯函数 →
+``AttemptLedger`` 状态机 → 配置规格表 / ``Settings``。分区只做定位，
+不拆文件（拆分收益抵不过契约测试的摩擦成本）。
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ MAX_WHITELIST_SIZE = 1000  # 白名单最大条目数，防止性能降级
 MAX_STRING_LIST_ITEM_LEN = (
     200  # 字符串列表条目最大长度（白名单/别名/忽略名单等共用），防止垃圾长条目
 )
-# 与前端 pages/主动回复设置/config-io.mjs 的 WHITELIST_ILLEGAL_RE 同字符集。
+# 与前端 pages/主动回复设置/config-form.mjs 的 WHITELIST_ILLEGAL_RE 同字符集。
 # 控制字符 + 引号 + 反斜杠：过长文案截进 logger.warning 时不能伪造日志行。
 STRING_LIST_ILLEGAL_RE = re.compile(r"[\x00-\x1f\"'\\]")
 MAX_BOT_ALIASES = 64

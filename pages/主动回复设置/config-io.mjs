@@ -4,13 +4,13 @@ import {
 	summarizeWhitelist,
 	uniqueWhitelistItems,
 	validateWhitelistLines,
+	WHITELIST_ILLEGAL_RE,
 } from "./config-form.mjs";
 import {
 	createConfigRequestCoordinator,
 	isSuccessfulConfigPayload,
 } from "./frontend-core.mjs";
-const WHITELIST_ITEM_MAX_LEN = 200;
-export const WHITELIST_ILLEGAL_RE = /[\x00-\x1f"'\\]/;
+export { WHITELIST_ILLEGAL_RE };
 const CONFIG_CONTROL_SELECTOR = "[data-config-key]";
 
 /** POST /config fields are declared by form data-config-key metadata. */
