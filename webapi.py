@@ -12,27 +12,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    # 只在类型检查期导入：运行时 main.py 先 import 本模块
-    # （main.py:115），反向真导入会成环。`from __future__ import annotations` 已让
-    # 注解全为字符串，故无需 quote、无加载期开销。
-    #
-    # 本模块保持 TYPE_CHECKING-only 是安全的，但**理由不是「宿主不解析注解」**：
-    # 4.27.2 已证伪那条假设（见 main.py 的 CommandReply 注释——指令
-    # 处理器就是因此在加载期 NameError）。这里安全的真实理由是本模块的函数从不以
-    # 裸函数交给宿主：全部经 partial(...) 包装后再 register，partial 对象没有
-    # __annotations__，宿主拿不到也不会去解析这些名字。
-    # 哪天有函数改成裸函数直接注册，就必须同步把注解改成运行时可解析。
-    #
-    # **诚实说明其检查力**：本注解今天**不产生任何 mypy 检查力**。
-    # `ignore_missing_imports = true` 让 astrbot.* 全解析为 Any，而
-    # SelfInitiatedReplyPlugin 继承的 Star 就来自那里，于是整个子类坍缩成 Any——
-    # 实测 `reveal_type(plugin)` 输出 `Any`，故意写错属性名（plugin.contextt）
-    # 也照样 Success。同一结论 [tool.mypy] 的注释已记录过。
-    #
-    # 那为什么还写：它是本模块 17 个函数**唯一说明"这个 plugin 是什么"的地方**。
-    # 此前读者看到裸 `plugin` 只能靠 grep 反查。编辑器的跳转与补全走的是
-    # pyright/Pylance 对 main.py 的直接解析，不受上面那条 mypy 开关影响。
-    # 且宿主哪天发布 py.typed（或本仓库补本地 stub），这 17 处会自动开始真检查。
+    # 运行时与 main 成环；partial 注册，宿主不解析这些注解。详见 DECISIONS.md。
     from .main import SelfInitiatedReplyPlugin
 
 from astrbot.api import logger
@@ -214,45 +194,78 @@ def _strict_bool(value: Any, field: str) -> bool:
     return value
 
 
-def _load_ui_theme(plugin: SelfInitiatedReplyPlugin) -> str:
-    """从 ui_prefs.json 加载主题偏好；损坏或缺失回退 auto。"""
+def _load_ui_prefs(plugin: SelfInitiatedReplyPlugin) -> tuple[str, bool, bool]:
+    """从 ui_prefs.json 加载主题/压暗/粗体；损坏或缺失回退 auto + 关。"""
     try:
         raw = json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8"))
         theme = str(raw.get("theme", "auto")).strip()
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
-        # 文件缺失/编码损坏/JSON 损坏/顶层非对象（raw.get 缺失）一律回退
-        return "auto"
-    return theme if theme in {"auto", "light", "dark"} else "auto"
+        dim = raw.get("dim", False)
+        bold = raw.get("bold", False)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError):
+        # 文件缺失/编码损坏/JSON 损坏/顶层非对象一律回退
+        return "auto", False, False
+    if theme not in {"auto", "light", "dark"}:
+        theme = "auto"
+    if not isinstance(dim, bool):
+        dim = False
+    if not isinstance(bold, bool):
+        bold = False
+    return theme, dim, bold
 
 
-def _save_ui_theme(plugin: SelfInitiatedReplyPlugin, theme: str) -> bool:
-    """原子写入主题偏好，与状态文件同一套落盘。"""
-    return _write_json_atomic(plugin._ui_prefs_path, {"theme": theme})
+def _save_ui_prefs(plugin: SelfInitiatedReplyPlugin, theme: str, dim: bool, bold: bool) -> bool:
+    """原子写入整份 UI 偏好，禁止只写 theme 抹掉 dim/bold。"""
+    return _write_json_atomic(plugin._ui_prefs_path, {"theme": theme, "dim": dim, "bold": bold})
+
+
+def _ui_prefs_payload(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "theme": plugin._ui_theme,
+        "dim": plugin._ui_dim,
+        "bold": plugin._ui_bold,
+    }
 
 
 async def _api_get_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """获取插件页面 UI 主题偏好。"""
-    return {"ok": True, "theme": plugin._ui_theme}
+    """获取插件页面 UI 主题/压暗/粗体偏好。"""
+    return _ui_prefs_payload(plugin)
 
 
 async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """更新插件页面 UI 主题偏好（持久化到 ui_prefs.json）。"""
+    """更新插件页面 UI 偏好（持久化到 ui_prefs.json）。未带的键保持原值。"""
     try:
         data = await _request_json()
     except Exception:
         data = {}
     if not isinstance(data, dict):
         return {"ok": False, "error": "请求体必须是 JSON 对象"}
-    theme = str(data.get("theme", "")).strip()
-    if theme not in {"auto", "light", "dark"}:
-        # 不回显 theme 原值：那是客户端可控输入，回显等于把请求体
-        # 原文反射回响应。合法取值是固定枚举，直接告知即可，无需回放输入。
+    theme = plugin._ui_theme
+    dim = plugin._ui_dim
+    bold = plugin._ui_bold
+    if "theme" not in data and "dim" not in data and "bold" not in data:
         return {"ok": False, "error": "无效主题，可选值：auto / light / dark"}
-    if theme != plugin._ui_theme:
-        if not _save_ui_theme(plugin, theme):
+    if "theme" in data:
+        theme = str(data.get("theme", "")).strip()
+        if theme not in {"auto", "light", "dark"}:
+            # 不回显 theme 原值：那是客户端可控输入，回显等于把请求体
+            # 原文反射回响应。合法取值是固定枚举，直接告知即可，无需回放输入。
+            return {"ok": False, "error": "无效主题，可选值：auto / light / dark"}
+    if "dim" in data:
+        if not isinstance(data["dim"], bool):
+            return {"ok": False, "error": "无效压暗开关"}
+        dim = data["dim"]
+    if "bold" in data:
+        if not isinstance(data["bold"], bool):
+            return {"ok": False, "error": "无效粗体开关"}
+        bold = data["bold"]
+    if (theme, dim, bold) != (plugin._ui_theme, plugin._ui_dim, plugin._ui_bold):
+        if not _save_ui_prefs(plugin, theme, dim, bold):
             return {"ok": False, "error": "主题写入失败"}
         plugin._ui_theme = theme
-    return {"ok": True, "theme": plugin._ui_theme}
+        plugin._ui_dim = dim
+        plugin._ui_bold = bold
+    return _ui_prefs_payload(plugin)
 
 
 def _strict_int(value: Any, field: str) -> int:
@@ -676,13 +689,13 @@ def register_web_apis(plugin: SelfInitiatedReplyPlugin) -> None:
         f"{route}/ui/theme",
         partial(_api_get_ui_theme, plugin),
         ["GET"],
-        "获取插件页面 UI 偏好（主题）",
+        "获取插件页面 UI 偏好（主题/压暗/粗体）",
     )
     register(
         f"{route}/ui/theme",
         partial(_api_post_ui_theme, plugin),
         ["POST"],
-        "更新插件页面 UI 偏好（主题）",
+        "更新插件页面 UI 偏好（主题/压暗/粗体）",
     )
 
 
@@ -694,5 +707,5 @@ def bind_api_handlers(plugin: SelfInitiatedReplyPlugin) -> None:
     plugin._api_post_ui_theme = partial(_api_post_ui_theme, plugin)
 
 
-# 公开入口：main.py 初始化时加载主题偏好。
-load_ui_theme = _load_ui_theme
+# 公开入口：main.py 初始化时加载 UI 偏好。
+load_ui_prefs = _load_ui_prefs

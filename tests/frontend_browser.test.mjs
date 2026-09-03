@@ -111,7 +111,7 @@ async function serveStatic(request, response) {
 
 async function installBridge(page, options = {}) {
   await page.addInitScript(
-    ({ config, providersFail, saveMode, theme, refreshConfigPending }) => {
+    ({ config, providersFail, saveMode, theme, dim, bold, refreshConfigPending }) => {
       const state = {
         saveMode,
         saveAttempts: 0,
@@ -138,7 +138,7 @@ async function installBridge(page, options = {}) {
             }
             return state.config;
           }
-          if (endpoint === "ui/theme") return { ok: true, theme };
+          if (endpoint === "ui/theme") return { ok: true, theme, dim, bold };
           return { ok: true };
         },
         apiPost: async (endpoint, body) => {
@@ -173,6 +173,8 @@ async function installBridge(page, options = {}) {
       providersFail: Boolean(options.providersFail),
       saveMode: options.saveMode || "success",
       theme: options.theme || "light",
+      dim: Boolean(options.dim),
+      bold: Boolean(options.bold),
       refreshConfigPending: Boolean(options.refreshConfigPending),
     }
   );
@@ -344,10 +346,24 @@ test("dimming places a visible non-interactive overlay above the page", async ({
   expect(overlay.pointerEvents).toBe("none");
   expect(Number(overlay.zIndex)).toBeGreaterThan(90);
   expect(await page.evaluate(() => localStorage.getItem("selfreply-dim"))).toBe("1");
+  await expect.poll(() =>
+    page.evaluate(() => window.__bridgeCalls.find((call) => call.method === "POST" && call.endpoint === "ui/theme")?.body)
+  ).toMatchObject({ dim: true });
   await page.locator("#dimBtn").click();
   await expect(page.locator("html")).not.toHaveClass(/dimmed/);
   await expect.poll(() => page.evaluate(() =>
     getComputedStyle(document.documentElement, "::after").backgroundColor)).toBe("rgba(0, 0, 0, 0)");
+  expect(errors).toEqual([]);
+});
+
+test("dimming and bold restore from ui prefs", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { dim: true, bold: true });
+  const errors = await openPage(page);
+  await expect(page.locator("html")).toHaveClass(/dimmed/);
+  await expect(page.locator("html")).toHaveClass(/bold-text/);
+  await expect(page.locator("#dimBtn")).toHaveClass(/active/);
+  await expect(page.locator("#boldBtn")).toHaveClass(/active/);
   expect(errors).toEqual([]);
 });
 

@@ -386,18 +386,21 @@ def test_ui_theme_load_and_get(tmp_path) -> None:
         webapi = sys.modules[f"{PACKAGE}.webapi"]
         # 损坏文件回退 auto
         plugin._ui_prefs_path.write_text("{bad json", encoding="utf-8")
-        assert webapi._load_ui_theme(plugin) == "auto"
-        # 非法主题回退 auto
+        assert webapi._load_ui_prefs(plugin) == ("auto", False, False)
+        # 非法主题回退 auto；缺 dim/bold 默认关
         plugin._ui_prefs_path.write_text('{"theme": "neon"}', encoding="utf-8")
-        assert webapi._load_ui_theme(plugin) == "auto"
+        assert webapi._load_ui_prefs(plugin) == ("auto", False, False)
         # 正常读取
-        plugin._ui_prefs_path.write_text('{"theme": "dark"}', encoding="utf-8")
-        assert webapi._load_ui_theme(plugin) == "dark"
-        # GET 返回实例当前主题
+        plugin._ui_prefs_path.write_text(
+            '{"theme": "dark", "dim": true, "bold": false}', encoding="utf-8"
+        )
+        assert webapi._load_ui_prefs(plugin) == ("dark", True, False)
+        # GET 返回实例当前偏好
         plugin._ui_theme = "light"
+        plugin._ui_dim = False
+        plugin._ui_bold = True
         result = await webapi._api_get_ui_theme(plugin)
-        assert result["ok"] is True
-        assert result["theme"] == "light"
+        assert result == {"ok": True, "theme": "light", "dim": False, "bold": True}
 
     with_plugin(tmp_path, scenario)
 
@@ -420,7 +423,11 @@ def test_api_post_ui_theme_paths(tmp_path) -> None:
         web.request.payload = {"theme": "dark"}
         result = await webapi._api_post_ui_theme(plugin)
         assert result["ok"] is True
-        assert json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8")) == {"theme": "dark"}
+        assert json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8")) == {
+            "theme": "dark",
+            "dim": False,
+            "bold": False,
+        }
         # 写入目标已是目录 → 失败
         plugin._ui_theme = "auto"
         blocked = tmp_path / "blocked.json"
@@ -431,13 +438,19 @@ def test_api_post_ui_theme_paths(tmp_path) -> None:
         assert result["ok"] is False
         # 成功
         plugin._ui_theme = "auto"
+        plugin._ui_dim = False
+        plugin._ui_bold = False
         plugin._ui_prefs_path = tmp_path / "ui_prefs.json"
         web.request.payload = {"theme": "dark"}
         result = await webapi._api_post_ui_theme(plugin)
         assert result["ok"] is True
         assert result["theme"] == "dark"
         assert plugin._ui_theme == "dark"
-        assert json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8")) == {"theme": "dark"}
+        assert json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8")) == {
+            "theme": "dark",
+            "dim": False,
+            "bold": False,
+        }
         # 相同主题不重复写盘
         result = await webapi._api_post_ui_theme(plugin)
         assert result["ok"] is True

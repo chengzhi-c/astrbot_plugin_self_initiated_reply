@@ -119,7 +119,7 @@ from .utils import (
     session_whitelisted,
     whitelist_storage_key,
 )
-from .webapi import bind_api_handlers, load_ui_theme, register_web_apis
+from .webapi import bind_api_handlers, load_ui_prefs, register_web_apis
 from .whitelist import WhitelistManager
 
 
@@ -186,10 +186,10 @@ class SelfInitiatedReplyPlugin(Star):
             self._image_cache_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             logger.warning("[%s] image cache directory unavailable: %s", PLUGIN_ID, exc)
-        # UI 偏好（主题）：AstrBot 插件页面以 iframe 嵌入 Dashboard，localStorage
-        # 不可用，主题必须持久化在后端 JSON 文件（与 state.json 同目录）。
+        # UI 偏好：AstrBot 插件页面以 iframe 嵌入 Dashboard，localStorage
+        # 不可靠，主题/压暗/粗体写入后端 JSON（与 state.json 同目录）。
         self._ui_prefs_path = self._storage_path.parent / "ui_prefs.json"
-        self._ui_theme = load_ui_theme(self)
+        self._ui_theme, self._ui_dim, self._ui_bold = load_ui_prefs(self)
         self._vision: VisionService
         self._whitelist_runtime_umos: dict[str, set[str]] = {}
         self._delay_tasks: dict[str, asyncio.Task[Any]] = {}

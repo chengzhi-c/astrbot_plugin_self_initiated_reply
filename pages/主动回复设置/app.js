@@ -18,6 +18,8 @@ import {
 	restoreTheme,
 } from "./theme.mjs";
 import {
+	applyBold,
+	applyDim,
 	bindDimBoldButtons,
 	createScrollHandler,
 	hideBoot,
@@ -102,8 +104,6 @@ const state = {
 const configRequestCoordinator = createConfigRequestCoordinator();
 const REFRESH_ARM_MS = 3000;
 const TOAST_MS = 2200;
-const SAVE_ANIM_MS = 1100;
-const SAVE_DOT_MS = 700;
 const PREVIEW_DEBOUNCE_MS = 80;
 const BOOT_TIMEOUT_MS = 12000;
 
@@ -241,8 +241,6 @@ const configIo = createConfigIo({
 	visionJudgeProviderControl,
 	fmtBool,
 	requestCoordinator: configRequestCoordinator,
-	SAVE_ANIM_MS,
-	SAVE_DOT_MS,
 });
 
 async function loadProviders() {
@@ -386,7 +384,7 @@ if (els.themeToggle) {
 	});
 }
 
-bindDimBoldButtons();
+bindDimBoldButtons(() => persistTheme(currentTheme(), apiPost));
 restoreDimBold();
 try {
 	const saved = localStorage.getItem(THEME_KEY);
@@ -450,6 +448,8 @@ loadAll()
 		showToast(err.message || "加载失败");
 	});
 
-restoreTheme(apiGet).then((theme) => {
-	if (theme !== currentTheme()) applyTheme(theme, els.themeToggle);
+restoreTheme(apiGet).then((prefs) => {
+	if (prefs.theme !== currentTheme()) applyTheme(prefs.theme, els.themeToggle);
+	applyDim(prefs.dim);
+	applyBold(prefs.bold);
 });

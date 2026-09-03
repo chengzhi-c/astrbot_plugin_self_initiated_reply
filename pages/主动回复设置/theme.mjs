@@ -30,7 +30,11 @@ export function applyTheme(theme, themeToggle) {
 export async function persistTheme(theme, apiPost) {
   cacheThemeLocally(theme);
   try {
-    await apiPost("ui/theme", { theme });
+    await apiPost("ui/theme", {
+      theme,
+      dim: document.documentElement.classList.contains("dimmed"),
+      bold: document.documentElement.classList.contains("bold-text"),
+    });
   } catch {
     /* 后端持久化失败仅当次生效 */
   }
@@ -42,9 +46,17 @@ export async function restoreTheme(apiGet) {
       result && result.ok !== false ? String(result.theme || "auto").trim() : "auto";
     const resolved = saved === "light" || saved === "dark" ? saved : "auto";
     cacheThemeLocally(resolved);
-    return resolved;
+    return {
+      theme: resolved,
+      dim: Boolean(result && result.dim),
+      bold: Boolean(result && result.bold),
+    };
   } catch {
-    return currentTheme();
+    return {
+      theme: currentTheme(),
+      dim: document.documentElement.classList.contains("dimmed"),
+      bold: document.documentElement.classList.contains("bold-text"),
+    };
   }
 }
 export function nextTheme() {

@@ -177,16 +177,20 @@ export function restoreDimBold() {
     /* ignore */
   }
 }
-export function bindDimBoldButtons() {
+export function bindDimBoldButtons(onChange) {
   const dimBtn = document.getElementById("dimBtn");
   const boldBtn = document.getElementById("boldBtn");
   if (dimBtn) {
-    dimBtn.addEventListener("click", () =>
-      applyDim(!document.documentElement.classList.contains("dimmed")));
+    dimBtn.addEventListener("click", () => {
+      applyDim(!document.documentElement.classList.contains("dimmed"));
+      onChange?.();
+    });
   }
   if (boldBtn) {
-    boldBtn.addEventListener("click", () =>
-      applyBold(!document.documentElement.classList.contains("bold-text")));
+    boldBtn.addEventListener("click", () => {
+      applyBold(!document.documentElement.classList.contains("bold-text"));
+      onChange?.();
+    });
   }
 }
 export function hideBoot(els) {

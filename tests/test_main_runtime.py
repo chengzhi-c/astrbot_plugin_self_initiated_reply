@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -1010,7 +1011,7 @@ def test_ui_theme_defaults_to_auto(tmp_path: Path) -> None:
 
     async def scenario(plugin, main):
         cfg = await plugin._api_get_ui_theme()
-        assert cfg == {"ok": True, "theme": "auto"}
+        assert cfg == {"ok": True, "theme": "auto", "dim": False, "bold": False}
 
     with_plugin(tmp_path, scenario)
 
@@ -1024,7 +1025,7 @@ def test_ui_theme_persists_across_instances(tmp_path: Path) -> None:
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"theme": "light"}
         result = await plugin._api_post_ui_theme()
-        assert result == {"ok": True, "theme": "light"}
+        assert result == {"ok": True, "theme": "light", "dim": False, "bold": False}
         # 文件已落盘
         prefs_path = plugin._ui_prefs_path
         assert prefs_path.exists()
@@ -1040,7 +1041,37 @@ def test_ui_theme_persists_across_instances(tmp_path: Path) -> None:
     # 同一数据目录新建实例：模拟刷新/重启后主题仍在（iframe 场景的关键）
     async def reopen(plugin, main):
         cfg = await plugin._api_get_ui_theme()
-        assert cfg == {"ok": True, "theme": "light"}
+        assert cfg == {"ok": True, "theme": "light", "dim": False, "bold": False}
+
+    with_plugin(tmp_path, reopen)
+
+
+def test_ui_dim_bold_survive_theme_only_post_and_reopen(tmp_path: Path) -> None:
+    """压暗/粗体写入 ui_prefs；只改主题不得抹掉它们。"""
+
+    async def scenario(plugin, main):
+        import sys
+
+        web = sys.modules["astrbot.api.web"]
+        web.request.payload = {"dim": True, "bold": True}
+        result = await plugin._api_post_ui_theme()
+        assert result == {"ok": True, "theme": "auto", "dim": True, "bold": True}
+        web.request.payload = {"theme": "dark"}
+        result = await plugin._api_post_ui_theme()
+        assert result == {"ok": True, "theme": "dark", "dim": True, "bold": True}
+        saved = json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8"))
+        assert saved == {"theme": "dark", "dim": True, "bold": True}
+        web.request.payload = {"dim": "yes"}
+        bad = await plugin._api_post_ui_theme()
+        assert bad.get("ok") is False
+        assert "yes" not in str(bad.get("error", ""))
+        assert plugin._ui_dim is True
+
+    with_plugin(tmp_path, scenario)
+
+    async def reopen(plugin, main):
+        cfg = await plugin._api_get_ui_theme()
+        assert cfg == {"ok": True, "theme": "dark", "dim": True, "bold": True}
 
     with_plugin(tmp_path, reopen)
 
@@ -1182,9 +1213,7 @@ def test_guard_early_exit_creates_no_lock_entry(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         umo = "fake:group:no-lock-entry"
         assert umo not in plugin._session_locks
-        result = await plugin._pipeline.check_session(
-            umo, trigger="patrol", force=False
-        )
+        result = await plugin._pipeline.check_session(umo, trigger="patrol", force=False)
         assert result == "会话不在主动回复白名单。"
         assert umo not in plugin._session_locks
 
