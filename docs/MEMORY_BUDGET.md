@@ -35,7 +35,7 @@ N = 活跃会话数（白名单上限 MAX_WHITELIST_SIZE = 1000）
 ## 图片本体（数据 URL 冻结）
 
 正常路径把冻结图片写入内容寻址的磁盘缓存，`ImageInfo.prepared_source` 只保留
-路径；磁盘不可用时才保留 data URL。内存回退按**原始载荷字节数**计数，并同时受：
+路径；磁盘不可用时才保留 data URL。内存回退按**原始载荷字节数**计数；热路径增量维护已入账字节，不再每次全量 `b64decode`。预算同时受：
 
 - `MAX_SESSION_IMAGE_MEMORY_BYTES = 16 MiB`：单会话图片索引预算；
 - `MAX_IMAGE_MEMORY_BYTES = 64 MiB`：所有会话图片索引共享预算；

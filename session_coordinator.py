@@ -47,6 +47,10 @@ def _prepared_memory_size(image: Any) -> int:
         return len(encoded.encode("utf-8"))
 
 
+def _event_bytes(images: list[Any]) -> int:
+    return sum(_prepared_memory_size(image) for image in images)
+
+
 class SessionCoordinator:
     """每会话协作：事件缓存、失效级联单点与图片索引。"""
 
@@ -70,6 +74,9 @@ class SessionCoordinator:
         self._notify_silence = notify_silence
         self._max_image_memory_bytes = max(0, int(max_image_memory_bytes))
         self._max_session_image_memory_bytes = max(0, int(max_session_image_memory_bytes))
+        self._session_bytes: dict[str, int] = {}
+        self._total_bytes = 0
+        self._recount()
 
     # ------------------------------------------------------------------
     # 写点
@@ -94,6 +101,27 @@ class SessionCoordinator:
             for image in images
         )
 
+    def _recount(self) -> None:
+        self._session_bytes.clear()
+        self._total_bytes = 0
+        for umo, events in self._images.items():
+            if not events:
+                continue
+            size = sum(_event_bytes(images) for _timestamp, images in events)
+            if size:
+                self._session_bytes[umo] = size
+                self._total_bytes += size
+
+    def _debit(self, umo: str, nbytes: int) -> None:
+        if nbytes <= 0:
+            return
+        remaining = self._session_bytes.get(umo, 0) - nbytes
+        if remaining > 0:
+            self._session_bytes[umo] = remaining
+        else:
+            self._session_bytes.pop(umo, None)
+        self._total_bytes -= nbytes
+
     def _evict_oldest_image_event(self, *, umo: str | None = None) -> tuple[int, str]:
         candidates = []
         events = self._images.items() if umo is None else [(umo, self._images.get(umo))]
@@ -106,12 +134,23 @@ class SessionCoordinator:
         _timestamp, evicted_images = image_events.popleft()
         if not image_events:
             self._images.pop(key, None)
-        return sum(_prepared_memory_size(image) for image in evicted_images), key
+        freed = _event_bytes(evicted_images)
+        self._debit(key, freed)
+        return freed, key
 
     def _append_image_event(self, umo: str, timestamp: float, images: list[Any]) -> None:
         # deque(maxlen=MAX_CACHED_IMAGE_EVENTS) 满员时自动逐出最旧事件，无需手工 popleft。
         image_events = self._images.setdefault(umo, deque(maxlen=MAX_CACHED_IMAGE_EVENTS))
+        dropped = None
+        if image_events.maxlen and len(image_events) == image_events.maxlen:
+            dropped = image_events[0]
         image_events.append((timestamp, images))
+        if dropped is not None:
+            self._debit(umo, _event_bytes(dropped[1]))
+        nbytes = _event_bytes(images)
+        if nbytes:
+            self._session_bytes[umo] = self._session_bytes.get(umo, 0) + nbytes
+            self._total_bytes += nbytes
 
     def capture_images(self, umo: str, timestamp: float, cached_images: list[Any]) -> list[Any]:
         """Write frozen images while enforcing global and per-session byte budgets."""
@@ -120,9 +159,8 @@ class SessionCoordinator:
             return []
 
         accepted: list[Any] = []
-        accepted_bytes = 0
-        session_bytes = self._memory_bytes_for(umo)
-        total_bytes = self._memory_bytes_for()
+        session_bytes = self._session_bytes.get(umo, 0)
+        total_bytes = self._total_bytes
         for image in cached_images:
             image_bytes = _prepared_memory_size(image)
             if image_bytes > self._max_session_image_memory_bytes:
@@ -170,7 +208,6 @@ class SessionCoordinator:
                 continue
 
             accepted.append(image)
-            accepted_bytes += image_bytes
             session_bytes += image_bytes
             total_bytes += image_bytes
 
@@ -187,7 +224,8 @@ class SessionCoordinator:
             items = list(self._images.items())
         for key, events in items:
             while events and events[0][0] < cutoff:
-                events.popleft()
+                _timestamp, evicted_images = events.popleft()
+                self._debit(key, _event_bytes(evicted_images))
             if not events:
                 self._images.pop(key, None)
 
@@ -214,12 +252,15 @@ class SessionCoordinator:
         """清理会话全部协作资源，供失效、移除和终止路径使用。"""
         self.clear_event(umo)
         self._images.pop(umo, None)
+        self._total_bytes -= self._session_bytes.pop(umo, 0)
 
     def reset_all(self) -> None:
         """清空全部会话协作资源（插件终止路径）。"""
         self._events.clear()
         self._event_at.clear()
         self._images.clear()
+        self._session_bytes.clear()
+        self._total_bytes = 0
 
     def snapshot(self) -> dict[str, Any]:
         """复制三张协作表，供配置回滚。容器身份仍由 restore_inplace 保持。"""
@@ -240,6 +281,7 @@ class SessionCoordinator:
         self._event_at.update(snapshot["last_event_at"])
         self._images.clear()
         self._images.update(snapshot["recent_image_events"])
+        self._recount()
 
     # ------------------------------------------------------------------
     # 读侧

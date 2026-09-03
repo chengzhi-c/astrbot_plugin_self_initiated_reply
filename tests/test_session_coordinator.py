@@ -288,3 +288,65 @@ def test_image_budget_recomputes_global_bytes_after_session_eviction() -> None:
     assert len(accepted) == 1
     assert coordinator._memory_bytes_for() == 8
     assert "s2" in images
+
+
+def test_capture_images_hot_path_does_not_rescan_memory() -> None:
+    from .source_contract import calls_in
+
+    assert "self._memory_bytes_for" not in calls_in(
+        "session_coordinator.py", "SessionCoordinator.capture_images"
+    )
+
+
+def test_deque_overflow_keeps_byte_counters_in_sync() -> None:
+    module = _coordinator_module()
+    _, coordinator, ctx = _make_coordinator()
+    limit = module.MAX_CACHED_IMAGE_EVENTS
+
+    for i in range(limit + 1):
+        accepted = coordinator.capture_images("s1", float(i), [_PreparedImage(bytes([i % 256]))])
+        assert len(accepted) == 1
+
+    assert len(ctx.images["s1"]) == limit
+    assert coordinator._total_bytes == coordinator._memory_bytes_for() == limit
+
+
+def test_reset_all_zeroes_image_byte_counters() -> None:
+    _, coordinator, _ = _make_coordinator()
+    coordinator.capture_images("s1", 1.0, [_PreparedImage(b"123")])
+
+    coordinator.reset_all()
+
+    assert coordinator._total_bytes == 0
+    assert coordinator._memory_bytes_for() == 0
+
+
+def test_clear_session_releases_image_byte_counters() -> None:
+    _, coordinator, _ = _make_coordinator()
+    coordinator.capture_images("s1", 1.0, [_PreparedImage(b"123")])
+    coordinator.capture_images("s2", 1.0, [_PreparedImage(b"45")])
+
+    coordinator.clear_session("s1")
+
+    assert coordinator._total_bytes == coordinator._memory_bytes_for() == 2
+
+
+def test_restore_inplace_rebuilds_image_byte_counters() -> None:
+    _, coordinator, _ = _make_coordinator()
+    coordinator.capture_images("s1", 1.0, [_PreparedImage(b"123")])
+    snapshot = coordinator.snapshot()
+    coordinator.reset_all()
+
+    coordinator.restore_inplace(snapshot)
+
+    assert coordinator._total_bytes == coordinator._memory_bytes_for() == 3
+
+
+def test_drop_older_than_releases_image_byte_counters() -> None:
+    _, coordinator, _ = _make_coordinator()
+    coordinator.capture_images("s1", 1.0, [_PreparedImage(b"123")])
+    coordinator.capture_images("s1", 100.0, [_PreparedImage(b"4567")])
+
+    coordinator.drop_older_than(50.0, umo="s1")
+
+    assert coordinator._total_bytes == coordinator._memory_bytes_for() == 4
