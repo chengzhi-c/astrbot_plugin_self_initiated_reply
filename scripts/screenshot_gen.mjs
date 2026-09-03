@@ -27,6 +27,7 @@ function configPayload() {
 		ok: true,
 		enabled: true,
 		runtime_enabled: true,
+		config_revision: `sha256:${"a".repeat(64)}`,
 		whitelist_sessions: ["123456789", "group:987654321"],
 		decision_model_enabled: true,
 		decision_prompt_template:

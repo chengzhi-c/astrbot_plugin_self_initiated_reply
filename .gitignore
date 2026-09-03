@@ -11,6 +11,8 @@ __pycache__/
 # pytest-cov 并行数据碎片：.coverage.<host>.pid<N>.<rand>。
 # 只写 .coverage 认不出它；实测它曾被打进 wheel（守卫见 scripts/check_wheel.py）。
 .coverage.*
+# 不带点前缀的覆盖率产物：coverage json/xml 写到仓库根，上面两条认不出。
+coverage.*
 .scratch/
 dist/
 data/
