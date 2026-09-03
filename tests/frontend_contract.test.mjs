@@ -294,7 +294,9 @@ test("frontend plugin id matches the backend package identity", async () => {
 test("dark accent tokens are declared once and reused", async () => {
   const css = await readFile(join(pageDir, "style.css"), "utf8");
   assert.equal((css.match(/#e0a040/g) || []).length, 1);
-  assert.match(css, /--accent:\s*light-dark\(/);
+  assert.match(css, /--accent:\s*var\(--accent-light\)/);
+  assert.match(css, /:root\[data-theme="dark"\]/);
+  assert.match(css, /prefers-color-scheme:\s*dark/);
 });
 
 test("script load failure fallback does not depend on the module", async () => {

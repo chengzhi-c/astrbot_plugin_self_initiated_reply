@@ -117,33 +117,6 @@ export function createConfigIo(deps) {
 			e.mobileSaveState.classList.remove("is-pending", "is-ok", "is-error");
 			if (cssKind) e.mobileSaveState.classList.add(`is-${cssKind}`);
 		}
-		if (state === "ok") {
-			const animMs = deps.SAVE_ANIM_MS ?? 1100;
-			const dotMs = deps.SAVE_DOT_MS ?? 700;
-			const savedButtons = [
-				e.saveTopBtn,
-				e.saveMobileBtn,
-				e.configForm
-					? e.configForm.querySelector('button[type="submit"]')
-					: null,
-			];
-			savedButtons.forEach((btn) => {
-				if (!btn) return;
-				btn.classList.remove("is-saved");
-				void btn.offsetWidth;
-				btn.classList.add("is-saved");
-				window.setTimeout(() => btn.classList.remove("is-saved"), animMs);
-			});
-			if (e.navSaveDot) {
-				e.navSaveDot.classList.remove("is-pulse");
-				void e.navSaveDot.offsetWidth;
-				e.navSaveDot.classList.add("is-pulse");
-				window.setTimeout(
-					() => e.navSaveDot.classList.remove("is-pulse"),
-					dotMs,
-				);
-			}
-		}
 	}
 	function setDirty(dirty = true) {
 		if (dirty) coordinator.markEdited();
