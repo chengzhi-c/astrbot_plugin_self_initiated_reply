@@ -161,10 +161,15 @@ class SessionScheduler:
     def cancel_delay(self, umo: str, *, force: bool = False) -> None:
         task = self._delay_tasks.get(umo)
         running_task = self._running_check_tasks.get(umo)
-        if not force and (self._gate.is_running(umo) or running_task is not None):
-            # 新消息使运行中的检查失效，但不能取消其 await 链；旧任务会到达
-            # 代次闸门后干净地抑制过期回复。取消会向装饰钩子注入
-            # CancelledError（例如智能分段）。
+        keep_running = (
+            not force
+            and running_task is not None
+            and not running_task.done()
+            and task is running_task
+        )
+        if keep_running:
+            # 运行中的检查不能被新消息取消：await 链还要走到代次闸门。
+            # 表里若是后续排队的 delayed_check，必须让位，否则每条新消息都会叠一次判断。
             logger.debug(
                 "[%s] leave running check alive for stale-generation suppression session=%s",
                 PLUGIN_ID,
@@ -173,7 +178,7 @@ class SessionScheduler:
             return
         self._delay_tasks.pop(umo, None)
         self._silence_events.pop(umo, None)
-        if task and not task.done():
+        if task and not task.done() and (force or task is not running_task):
             task.cancel()
         if force and running_task and not running_task.done() and running_task is not task:
             running_task.cancel()

@@ -1218,3 +1218,99 @@ def test_guard_early_exit_creates_no_lock_entry(tmp_path: Path) -> None:
         assert umo not in plugin._session_locks
 
     with_plugin(tmp_path, scenario)
+
+
+def test_cooldown_skips_decision_model_after_proactive_reply(tmp_path: Path) -> None:
+    """主动回复后冷却期内再来消息，不得再打判断模型。"""
+
+    async def scenario(plugin, main):
+        calls: list[str] = []
+        original = plugin._decision.ask_decision_model
+
+        async def counting(umo, state, *, trigger):
+            calls.append(trigger)
+            return await original(umo, state, trigger=trigger)
+
+        plugin._decision.ask_decision_model = counting
+        plugin.settings.decision_model_enabled = True
+        plugin.settings.min_silence_sec = 0
+        plugin.settings.cooldown_sec = 900
+        plugin.settings.message_delay_sec = 0
+        state = plugin._state_for(UMO)
+        now = main.now_ts()
+        event = _make_event(message_str="新消息")
+        plugin._last_events[UMO] = event
+        plugin._last_event_at[UMO] = now - 30
+        state.last_active_at = now - 30
+        state.last_proactive_at = now - 240
+        state.last_proactive_observed_at = now - 240
+        token = plugin._gate.advance(UMO)
+
+        result = await plugin._pipeline.check_session(
+            UMO, trigger="message_delay", force=False, expected_generation=token
+        )
+
+        assert "冷却中" in result
+        assert calls == []
+
+    with_plugin(tmp_path, scenario, cooldown_sec=900, min_silence_sec=0)
+
+
+def test_messages_during_running_check_coalesce_to_one_follow_up(tmp_path: Path) -> None:
+    """检查进行中连来多条消息，只允许再跟一次判断，不得叠出多条并行模型调用。"""
+
+    async def scenario(plugin, main):
+        from .host_stubs import until
+
+        model_calls: list[str] = []
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_ask(umo, state, *, trigger):
+            model_calls.append(str(trigger))
+            if not entered.is_set():
+                entered.set()
+                await release.wait()
+            return {"should_reply": False, "reason": "群聊平静", "elapsed_sec": 0.0}
+
+        plugin._decision.ask_decision_model = slow_ask
+        plugin.settings.decision_model_enabled = True
+        plugin.settings.min_silence_sec = 0
+        plugin.settings.cooldown_sec = 0
+        plugin.settings.message_delay_sec = 0
+        plugin.settings.abandon_stale_on_new_message = False
+        plugin._last_events[UMO] = _make_event(message_str="先来一条")
+        plugin._last_event_at[UMO] = main.now_ts()
+        plugin._state_for(UMO).last_active_at = main.now_ts() - 30
+        token = plugin._gate.advance(UMO)
+
+        task = asyncio.create_task(
+            plugin._pipeline.check_session(
+                UMO, trigger="message_delay", force=False, expected_generation=token
+            )
+        )
+        await entered.wait()
+        await plugin.on_message(_make_event(message_str="检查中 1"))
+        await plugin.on_message(_make_event(message_str="检查中 2"))
+        await plugin.on_message(_make_event(message_str="检查中 3"))
+        pending = [
+            delayed
+            for delayed in plugin._delay_tasks.values()
+            if delayed is not task and not delayed.done()
+        ]
+        assert len(pending) <= 1
+        release.set()
+        await task
+        await until(lambda: all(item.done() for item in list(plugin._delay_tasks.values())))
+        leftover = [delayed for delayed in plugin._delay_tasks.values() if not delayed.done()]
+        assert leftover == []
+        assert model_calls == ["message_delay", "message_delay"]
+
+    with_plugin(
+        tmp_path,
+        scenario,
+        cooldown_sec=0,
+        min_silence_sec=0,
+        message_delay_sec=0,
+        decision_model_enabled=True,
+    )
