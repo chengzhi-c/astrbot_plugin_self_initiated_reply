@@ -1174,3 +1174,18 @@ def test_command_debug_returns_diagnostic_info(tmp_path: Path) -> None:
         assert "is_at_or_wake_command:" in text
 
     with_plugin(tmp_path, scenario)
+
+
+def test_guard_early_exit_creates_no_lock_entry(tmp_path: Path) -> None:
+    """门卫早退不得创建锁表条目（distinct UMO 不留锁）。"""
+
+    async def scenario(plugin, main):
+        umo = "fake:group:no-lock-entry"
+        assert umo not in plugin._session_locks
+        result = await plugin._pipeline.check_session(
+            umo, trigger="patrol", force=False
+        )
+        assert result == "会话不在主动回复白名单。"
+        assert umo not in plugin._session_locks
+
+    with_plugin(tmp_path, scenario)

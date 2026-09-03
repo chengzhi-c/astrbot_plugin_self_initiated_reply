@@ -583,6 +583,28 @@ def test_parse_truncates_long_description(tmp_path: Path) -> None:
     assert len(result) <= 303 and result.endswith("...")
 
 
+def test_parse_truncation_limit_is_single_sourced(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    support_mod = sys.modules[f"{PACKAGE_NAME}.image._support"]
+    assert parser_mod.MAX_DESCRIPTION_CHARS == support_mod.MAX_DESCRIPTION_CHARS
+
+    class Bridge:
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            return SimpleNamespace(
+                completion_text="字" * (support_mod.MAX_DESCRIPTION_CHARS + 50)
+            )
+
+    info = image.ImageInfo(url="https://x/y.png")
+    result = _parse_with_bridge(image, Bridge(), info)
+    assert result is not None
+    assert len(result) == support_mod.MAX_DESCRIPTION_CHARS + 3
+    assert result.endswith("...")
+
+
 def test_parse_timeout_returns_none(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
 

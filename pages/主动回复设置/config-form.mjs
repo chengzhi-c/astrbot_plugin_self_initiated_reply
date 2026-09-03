@@ -71,6 +71,7 @@ export function renderPromptTemplateHtml(template, values = PROMPT_PREVIEW_VALUE
       const val = escapeHtml(values[key]);
       return `<span class="prompt-var-tag" title="变量 {${key}}">${val}</span>`;
     }
+    return match;
   });
 }
 

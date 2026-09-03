@@ -26,7 +26,7 @@ from ..models import (
     PLUGIN_ID,
 )
 from ..utils import response_text
-from ._support import ImageCache, ImageInfo, sniff_image_mime
+from ._support import MAX_DESCRIPTION_CHARS, ImageCache, ImageInfo, sniff_image_mime
 from .recorder_bridge import MAX_IMAGE_BYTES, MessageRecorderBridge
 
 VISION_PROMPT_VERSION = "v1"
@@ -567,8 +567,8 @@ class ImageParser:
                         logger.info("[%s] no usable description from provider", PLUGIN_ID)
                     else:
                         description = description.strip()
-                        if len(description) > 300:
-                            description = description[:300].rstrip() + "..."
+                        if len(description) > MAX_DESCRIPTION_CHARS:
+                            description = description[:MAX_DESCRIPTION_CHARS].rstrip() + "..."
                         self._cache.put(cache_key, description)
                         result = description
             finally:

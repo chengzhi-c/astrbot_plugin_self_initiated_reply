@@ -124,6 +124,13 @@ class SessionPipeline:
         force: bool,
         expected_generation: int | None = None,
     ) -> str:
+        pre_guard = self.session_check_guard(
+            umo, force=force, expected_generation=expected_generation
+        )
+        if pre_guard is not None:
+            # 锁前预检：与持锁路径同一门卫，避免为注定早退的会话创建锁表条目。
+            # 持锁后仍会复检（运行互斥的 TOCTOU），此处只做“不建锁”的快速返回。
+            return pre_guard
         lock = self._gate.lock_for(umo)
         if lock.locked():
             return "已有判断任务在运行。"

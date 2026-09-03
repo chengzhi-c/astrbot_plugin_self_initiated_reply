@@ -17,6 +17,7 @@ import {
   createConfigIo,
 } from "../pages/主动回复设置/config-io.mjs";
 import {
+  renderPromptTemplateHtml,
   summarizeWhitelist,
   uniqueWhitelistItems,
   validateWhitelistLines,
@@ -589,6 +590,12 @@ test("validateWhitelistLines reports line numbers and reasons for malformed whit
   assert.ok(errors[0].reason.includes("非法字符"));
   assert.equal(errors[1].line, 4);
   assert.ok(errors[1].reason.includes("字符上限"));
+});
+
+test("prompt preview keeps unknown variables verbatim", () => {
+  const out = renderPromptTemplateHtml("hi {foo} {latest_message}");
+  assert.ok(out.includes("{foo}"));
+  assert.ok(!out.includes("undefined"));
 });
 
 test("settings page JS sources keep lines under the maintainability cap", async () => {
