@@ -774,7 +774,6 @@ body.is-ready .master,
 .readout.is-info .readout-label {
 	color: var(--info);
 }
-.readout.is-info .stat-dot,
 .master .readout.is-info .stat-dot {
 	background: var(--info);
 	box-shadow: 0 0 0 3px var(--info-soft);
@@ -891,7 +890,8 @@ body.is-ready .master,
 .panel-collapsible > summary::-webkit-details-marker {
 	display: none;
 }
-.panel-collapsible > summary::before {
+.panel-collapsible > summary::before,
+.prompt-help > summary::before {
 	content: "";
 	flex: none;
 	width: 14px;
@@ -1346,20 +1346,6 @@ textarea {
 .prompt-help > summary::-webkit-details-marker {
 	display: none;
 }
-.prompt-help > summary::before {
-	content: "";
-	flex: none;
-	width: 14px;
-	height: 14px;
-	background: var(--muted);
-	transition: transform 0.2s var(--ease);
-	-webkit-mask:
-		url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 6l6 6-6 6'/%3E%3C/svg%3E")
-		center / contain no-repeat;
-	mask:
-		url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 6l6 6-6 6'/%3E%3C/svg%3E")
-		center / contain no-repeat;
-}
 .prompt-help[open] > summary::before {
 	transform: rotate(90deg);
 }
@@ -1575,13 +1561,16 @@ textarea {
 	color: var(--muted);
 	transition: color 0.16s var(--ease);
 }
-.save-state.is-ok {
+.save-state.is-ok,
+.mobile-save-state.is-ok {
 	color: var(--ok);
 }
-.save-state.is-error {
+.save-state.is-error,
+.mobile-save-state.is-error {
 	color: var(--danger);
 }
-.save-state.is-pending {
+.save-state.is-pending,
+.mobile-save-state.is-pending {
 	color: var(--accent-text);
 }
 .toast {
@@ -1669,15 +1658,6 @@ textarea {
 }
 .mobile-tabbar {
 	display: none;
-}
-.mobile-save-state.is-ok {
-	color: var(--ok);
-}
-.mobile-save-state.is-error {
-	color: var(--danger);
-}
-.mobile-save-state.is-pending {
-	color: var(--accent-text);
 }
 @media (max-width: 1024px) {
 	:root {

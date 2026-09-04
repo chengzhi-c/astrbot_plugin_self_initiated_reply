@@ -113,9 +113,10 @@ function setStatState(element, stateName) {
 	element.classList.add(stateName);
 }
 
-function showToast(message) {
+function showToast(message, isError = false) {
 	if (!els.toast) return;
 	els.toast.textContent = message;
+	els.toast.setAttribute("role", isError ? "alert" : "status");
 	els.toast.classList.add("show");
 	window.clearTimeout(showToast.timer);
 	showToast.timer = window.setTimeout(
@@ -241,6 +242,8 @@ const configIo = createConfigIo({
 	visionJudgeProviderControl,
 	fmtBool,
 	requestCoordinator: configRequestCoordinator,
+	getProviderOptions: () => providerOptions,
+	isProviderListAvailable: () => providerListAvailable,
 });
 
 async function loadProviders() {

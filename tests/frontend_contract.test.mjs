@@ -723,6 +723,73 @@ test("successful save applies the returned config and clears dirty state", async
   assert.equal(form.inert, false);
 });
 
+test("unknown provider id warns but does not block save", async () => {
+  const classList = { add() {}, remove() {}, toggle() {} };
+  const fields = [
+    {
+      dataset: { configKey: "judge_provider_id", configControl: "judge" },
+    },
+  ];
+  const form = {
+    classList,
+    inert: false,
+    querySelector: () => null,
+    querySelectorAll: () => fields,
+  };
+  const elements = {
+    configForm: form,
+    configSaveState: { textContent: "", classList },
+  };
+  const state = {
+    configLoaded: true,
+    savingConfig: false,
+    configRevision: TEST_REVISION,
+    isDirty: false,
+    requiresConfigRefresh: false,
+  };
+  const toasts = [];
+  let posted = false;
+  const io = createConfigIo({
+    getEls: () => elements,
+    getState: () => state,
+    setState: (updates) => Object.assign(state, updates),
+    apiGet: async () => {
+      throw new Error("skip refresh");
+    },
+    apiPost: async () => {
+      posted = true;
+      return { ok: true, config: {}, adjusted_fields: [] };
+    },
+    showToast: (msg) => toasts.push(msg),
+    setStatState() {},
+    renderPromptPreview() {},
+    judgeProviderControl: { value: () => "typo-id", sync() {} },
+    visionProviderControl: { value: () => "", sync() {} },
+    visionJudgeProviderControl: { value: () => "", sync() {} },
+    fmtBool: String,
+    getProviderOptions: () => [{ id: "real-id", label: "real" }],
+    isProviderListAvailable: () => true,
+  });
+
+  await io.saveConfig({ preventDefault() {} });
+
+  assert.equal(posted, true);
+  assert.ok(toasts.some((msg) => msg.includes("不在列表中")));
+});
+
+test("undici and abort failures map to the connection hint", () => {
+  const hint = "无法连接插件 API，请重载页面或重启 AstrBot 后重试";
+  assert.equal(normalizeApiError(new Error("fetch failed")).message, hint);
+  const aborted = new Error("This operation was aborted");
+  aborted.name = "AbortError";
+  assert.equal(normalizeApiError(aborted).message, hint);
+});
+
+test("backend messages containing fetch details pass through untouched", () => {
+  const backend = new Error("保存失败：fetch failed details");
+  assert.equal(normalizeApiError(backend), backend);
+});
+
 test("empty number fields reuse last loaded values", () => {
   const field = {
     dataset: { configKey: "cooldown_sec" },

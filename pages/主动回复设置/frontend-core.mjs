@@ -4,7 +4,10 @@ export function normalizeApiError(error) {
     message === "Failed to fetch" ||
     message === "NetworkError" ||
     message === "Load failed" ||
-    message === "NetworkError when attempting to fetch resource."
+    message === "NetworkError when attempting to fetch resource." ||
+    message === "fetch failed" ||
+    message.includes("NS_ERROR") ||
+    error?.name === "AbortError"
   ) {
     return new Error("无法连接插件 API，请重载页面或重启 AstrBot 后重试");
   }

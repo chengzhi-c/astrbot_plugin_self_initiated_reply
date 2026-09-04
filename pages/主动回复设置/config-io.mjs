@@ -11,9 +11,16 @@ import {
 	createConfigRequestCoordinator,
 	isSuccessfulConfigPayload,
 	missingConfigPayloadKeys,
+	providerNeedsManualInput,
 } from "./frontend-core.mjs";
 export { WHITELIST_ILLEGAL_RE };
 const CONFIG_CONTROL_SELECTOR = "[data-config-key]";
+// 与 index.html 三个 data-config-control 控件对应的提交键。
+const PROVIDER_CONFIG_KEYS = [
+	"judge_provider_id",
+	"vision_provider_id",
+	"vision_judge_provider_id",
+];
 
 /** POST /config fields are declared by form data-config-key metadata. */
 function configControls(form) {
@@ -93,6 +100,8 @@ export function createConfigIo(deps) {
 		visionJudgeProviderControl,
 		fmtBool,
 		requestCoordinator,
+		getProviderOptions = () => [],
+		isProviderListAvailable = () => false,
 	} = deps;
 	const coordinator = requestCoordinator || createConfigRequestCoordinator();
 	let numberFields = [];
@@ -394,13 +403,21 @@ export function createConfigIo(deps) {
 				lastKnownConfig,
 			);
 			let result;
+			for (const key of PROVIDER_CONFIG_KEYS) {
+				if (providerNeedsManualInput(
+					body[key], getProviderOptions(), isProviderListAvailable(),
+				)) {
+					showToast("部分 Provider ID 不在列表中，已继续保存，请确认拼写无误");
+					break;
+				}
+			}
 			try {
 				result = await apiPost("config", body);
 			} catch (error) {
 				coordinator.markWriteUnknown();
 				setState({ requiresConfigRefresh: true });
 				setSaveState("保存状态未知", "error");
-				showToast("保存状态未知，请刷新配置后重试");
+				showToast("保存状态未知，请刷新配置后重试", true);
 				return;
 			}
 			if (!result || result.ok !== true) {
@@ -422,7 +439,7 @@ export function createConfigIo(deps) {
 					e.whitelistError.classList.add("show");
 					e.whitelistInput.focus();
 				}
-				showToast(errorText);
+				showToast(errorText, true);
 				return;
 			}
 			const savedConfig = {
@@ -442,7 +459,7 @@ export function createConfigIo(deps) {
 				coordinator.markWriteUnknown();
 				setState({ requiresConfigRefresh: true });
 				setSaveState("保存状态未知", "error");
-				showToast("保存状态未知，请刷新配置后重试");
+				showToast("保存状态未知，请刷新配置后重试", true);
 				return;
 			}
 			const adjusted = Array.isArray(result.adjusted_fields)
