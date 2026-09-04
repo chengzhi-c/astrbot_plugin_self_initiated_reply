@@ -168,6 +168,23 @@ def test_frontend_whitelist_illegal_chars_match_backend() -> None:
     assert frontend.search("has'quote")
 
 
+def test_frontend_whitelist_max_count_matches_backend() -> None:
+    """前端 WHITELIST_MAX_COUNT 必须等于后端 MAX_WHITELIST_SIZE。
+
+    超限时前端只做计数警告、以后端截断/拒绝为准；阈值本身漂移则警告误报或漏报。
+    """
+    from .host_stubs import install_astrbot_stubs, load_package
+
+    install_astrbot_stubs()
+    models = load_package("selfreply_config_sot_package", "models")
+    form = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
+    match = re.search(r"export const WHITELIST_MAX_COUNT = (\d+);", form)
+    assert match, "WHITELIST_MAX_COUNT not found"
+    assert int(match.group(1)) == models.MAX_WHITELIST_SIZE, (
+        f"前后端白名单上限漂移：前端 {match.group(1)}，后端 {models.MAX_WHITELIST_SIZE}"
+    )
+
+
 def test_frontend_number_bounds_match_panel_specs() -> None:
     """自定义页 number 控件的 min/max/step 必须等于规格表。"""
     from .host_stubs import install_astrbot_stubs, load_package

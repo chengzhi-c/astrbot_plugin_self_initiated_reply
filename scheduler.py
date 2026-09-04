@@ -32,6 +32,7 @@ from .models import (
     Settings,
     now_ts,
 )
+from .session_gate import SessionGate
 from .utils import session_is_private, whitelist_storage_key
 
 
@@ -50,7 +51,7 @@ class SessionScheduler:
         self,
         *,
         settings: Settings,
-        gate: Any,
+        gate: SessionGate,
         image_cache_dir: Path,
         spawn: Callable[[Any], asyncio.Task[Any] | None],
         should_run: Callable[[], bool],
