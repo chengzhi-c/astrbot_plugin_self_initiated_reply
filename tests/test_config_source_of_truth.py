@@ -123,31 +123,19 @@ def test_prompt_preview_keys_are_injectable_variables() -> None:
     assert not extra, f"前端预览了后端不注入的变量：{sorted(extra)}"
 
 
-def test_frontend_bool_defaults_match_config_specs() -> None:
-    """data-config-default 属性值必须等于对应 ConfigSpec.default。
+def test_no_dead_config_default_attribute() -> None:
+    """HTML 不得再出现 data-config-default。
 
-    number 边界已有 test_frontend_number_bounds_match_panel_specs 守，bool 默认值
-    此前无人守：前端写 data-config-default="true" 而后端默认 False 时，未加载态的
-    开关显示与实际保存值相反。
+    该属性曾用于"配置缺键时按默认值决定开关初态"。但 GET /config 的每个键都是
+    前端 requiredKeys，缺键在 isSuccessfulConfigPayload 处即抛错，走不到控件赋值；
+    且 bool 键经 as_bool 归一恒为真 bool。于是 ``x !== false`` 与 ``Boolean(x)``
+    在全部可达路径上恒等——属性成了后端 CONFIG_SPEC 的镜像副本，只带来漂移面。
+    真实渲染行为改由 tests/frontend_browser.test.mjs 断言。
     """
-    from .host_stubs import install_astrbot_stubs, load_package
-
-    install_astrbot_stubs()
-    models = load_package("selfreply_config_sot_bool_defaults", "models")
     html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
-    drift: list[str] = []
-    for tag in re.findall(r"<input\b[^>]*>", html):
-        key_match = re.search(r'data-config-key="([a-z0-9_]+)"', tag)
-        default_match = re.search(r'data-config-default="([^"]+)"', tag)
-        if not key_match or not default_match:
-            continue
-        spec = models.CONFIG_SPEC_BY_KEY[key_match.group(1)]
-        expected = "true" if spec.default is True else "false"
-        if default_match.group(1) != expected:
-            drift.append(
-                f"{key_match.group(1)}: HTML={default_match.group(1)} spec={spec.default!r}"
-            )
-    assert not drift, "data-config-default 与规格表默认值漂移：\n" + "\n".join(drift)
+    io = (ROOT / "pages" / "主动回复设置" / "config-io.mjs").read_text(encoding="utf-8")
+    assert "data-config-default" not in html, "HTML 残留已失效的 data-config-default"
+    assert "configDefault" not in io, "config-io 残留已失效的 configDefault 分支"
 
 
 def _fe_whitelist_illegal_pattern() -> str:

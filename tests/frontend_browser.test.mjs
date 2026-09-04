@@ -228,6 +228,41 @@ test("pending save restores the form and a second save succeeds", async ({ page 
   expect(errors).toEqual([]);
 });
 
+test("every checkbox renders the backend bool value", async ({ page }) => {
+  // 取代已删除的 data-config-default 机制：那个属性只在"配置缺键"时才与
+  // Boolean() 不同，而缺键会被 requiredKeys 校验提前拦死，故它永不生效。
+  // 真正要守的是渲染本身——后端 false 却显示勾选，用户会以为功能已开。
+  const overrides = {
+    enabled: true,
+    enabled_private_sessions: false,
+    abandon_stale_on_new_message: true,
+    decision_model_enabled: false,
+    proactive_inherit_tools: true,
+    vision_judge_enabled: false,
+    vision_main_enabled: true,
+    vision_skip_stickers: false,
+  };
+  await installBridge(page, { config: overrides });
+  await openPage(page);
+  for (const [id, key] of Object.entries({
+    enabledInput: "enabled",
+    enabledPrivateSessionsInput: "enabled_private_sessions",
+    abandonStaleOnNewMessageInput: "abandon_stale_on_new_message",
+    decisionModelInput: "decision_model_enabled",
+    proactiveInheritToolsInput: "proactive_inherit_tools",
+    visionJudgeEnabledInput: "vision_judge_enabled",
+    visionMainEnabledInput: "vision_main_enabled",
+    visionSkipStickersInput: "vision_skip_stickers",
+  })) {
+    // 显式断言双向：只测 true 会让"恒为勾选"的缺陷溜过。
+    if (overrides[key]) {
+      await expect(page.locator(`#${id}`), `${key} 应为勾选`).toBeChecked();
+    } else {
+      await expect(page.locator(`#${id}`), `${key} 应为未勾选`).not.toBeChecked();
+    }
+  }
+});
+
 test("late refresh config does not overwrite a dirty form", async ({ page }) => {
   await installBridge(page, { refreshConfigPending: true });
   const errors = await openPage(page);

@@ -52,7 +52,6 @@ function loadConfigControls(form, config, providerControls) {
 	for (const control of configControls(form)) {
 		const {
 			configControl,
-			configDefault,
 			configFallbackKey,
 			configKey,
 			configTransform,
@@ -64,10 +63,11 @@ function loadConfigControls(form, config, providerControls) {
 				? config[configKey].join("\n")
 				: "";
 		} else if (control.type === "checkbox") {
-			control.checked =
-				configDefault === "true"
-					? config[configKey] !== false
-					: Boolean(config[configKey]);
+			// 后端 bool 键经 as_bool 归一恒为真 bool，且每个 data-config-key 都是
+			// GET /config 的 requiredKey（缺键在 isSuccessfulConfigPayload 处即抛错，
+			// 走不到这里），故不再有"缺键时按默认值取反"的分支——那套
+			// data-config-default 机制在可达路径上恒等于 Boolean()，已移除。
+			control.checked = Boolean(config[configKey]);
 		} else if (control.type === "number") {
 			control.value = config[configKey] ?? "";
 		} else {
