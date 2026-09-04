@@ -600,6 +600,20 @@ def test_degraded_state_rejects_new_spawn_and_force_check(tmp_path: Path) -> Non
     with_plugin(tmp_path, scenario)
 
 
+async def _drive_decorated_status(plugin, event) -> str:
+    """直接驱动 @selfreply.command("status") 那条装饰器出口，取回显文本。
+
+    host_stubs 的 command_group/permission_type 都是 passthrough，故被装饰的
+    async generator 保持原样可调用。这条 helper 只为覆盖装饰器路径：内联指令
+    走 dispatch_command_action，两条出口各自组装 status_text 参数，漏一处不会
+    被另一处发现。
+    """
+    texts = []
+    async for result in plugin.selfreply_status(event):
+        texts.append(getattr(result, "text", "") or str(result))
+    return "\n".join(texts)
+
+
 def test_degraded_lifecycle_is_visible_in_status_and_add_message(tmp_path: Path) -> None:
     """降级态必须能从 /status 与 /selfreply status 看出，且 add 报错文案不误导。
 
@@ -625,6 +639,12 @@ def test_degraded_lifecycle_is_visible_in_status_and_add_message(tmp_path: Path)
         text = await plugin._command_text(event, "status")
         assert "已降级" in text
         assert "运行中: True" not in text
+
+        # 装饰器命令是另一条独立出口，必须同样可见：它曾漏传 lifecycle，
+        # 靠 status_text 的默认值静默回落 RUNNING，被上面那条内联断言掩盖。
+        decorated = await _drive_decorated_status(plugin, event)
+        assert "已降级" in decorated, "装饰器 /selfreply status 仍谎报正常"
+        assert "运行中: True" not in decorated
 
         # add 的拒绝文案不得说"正在关闭"（误导：根本没在关闭）。
         try:

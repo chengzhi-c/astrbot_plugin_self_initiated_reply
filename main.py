@@ -590,7 +590,15 @@ class SelfInitiatedReplyPlugin(Star):
         self._set_command_handled(event)
         umo = event_umo(event)
         state = self._state_for(whitelist_storage_key(umo)) if umo else SessionState()
-        yield event.plain_result(status_text(self.settings, event, state, self.runtime_enabled))
+        yield event.plain_result(
+            status_text(
+                self.settings,
+                event,
+                state,
+                self.runtime_enabled,
+                self.lifecycle_state,
+            )
+        )
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("list", alias={"ls", "whitelist"})

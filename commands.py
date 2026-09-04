@@ -99,11 +99,16 @@ def status_text(
     event: AstrMessageEvent,
     state: object,
     runtime_enabled: bool,
-    lifecycle: str = "RUNNING",
+    lifecycle: str,
 ) -> str:
+    """渲染 /selfreply status 文本。
+
+    ``lifecycle`` 必填且无默认值：降级是单向门，``runtime_enabled`` 读持久配置
+    仍为 True，只有 lifecycle 能说明插件实际已拒绝一切新工作。给默认值会让新增
+    调用点静默回落 "RUNNING" 而谎报正常（装饰器命令就漏过一次），故由签名强制
+    每个调用方显式表态。
+    """
     umo = event_umo(event)
-    # 降级是单向门：runtime_enabled 读持久配置仍为 True，只有 lifecycle 能说明
-    # 插件实际已拒绝一切新工作。不显示它，运营者会对着"运行中: True"排障半天。
     # STOPPING 与 DEGRADED 分开措辞：前者是正常关停，后者才需要重启恢复。
     if lifecycle == "DEGRADED":
         running_line = f"状态: 已降级（需重启插件恢复），持久开关: {runtime_enabled}"
