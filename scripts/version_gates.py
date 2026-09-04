@@ -12,7 +12,7 @@ ci.yml 里原本只有一句注释声明"与 .pre-commit-config.yaml 的 rev 对
 
 历史：本脚本曾有"本机 vs 声明"的默认模式（探测本机装了什么版本），但 CI、
 pre-commit、gates.py 三个调用方全部只跑跨源比对，本机模式没有任何自动化消费者，
-已删除。``--cross-only`` 参数名保留以兼容既有调用方，行为即默认且唯一行为。
+已删除。跨源比对因此是唯一行为，不再有模式开关；本脚本也不解析 argv。
 """
 
 from __future__ import annotations

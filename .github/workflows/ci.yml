@@ -24,9 +24,8 @@ jobs:
         # （此前三处一致仅由注释声明，改一处忘另一处无人发现）。
         run: pip install ruff==0.16.1
       - name: Version cross-source gate
-        # --cross-only 只比对配置之间，纯 stdlib、不探测本机，故能挂在这个
-        # 只装了 ruff 的作业里；完整模式（含本机版本核验）供本地开发手动跑。
-        run: python scripts/version_gates.py --cross-only
+        # 只比对配置之间、纯 stdlib、不探测本机，故能挂在这个只装了 ruff 的作业里。
+        run: python scripts/version_gates.py
       - name: Ruff check
         run: ruff check .
       - name: Ruff format check

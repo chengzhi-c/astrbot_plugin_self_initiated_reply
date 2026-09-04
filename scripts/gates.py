@@ -93,10 +93,7 @@ def main(*, require_release: bool = False) -> int:
     _run("ruff check", [sys.executable, "-m", "ruff", "check", *targets])
     _run("ruff format --check", [sys.executable, "-m", "ruff", "format", "--check", *targets])
     _run("mypy", [sys.executable, "-m", "mypy"])
-    _run(
-        "version_gates",
-        [sys.executable, "scripts/version_gates.py", "--cross-only"],
-    )
+    _run("version_gates", [sys.executable, "scripts/version_gates.py"])
 
     fe_sources = sorted(PAGE.glob("*.js")) + sorted(PAGE.glob("*.mjs"))
     if not fe_sources:
