@@ -2,6 +2,7 @@
 // playwright.config.mjs testMatch only includes frontend_browser.test.mjs.
 // Run: npx playwright test scripts/screenshot_gen.mjs
 import { test } from "@playwright/test";
+import { configPayload } from "../tests/fixtures/config-payload.mjs";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -22,37 +23,22 @@ const MIME = {
 let server;
 let baseUrl;
 
-function configPayload() {
-	return {
-		ok: true,
-		enabled: true,
-		runtime_enabled: true,
+// README screenshot values differ from the browser-test defaults only in
+// display content (realistic provider names, a fuller prompt, vision on).
+// The field set itself comes from the shared fixture.
+function screenshotConfig() {
+	return configPayload({
 		config_revision: `sha256:${"a".repeat(64)}`,
 		whitelist_sessions: ["123456789", "group:987654321"],
-		decision_model_enabled: true,
 		decision_prompt_template:
 			"你是一个群聊 Bot，请根据 {latest_message} 和群聊上下文判断是否需要接话。",
 		decision_prompt_default:
 			"你是一个群聊 Bot，请根据 {latest_message} 和群聊上下文判断是否需要接话。",
 		judge_provider_id: "deepseek-chat",
-		decision_temperature: 0.2,
-		decision_timeout_sec: 20,
-		decision_history_min_messages: 5,
-		message_delay_sec: 60,
-		min_silence_sec: 45,
-		cooldown_sec: 900,
-		proactive_inherit_tools: false,
-		vision_judge_enabled: false,
 		vision_main_enabled: true,
 		vision_skip_stickers: true,
 		vision_provider_id: "gpt-4o",
-		vision_judge_provider_id: "",
-		vision_max_images: 2,
-		vision_image_age_sec: 300,
-		vision_timeout_sec: 20,
-		enabled_private_sessions: true,
-		abandon_stale_on_new_message: false,
-	};
+	});
 }
 
 test.beforeAll(async () => {
@@ -84,7 +70,7 @@ test.beforeAll(async () => {
 				res.writeHead(200, {
 					"Content-Type": "application/json; charset=utf-8",
 				});
-				res.end(JSON.stringify(configPayload()));
+				res.end(JSON.stringify(screenshotConfig()));
 				return;
 			}
 			res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
@@ -166,7 +152,7 @@ for (const { name, width, height, theme } of [
 					apiPost: async () => ({ ok: true }),
 				};
 			},
-			{ theme, config: configPayload() },
+			{ theme, config: screenshotConfig() },
 		);
 
 		await page.goto(baseUrl + PAGE_PATH);
