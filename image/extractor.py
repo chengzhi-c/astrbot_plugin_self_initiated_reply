@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from astrbot.api import logger
 
 from ..models import PLUGIN_ID
-from ._support import HTTP_SCHEMES, LOCAL_SOURCE_SCHEMES, ImageInfo
+from ._support import HTTP_SCHEMES, URL_SCHEMES, ImageInfo
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
@@ -91,7 +91,7 @@ def _is_absolute_local_source(value: str) -> bool:
     normalized = str(value or "").strip()
     if not normalized:
         return False
-    if urlparse(normalized).scheme in LOCAL_SOURCE_SCHEMES:
+    if urlparse(normalized).scheme in URL_SCHEMES:
         return False
     return os.path.isabs(normalized) or ntpath.isabs(normalized)
 

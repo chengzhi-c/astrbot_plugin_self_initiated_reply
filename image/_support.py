@@ -9,10 +9,17 @@ from dataclasses import dataclass
 
 from ..models import sanitize_prompt_variable
 
-# 图片来源 scheme 判定：HTTP_SCHEMES 是"可下载的远端"，LOCAL_SOURCE_SCHEMES 是
-# "带 scheme 所以不是本地路径"。两处判定在 extractor 与 parser 各自出现，单源在此。
+# 图片来源 scheme 判定，两个集合用途不同，勿合并：
+# - HTTP_SCHEMES：可下载的远端地址；
+# - URL_SCHEMES：任何带 scheme 前缀的形态（含 file:）。命中它说明该值不是裸
+#   文件系统路径，extractor 与 parser 各自用这个口径排除本地路径。
 HTTP_SCHEMES = frozenset({"http", "https"})
-LOCAL_SOURCE_SCHEMES = HTTP_SCHEMES | frozenset({"file"})
+URL_SCHEMES = HTTP_SCHEMES | frozenset({"file"})
+
+# 图片地址允许的端口白名单（SSRF 防护）：只放行标准 HTTP/HTTPS 端口，避免把
+# 内网服务端口探测嫁接到识图链路上。传输层与 URL 校验两处必须同一口径，
+# 各写一份字面量会让"改一处漏一处"变成防护强度不一致的静默缺陷。
+ALLOWED_IMAGE_PORTS = frozenset({80, 443})
 
 # 单次批量识图的并发上限。图片下载与 provider 调用都是 IO 密集但对端有速率限制，
 # 2 是实测够用的保守值；六处字面量收敛到此。

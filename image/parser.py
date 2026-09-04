@@ -27,9 +27,10 @@ from ..models import (
 )
 from ..utils import redact_url, response_text
 from ._support import (
+    ALLOWED_IMAGE_PORTS,
     HTTP_SCHEMES,
-    LOCAL_SOURCE_SCHEMES,
     MAX_DESCRIPTION_CHARS,
+    URL_SCHEMES,
     VISION_MAX_CONCURRENT,
     ImageCache,
     ImageInfo,
@@ -292,7 +293,7 @@ class _FixedAddressTransport(httpx.AsyncBaseTransport):
         host = str(request.url.host or "")
         scheme = str(request.url.scheme or "").lower()
         port = request.url.port or (443 if scheme == "https" else 80)
-        if scheme not in HTTP_SCHEMES or not host or port not in {80, 443}:
+        if scheme not in HTTP_SCHEMES or not host or port not in ALLOWED_IMAGE_PORTS:
             raise httpx.ConnectError(f"拒绝连接不安全的图片地址: {host}")
         resolver = self._resolver or _resolve_global_address
         address = self._address
@@ -470,7 +471,7 @@ class ImageParser:
             return False
         file_value = str(image_info.file_path).strip()
         parsed = urlparse(file_value)
-        if parsed.scheme in LOCAL_SOURCE_SCHEMES:
+        if parsed.scheme in URL_SCHEMES:
             return False
         path = Path(file_value)
         if not path.is_absolute():
@@ -779,7 +780,7 @@ class ImageParser:
             parsed = urlparse(url)
             if parsed.scheme not in HTTP_SCHEMES or not parsed.hostname:
                 return None
-            if parsed.port is not None and parsed.port not in {80, 443}:
+            if parsed.port is not None and parsed.port not in ALLOWED_IMAGE_PORTS:
                 return None
             address = await asyncio.to_thread(_resolve_global_address, parsed.hostname)
             if not address:
