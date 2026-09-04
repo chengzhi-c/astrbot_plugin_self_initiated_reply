@@ -254,7 +254,7 @@ class ImageExtractor:
                 )
                 if skip_stickers and is_sticker:
                     continue
-                raw_url = _component_value(component, "url", "src")
+                raw_url = _component_value(component, "url")
                 normalized_file = _component_value(component, "file", "path", "local_path")
                 # Only a non-mapping, normalized AstrBot component may mark an
                 # absolute local source as host-trusted. Raw mappings can carry
@@ -270,7 +270,7 @@ class ImageExtractor:
                 # original OneBot URL/file metadata when the normalized object
                 # no longer carries a usable source.
                 if raw_component is not None:
-                    raw_url = raw_url or _component_value(raw_component, "url", "src")
+                    raw_url = raw_url or _component_value(raw_component, "url")
                     raw_file = raw_file or _component_value(
                         raw_component,
                         "file",
