@@ -16,7 +16,7 @@ from ..adapters import AstrBotBridge
 from ..models import PLUGIN_ID, Settings
 from ..session_coordinator import SessionCoordinator
 from ..session_gate import SessionGate
-from ._support import ImageInfo, format_image_context
+from ._support import VISION_MAX_CONCURRENT, ImageInfo, format_image_context
 from .parser import ImageParser
 from .recorder_bridge import MessageRecorderBridge
 
@@ -87,7 +87,7 @@ class VisionService:
         parser = self.get_image_parser()
         if parser is not None:
             try:
-                await parser.snapshot_local_sources(images, max_concurrent=2)
+                await parser.snapshot_local_sources(images, max_concurrent=VISION_MAX_CONCURRENT)
             except Exception as exc:
                 logger.debug("[%s] local image snapshot stage failed: %s", PLUGIN_ID, exc)
         self._track_background_task(
@@ -112,7 +112,7 @@ class VisionService:
             if parser is None:
                 return
             prepared = await asyncio.wait_for(
-                parser.prepare_batch(images, max_concurrent=2),
+                parser.prepare_batch(images, max_concurrent=VISION_MAX_CONCURRENT),
                 # 冻结预算取单图超时的 2 倍（5–30s 夹取）：批量可比单图慢，但不得拖住消息主链。
                 timeout=max(5.0, min(30.0, float(self._settings.vision_timeout_sec) * 2)),
             )
@@ -160,6 +160,6 @@ class VisionService:
         descriptions = await parser.parse_batch(
             images,
             umo=umo,
-            max_concurrent=min(2, self._settings.vision_max_images),
+            max_concurrent=min(VISION_MAX_CONCURRENT, self._settings.vision_max_images),
         )
         return format_image_context(descriptions)

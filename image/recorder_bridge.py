@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +9,7 @@ from astrbot.api import logger
 
 from ..models import PLUGIN_ID
 from ..utils import maybe_await
-from ._support import sniff_image_mime
+from ._support import sniff_image_mime, to_data_url
 
 RECORDER_PLUGIN_NAME = "astrbot_plugin_message_recorder"
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -111,6 +110,6 @@ class MessageRecorderBridge:
             if not mime:
                 logger.debug("[%s] rejected non-image payload path=%s", PLUGIN_ID, path)
                 return None
-            return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+            return to_data_url(mime, data)
         except (OSError, ValueError):
             return None

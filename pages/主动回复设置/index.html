@@ -585,8 +585,9 @@
                       min="5"
                       max="86400"
                       step="5"
+                      aria-describedby="messageDelayHint"
                     />
-                    <p class="field-hint">
+                    <p class="field-hint" id="messageDelayHint">
                       消息后等待多久才开口，建议 30–120 秒
                     </p>
                   </label>
@@ -599,8 +600,9 @@
                       min="0"
                       max="86400"
                       step="10"
+                      aria-describedby="minSilenceHint"
                     />
-                    <p class="field-hint">连续静默多久才允许触发</p>
+                    <p class="field-hint" id="minSilenceHint">连续静默多久才允许触发</p>
                   </label>
                 </div>
               </fieldset>
@@ -620,8 +622,9 @@
                       min="0"
                       max="86400"
                       step="60"
+                      aria-describedby="cooldownHint"
                     />
-                    <p class="field-hint">同一会话里，两次主动回复至少间隔这么多秒；各会话独立计时。</p>
+                    <p class="field-hint" id="cooldownHint">同一会话里，两次主动回复至少间隔这么多秒；各会话独立计时。</p>
                   </label>
                 </div>
               </fieldset>
@@ -640,8 +643,9 @@
                       min="0"
                       max="30"
                       step="1"
+                      aria-describedby="minContextHint"
                     />
-                    <p class="field-hint">
+                    <p class="field-hint" id="minContextHint">
                       本插件记录的文字消息少于此数时，会尝试读取同一会话的旧消息，帮助判断要不要接话。设为
                       0 时，只看插件已记录的消息。
                     </p>
@@ -723,8 +727,9 @@
                   min="0"
                   max="2"
                   step="0.1"
+                  aria-describedby="decisionTempHint"
                 />
-                <p class="field-hint">越高越发散，默认 0.2</p>
+                <p class="field-hint" id="decisionTempHint">越高越发散，默认 0.2</p>
               </label>
               <label class="field">
                 <span class="field-label">判断超时<em>秒</em></span>
@@ -735,8 +740,9 @@
                   min="1"
                   max="300"
                   step="1"
+                  aria-describedby="decisionTimeoutHint"
                 />
-                <p class="field-hint">判断模型等待上限，超时则本次不主动回应</p>
+                <p class="field-hint" id="decisionTimeoutHint">判断模型等待上限，超时则本次不主动回应</p>
               </label>
             </div>
 
@@ -948,8 +954,9 @@
                       min="1"
                       max="5"
                       step="1"
+                      aria-describedby="visionMaxImagesHint"
                     />
-                    <p class="field-hint">单次最多读取几张图</p>
+                    <p class="field-hint" id="visionMaxImagesHint">单次最多读取几张图</p>
                   </label>
                   <label class="field">
                     <span class="field-label">图片有效时间<em>秒</em></span>
@@ -960,8 +967,9 @@
                       min="60"
                       max="86400"
                       step="60"
+                      aria-describedby="visionImageAgeHint"
                     />
-                    <p class="field-hint">超过此时长未活动的图片不再识别</p>
+                    <p class="field-hint" id="visionImageAgeHint">超过此时长未活动的图片不再识别</p>
                   </label>
                   <label class="field">
                     <span class="field-label">识图超时<em>秒</em></span>
@@ -972,8 +980,9 @@
                       min="1"
                       max="120"
                       step="1"
+                      aria-describedby="visionTimeoutHint"
                     />
-                    <p class="field-hint">单次识图等待上限</p>
+                    <p class="field-hint" id="visionTimeoutHint">单次识图等待上限</p>
                   </label>
                 </div>
               </div>

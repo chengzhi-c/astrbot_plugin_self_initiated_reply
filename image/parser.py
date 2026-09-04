@@ -26,7 +26,16 @@ from ..models import (
     PLUGIN_ID,
 )
 from ..utils import response_text
-from ._support import MAX_DESCRIPTION_CHARS, ImageCache, ImageInfo, sniff_image_mime
+from ._support import (
+    HTTP_SCHEMES,
+    LOCAL_SOURCE_SCHEMES,
+    MAX_DESCRIPTION_CHARS,
+    VISION_MAX_CONCURRENT,
+    ImageCache,
+    ImageInfo,
+    sniff_image_mime,
+    to_data_url,
+)
 from .recorder_bridge import MAX_IMAGE_BYTES, MessageRecorderBridge
 
 VISION_PROMPT_VERSION = "v1"
@@ -305,7 +314,7 @@ class _FixedAddressTransport(httpx.AsyncBaseTransport):
         host = str(request.url.host or "")
         scheme = str(request.url.scheme or "").lower()
         port = request.url.port or (443 if scheme == "https" else 80)
-        if scheme not in {"http", "https"} or not host or port not in {80, 443}:
+        if scheme not in HTTP_SCHEMES or not host or port not in {80, 443}:
             raise httpx.ConnectError(f"拒绝连接不安全的图片地址: {host}")
         resolver = self._resolver or _resolve_global_address
         address = self._address
@@ -463,7 +472,7 @@ class ImageParser:
         return list(await asyncio.gather(*(run_one(image) for image in images)))
 
     async def snapshot_local_sources(
-        self, images: list[ImageInfo], *, max_concurrent: int = 2
+        self, images: list[ImageInfo], *, max_concurrent: int = VISION_MAX_CONCURRENT
     ) -> list[bool]:
         """Copy host-provided temporary images before the event handler returns.
 
@@ -483,7 +492,7 @@ class ImageParser:
             return False
         file_value = str(image_info.file_path).strip()
         parsed = urlparse(file_value)
-        if parsed.scheme in {"http", "https", "file"}:
+        if parsed.scheme in LOCAL_SOURCE_SCHEMES:
             return False
         path = Path(file_value)
         if not path.is_absolute():
@@ -514,7 +523,7 @@ class ImageParser:
             return False
 
     async def prepare_batch(
-        self, images: list[ImageInfo], *, max_concurrent: int = 2
+        self, images: list[ImageInfo], *, max_concurrent: int = VISION_MAX_CONCURRENT
     ) -> list[bool]:
         """Freeze image sources concurrently while preserving input order."""
         return await self._run_concurrent(images, self.prepare, max_concurrent=max_concurrent)
@@ -621,7 +630,7 @@ class ImageParser:
         images: list[ImageInfo],
         *,
         umo: str = "",
-        max_concurrent: int = 2,
+        max_concurrent: int = VISION_MAX_CONCURRENT,
     ) -> list[str | None]:
         """Parse images concurrently while preserving input order."""
         return await self._run_concurrent(
@@ -679,7 +688,7 @@ class ImageParser:
         if image_info.file_path:
             file_value = str(image_info.file_path).strip()
             parsed = urlparse(file_value)
-            if parsed.scheme in {"http", "https"}:
+            if parsed.scheme in HTTP_SCHEMES:
                 data_url = await self._fetch_image_data_url(file_value)
                 if data_url:
                     return data_url
@@ -794,7 +803,7 @@ class ImageParser:
         """
         try:
             parsed = urlparse(url)
-            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            if parsed.scheme not in HTTP_SCHEMES or not parsed.hostname:
                 return None
             if parsed.port is not None and parsed.port not in {80, 443}:
                 return None
@@ -829,7 +838,7 @@ class ImageParser:
                     content_type = sniff_image_mime(bytes(content))
                     if not content_type:
                         return None
-                    return f"data:{content_type};base64,{base64.b64encode(content).decode('ascii')}"
+                    return to_data_url(content_type, bytes(content))
         except Exception as exc:
             logger.debug("[%s] image download failed: %s", PLUGIN_ID, exc)
             return None

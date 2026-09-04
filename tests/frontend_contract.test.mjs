@@ -362,6 +362,101 @@ test("dark accent tokens are declared once and reused", async () => {
   assert.match(css, /prefers-color-scheme:\s*dark/);
 });
 
+test("the two dark token blocks stay token-identical", async () => {
+  // 深色令牌写了两份：:root[data-theme="dark"]（显式深色）与
+  // @media (prefers-color-scheme: dark) 下的 :root:not([data-theme])（跟随系统）。
+  // 合并成一份需要引入"选中态 vs 解析态"双状态机（currentTheme 从 data-theme
+  // 读取，auto 一旦被解析成具体值就不可表示，nextTheme 的三态循环会断），
+  // 复杂度大于收益，故保留两份并用这条测试把"改一处忘另一处"变成红灯。
+  const css = await readFile(join(pageDir, "style.css"), "utf8");
+  const explicit = css.match(
+    /:root\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/,
+  );
+  const system = css.match(
+    /@media \(prefers-color-scheme: dark\) \{\s*\n\t:root:not\(\[data-theme\]\) \{([\s\S]*?)\n\t\}/,
+  );
+  assert.ok(explicit && system, "dark token blocks not found in style.css");
+  const normalize = (body) =>
+    body
+      .split("\n")
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter((line) => line && !line.startsWith("color-scheme"))
+      .join("\n");
+  assert.equal(
+    normalize(system[1]),
+    normalize(explicit[1]),
+    "两份深色令牌块漂移：改一处必须改另一处",
+  );
+});
+
+test("page wires the manual image cache cleanup control to the API", async () => {
+  // 清理按钮必须接入页面与 API，而不是只能重载插件。此前这条断言住在
+  // tests/test_vision.py 里读前端源码——前端改名即红，与识图无关，搬回契约测试。
+  const [html, configIo] = await Promise.all([
+    readFile(join(pageDir, "index.html"), "utf8"),
+    readFile(join(pageDir, "config-io.mjs"), "utf8"),
+  ]);
+  assert.match(html, /id="cleanupImageCacheBtn"/);
+  assert.match(configIo, /apiPost\("image-cache\/cleanup"/);
+});
+
+test("number inputs keep their hint in aria-describedby", async () => {
+  // 校验错误此前独占 aria-describedby，读屏用户聚焦输入框时听不到"建议 30–120
+  // 秒"这类操作必需提示。这条守两件事：HTML 里 hint 有 id 且被 input 引用；
+  // config-io 合并而非覆盖 aria-describedby。
+  const [html, configIo] = await Promise.all([
+    readFile(join(pageDir, "index.html"), "utf8"),
+    readFile(join(pageDir, "config-io.mjs"), "utf8"),
+  ]);
+  const blocks = [...html.matchAll(/<label class="field">([\s\S]*?)<\/label>/g)].map(
+    (m) => m[1],
+  );
+  let checked = 0;
+  for (const block of blocks) {
+    const inputTag = block.match(/<input\b[\s\S]*?\/>/);
+    if (!inputTag || !/type="number"/.test(inputTag[0])) continue;
+    const id = inputTag[0].match(/id="(\w+)"/);
+    const described = inputTag[0].match(/aria-describedby="([^"]+)"/);
+    const hint = block.match(/<p class="field-hint" id="(\w+)"/);
+    assert.ok(id, `number input without id: ${inputTag[0].slice(0, 40)}`);
+    assert.ok(hint, `number ${id[1]} has a field-hint with no id`);
+    assert.ok(
+      described && described[1].split(" ").includes(hint[1]),
+      `number ${id[1]} aria-describedby 未引用其 hint`,
+    );
+    checked += 1;
+  }
+  assert.equal(checked, 9, `expected 9 number fields, checked ${checked}`);
+  assert.match(
+    configIo,
+    /getAttribute\("aria-describedby"\)/,
+    "setupValidation 必须合并已有 aria-describedby，不能覆盖 hint 关联",
+  );
+});
+
+test("theme label names match between CSS content and JS labels", async () => {
+  // 主题名（跟随系统/慈爱之惠/审判之司）写了两处：style.css 的 .theme-label::after
+  // content（短标签）与 theme.mjs 的 THEME_LABELS（带"浅色 ·"/"深色 ·"前缀，用于
+  // aria-label）。改一处忘另一处会让可见文字与读屏播报不一致，且无人报错。
+  // 这条守的是"CSS 短标签必须是 JS 完整标签的子串"，不要求字面相等。
+  const [css, theme] = await Promise.all([
+    readFile(join(pageDir, "style.css"), "utf8"),
+    readFile(join(pageDir, "theme.mjs"), "utf8"),
+  ]);
+  const cssLabels = [...css.matchAll(/\.theme-label::after \{\s*\n\s*content: "([^"]+)"/g)].map(
+    (m) => m[1],
+  );
+  assert.equal(cssLabels.length, 3, "expected 3 theme-label content rules");
+  const jsLabels = [...theme.matchAll(/(?:auto|light|dark): "([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(jsLabels.length, 3, "expected 3 THEME_LABELS entries");
+  for (const cssLabel of cssLabels) {
+    assert.ok(
+      jsLabels.some((js) => js.includes(cssLabel)),
+      `CSS 主题标签 "${cssLabel}" 未出现在任何 JS THEME_LABELS 中`,
+    );
+  }
+});
+
 test("script load failure fallback does not depend on the module", async () => {
   const html = await readFile(join(pageDir, "index.html"), "utf8");
   const chrome = await readFile(join(pageDir, "chrome.mjs"), "utf8");

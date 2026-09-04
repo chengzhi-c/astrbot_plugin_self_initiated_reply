@@ -825,17 +825,6 @@ def test_cleanup_source_cache_can_run_when_vision_is_disabled(tmp_path: Path) ->
     assert not expired.exists()
 
 
-def test_web_page_exposes_manual_image_cache_cleanup_control() -> None:
-    """清理按钮必须接入现有页面与 API，而不是只能重载插件。"""
-    page = ROOT / "pages" / "主动回复设置"
-    html = (page / "index.html").read_text(encoding="utf-8")
-    scripts = "\n".join(
-        p.read_text(encoding="utf-8") for p in list(page.glob("*.js")) + list(page.glob("*.mjs"))
-    )
-    assert "cleanupImageCacheBtn" in html
-    assert 'apiPost("image-cache/cleanup"' in scripts
-
-
 def test_image_parser_does_not_fallback_to_expiring_raw_url() -> None:
     _, image, _ = _load_modules()
 

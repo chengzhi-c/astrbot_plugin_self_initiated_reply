@@ -198,7 +198,13 @@ export function createConfigIo(deps) {
 			error.className = "field-error";
 			error.id = `${input.id}Error`;
 			error.setAttribute("role", "alert");
-			input.setAttribute("aria-describedby", error.id);
+			// 合并而非覆盖：静态 aria-describedby 指向 field-hint，独占会把
+			// 提示从可访问名计算里抹掉。
+			const described = input.getAttribute("aria-describedby");
+			input.setAttribute(
+				"aria-describedby",
+				described ? `${described} ${error.id}` : error.id,
+			);
 			input.insertAdjacentElement("afterend", error);
 			const field = { input, error, min, max };
 			numberFields.push(field);

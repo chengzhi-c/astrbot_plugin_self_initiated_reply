@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -90,6 +91,63 @@ def test_frontend_has_no_handwritten_default_config() -> None:
     io = (ROOT / "pages" / "主动回复设置" / "config-io.mjs").read_text(encoding="utf-8")
     assert "DEFAULT_CONFIG" not in form
     assert "DEFAULT_CONFIG" not in io
+
+
+def _decision_prompt_value_keys() -> set[str]:
+    """AST 取 build_decision_prompt 里 values 字典的键（后端可注入的模板变量）。"""
+    tree = ast.parse((ROOT / "decision.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "build_decision_prompt":
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "values" for t in sub.targets
+                ):
+                    assert isinstance(sub.value, ast.Dict)
+                    return {k.value for k in sub.value.keys if isinstance(k, ast.Constant)}
+    raise AssertionError("build_decision_prompt values dict not found")
+
+
+def test_prompt_preview_keys_are_injectable_variables() -> None:
+    """前端预览示例的每个变量名都必须是后端真会注入的键。
+
+    后端把 {latest_message} 改名而前端预览仍高亮旧名，用户看到的预览就与实际
+    发给模型的内容不符——这条把该漂移变红灯。方向是子集：后端新增键而前端暂不
+    预览只是不高亮（无害），前端多出后端没有的键才是误导。
+    """
+    form = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
+    block = form.split("PROMPT_PREVIEW_VALUES = {", 1)[1].split("\n};", 1)[0]
+    preview_keys = set(re.findall(r"^\s*([a-z_]+):", block, re.M))
+    assert preview_keys, "PROMPT_PREVIEW_VALUES 解析为空"
+    injectable = _decision_prompt_value_keys()
+    extra = preview_keys - injectable
+    assert not extra, f"前端预览了后端不注入的变量：{sorted(extra)}"
+
+
+def test_frontend_bool_defaults_match_config_specs() -> None:
+    """data-config-default 属性值必须等于对应 ConfigSpec.default。
+
+    number 边界已有 test_frontend_number_bounds_match_panel_specs 守，bool 默认值
+    此前无人守：前端写 data-config-default="true" 而后端默认 False 时，未加载态的
+    开关显示与实际保存值相反。
+    """
+    from .host_stubs import install_astrbot_stubs, load_package
+
+    install_astrbot_stubs()
+    models = load_package("selfreply_config_sot_bool_defaults", "models")
+    html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
+    drift: list[str] = []
+    for tag in re.findall(r"<input\b[^>]*>", html):
+        key_match = re.search(r'data-config-key="([a-z0-9_]+)"', tag)
+        default_match = re.search(r'data-config-default="([^"]+)"', tag)
+        if not key_match or not default_match:
+            continue
+        spec = models.CONFIG_SPEC_BY_KEY[key_match.group(1)]
+        expected = "true" if spec.default is True else "false"
+        if default_match.group(1) != expected:
+            drift.append(
+                f"{key_match.group(1)}: HTML={default_match.group(1)} spec={spec.default!r}"
+            )
+    assert not drift, "data-config-default 与规格表默认值漂移：\n" + "\n".join(drift)
 
 
 def _fe_whitelist_illegal_pattern() -> str:

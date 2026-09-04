@@ -22,9 +22,19 @@ from packaging.requirements import Requirement
 from packaging.version import InvalidVersion, Version
 
 try:
-    from scripts.release_artifacts import ArtifactError, expected_project_name, resolve_artifact
+    from scripts.release_artifacts import (
+        REQUIRED_PAGE_FILES,
+        ArtifactError,
+        expected_project_name,
+        resolve_artifact,
+    )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    from release_artifacts import ArtifactError, expected_project_name, resolve_artifact
+    from release_artifacts import (
+        REQUIRED_PAGE_FILES,
+        ArtifactError,
+        expected_project_name,
+        resolve_artifact,
+    )
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,15 +68,7 @@ REQUIRED_FILES = (
     "pages/",
     "README.md",
     "CHANGELOG.md",
-    "pages/主动回复设置/index.html",
-    "pages/主动回复设置/style.css",
-    "pages/主动回复设置/app.js",
-    "pages/主动回复设置/frontend-core.mjs",
-    "pages/主动回复设置/config-form.mjs",
-    "pages/主动回复设置/config-io.mjs",
-    "pages/主动回复设置/providers.mjs",
-    "pages/主动回复设置/theme.mjs",
-    "pages/主动回复设置/chrome.mjs",
+    *REQUIRED_PAGE_FILES,
 )
 # 开发配置类：wheel 内不应出现
 FORBIDDEN_SUFFIXES = (".pre-commit-config.yaml", ".pyc")

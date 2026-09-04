@@ -14,18 +14,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-FRONTEND_FILES = [
-    "pages/主动回复设置/index.html",
-    "pages/主动回复设置/style.css",
-    "pages/主动回复设置/app.js",
-    "pages/主动回复设置/frontend-core.mjs",
-    "pages/主动回复设置/config-form.mjs",
-    "pages/主动回复设置/config-io.mjs",
-    "pages/主动回复设置/providers.mjs",
-    "pages/主动回复设置/theme.mjs",
-    "pages/主动回复设置/chrome.mjs",
-]
-
 
 def _load_script(name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(
@@ -36,6 +24,11 @@ def _load_script(name: str) -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+# 页面文件清单与发布脚本共用同一事实源（release_artifacts.REQUIRED_PAGE_FILES）；
+# 本测试文件此前抄了第三份，收敛后这里只做派生。
+FRONTEND_FILES = list(_load_script("release_artifacts").REQUIRED_PAGE_FILES)
 
 
 def _write_wheel(path: Path) -> None:
@@ -132,6 +125,23 @@ def test_wheel_required_files_use_exact_file_matching() -> None:
 
     assert check_wheel._has_required_file(["main.py.bak"], "main.py") is False
     assert check_wheel._has_required_file(["pages/index.html"], "pages/") is True
+
+
+def test_wheel_and_zip_share_one_page_file_list() -> None:
+    """wheel 与 deploy zip 的页面文件清单必须来自同一常量。
+
+    两侧此前各抄一遍：新增页面文件时漏改一侧，"zip 里有、wheel 里没有"会静默
+    通过（wheel 才是 pip 安装路径，缺文件直接让设置页 404）。
+    """
+    shared = _load_script("release_artifacts").REQUIRED_PAGE_FILES
+    check_wheel = _load_script("check_wheel")
+    make_zip = _load_script("make_release_zip")
+
+    assert [f for f in check_wheel.REQUIRED_FILES if f.startswith("pages/")] == [
+        "pages/",
+        *shared,
+    ]
+    assert [f for f in make_zip.REQUIRED if f.startswith("pages/")] == list(shared)
 
 
 def test_wheel_checker_rejects_version_substring_match(tmp_path: Path, monkeypatch, capsys) -> None:

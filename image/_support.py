@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import base64
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 from ..models import sanitize_prompt_variable
+
+# 图片来源 scheme 判定：HTTP_SCHEMES 是"可下载的远端"，LOCAL_SOURCE_SCHEMES 是
+# "带 scheme 所以不是本地路径"。两处判定在 extractor 与 parser 各自出现，单源在此。
+HTTP_SCHEMES = frozenset({"http", "https"})
+LOCAL_SOURCE_SCHEMES = HTTP_SCHEMES | frozenset({"file"})
+
+# 单次批量识图的并发上限。图片下载与 provider 调用都是 IO 密集但对端有速率限制，
+# 2 是实测够用的保守值；六处字面量收敛到此。
+VISION_MAX_CONCURRENT = 2
 
 IMAGE_SNIFF_BYTES = 12
 _JPEG_PREFIX = b"\xff\xd8\xff"
@@ -43,6 +53,11 @@ class ImageInfo:
         if self.file_path:
             return f"file:{self.file_path}"
         return f"id:{self.message_id}"
+
+
+def to_data_url(mime: str, content: bytes) -> str:
+    """Assemble a base64 data URL; the payload's MIME must already be sniffed."""
+    return f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}"
 
 
 def sniff_image_mime(data: bytes) -> str:

@@ -16,6 +16,21 @@ from packaging.utils import (
 )
 from packaging.version import Version
 
+# 设置页必须随包的文件。wheel 断言（check_wheel.REQUIRED_FILES）与 deploy zip 断言
+# （make_release_zip.REQUIRED）共用这一份：两侧此前各抄一遍 9 条，新增页面文件时
+# 漏改一侧会让"zip 里有、wheel 里没有"这类缺口静默通过。
+REQUIRED_PAGE_FILES = (
+    "pages/主动回复设置/index.html",
+    "pages/主动回复设置/style.css",
+    "pages/主动回复设置/app.js",
+    "pages/主动回复设置/frontend-core.mjs",
+    "pages/主动回复设置/config-form.mjs",
+    "pages/主动回复设置/config-io.mjs",
+    "pages/主动回复设置/providers.mjs",
+    "pages/主动回复设置/theme.mjs",
+    "pages/主动回复设置/chrome.mjs",
+)
+
 
 class ArtifactError(ValueError):
     """Raised when release artifact discovery is ambiguous or invalid."""

@@ -30,6 +30,7 @@ from pathlib import Path
 
 try:
     from scripts.release_artifacts import (
+        REQUIRED_PAGE_FILES,
         ArtifactError,
         expected_project_name,
         resolve_artifact,
@@ -37,6 +38,7 @@ try:
     )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
     from release_artifacts import (
+        REQUIRED_PAGE_FILES,
         ArtifactError,
         expected_project_name,
         resolve_artifact,
@@ -46,21 +48,14 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR_NAME = "astrbot_plugin_self_initiated_reply"
 # 缺任何一条即拒绝出包：宿主靠 main.py 找入口、靠 metadata.yaml 认插件，
-# 缺了不会报错只会"装上却不工作"。
+# 缺了不会报错只会"装上却不工作"。页面文件清单与 check_wheel 共用
+# release_artifacts.REQUIRED_PAGE_FILES。
 REQUIRED = (
     "main.py",
     "metadata.yaml",
     "_conf_schema.json",
     "__init__.py",
-    "pages/主动回复设置/index.html",
-    "pages/主动回复设置/style.css",
-    "pages/主动回复设置/app.js",
-    "pages/主动回复设置/frontend-core.mjs",
-    "pages/主动回复设置/config-form.mjs",
-    "pages/主动回复设置/config-io.mjs",
-    "pages/主动回复设置/providers.mjs",
-    "pages/主动回复设置/theme.mjs",
-    "pages/主动回复设置/chrome.mjs",
+    *REQUIRED_PAGE_FILES,
 )
 # 与 check_wheel.py 的 FORBIDDEN_PREFIXES 同源的开发物前缀。这里再查一遍不是
 # 冗余：wheel 与 zip 之间还有本脚本这一层转写，转写逻辑写错时 check_wheel 已经

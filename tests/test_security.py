@@ -41,37 +41,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME_R3 = "selfreply_round3_package"
 
 
-def _install_astrbot_stubs() -> None:
-    astrbot = sys.modules.setdefault("astrbot", types.ModuleType("astrbot"))
-    api = sys.modules.setdefault("astrbot.api", types.ModuleType("astrbot.api"))
-    event = sys.modules.setdefault("astrbot.api.event", types.ModuleType("astrbot.api.event"))
-    star = sys.modules.setdefault("astrbot.api.star", types.ModuleType("astrbot.api.star"))
-    components = sys.modules.setdefault(
-        "astrbot.api.message_components", types.ModuleType("astrbot.api.message_components")
-    )
-
-    class AstrMessageEvent:
-        pass
-
-    class Context:
-        pass
-
-    class At:
-        pass
-
-    if not hasattr(api, "logger"):
-        api.logger = logging.getLogger("selfreply-round3")
-    if not hasattr(event, "AstrMessageEvent"):
-        event.AstrMessageEvent = AstrMessageEvent
-    if not hasattr(star, "Context"):
-        star.Context = Context
-    if not hasattr(components, "At"):
-        components.At = At
-    astrbot.api = api
-
-
 def _load_r3_modules():
-    _install_astrbot_stubs()
+    install_astrbot_stubs()
     package = sys.modules.get(PACKAGE_NAME_R3)
     if package is None:
         package = types.ModuleType(PACKAGE_NAME_R3)
@@ -321,39 +292,8 @@ def test_sanitize_still_removes_control_characters() -> None:
 PACKAGE_NAME_SEC = "selfreply_redlight_test"
 
 
-def _install_astrbot_stubs() -> None:
-    if "astrbot" in sys.modules:
-        return
-
-    import logging
-
-    astrbot = types.ModuleType("astrbot")
-    api = types.ModuleType("astrbot.api")
-    event_mod = types.ModuleType("astrbot.api.event")
-    message_components = types.ModuleType("astrbot.api.message_components")
-
-    class AstrMessageEvent:
-        pass
-
-    class At:
-        pass
-
-    api.logger = logging.getLogger("selfreply-redlight")
-    event_mod.AstrMessageEvent = AstrMessageEvent
-    message_components.At = At
-
-    sys.modules.update(
-        {
-            "astrbot": astrbot,
-            "astrbot.api": api,
-            "astrbot.api.event": event_mod,
-            "astrbot.api.message_components": message_components,
-        }
-    )
-
-
 def _load_sec_modules():
-    _install_astrbot_stubs()
+    install_astrbot_stubs()
     package = types.ModuleType(PACKAGE_NAME_SEC)
     package.__path__ = [str(ROOT)]
     sys.modules[PACKAGE_NAME_SEC] = package

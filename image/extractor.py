@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from astrbot.api import logger
 
 from ..models import PLUGIN_ID
-from ._support import ImageInfo
+from ._support import HTTP_SCHEMES, LOCAL_SOURCE_SCHEMES, ImageInfo
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
@@ -91,7 +91,7 @@ def _is_absolute_local_source(value: str) -> bool:
     normalized = str(value or "").strip()
     if not normalized:
         return False
-    if urlparse(normalized).scheme in {"http", "https", "file"}:
+    if urlparse(normalized).scheme in LOCAL_SOURCE_SCHEMES:
         return False
     return os.path.isabs(normalized) or ntpath.isabs(normalized)
 
@@ -286,9 +286,9 @@ class ImageExtractor:
                         "local_path",
                     )
                 parsed_file = urlparse(raw_file)
-                if not raw_url and parsed_file.scheme in {"http", "https"}:
+                if not raw_url and parsed_file.scheme in HTTP_SCHEMES:
                     raw_url, raw_file = raw_file, ""
-                elif raw_url and urlparse(raw_url).scheme not in {"http", "https"}:
+                elif raw_url and urlparse(raw_url).scheme not in HTTP_SCHEMES:
                     if not raw_file:
                         raw_file = raw_url
                     raw_url = ""

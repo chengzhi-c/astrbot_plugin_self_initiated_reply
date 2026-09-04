@@ -17,7 +17,9 @@
 	--text: #1b1e2e;
 	--text-soft: #373c52;
 	--muted: #5c637e;
-	--faint: #7c839f;
+	/* 浅色提示文字令牌：11–12px 小字号需过 WCAG AA 4.5:1。#7c839f 在白底仅 3.75，
+	   同色相加深到 #666d88（白底 5.11 / --surface-2 底 4.77）。深色侧另值。 */
+	--faint: #666d88;
 	--accent-light: #485484;
 	--accent-text-light: #3b4672;
 	--accent-soft-light: rgba(72, 84, 132, 0.12);

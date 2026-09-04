@@ -12,14 +12,13 @@ import asyncio
 import base64
 import hashlib
 import importlib
-import logging
 import os
 import sys
 import types
 from pathlib import Path
 from typing import Any
 
-from .host_stubs import with_plugin
+from .host_stubs import install_astrbot_stubs, with_plugin
 from .source_contract import calls_in, logger_levels_for, method_source
 from .test_main_runtime import UMO, _make_event, _PipelineTestAdapter
 
@@ -33,37 +32,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME_R3 = "selfreply_regressions_package"
 
 
-def _install_astrbot_stubs() -> None:
-    astrbot = sys.modules.setdefault("astrbot", types.ModuleType("astrbot"))
-    api = sys.modules.setdefault("astrbot.api", types.ModuleType("astrbot.api"))
-    event = sys.modules.setdefault("astrbot.api.event", types.ModuleType("astrbot.api.event"))
-    star = sys.modules.setdefault("astrbot.api.star", types.ModuleType("astrbot.api.star"))
-    components = sys.modules.setdefault(
-        "astrbot.api.message_components", types.ModuleType("astrbot.api.message_components")
-    )
-
-    class AstrMessageEvent:
-        pass
-
-    class Context:
-        pass
-
-    class At:
-        pass
-
-    if not hasattr(api, "logger"):
-        api.logger = logging.getLogger("selfreply-round3")
-    if not hasattr(event, "AstrMessageEvent"):
-        event.AstrMessageEvent = AstrMessageEvent
-    if not hasattr(star, "Context"):
-        star.Context = Context
-    if not hasattr(components, "At"):
-        components.At = At
-    astrbot.api = api
-
-
 def _load_r3_modules():
-    _install_astrbot_stubs()
+    install_astrbot_stubs()
     package = sys.modules.get(PACKAGE_NAME_R3)
     if package is None:
         package = types.ModuleType(PACKAGE_NAME_R3)
