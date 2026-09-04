@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -293,5 +294,16 @@ def persist_settings_config(path: Path, config_obj: Any, settings: Settings) -> 
     """
     data = settings.to_config_dict()
     if not _write_json_atomic(path, data):
+        return False
+    return _update_config_obj(config_obj, data) and _persist_config_obj(config_obj, data)
+
+
+async def apersist_settings_config(path: Path, config_obj: Any, settings: Settings) -> bool:
+    """``persist_settings_config`` 的 async 版：只有文件写盘进线程。
+
+    宿主 ``save_config`` 的线程安全性未知，仍在事件循环内同步执行。
+    """
+    data = settings.to_config_dict()
+    if not await asyncio.to_thread(_write_json_atomic, path, data):
         return False
     return _update_config_obj(config_obj, data) and _persist_config_obj(config_obj, data)

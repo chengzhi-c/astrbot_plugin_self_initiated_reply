@@ -30,7 +30,7 @@ class FakePersistence:
         self.sync_fail = False
         self.save_fail = False
 
-    def sync(self) -> bool:
+    async def sync(self) -> bool:
         self.sync_calls += 1
         if self.sync_fail:
             raise RuntimeError("config write failed")

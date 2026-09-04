@@ -218,19 +218,19 @@ def test_config_rollback_preserves_container_identity(tmp_path) -> None:
         plugin._state_for(UMO).daily_count = 7
 
         # 让配置持久化失败触发回滚
-        original_sync = plugin._sync_whitelist
+        original_persist = plugin._persist_config
 
-        def failing_sync():
+        async def failing_persist():
             raise OSError("sync failed")
 
-        plugin._sync_whitelist = failing_sync
+        plugin._persist_config = failing_persist
         try:
             web = sys.modules["astrbot.api.web"]
             web.request.payload = {"cooldown_sec": 777}
             result = await plugin._api_post_config()
             assert result.get("ok") is False
         finally:
-            plugin._sync_whitelist = original_sync
+            plugin._persist_config = original_persist
 
         # 容器身份必须存活：协作对象仍持有同一 dict 对象
         assert plugin._last_events is scheduler_events
@@ -293,19 +293,19 @@ def test_config_rollback_preserves_every_container_holder(tmp_path) -> None:
         plugin._whitelist_runtime_umos.setdefault("12345", {UMO})
         plugin._state_for(UMO).daily_count = 7
 
-        original_sync = plugin._sync_whitelist
+        original_persist = plugin._persist_config
 
-        def failing_sync():
+        async def failing_persist():
             raise OSError("sync failed")
 
-        plugin._sync_whitelist = failing_sync
+        plugin._persist_config = failing_persist
         try:
             web = sys.modules["astrbot.api.web"]
             web.request.payload = {"cooldown_sec": 777}
             result = await plugin._api_post_config()
             assert result.get("ok") is False, "配置持久化未失败，回滚路径没被触发"
         finally:
-            plugin._sync_whitelist = original_sync
+            plugin._persist_config = original_persist
 
         for main_attr, owner, attr in CONTAINER_HOLDERS:
             main_container = getattr(plugin, main_attr)

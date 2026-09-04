@@ -139,3 +139,33 @@ async def test_prepare_materializes_data_url_off_the_event_loop(tmp_path: Path) 
         "prepare() 在事件循环线程内物化 data URL——base64 解码+写盘会阻塞所有会话"
     )
     assert info.prepared_source
+
+
+async def test_settings_config_write_offloads_file_io_to_thread(tmp_path: Path) -> None:
+    """配置写盘的文件 IO 必须在工作线程执行，宿主同步留在事件循环。
+
+    POST /config 与 /on|/off 都在 async 上下文写配置：JSON 落盘含 fsync，
+    在事件循环线程内执行会阻塞所有会话。宿主 save_config 的线程安全性未知，
+    故只有纯本插件的文件写进线程，宿主同步仍在循环内。
+    """
+    from .test_storage_and_umo import _load_modules
+
+    models, _, storage = _load_modules()
+    threads: list[int] = []
+    original = storage._write_json_atomic
+
+    def probe(path, data):
+        threads.append(threading.get_ident())
+        return original(path, data)
+
+    storage._write_json_atomic = probe
+    try:
+        settings = models.Settings.from_config({})
+        ok = await storage.apersist_settings_config(tmp_path / "cfg.json", {}, settings)
+        assert ok is True
+        assert threads, "配置写盘未发生"
+        assert threads[0] != threading.get_ident(), (
+            "配置写盘在事件循环线程内执行——fsync 会阻塞所有会话"
+        )
+    finally:
+        storage._write_json_atomic = original

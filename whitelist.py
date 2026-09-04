@@ -32,7 +32,7 @@ class WhitelistManager:
         self,
         *,
         settings: Settings,
-        sync_whitelist: Callable[[], bool],
+        sync_whitelist: Callable[[], Awaitable[bool]],
         save_storage: Callable[[], Awaitable[None]],
         ensure_state: Callable[[str], Any],
         invalidate: Callable[[str], int],
@@ -103,7 +103,7 @@ class WhitelistManager:
     ) -> None:
         """双写持久化一次变更；失败回滚内存并重写，仍失败则告警上抛。"""
         try:
-            self._sync_whitelist()
+            await self._sync_whitelist()
             await self._save_storage()
         except Exception:
             self.replace(old_whitelist)
@@ -111,7 +111,7 @@ class WhitelistManager:
             # 失败回滚必须复活，否则日配额/冷却时间戳被静默清零。
             self._sessions.update(pruned)
             try:
-                self._sync_whitelist()
+                await self._sync_whitelist()
                 await self._save_storage()
             except Exception as rollback_exc:
                 logger.error(

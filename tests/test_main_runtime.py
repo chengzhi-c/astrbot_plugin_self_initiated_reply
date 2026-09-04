@@ -493,12 +493,12 @@ def test_off_rolls_back_memory_when_config_write_fails(tmp_path: Path) -> None:
     """
 
     async def scenario(plugin, main):
-        original_sync = plugin._sync_whitelist
+        original_persist = plugin._persist_config
 
-        def failing_sync():
+        async def failing_persist():
             raise OSError("配置文件写入失败（模拟）")
 
-        plugin._sync_whitelist = failing_sync
+        plugin._persist_config = failing_persist
         try:
             with pytest.raises(OSError):
                 await plugin._command_text(_make_event(), "off")
@@ -506,7 +506,7 @@ def test_off_rolls_back_memory_when_config_write_fails(tmp_path: Path) -> None:
             assert plugin.settings.enabled is True
             assert plugin.runtime_enabled is True
         finally:
-            plugin._sync_whitelist = original_sync
+            plugin._persist_config = original_persist
 
     with_plugin(tmp_path, scenario)
 

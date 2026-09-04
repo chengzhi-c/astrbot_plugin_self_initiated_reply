@@ -19,8 +19,8 @@ from .models import (
     now_ts,
 )
 from .storage import (
+    apersist_settings_config,
     build_sessions_payload,
-    persist_settings_config,
     write_sessions_payload,
 )
 from .utils import event_sender_id, event_sender_name, session_group_id
@@ -174,25 +174,26 @@ async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
             raise OSError(f"状态文件写入失败：{plugin._storage_path}")
 
 
-def sync_whitelist(plugin: SelfInitiatedReplyPlugin) -> bool:
-    if not persist_settings_config(plugin._config_path, plugin.config, plugin.settings):
+async def async_sync_whitelist(plugin: SelfInitiatedReplyPlugin) -> bool:
+    """落盘当前配置：文件写盘进线程，宿主同步留事件循环（见 storage.apersist）。"""
+    if not await apersist_settings_config(plugin._config_path, plugin.config, plugin.settings):
         raise OSError(f"配置文件写入失败：{plugin._config_path}")
     return True
 
 
 async def persist_enabled(plugin: SelfInitiatedReplyPlugin, enabled: bool) -> None:
-    """双写 enabled + runtime_enabled；失败经 plugin._sync_whitelist 回滚。"""
+    """双写 enabled + runtime_enabled；失败经 plugin._persist_config 回滚。"""
     old_enabled = plugin.settings.enabled
     old_runtime = plugin.runtime_enabled
     plugin.settings.enabled = enabled
     plugin.runtime_enabled = enabled
     try:
-        plugin._sync_whitelist()
+        await plugin._persist_config()
     except Exception:
         plugin.settings.enabled = old_enabled
         plugin.runtime_enabled = old_runtime
         try:
-            plugin._sync_whitelist()
+            await plugin._persist_config()
         except Exception as rollback_exc:
             logger.error(
                 "[%s] enabled=%s rollback persistence failed: %s",

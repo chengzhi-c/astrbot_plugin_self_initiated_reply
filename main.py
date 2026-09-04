@@ -91,13 +91,13 @@ from .models import (
     now_ts,
 )
 from .plugin_state import (
+    async_sync_whitelist,
     persist_enabled,
     refresh_admin_ids,
     resolve_paths,
     save_storage,
     save_storage_sync,
     state_for,
-    sync_whitelist,
     track_background_task,
     track_critical_task,
 )
@@ -335,7 +335,7 @@ class SelfInitiatedReplyPlugin(Star):
 
         self._whitelist = WhitelistManager(
             settings=self.settings,
-            sync_whitelist=lambda: bool(self._sync_whitelist()),
+            sync_whitelist=self._persist_config,
             save_storage=lambda: self._save_storage(),
             ensure_state=lambda key: self._state_for(key),
             invalidate=lambda umo: self._coordinator.invalidate(umo),
@@ -390,11 +390,8 @@ class SelfInitiatedReplyPlugin(Star):
     async def _save_storage(self) -> None:
         await save_storage(self)
 
-    def _persist_config(self) -> bool:
-        return self._sync_whitelist()
-
-    def _sync_whitelist(self) -> bool:
-        return sync_whitelist(self)
+    async def _persist_config(self) -> bool:
+        return await async_sync_whitelist(self)
 
     async def _persist_enabled(self, enabled: bool) -> None:
         await persist_enabled(self, enabled)
