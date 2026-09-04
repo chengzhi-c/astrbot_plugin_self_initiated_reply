@@ -600,6 +600,44 @@ def test_degraded_state_rejects_new_spawn_and_force_check(tmp_path: Path) -> Non
     with_plugin(tmp_path, scenario)
 
 
+def test_degraded_lifecycle_is_visible_in_status_and_add_message(tmp_path: Path) -> None:
+    """降级态必须能从 /status 与 /selfreply status 看出，且 add 报错文案不误导。
+
+    回归：一次生成超时 + 宿主吞取消即永久 DEGRADED，但 status 仍显示"运行中:
+    True"、GET /status 不含 lifecycle、add 报"插件正在关闭"（根本没在关闭）。
+    """
+
+    async def scenario(plugin, main):
+        webapi = importlib.import_module(main.__package__ + ".webapi")
+
+        # 正常态：lifecycle 可见且为 RUNNING。
+        status = await webapi._api_status(plugin)
+        assert status["lifecycle"] == "RUNNING"
+
+        plugin._mark_degraded("stubborn runner")
+
+        # /status 端点暴露降级态。
+        status = await webapi._api_status(plugin)
+        assert status["lifecycle"] == "DEGRADED"
+
+        # /selfreply status 文本不再谎报"运行中: True"，而是点明降级。
+        event = _make_event()
+        text = await plugin._command_text(event, "status")
+        assert "已降级" in text
+        assert "运行中: True" not in text
+
+        # add 的拒绝文案不得说"正在关闭"（误导：根本没在关闭）。
+        try:
+            await plugin._add_whitelist_session("fake:group:999")
+        except RuntimeError as exc:
+            assert "正在关闭" not in str(exc)
+            assert "已降级" in str(exc)
+        else:
+            raise AssertionError("降级态下 add 应被拒绝")
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_terminate_quarantines_noncooperative_runner(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         release = asyncio.Event()

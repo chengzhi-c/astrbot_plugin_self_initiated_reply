@@ -218,6 +218,44 @@ test("config payload requires ok true and write-critical fields", () => {
   );
 });
 
+test("config load failure names the missing fields", async () => {
+  // 后端返回 ok:true 但缺表单声明的键时，错误文案必须点出缺哪个键；
+  // 统一一句"配置加载失败"让排障者无从下手。
+  const field = (key) => ({ dataset: { configKey: key } });
+  const form = {
+    classList: { add() {}, remove() {}, toggle() {} },
+    inert: false,
+    querySelector: () => null,
+    querySelectorAll: () => [field("cooldown_sec"), field("min_silence_sec")],
+  };
+  const io = createConfigIo({
+    getEls: () => ({ configForm: form }),
+    getState: () => ({
+      configLoaded: false,
+      savingConfig: false,
+      configRevision: "",
+      isDirty: false,
+    }),
+    setState() {},
+    apiGet: async () => ({
+      ok: true,
+      enabled: true,
+      whitelist_sessions: [],
+      config_revision: TEST_REVISION,
+      cooldown_sec: 900,
+    }),
+    apiPost: async () => ({}),
+    showToast() {},
+    setStatState() {},
+    renderPromptPreview() {},
+    judgeProviderControl: { value: () => "", sync() {} },
+    visionProviderControl: { value: () => "", sync() {} },
+    visionJudgeProviderControl: { value: () => "", sync() {} },
+    fmtBool: String,
+  });
+  await assert.rejects(() => io.loadConfig(), /缺少字段 min_silence_sec/);
+});
+
 test("page exposes the accessibility and narrow-layout contracts", async () => {
   const [html, app, css, chrome, configIo, providers] = await Promise.all([
     readFile(join(pageDir, "index.html"), "utf8"),
@@ -251,6 +289,31 @@ test("page exposes the accessibility and narrow-layout contracts", async () => {
   assert.match(css, /more-actions-menu\[hidden\]/);
   assert.doesNotMatch(css, /\.master, \.panel, \.form-actions/);
   assert.doesNotMatch(css, /\.form > \*:nth-child\([2-6]\) \{ animation-delay/);
+});
+
+test("every data-config-control in the page is registered in config-io", async () => {
+  // configControlValue 直接 providerControls[configControl].value()，未注册即裸
+  // TypeError。当前 HTML 声明与注册表一致故运行时不可达；这条守的是"新增控件
+  // 忘了注册"的漂移，而不是给生产路径加死检查。
+  const [html, configIo] = await Promise.all([
+    readFile(join(pageDir, "index.html"), "utf8"),
+    readFile(join(pageDir, "config-io.mjs"), "utf8"),
+  ]);
+  const declared = new Set(
+    [...html.matchAll(/data-config-control="([^"]+)"/g)].map((m) => m[1]),
+  );
+  assert.ok(declared.size > 0, "index.html declares no data-config-control");
+  const registry = configIo.match(/const providerControls = \{([\s\S]*?)\};/);
+  assert.ok(registry, "config-io.mjs providerControls registry not found");
+  const registered = new Set(
+    [...registry[1].matchAll(/(\w+):/g)].map((m) => m[1]),
+  );
+  const missing = [...declared].filter((name) => !registered.has(name));
+  assert.deepEqual(
+    missing,
+    [],
+    `data-config-control 未在 providerControls 注册：${missing}`,
+  );
 });
 
 test("context-history setting describes its fallback behavior", async () => {

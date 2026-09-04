@@ -95,13 +95,26 @@ def list_text(settings: Settings) -> str:
 
 
 def status_text(
-    settings: Settings, event: AstrMessageEvent, state: object, runtime_enabled: bool
+    settings: Settings,
+    event: AstrMessageEvent,
+    state: object,
+    runtime_enabled: bool,
+    lifecycle: str = "RUNNING",
 ) -> str:
     umo = event_umo(event)
+    # 降级是单向门：runtime_enabled 读持久配置仍为 True，只有 lifecycle 能说明
+    # 插件实际已拒绝一切新工作。不显示它，运营者会对着"运行中: True"排障半天。
+    # STOPPING 与 DEGRADED 分开措辞：前者是正常关停，后者才需要重启恢复。
+    if lifecycle == "DEGRADED":
+        running_line = f"状态: 已降级（需重启插件恢复），持久开关: {runtime_enabled}"
+    elif lifecycle == "STOPPING":
+        running_line = f"状态: 正在关闭，持久开关: {runtime_enabled}"
+    else:
+        running_line = f"运行中: {runtime_enabled}"
     return "\n".join(
         [
             "主动回复状态",
-            f"运行中: {runtime_enabled}",
+            running_line,
             f"当前会话: {umo or '-'}",
             f"当前会话在白名单: {'是' if session_whitelisted(umo, settings.whitelist) else '否'}",
             f"私聊主动回复: {'启用' if settings.enabled_private_sessions else '关闭'}",
@@ -158,7 +171,9 @@ async def dispatch_command_action(
         return help_text()
     if action == "status":
         state = plugin._state_for(whitelist_storage_key(umo)) if umo else SessionState()
-        return status_text(plugin.settings, event, state, plugin.runtime_enabled)
+        return status_text(
+            plugin.settings, event, state, plugin.runtime_enabled, plugin.lifecycle_state
+        )
     if action == "list":
         return list_text(plugin.settings)
     if not umo:

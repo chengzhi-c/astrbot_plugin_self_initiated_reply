@@ -720,8 +720,10 @@ def test_cleanup_skips_symlinks(tmp_path: Path) -> None:
     link = root / "link.png"
     try:
         link.symlink_to(target)
-    except (OSError, NotImplementedError):
-        return
+    except (OSError, NotImplementedError) as exc:
+        # Windows 非开发者模式下 symlink_to 恒抛 OSError：必须显式 skip，
+        # 否则该用例静默空转而报告显示 PASSED。
+        pytest.skip(f"symlink not permitted on this platform: {exc}")
     os.utime(link, (100.0, 100.0))
 
     removed = image.ImageParser.cleanup_source_cache(root, max_age_sec=60, now=5000.0)

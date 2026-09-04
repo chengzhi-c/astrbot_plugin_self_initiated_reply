@@ -651,8 +651,10 @@ def test_materialize_refuses_symlink_target(tmp_path: Path) -> None:
     outside.write_bytes(b"outside")
     try:
         target.symlink_to(outside)
-    except (OSError, NotImplementedError):
-        return
+    except (OSError, NotImplementedError) as exc:
+        # Windows 非开发者模式下 symlink_to 恒抛 OSError：必须显式 skip，
+        # 否则该安全用例静默空转而报告显示 PASSED。
+        pytest.skip(f"symlink not permitted on this platform: {exc}")
 
     assert parser._materialize_data_url(data_url) is None
     assert outside.read_bytes() == b"outside"

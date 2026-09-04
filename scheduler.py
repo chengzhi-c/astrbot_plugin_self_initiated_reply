@@ -326,7 +326,13 @@ class SessionScheduler:
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            logger.warning("[%s] delayed check failed session=%s error=%s", PLUGIN_ID, umo, exc)
+            logger.warning(
+                "[%s] delayed check failed session=%s error=%s",
+                PLUGIN_ID,
+                umo,
+                exc,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # 图片与事件清理

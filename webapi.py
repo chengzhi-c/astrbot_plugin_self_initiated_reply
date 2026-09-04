@@ -615,8 +615,12 @@ def _log_audited_changes(
 async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """返回插件集成状态与会话级运行状态（调试面板导出）。
 
-    覆盖：代次快照、运行中集合、任务数（延迟/运行中检查/后台）、缓存规模
-    （事件/图片事件/会话）、每会话最近裁决原因。
+    覆盖：生命周期、代次快照、运行中集合、任务数（延迟/运行中检查/后台）、
+    缓存规模（事件/图片事件/会话）、每会话最近裁决原因。
+
+    ``lifecycle`` 是承重字段：一次生成超时 + 宿主吞取消即永久 DEGRADED，此后
+    一切新工作被拒，但 ``runtime_enabled`` 读的是持久配置、仍显示 True。没有
+    这个字段，运营者只能翻日志发现插件已死。
 
     当前虽无可达异常，仍与其它 ``_api_*`` 处理器一样兜 ``except``：不让内部
     细节以任何形式流向调用方，且本函数会随调试面板扩字段而增长，"当前无可达
@@ -627,6 +631,7 @@ async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
             "ok": True,
             "loaded": True,
             "runtime_enabled": plugin.runtime_enabled,
+            "lifecycle": plugin.lifecycle_state,
             "whitelist_count": len(plugin.settings.whitelist),
             "decision_model_enabled": plugin.settings.decision_model_enabled,
             "gate": {

@@ -9,6 +9,7 @@ import {
 import {
 	createConfigRequestCoordinator,
 	isSuccessfulConfigPayload,
+	missingConfigPayloadKeys,
 } from "./frontend-core.mjs";
 export { WHITELIST_ILLEGAL_RE };
 const CONFIG_CONTROL_SELECTOR = "[data-config-key]";
@@ -315,8 +316,17 @@ export function createConfigIo(deps) {
 		if (initialLoad && e.configForm) e.configForm.inert = true;
 		try {
 			const config = await apiGet("config");
-			if (!isSuccessfulConfigPayload(config, configControls(e.configForm).map((control) => control.dataset.configKey))) {
-				throw new Error(config?.error || "配置加载失败");
+			const requiredKeys = configControls(e.configForm).map(
+				(control) => control.dataset.configKey,
+			);
+			if (!isSuccessfulConfigPayload(config, requiredKeys)) {
+				const missing = missingConfigPayloadKeys(config, requiredKeys);
+				throw new Error(
+					config?.error ||
+						(missing.length
+							? `配置加载失败：缺少字段 ${missing.join(", ")}`
+							: "配置加载失败"),
+				);
 			}
 			if (!coordinator.canApplyLoad(requestEpoch, getState().isDirty, force)) return false;
 			applyConfigPayload(config);

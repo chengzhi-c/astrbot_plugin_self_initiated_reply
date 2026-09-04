@@ -137,6 +137,33 @@ async def test_patrol_loop_session_error_continues(tmp_path: Path, caplog: objec
     )
 
 
+async def test_delayed_check_error_logs_traceback(tmp_path: Path, caplog: object) -> None:
+    """主触发链的 delayed_check 异常必须带 traceback。
+
+    巡检路径（:557/:595）用 exc_info=True，而 delayed_check 此前只记一行
+    warning 无栈——主触发链反而比后台链更难排障。这条钉住两者对齐。
+    """
+    scheduler_mod, _, scheduler, _, _ = _make_scheduler(tmp_path)
+    umo = "s1"
+
+    async def boom(umo_, *, trigger, force, expected_generation):
+        raise RuntimeError("delayed check broken")
+
+    scheduler._check_session = boom
+    with capture_logs(caplog, scheduler_mod.logger, logging.WARNING):
+        await scheduler.delayed_check(
+            umo,
+            delay_sec=0,
+            trigger="message_delay",
+            force=True,
+            generation=scheduler._gate.advance(umo),
+        )
+    records = [r for r in caplog.records if "delayed check failed" in r.getMessage()]
+    assert records, "delayed_check 异常未记 warning"
+    assert records[-1].exc_info is not None, "delayed_check 异常缺 traceback，无法定位栈"
+    assert "RuntimeError: delayed check broken" in records[-1].exc_text
+
+
 async def test_patrol_loop_outer_backoff_on_cleanup_error(tmp_path: Path) -> None:
     """循环级异常（清理阶段）：走外层 except 的退避重试路径。"""
     _, _, scheduler, _, _ = _make_scheduler(tmp_path, {"enabled_patrol_trigger": True})

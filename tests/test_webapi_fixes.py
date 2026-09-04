@@ -405,6 +405,49 @@ def test_ui_theme_load_and_get(tmp_path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+def test_concurrent_ui_theme_posts_preserve_both_fields(tmp_path) -> None:
+    """并发 POST（一个改 dim、一个改 bold）不得互相覆盖。
+
+    读-改-写块（243-267）之间无 await，asyncio 单线程下天然原子；这条测试
+    验证该不变量，若未来有人在块内插入 await 则变红。
+    """
+
+    async def scenario(plugin, main):
+        webapi = sys.modules[f"{PACKAGE}.webapi"]
+        plugin._ui_theme = "auto"
+        plugin._ui_dim = False
+        plugin._ui_bold = False
+        plugin._ui_prefs_path = tmp_path / "ui_prefs.json"
+
+        payloads = [{"dim": True}, {"bold": True}]
+        idx = {"n": 0}
+        original_request_json = webapi._request_json
+
+        async def rotating_json():
+            data = payloads[idx["n"] % len(payloads)]
+            idx["n"] += 1
+            await asyncio.sleep(0)  # 让另一条 POST 交错进入
+            return data
+
+        webapi._request_json = rotating_json
+        try:
+            results = await asyncio.gather(
+                webapi._api_post_ui_theme(plugin),
+                webapi._api_post_ui_theme(plugin),
+            )
+        finally:
+            webapi._request_json = original_request_json
+
+        assert all(r["ok"] for r in results)
+        # 两条 POST 各改一个字段，最终两份偏好都保留
+        assert plugin._ui_dim is True
+        assert plugin._ui_bold is True
+        saved = json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8"))
+        assert saved == {"theme": "auto", "dim": True, "bold": True}
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_api_post_ui_theme_paths(tmp_path) -> None:
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]

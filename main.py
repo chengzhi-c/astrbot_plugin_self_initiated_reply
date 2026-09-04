@@ -422,6 +422,18 @@ class SelfInitiatedReplyPlugin(Star):
             and len(self._quarantined_tasks) < MAX_QUARANTINED_TASKS
         )
 
+    def _reject_if_not_running(self, action: str) -> None:
+        """拒绝非 RUNNING 态下的写操作，并按实际生命周期给出准确原因。
+
+        DEGRADED 与 STOPPING 都置 ``_stopping``，但含义不同：前者是隔离失败后
+        的永久降级（需重启插件恢复），后者才是真的在关闭。统一说"正在关闭"会把
+        降级误导成关停。
+        """
+        if self._lifecycle_state is PluginLifecycle.DEGRADED:
+            raise RuntimeError(f"插件已降级，无法{action}（需重启插件恢复）")
+        if self._stopping:
+            raise RuntimeError(f"插件正在关闭，无法{action}")
+
     def _mark_degraded(self, reason: str) -> None:
         """Quarantine failure state and permanently close new work for this instance."""
         if self._lifecycle_state is PluginLifecycle.DEGRADED:
@@ -514,14 +526,12 @@ class SelfInitiatedReplyPlugin(Star):
 
     async def _add_whitelist_session(self, umo: str) -> bool:
         async with self._config_lock:
-            if self._stopping:
-                raise RuntimeError("插件正在关闭，无法修改白名单")
+            self._reject_if_not_running("修改白名单")
             return await self._whitelist.add(umo)
 
     async def _remove_whitelist_session(self, umo: str) -> bool:
         async with self._config_lock:
-            if self._stopping:
-                raise RuntimeError("插件正在关闭，无法修改白名单")
+            self._reject_if_not_running("修改白名单")
             return await self._whitelist.remove(umo)
 
     async def _handle_inline_command(

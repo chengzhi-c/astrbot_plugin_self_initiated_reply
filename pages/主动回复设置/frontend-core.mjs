@@ -48,6 +48,11 @@ export function createConfigRequestCoordinator() {
   };
 }
 
+export function missingConfigPayloadKeys(config, requiredKeys = []) {
+  if (!config || typeof config !== "object" || config.ok !== true) return [];
+  return requiredKeys.filter((key) => !Object.prototype.hasOwnProperty.call(config, key));
+}
+
 export function isSuccessfulConfigPayload(config, requiredKeys = []) {
   return (
     !!config &&
@@ -56,7 +61,7 @@ export function isSuccessfulConfigPayload(config, requiredKeys = []) {
     typeof config.enabled === "boolean" &&
     Array.isArray(config.whitelist_sessions) &&
     /^sha256:[0-9a-f]{64}$/.test(config.config_revision || "") &&
-    requiredKeys.every((key) => Object.prototype.hasOwnProperty.call(config, key))
+    missingConfigPayloadKeys(config, requiredKeys).length === 0
   );
 }
 
