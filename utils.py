@@ -1,10 +1,11 @@
 """宿主事件字段提取与消息文本纯函数库。
 
 全部函数无状态（仅依赖入参），供 main/scheduler/decision 与测试共用。
-职责三簇：
+职责四簇：
 - 事件字段提取：event_text/event_umo/event_sender_* 等，统一宿主事件访问口径；
 - 文本清洗与判定：clean_chat_text/is_at_*/looks_like_reply_request 等；
-- 白名单与历史记录：session_whitelisted/whitelist_storage_key/build_history_text 等。
+- 白名单与历史记录：session_whitelisted/whitelist_storage_key/build_history_text 等；
+- 凭证脱敏：redact_url/redact_exc_text，供日志与对外 reason 共用同一口径。
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import inspect
 import json
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
@@ -53,6 +55,42 @@ GENERAL_REPLY_REQUEST_PATTERNS = tuple(
         r"^(?:找|搜|搜索)(?:个|张)?(?:表情包|表情|图|gif|动图)$",
     )
 )
+
+
+# 日志/对外文本中 URL 的最大呈现长度（含脱敏标记）：与脱敏前的裸截断口径一致，
+# 避免"为了安全"反而把日志行拉宽。
+LOG_URL_MAX_CHARS = 80
+_REDACTED_QUERY_MARK = "?<redacted>"
+
+# 异常文本里的 URL 形态：scheme:// 开头，吃到引号/空白/括号为止。
+# 只认这一种形态（实证泄漏全部来自它），不做全文 secret 扫描（见方案 N7）。
+_EXCEPTION_URL_PATTERN = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>)\]]+")
+
+
+def redact_url(value: str) -> str:
+    """去掉 query/fragment 后再截断，避免签名 token 进日志或对外文本。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return text[:LOG_URL_MAX_CHARS]
+    if not parsed.scheme or not parsed.netloc:
+        return text[:LOG_URL_MAX_CHARS]
+    suffix = _REDACTED_QUERY_MARK if (parsed.query or parsed.fragment) else ""
+    clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    return clean[: LOG_URL_MAX_CHARS - len(suffix)] + suffix
+
+
+def redact_exc_text(exc: BaseException) -> str:
+    """把异常文本里 URL 形态片段的 query/fragment 抹掉。
+
+    provider SDK 的异常串常把请求 URL 整段带出来（含 api_key/Signature 等
+    query 凭证）。这些文本既进日志，也进 ``reason`` 经 GET /status 出网，
+    故统一在此收口。非 URL 片段原样保留，便于排查。
+    """
+    return _EXCEPTION_URL_PATTERN.sub(lambda m: redact_url(m.group(0)), str(exc))
 
 
 async def maybe_await(value: Any) -> Any:

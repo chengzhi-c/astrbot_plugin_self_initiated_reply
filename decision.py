@@ -36,6 +36,7 @@ from .utils import (
     latest_user_text,
     looks_like_reply_request,
     parse_decision_json,
+    redact_exc_text,
     response_text,
 )
 
@@ -228,7 +229,11 @@ class DecisionMaker:
         except Exception as exc:
             # provider 解析链路的业务故障（配置坏/DB 错）在此分类，避免被当作
             # "不存在"而输出误导性的"未找到可用判断模型"。
-            logger.error("[%s] resolve decision provider failed: %s", PLUGIN_ID, exc)
+            logger.error(
+                "[%s] resolve decision provider failed: %s",
+                PLUGIN_ID,
+                redact_exc_text(exc),
+            )
             return {
                 "should_reply": False,
                 "reason": "判断模型解析失败",
@@ -253,10 +258,14 @@ class DecisionMaker:
                 "elapsed_sec": self._clock() - started,
             }
         except Exception as exc:
-            logger.warning("[%s] decision model failed: %s", PLUGIN_ID, exc)
+            # provider SDK 的异常文本常把请求 URL 整段带出来（含 api_key/Signature
+            # 等 query 凭证）。reason 不只进日志，还经 GET /status 的 last_decisions
+            # 回给任何能访问控制台的调用方，故两处共用同一脱敏口径。
+            detail = redact_exc_text(exc)
+            logger.warning("[%s] decision model failed: %s", PLUGIN_ID, detail)
             return {
                 "should_reply": False,
-                "reason": f"判断模型异常：{exc}",
+                "reason": f"判断模型异常：{detail}",
                 "elapsed_sec": self._clock() - started,
             }
 

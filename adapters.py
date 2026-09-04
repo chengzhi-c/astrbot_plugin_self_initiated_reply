@@ -18,7 +18,7 @@ from astrbot.api import logger
 from astrbot.api.star import Context
 
 from .models import PLUGIN_ID, MessageRecord, history_display_name
-from .utils import content_to_text, maybe_await
+from .utils import content_to_text, maybe_await, redact_exc_text
 
 
 class AstrBotBridge:
@@ -132,7 +132,8 @@ class AstrBotBridge:
             try:
                 return await maybe_await(func(*args, **kwargs))
             except Exception as exc:
-                logger.warning("[%s] %s failed: %s", PLUGIN_ID, log_name, exc)
+                # 宿主方法失败常把带凭证的请求 URL 写进异常文本，日志同样要脱敏。
+                logger.warning("[%s] %s failed: %s", PLUGIN_ID, log_name, redact_exc_text(exc))
                 raise
 
         last_type_error: TypeError | None = None
@@ -145,7 +146,7 @@ class AstrBotBridge:
             try:
                 return await maybe_await(func(*args, **kwargs))
             except Exception as exc:
-                logger.warning("[%s] %s failed: %s", PLUGIN_ID, log_name, exc)
+                logger.warning("[%s] %s failed: %s", PLUGIN_ID, log_name, redact_exc_text(exc))
                 raise
         if last_type_error:
             logger.debug("[%s] %s unsupported signature: %s", PLUGIN_ID, log_name, last_type_error)

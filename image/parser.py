@@ -25,7 +25,7 @@ from ..models import (
     MAX_IMAGE_DESCRIPTION_CACHE_BYTES,
     PLUGIN_ID,
 )
-from ..utils import response_text
+from ..utils import redact_url, response_text
 from ._support import (
     HTTP_SCHEMES,
     LOCAL_SOURCE_SCHEMES,
@@ -46,12 +46,6 @@ VISION_PROMPT_TEXT = "简要描述这张图片，重点说明文字和关键物�
 VISION_SYSTEM_PROMPT_TEXT = (
     "你是主动回复插件的图片理解器。只描述图片中可观察到的内容，不要猜测身份、隐私或图片之外的信息。"
 )
-
-
-# 日志中 URL 的最大呈现长度（含脱敏标记）：与脱敏前的裸截断口径保持一致，
-# 避免"为了安全"反而把日志行拉宽。
-LOG_URL_MAX_CHARS = 80
-_REDACTED_QUERY_MARK = "?<redacted>"
 
 
 _UNABLE_PATTERNS = re.compile(
@@ -177,22 +171,6 @@ def _atomic_write(path: Path, content: bytes) -> None:
                 temporary_path.unlink()
             except OSError:
                 pass
-
-
-def _redact_url(value: str) -> str:
-    """去掉 query/fragment 后再截断，避免签名 token 进日志。"""
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    try:
-        parsed = urlparse(text)
-    except ValueError:
-        return text[:LOG_URL_MAX_CHARS]
-    if not parsed.scheme or not parsed.netloc:
-        return text[:LOG_URL_MAX_CHARS]
-    suffix = _REDACTED_QUERY_MARK if (parsed.query or parsed.fragment) else ""
-    clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-    return clean[: LOG_URL_MAX_CHARS - len(suffix)] + suffix
 
 
 def _global_addresses(host: str) -> list[str]:
@@ -692,9 +670,7 @@ class ImageParser:
                 data_url = await self._fetch_image_data_url(file_value)
                 if data_url:
                     return data_url
-                logger.info(
-                    "[%s] image URL download failed: %s", PLUGIN_ID, _redact_url(file_value)
-                )
+                logger.info("[%s] image URL download failed: %s", PLUGIN_ID, redact_url(file_value))
                 return None
             path = Path(file_value)
             # 本地路径一律走 allowlist：image_info.trusted_local_path
@@ -715,9 +691,7 @@ class ImageParser:
             data_url = await self._fetch_image_data_url(image_info.url)
             if data_url:
                 return data_url
-            logger.info(
-                "[%s] image URL download failed: %s", PLUGIN_ID, _redact_url(image_info.url)
-            )
+            logger.info("[%s] image URL download failed: %s", PLUGIN_ID, redact_url(image_info.url))
         return None
 
     def _materialize_data_url(self, data_url: str) -> Path | None:

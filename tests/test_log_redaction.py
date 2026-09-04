@@ -27,6 +27,81 @@ def _load_parser():
     return load_package(PACKAGE_NAME, "image.parser")
 
 
+def _make_failing_maker() -> tuple[object, object, object]:
+    """构造一个判断模型必抛「异常文本含签名 URL」的 DecisionMaker。
+
+    provider SDK 的异常串常把请求 URL 整段带出来（openai 的 APIStatusError
+    形如 ``Client error '401' for url '...?api_key=...'``），这是本文件要守的
+    真实泄漏形态，不是臆想。
+    """
+    install_astrbot_stubs()
+    models = load_package(f"{PACKAGE_NAME}_models", "models")
+    decision = load_package(f"{PACKAGE_NAME}_decision", "decision")
+
+    async def boom(_provider_id: str, _prompt: str):
+        raise RuntimeError(f"Client error '401' for url '{SIGNED_URL}'")
+
+    async def resolve(_umo: str) -> str:
+        return "judge-provider"
+
+    async def no_history(*_a, **_k):
+        return []
+
+    async def no_image(*_a, **_k):
+        return ""
+
+    maker = decision.DecisionMaker(
+        settings=models.Settings.from_config({"decision_model_enabled": True}),
+        resolve_provider=resolve,
+        llm_generate=boom,
+        read_history=no_history,
+        build_image_context=no_image,
+    )
+    return models, maker, decision
+
+
+def test_decision_exception_reason_drops_url_credentials() -> None:
+    """reason 会经 GET /status 的 last_decisions 出网，不得带出 query 凭证。
+
+    这是比日志更宽的面：日志落在服务器本地，reason 却回给任何能访问控制台的
+    调用方。异常文本里的签名 URL 必须先脱敏再进 reason。
+    """
+    models, maker, _ = _make_failing_maker()
+    result = asyncio.run(
+        maker.ask_decision_model("s1", models.SessionState(), trigger="message_delay"),
+    )
+    assert result["should_reply"] is False
+    assert result["reason"].startswith("判断模型异常："), result["reason"]
+    for secret in SECRETS:
+        assert secret not in result["reason"], f"reason 泄漏凭证 {secret}：{result['reason']}"
+
+
+def test_decision_exception_log_drops_url_credentials() -> None:
+    """同一条异常写进日志时同样不得带出凭证。"""
+    models, maker, decision = _make_failing_maker()
+    lines: list[str] = []
+
+    class _Recorder:
+        def warning(self, template: str, *args: object) -> None:
+            lines.append(template % args if args else template)
+
+        def __getattr__(self, _name: str):
+            return lambda *_a, **_k: None
+
+    original = decision.logger
+    decision.logger = _Recorder()
+    try:
+        asyncio.run(
+            maker.ask_decision_model("s1", models.SessionState(), trigger="message_delay"),
+        )
+    finally:
+        decision.logger = original
+    rendered = "\n".join(lines)
+    assert rendered, "未捕获判断模型异常日志"
+    for secret in SECRETS:
+        assert secret not in rendered, f"日志泄漏凭证 {secret}：{rendered}"
+
+
 def _capture_download_failure_log(parser_mod, *, field: str) -> str:
     """驱动下载失败路径，返回该次 info 日志的渲染文本。
 
@@ -84,10 +159,14 @@ def test_log_keeps_diagnosability_and_marks_redaction() -> None:
     assert "<redacted>" in line, f"未标记已剥离的 query：{line}"
 
 
+def _load_utils():
+    install_astrbot_stubs()
+    return load_package(f"{PACKAGE_NAME}_utils", "utils")
+
+
 def test_redaction_degrades_on_non_url_shapes() -> None:
     """空值、非 URL 与畸形输入走裸截断兜底，不抛异常。"""
-    parser_mod = _load_parser()
-    redact = parser_mod._redact_url
+    redact = _load_utils().redact_url
 
     assert redact("") == ""
     assert redact("   ") == ""
@@ -106,9 +185,9 @@ def test_redacted_length_never_exceeds_budget() -> None:
     早期缺陷：早期实现写成 clean[:80] + "?<redacted>"，超长 path 时
     产出 91 字符，比它要替换的原实现（url[:80]）更宽，日志行反而变长。
     """
-    parser_mod = _load_parser()
-    redact = parser_mod._redact_url
-    limit = parser_mod.LOG_URL_MAX_CHARS
+    utils_mod = _load_utils()
+    redact = utils_mod.redact_url
+    limit = utils_mod.LOG_URL_MAX_CHARS
 
     long_signed = "https://img.example.com/" + "p" * 300 + ".jpg?Signature=SECRET_SIGNATURE"
     for value in (
