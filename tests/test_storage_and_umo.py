@@ -584,3 +584,49 @@ def test_content_to_text_handles_all_host_content_shapes() -> None:
     assert utils.content_to_text(Part("裸对象")) == "裸对象"
     assert utils.content_to_text(object()) == ""
     assert utils.content_to_text(None) == ""
+
+
+def _load_plugin_state():
+    install_astrbot_stubs()
+    return load_package(PACKAGE_NAME, "plugin_state")
+
+
+def test_resolve_paths_data_root_tracks_host_answer(tmp_path: Path) -> None:
+    """data 根的语义契约：等于宿主 plugin_data 答案的上一级。
+
+    识图本地读取 allowlist 与 cmd_config.json 热读都以 data 根为基准，算错等于
+    静默放宽或锁死安全边界。此前 main.py 用 ``storage_path.parents[2]`` 反推，把
+    "state.json 恰好嵌两层"变成隐式前提；现由 resolve_paths 正向构造，本用例把
+    语义钉成契约。诚实说明：在 state.json 深度不变时新旧实现结果恒等，故这条不是
+    "能捕获 parents 崩溃"的红灯，而是防止未来改存储布局时 data 根语义漂移的守卫。
+    """
+    ps = _load_plugin_state()
+    data = tmp_path / "data"
+
+    config_path, storage_path, data_root = ps.resolve_paths(
+        {},
+        get_config_path=lambda: str(data / "config"),
+        get_plugin_data_path=lambda: str(data / "plugin_data"),
+    )
+    assert data_root == data
+    # state.json 仍落在 <data>/plugin_data/<pid>/ 下，形状未变
+    assert storage_path == data / "plugin_data" / ps.PLUGIN_ID / "state.json"
+    assert config_path.parent == data / "config"
+
+    # 宿主把 plugin_data 整体挪位时，data 根跟着宿主答案走，不依赖固定绝对路径。
+    nested = tmp_path / "nested"
+    _, _, nested_root = ps.resolve_paths(
+        {},
+        get_config_path=lambda: str(nested / "config"),
+        get_plugin_data_path=lambda: str(nested / "plugin_data"),
+    )
+    assert nested_root == nested
+
+
+def test_resolve_paths_legacy_branch_data_root(tmp_path: Path) -> None:
+    """无宿主 plugin_data 函数时，data 根取 config 目录的上一级（<data>/config 布局）。"""
+    ps = _load_plugin_state()
+    data = tmp_path / "data"
+    _, storage_path, data_root = ps.resolve_paths({}, get_config_path=lambda: str(data / "config"))
+    assert data_root == data
+    assert storage_path.parent == data / "plugin_data" / ps.PLUGIN_ID

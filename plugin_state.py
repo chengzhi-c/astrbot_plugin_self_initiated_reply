@@ -34,8 +34,15 @@ def resolve_paths(
     *,
     get_config_path: Any = None,
     get_plugin_data_path: Any = None,
-) -> tuple[Path, Path]:
-    """Resolve config + state.json paths from host root, with legacy fallback."""
+) -> tuple[Path, Path, Path]:
+    """Resolve config / state.json / data-root paths from host root, with legacy fallback.
+
+    第三个返回值是宿主 ``<data>`` 根，识图本地读取 allowlist 与 ``cmd_config.json``
+    热读都以它为基准，算错等于放宽或锁死安全边界。它由 ``plugin_data_path`` 的
+    构造式**正向**推出（``<data>/plugin_data/<pid>`` 的上两级），不再让调用方从
+    ``state.json`` 反向数 parents 层数——那种写法把"state.json 恰好嵌两层"变成
+    隐式前提，嵌套一改就静默算错且无任何报错。
+    """
     configured_path = getattr(config_obj, "config_path", None)
     if configured_path:
         config_path = Path(str(configured_path)).expanduser()
@@ -48,7 +55,7 @@ def resolve_paths(
         plugin_data_path = Path(str(get_plugin_data_path())).expanduser() / PLUGIN_ID
     else:
         plugin_data_path = config_path.parent.parent / "plugin_data" / PLUGIN_ID
-    return config_path, plugin_data_path / "state.json"
+    return config_path, plugin_data_path / "state.json", plugin_data_path.parent.parent
 
 
 def refresh_admin_ids(plugin: SelfInitiatedReplyPlugin) -> set[str]:
