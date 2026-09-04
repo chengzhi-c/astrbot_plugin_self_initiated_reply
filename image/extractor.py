@@ -235,8 +235,6 @@ class ImageExtractor:
     def extract_images(
         event: AstrMessageEvent,
         *,
-        sender_id: str = "",
-        timestamp: float = 0.0,
         skip_stickers: bool = False,
     ) -> list[ImageInfo]:
         """从消息事件抽取图片来源，归一化为 ``ImageInfo`` 列表。
@@ -296,18 +294,12 @@ class ImageExtractor:
                     raw_url = ""
                 if not raw_url and not raw_file:
                     continue
-                image_format = _component_value(component, "format", "mime_type")
-                if not image_format:
-                    image_format = _infer_format(raw_url or raw_file)
                 images.append(
                     ImageInfo(
                         url=raw_url,
                         file_path=raw_file,
-                        format=image_format,
                         message_id=message_id,
-                        sender_id=str(sender_id or ""),
                         is_sticker=is_sticker,
-                        timestamp=float(timestamp or 0.0),
                         trusted_local_path=trusted_local_path,
                     )
                 )
@@ -335,17 +327,3 @@ class ImageExtractor:
     def is_sticker(component: Any) -> bool:
         """Expose platform sticker detection for diagnostics and tests."""
         return _component_is_sticker(component)
-
-
-def _infer_format(value: str) -> str:
-    lowered = str(value or "").lower()
-    for suffix, image_format in (
-        (".jpeg", "jpeg"),
-        (".jpg", "jpg"),
-        (".png", "png"),
-        (".gif", "gif"),
-        (".webp", "webp"),
-    ):
-        if suffix in lowered:
-            return image_format
-    return ""

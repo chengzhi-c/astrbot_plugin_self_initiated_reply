@@ -961,11 +961,9 @@ def test_version_consistency_across_metadata() -> None:
     assert match is not None
     version = match.group(1)
     assert f"version: {version}" in metadata
-    # pyproject 版本（3.10 无 tomllib，用 tomli 兼容；dev 依赖已声明）
-    try:
-        import tomllib
-    except ImportError:  # pragma: no cover - py3.10 兼容分支
-        import tomli as tomllib  # type: ignore[no-redef]
+    # pyproject 版本（requires-python >= 3.12，tomllib 恒可用）
+    import tomllib
+
     pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
 
     # pyproject 不再写死版本号，改由 hatchling 从 models.py 读取。

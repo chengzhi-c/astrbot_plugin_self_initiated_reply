@@ -20,7 +20,7 @@ from .models import (
 )
 from .storage import (
     build_sessions_payload,
-    sync_config_whitelist,
+    persist_settings_config,
     write_sessions_payload,
 )
 from .utils import event_sender_id, event_sender_name, session_group_id
@@ -168,7 +168,7 @@ async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
 
 
 def sync_whitelist(plugin: SelfInitiatedReplyPlugin) -> bool:
-    if not sync_config_whitelist(plugin._config_path, plugin.config, plugin.settings):
+    if not persist_settings_config(plugin._config_path, plugin.config, plugin.settings):
         raise OSError(f"配置文件写入失败：{plugin._config_path}")
     return True
 

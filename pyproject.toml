@@ -33,8 +33,9 @@ dependencies = [
 #   hatchling 的 exclude 匹配语义。它本是 hatchling 与 mypy 的传递依赖，装 .[dev]
 #   时恰好在，但依赖别人的依赖会在上游删依赖时静默变红，故显式声明。
 #   下限对齐 hatchling 的 pathspec>=0.10.1（GitIgnoreSpec 自 0.10.0 起提供）。
-# - packaging：scripts/version_gates.py 用它解析本节的版本区间。同上，它本是 pytest
-#   的传递依赖，显式声明是同一个理由。
+# - packaging：scripts/runtime_dependency_gates.py 用它解析 pyproject 的运行时依赖
+#   区间（compat_check.py 经该模块调用）。同上，它本是 pytest 的传递依赖，
+#   显式声明是同一个理由。
 dev = [
   "pytest>=8,<10",
   "pytest-asyncio>=1,<2",

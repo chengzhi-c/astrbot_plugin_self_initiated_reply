@@ -26,10 +26,7 @@ UNTRUSTED_HEADER = (
 class ImageInfo:
     url: str = ""
     file_path: str = ""
-    format: str = ""
     message_id: str = ""
-    sender_id: str = ""
-    timestamp: float = 0.0
     is_sticker: bool = False
     trusted_local_path: bool = False
     prepared_source: str = ""
@@ -63,10 +60,6 @@ def sniff_image_mime(data: bytes) -> str:
     if data.startswith(_BMP_PREFIX):
         return "image/bmp"
     return ""
-
-
-def is_image_payload(data: bytes) -> bool:
-    return bool(sniff_image_mime(data))
 
 
 class ImageCache:

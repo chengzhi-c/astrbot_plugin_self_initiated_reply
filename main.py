@@ -107,7 +107,7 @@ from .session_pipeline import SessionPipeline
 from .storage import (
     load_config_data,
     load_sessions,
-    migrate_config_file,
+    persist_settings_config,
 )
 from .utils import (
     event_sender_id,
@@ -171,7 +171,7 @@ class SelfInitiatedReplyPlugin(Star):
         # 改为通过 AstrBot 正常 LLM 管线自动触发，行为更接近 @Bot 回复。
         self.bridge = AstrBotBridge(context)
 
-        migrate_config_file(self._config_path, self.config, self.settings)
+        persist_settings_config(self._config_path, self.config, self.settings)
 
         self.sessions = load_sessions(
             self._storage_path,

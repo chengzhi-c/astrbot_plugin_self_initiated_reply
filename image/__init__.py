@@ -4,7 +4,6 @@ from ._support import (
     ImageCache,
     ImageInfo,
     format_image_context,
-    is_image_payload,
     sniff_image_mime,
 )
 from .extractor import ImageExtractor
@@ -16,6 +15,5 @@ __all__ = [
     "ImageExtractor",
     "ImageParser",
     "format_image_context",
-    "is_image_payload",
     "sniff_image_mime",
 ]

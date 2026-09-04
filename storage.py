@@ -296,20 +296,13 @@ def write_sessions_payload(path: Path, payload: dict[str, Any]) -> bool:
     return _write_json_atomic(path, payload)
 
 
-def migrate_config_file(path: Path, config_obj: Any, settings: Settings) -> bool:
-    data = settings.to_config_dict()
-    if not _write_json_atomic(path, data):
-        return False
-    return _update_config_obj(config_obj, data) and _persist_config_obj(config_obj, data)
-
-
 def persist_settings_config(path: Path, config_obj: Any, settings: Settings) -> bool:
-    """原子落盘当前 Settings 的全部配置（包含白名单）并同步宿主配置对象。"""
+    """原子落盘当前 Settings 的全部配置（含白名单）并同步宿主配置对象。
+
+    白名单已在 ``Settings.to_config_dict()`` 里按 ``container="set"`` 排序输出，
+    此处不再单独处理。
+    """
     data = settings.to_config_dict()
-    data["whitelist_sessions"] = sorted(settings.whitelist)
     if not _write_json_atomic(path, data):
         return False
     return _update_config_obj(config_obj, data) and _persist_config_obj(config_obj, data)
-
-
-sync_config_whitelist = persist_settings_config

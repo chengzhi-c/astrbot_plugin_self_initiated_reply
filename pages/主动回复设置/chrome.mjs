@@ -14,7 +14,6 @@ export function setupMoreActionsMenu(els) {
   const setOpen = (open, focusMenu = false) => {
     const compact = media.matches;
     const visible = compact && Boolean(open);
-    els.moreActions.classList.toggle("is-open", visible);
     els.moreActionsMenu.hidden = compact ? !visible : false;
     // 桌面菜单常显、trigger 隐藏，不渲染折叠态。
     if (compact) els.moreActionsBtn.setAttribute("aria-expanded", String(visible));

@@ -1,8 +1,8 @@
 """真实宿主兼容性检查：插件绑定的私有 AstrBot API 符号存在性 + 契约断言 + 加载路径。
 
-在装有真实 ``astrbot`` 包的环境中运行（CI 兼容矩阵 job 用）：
-- 锁定版（默认）：契约缺口（符号缺失/签名缺参/危险工具未覆盖/处理器注解不可解析）即 exit 1
-- 最新版（--warn-latest）：同一组检查降级为漂移预警，只告警不阻塞
+在装有真实 ``astrbot`` 包的环境中运行（CI 兼容矩阵 job 用）：契约缺口（符号缺失/
+签名缺参/危险工具未覆盖/处理器注解不可解析）即 exit 1。CI 对 latest 宿主的不阻塞
+语义由 workflow 的 ``continue-on-error`` 实现，脚本本身只有一种退出行为。
 
 三类检查的性质不同：前两类只问「宿主有没有这个符号」，第三类
 （``_handler_signature_gaps``）**真的走一遍宿主加载期的动作**。0.9.5 之前只有前两类，
@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 import tempfile
@@ -145,7 +144,7 @@ def _denylist_gaps() -> dict[str, list[str]]:
     }
 
 
-def run_contract_checks(*, warn: bool) -> int:
+def run_contract_checks() -> int:
     """符号存在性 + 契约断言 + denylist 覆盖；返回进程退出码。"""
     import importlib
 
@@ -189,20 +188,12 @@ def run_contract_checks(*, warn: bool) -> int:
         print("host compat OK")
         return 0
     for problem in all_problems:
-        level = "warn" if warn else "error"
-        print(f"[{level}] {problem}", file=sys.stderr)
-    return 0 if warn else 1
+        print(f"[error] {problem}", file=sys.stderr)
+    return 1
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--warn-latest",
-        action="store_true",
-        help="最新版漂移预警：契约缺口只告警不阻塞（锁定版硬门禁为默认）",
-    )
-    args = parser.parse_args()
-    return run_contract_checks(warn=args.warn_latest)
+    return run_contract_checks()
 
 
 if __name__ == "__main__":

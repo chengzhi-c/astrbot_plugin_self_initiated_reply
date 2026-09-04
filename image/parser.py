@@ -225,8 +225,6 @@ class _FixedAddressBackend(httpcore.AsyncNetworkBackend):
 
     def __init__(self, address: str, wrapped: Any | None = None) -> None:
         if wrapped is None:
-            if httpcore is None:
-                raise RuntimeError("httpcore is required for fixed-address image downloads")
             wrapped = httpcore.AnyIOBackend()
         self._address = address
         self._wrapped = wrapped
@@ -794,8 +792,6 @@ class ImageParser:
         （仅异常路径记 debug）。返回 ``None`` 的语义是"这张图不可用"，不是"出错了"，
         因此不向上抛。
         """
-        if httpx is None or httpcore is None:
-            return None
         try:
             parsed = urlparse(url)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:

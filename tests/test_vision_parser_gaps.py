@@ -594,9 +594,7 @@ def test_parse_truncation_limit_is_single_sourced(tmp_path: Path) -> None:
             return preferred
 
         async def llm_generate_direct(self, **_kwargs):
-            return SimpleNamespace(
-                completion_text="字" * (support_mod.MAX_DESCRIPTION_CHARS + 50)
-            )
+            return SimpleNamespace(completion_text="字" * (support_mod.MAX_DESCRIPTION_CHARS + 50))
 
     info = image.ImageInfo(url="https://x/y.png")
     result = _parse_with_bridge(image, Bridge(), info)
@@ -1243,14 +1241,6 @@ def test_fetch_client_exception_returns_none(monkeypatch) -> None:
             raise RuntimeError("connection reset")
 
     monkeypatch.setattr(parser_mod.httpx, "AsyncClient", ExplodingClient)
-    parser = image.ImageParser(object())
-    assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) is None
-
-
-def test_fetch_without_httpx_returns_none(monkeypatch) -> None:
-    _, image, _ = _load_modules()
-    parser_mod = _parser_module()
-    monkeypatch.setattr(parser_mod, "httpx", None)
     parser = image.ImageParser(object())
     assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) is None
 

@@ -36,13 +36,12 @@ def test_image_extractor_preserves_remote_url_and_local_path() -> None:
         def get_messages():
             return [Image()]
 
-    extracted = image.ImageExtractor.extract_images(Event(), sender_id="u1", timestamp=123.0)
+    extracted = image.ImageExtractor.extract_images(Event())
 
     assert len(extracted) == 1
     assert extracted[0].url == "https://cdn.example.test/cat.png"
     assert extracted[0].file_path == r"C:\media\cat.png"
     assert extracted[0].message_id == "message-42"
-    assert extracted[0].sender_id == "u1"
 
 
 def test_aiocqhttp_raw_cq_string_recovers_image_url() -> None:

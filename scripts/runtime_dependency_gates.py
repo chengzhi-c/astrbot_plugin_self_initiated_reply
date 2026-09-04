@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.metadata
-import sys
 import tomllib
 from pathlib import Path
 
@@ -92,15 +91,6 @@ def main() -> int:
         )
         return 1
     print("PASS: runtime dependency allowlist is exact")
-    if "--installed" not in sys.argv[1:]:
-        return 0
-    gaps = installed_runtime_dependency_gaps() + runtime_api_gaps()
-    if gaps:
-        print("FAIL: installed runtime dependency check")
-        for gap in gaps:
-            print(f"  {gap}")
-        return 1
-    print("PASS: installed runtime dependencies satisfy declared ranges")
     return 0
 
 

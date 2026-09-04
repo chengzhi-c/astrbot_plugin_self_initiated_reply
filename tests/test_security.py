@@ -173,7 +173,7 @@ def test_sniffer_rejects_non_image_payloads() -> None:
     assert image.sniff_image_mime(b"") == ""
     assert image.sniff_image_mime(b"OPENAI_API_KEY=sk-x") == ""
     assert image.sniff_image_mime(b"RIFF\x24\x00\x00\x00WAVE") == "", "WAV 不是图片"
-    assert not image.is_image_payload(b"%PDF-1.7")
+    assert image.sniff_image_mime(b"%PDF-1.7") == ""
 
 
 def test_resolver_still_accepts_real_local_image(tmp_path: Path) -> None:

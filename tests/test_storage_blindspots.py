@@ -256,7 +256,7 @@ def test_load_sessions_record_exception_skips_session(tmp_path: Path, caplog: ob
 
 
 def test_migrate_and_sync_fail_on_config_update(tmp_path: Path) -> None:
-    """宿主配置对象写回失败：迁移/同步返回 False（磁盘 JSON 已写成功）。"""
+    """宿主配置对象写回失败：持久化返回 False（磁盘 JSON 已写成功）。"""
     models, _, storage = _load_modules()
     settings = models.Settings.from_config({})
     path = tmp_path / "config.json"
@@ -265,5 +265,4 @@ def test_migrate_and_sync_fail_on_config_update(tmp_path: Path) -> None:
         def __setitem__(self, key, value) -> None:
             raise RuntimeError("config object broken")
 
-    assert storage.migrate_config_file(path, SetBoom(), settings) is False
-    assert storage.sync_config_whitelist(path, SetBoom(), settings) is False
+    assert storage.persist_settings_config(path, SetBoom(), settings) is False

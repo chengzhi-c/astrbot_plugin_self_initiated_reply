@@ -1,27 +1,23 @@
 #!/usr/bin/env python3
-"""版本断言门禁：工具版本在「本机 / CI / pre-commit / pyproject」四处的一致性检查。
+"""版本断言门禁：ruff 在「CI / pre-commit / pyproject」三处声明必须同版。
 
 动机：ruff 0.15 → 0.16 起检查 Markdown 代码围栏，旧版通过的改动在 CI 变红。
-本脚本对比两类事实：
-
-1. **本机 vs 声明**（默认模式）：本机装的版本是否满足 pyproject 的 ``[dev]`` 区间，
-   以及是否等于 ci.yml 里明确钉版的工具版本。管的是"本地环境过期"。
-2. **声明之间**（``--cross-only`` 也会跑，且不需要装任何工具）：ruff 在 ci.yml、
-   .pre-commit-config.yaml、pyproject 三处必须同版。管的是"配置互相漂移"。
-
-第 2 类补的缺口：ci.yml 里原本只有一句注释声明"与
-.pre-commit-config.yaml 的 rev 对齐"，没有任何断言核验，改一处忘另一处不会有人发现——
-后果是本地 pre-commit 全绿而 CI 的 lint 作业变红（或反之，本地被旧版拦下）。
+ci.yml 里原本只有一句注释声明"与 .pre-commit-config.yaml 的 rev 对齐"，没有任何
+断言核验，改一处忘另一处不会有人发现——后果是本地 pre-commit 全绿而 CI 的 lint
+作业变红（或反之，本地被旧版拦下）。
 
 为什么钉版之外还要留这个门禁：钉版是**安装期**预防（装的时候就装对），本脚本是
-**任何时刻**检测（长期开着的开发机、手动 pip install 覆盖过的环境、pyproject 改了
-但没重装的工作树）。两者不重复。
+**任何时刻**检测（pyproject 改了但没重装的工作树、rev 与 pip install 行漂移）。
+两者不重复。
+
+历史：本脚本曾有"本机 vs 声明"的默认模式（探测本机装了什么版本），但 CI、
+pre-commit、gates.py 三个调用方全部只跑跨源比对，本机模式没有任何自动化消费者，
+已删除。``--cross-only`` 参数名保留以兼容既有调用方，行为即默认且唯一行为。
 """
 
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -38,10 +34,8 @@ CROSS_SOURCE_TOOLS = ("ruff",)
 
 
 def _read_pyproject() -> dict:
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python < 3.11
-        import tomli as tomllib  # type: ignore[no-redef]
+    import tomllib
+
     return tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
 
 
@@ -61,24 +55,6 @@ def extract_pinned_versions() -> dict[str, str]:
                 if version and version[0].isdigit():
                     pinned[tool.strip()] = version.strip()
     return pinned
-
-
-def extract_dev_specifiers() -> dict[str, str]:
-    """从 pyproject 的 ``[project.optional-dependencies].dev`` 提取版本区间。
-
-    返回 ``{包名: 版本区间}``；带环境标记（如 ``tomli; python_version < '3.11'``）
-    的条目按当前解释器求值，不适用则跳过——否则在 3.11+ 上会去查一个本不该装的包。
-    """
-    from packaging.markers import Marker
-    from packaging.requirements import Requirement
-
-    specifiers: dict[str, str] = {}
-    for raw in _read_pyproject()["project"]["optional-dependencies"]["dev"]:
-        req = Requirement(raw)
-        if req.marker is not None and not Marker(str(req.marker)).evaluate():
-            continue
-        specifiers[req.name] = str(req.specifier)
-    return specifiers
 
 
 def extract_dev_exact_pins() -> dict[str, str]:
@@ -123,8 +99,8 @@ def extract_precommit_revs() -> dict[str, str]:
 def check_cross_source() -> list[str]:
     """声明之间的一致性：同一工具在 CI / pre-commit / pyproject 三处必须同版。
 
-    返回问题描述列表（空列表表示通过）。本函数**不探测本机、且只用 stdlib**，故在任何
-    环境都能跑（含只装了 ruff 的 CI lint 作业），也被 tests/test_config_schema.py
+    返回问题描述列表（空列表表示通过）。本函数**只用 stdlib**，故在任何环境都能跑
+    （含只装了 ruff 的 CI lint 作业），也被 tests/test_config_schema.py
     直接调用当断言用。
     """
     ci_pins = extract_pinned_versions()
@@ -158,81 +134,7 @@ def check_cross_source() -> list[str]:
     return problems
 
 
-def get_local_version(tool: str) -> str | None:
-    """获取本机已安装版本。
-
-    优先查包元数据（``importlib.metadata``）：httpx / pathspec / pytest-asyncio 这类
-    没有 ``python -m tool --version`` 入口的包只能这样拿到版本。取不到再退回子进程，
-    保留原有对 ruff / mypy / pytest 的探测口径。
-    """
-    import importlib.metadata as md
-
-    try:
-        return md.version(tool)
-    except md.PackageNotFoundError:
-        pass
-    except Exception:
-        pass
-
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", tool, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return None
-        # ruff: "ruff 0.16.1"
-        # mypy: "mypy 2.3.0 (compiled: yes)"
-        # pytest: "pytest 9.1.1"
-        first_line = result.stdout.strip().split("\n")[0]
-        parts = first_line.split()
-        if len(parts) >= 2:
-            # 取第二个词作为版本号
-            return parts[1]
-        return None
-    except Exception:
-        return None
-
-
-def check_local_env() -> tuple[list[str], list[str]]:
-    """本机 vs 声明：返回 ``(问题列表, 修复命令列表)``。"""
-    from packaging.specifiers import SpecifierSet
-    from packaging.version import InvalidVersion, Version
-
-    ci_pins = extract_pinned_versions()
-    dev = extract_dev_specifiers()
-    problems: list[str] = []
-    fixes: list[str] = []
-
-    for tool, ci_version in sorted(ci_pins.items()):
-        local = get_local_version(tool)
-        if local != ci_version:
-            problems.append(f"{tool}: CI 钉版 {ci_version}，本机 {local or '未安装或无法探测'}")
-            fixes.append(f"pip install {tool}=={ci_version}")
-
-    for tool, spec in sorted(dev.items()):
-        if not spec or tool in ci_pins:
-            continue  # 无区间；或已由上面的精确比对覆盖
-        local = get_local_version(tool)
-        if local is None:
-            problems.append(f"{tool}: pyproject 要求 {spec}，本机未安装")
-            fixes.append('pip install -e ".[dev]"')
-            continue
-        try:
-            satisfied = Version(local) in SpecifierSet(spec)
-        except InvalidVersion:
-            continue  # 本机版本号非标准（如源码安装的 dev 版）：不判死
-        if not satisfied:
-            problems.append(f"{tool}: pyproject 要求 {spec}，本机 {local}")
-            fixes.append('pip install -e ".[dev]"')
-    return problems, fixes
-
-
 def main() -> int:
-    cross_only = "--cross-only" in sys.argv[1:]
-
     cross_problems = check_cross_source()
     if cross_problems:
         print("FAIL: 配置声明之间的版本不一致")
@@ -243,25 +145,6 @@ def main() -> int:
         print("这类漂移的后果是本地 pre-commit 与 CI lint 结论相反，改一处务必改全部。")
         return 1
     print(f"PASS: {len(CROSS_SOURCE_TOOLS)} 个跨源工具在各配置中同版")
-
-    if cross_only:
-        return 0
-
-    problems, fixes = check_local_env()
-    if problems:
-        print()
-        print("FAIL: 本机工具版本与声明不符")
-        print()
-        for problem in problems:
-            print(f"  {problem}")
-        print()
-        print("修复命令：")
-        for fix in dict.fromkeys(fixes):  # 去重且保序
-            print(f"  {fix}")
-        return 1
-
-    dev = extract_dev_specifiers()
-    print(f"PASS: {len(dev)} 个开发依赖均满足 pyproject 声明的版本区间")
     return 0
 
 

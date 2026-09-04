@@ -422,10 +422,7 @@ def test_wheel_required_files_covered_by_pyproject() -> None:
     漂移后果：check_wheel 在 CI 红但本地构建永远绿（要求了打包层根本
     不会包含的文件），守卫失效。断言 artifacts 前缀 ∪ packages 目录。
     """
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python < 3.11
-        import tomli as tomllib  # type: ignore[no-redef]
+    import tomllib
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     tool = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]
@@ -463,12 +460,8 @@ def test_wheel_forbidden_patterns_are_excluded_by_pyproject() -> None:
     放过本阶段刚修的那类漏排。改为给每个禁止模式造代表性路径，用 hatchling 自己的
     匹配库（pathspec / gitwildmatch）真跑一遍 exclude。
     """
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python < 3.11
-        import tomli as tomllib  # type: ignore[no-redef]
-
     import runpy
+    import tomllib
 
     import pathspec
 
@@ -554,10 +547,7 @@ def test_wheel_artifacts_do_not_override_excludes() -> None:
 
     变异验证：去掉任一条的前导 ``/`` → 该模式的深层探针命中，本用例红。
     """
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python < 3.11
-        import tomli as tomllib  # type: ignore[no-redef]
+    import tomllib
 
     import pathspec
 
@@ -653,10 +643,7 @@ def test_every_exposed_config_key_is_consumed_by_the_panel() -> None:
 
 
 def _mypy_files_entries() -> list[str]:
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # pragma: no cover
-        import tomli as tomllib  # type: ignore[no-redef]
+    import tomllib
 
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     files = data["tool"]["mypy"]["files"]

@@ -117,8 +117,6 @@ async def _capture_images(
 ) -> None:
     images = ImageExtractor.extract_images(
         event,
-        sender_id=event_sender_id(event),
-        timestamp=active_at,
         skip_stickers=plugin.settings.vision_skip_stickers,
     )[: max(1, int(plugin.settings.vision_max_images))]
     if not images:
