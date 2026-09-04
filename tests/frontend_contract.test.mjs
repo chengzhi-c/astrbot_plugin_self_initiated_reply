@@ -426,7 +426,13 @@ test("number inputs keep their hint in aria-describedby", async () => {
     );
     checked += 1;
   }
-  assert.equal(checked, 9, `expected 9 number fields, checked ${checked}`);
+  // 与全文独立计数交叉比对：label 块正则一旦失配（改结构、换 class），
+  // checked 会静默变小甚至归零而测试仍绿。不写死字段个数，新增字段自动纳入。
+  const totalNumberInputs = (html.match(/type="number"/g) || []).length;
+  assert.ok(
+    checked > 0 && checked === totalNumberInputs,
+    `仅核对 ${checked} 个 number 字段，页面共 ${totalNumberInputs} 个：label 结构可能已变`,
+  );
   assert.match(
     configIo,
     /getAttribute\("aria-describedby"\)/,
