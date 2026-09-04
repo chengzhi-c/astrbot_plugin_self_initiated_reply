@@ -1,5 +1,6 @@
 import {
-	num,
+	toNumberOrFallback,
+	numberFieldError,
 	parseWhitelist,
 	summarizeWhitelist,
 	uniqueWhitelistItems,
@@ -28,7 +29,7 @@ function configControlValue(control, providerControls, lastKnown = {}) {
 	if (configControl) return providerControls[configControl].value();
 	if (configTransform === "whitelist") return parseWhitelist(control.value);
 	if (control.type === "checkbox") return control.checked;
-	if (control.type === "number") return num(control.value, lastKnown[configKey]);
+	if (control.type === "number") return toNumberOrFallback(control.value, lastKnown[configKey]);
 	return configTransform === "trim" ? control.value.trim() : control.value;
 }
 
@@ -223,20 +224,7 @@ export function createConfigIo(deps) {
 		}
 	}
 	function validateField(field) {
-		const raw = field.input.value;
-		if (raw === "") {
-			field.input.removeAttribute("aria-invalid");
-			field.error.classList.remove("show");
-			field.error.textContent = "";
-			return true;
-		}
-		const value = Number(raw);
-		let msg = "";
-		if (!Number.isFinite(value)) msg = "请输入有效数字";
-		else if (field.min != null && value < field.min)
-			msg = `不能小于 ${field.min}`;
-		else if (field.max != null && value > field.max)
-			msg = `不能大于 ${field.max}`;
+		const msg = numberFieldError(field.input.value, field.min, field.max);
 		if (msg) {
 			field.input.setAttribute("aria-invalid", "true");
 			field.error.textContent = msg;
@@ -266,7 +254,7 @@ export function createConfigIo(deps) {
 		if (errors.length > 0) {
 			const first = errors[0];
 			e.whitelistInput.setAttribute("aria-invalid", "true");
-			e.whitelistError.textContent = `第 ${first.line} 行${first.reason}：${first.item.slice(0, 24)}`;
+			e.whitelistError.textContent = `第 ${first.line} 项${first.reason}：${first.item.slice(0, 24)}`;
 			e.whitelistError.classList.add("show");
 			e.whitelistInput.focus();
 			return false;

@@ -17,6 +17,7 @@ import {
   createConfigIo,
 } from "../pages/主动回复设置/config-io.mjs";
 import {
+  numberFieldError,
   renderPromptTemplateHtml,
   summarizeWhitelist,
   uniqueWhitelistItems,
@@ -751,6 +752,24 @@ test("whitelist format collapses a group UMO onto its bare group id", () => {
     summarizeWhitelist(raw),
     "已识别 4 个有效会话（3 个纯群号，1 个完整 UMO） · 存在 1 处重复",
   );
+});
+
+test("validateWhitelistLines splits on commas like the save path", () => {
+  const errors = validateWhitelistLines('ok1,bad"q');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].line, 2);
+  assert.ok(errors[0].reason.includes("非法字符"));
+});
+
+test("summarizeWhitelist warns past the backend whitelist cap", () => {
+  const raw = Array.from({ length: 1002 }, (_, i) => `s${i}`).join("\n");
+  assert.ok(summarizeWhitelist(raw).includes("超过 1000 条上限"));
+});
+
+test("empty number input is a validation error, not a silent fallback", () => {
+  assert.equal(numberFieldError("5", 0, 30), "");
+  assert.ok(numberFieldError("", 0, 30).length > 0);
+  assert.ok(numberFieldError("99", 0, 30).includes("不能大于"));
 });
 
 test("validateWhitelistLines reports line numbers and reasons for malformed whitelist input", () => {
