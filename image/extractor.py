@@ -99,19 +99,11 @@ def _is_absolute_local_source(value: str) -> bool:
 def _is_sticker_marker(value: Any) -> bool:
     if isinstance(value, bool):
         return value
+    # OneBot subType 实际是 0/1 整数，str() 后为 "1"；"true" 覆盖 raw dict
+    # 显式布尔。其余写法（yes/on/sticker/emoji/face/表情…）无任何宿主样本
+    # 证据，收窄以免臆想兼容面持续膨胀。真实环境若出现漏判，带样本加回一行。
     normalized = str(value or "").strip().lower()
-    return normalized in {
-        "1",
-        "true",
-        "yes",
-        "on",
-        "sticker",
-        "emoji",
-        "face",
-        "表情",
-        "表情包",
-        "贴图",
-    }
+    return normalized in {"1", "true"}
 
 
 def _explicit_sticker_marker(component: Any) -> tuple[bool, bool]:
