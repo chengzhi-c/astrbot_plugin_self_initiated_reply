@@ -20,7 +20,13 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import At
 
-from .models import PLUGIN_ID, MessageRecord, ReadHistoryCallback, history_display_name
+from .models import (
+    PLUGIN_ID,
+    MessageRecord,
+    ReadHistoryCallback,
+    first_bindable_args,
+    history_display_name,
+)
 
 # 预编译正则表达式以提升性能
 _AT_MENTION_PATTERN = re.compile(r"^(?:\[[^\]]*[Aa][Tt][^\]]*\]\s*)+")
@@ -313,23 +319,12 @@ def event_extra(event: AstrMessageEvent, key: str, default: Any = None) -> Any:
     get_extra = getattr(event, "get_extra", None)
     if not callable(get_extra):
         return default
-    args: tuple[Any, ...]
+    picked = first_bindable_args(get_extra, [((key, default), {}), ((key,), {})])
+    if picked is None:
+        return default
+    args, _kwargs = picked
     try:
-        signature = inspect.signature(get_extra)
-    except (TypeError, ValueError):
-        args = (key, default)
-    else:
-        try:
-            signature.bind(key, default)
-            args = (key, default)
-        except TypeError:
-            try:
-                signature.bind(key)
-            except TypeError:
-                return default
-            args = (key,)
-    try:
-        value = get_extra(*args)
+        value = get_extra(*args, **_kwargs)
     except Exception:
         return default
     return default if value is None else value

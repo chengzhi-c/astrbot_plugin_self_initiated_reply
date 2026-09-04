@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
-import inspect
 import json
 import math
 from functools import partial
@@ -31,9 +30,11 @@ from .models import (
     ConfigSpec,
     Settings,
     config_revision,
+    first_bindable_args,
     normalize_config_updates,
     normalize_string_list,
     panel_config_specs,
+    restore_container_inplace,
 )
 from .storage import _write_json_atomic
 
@@ -298,19 +299,11 @@ def _strict_float(value: Any, field: str) -> float:
 async def _request_json() -> Any:
     json_reader = getattr(request, "json", None)
     if callable(json_reader):
-        try:
-            signature = inspect.signature(json_reader)
-        except (TypeError, ValueError):
-            return await json_reader(default={})
-        try:
-            signature.bind(default={})
-        except TypeError:
-            try:
-                signature.bind()
-            except TypeError as exc:
-                raise RuntimeError("当前 AstrBot Web API 不支持 JSON 请求读取") from exc
-            return await json_reader()
-        return await json_reader(default={})
+        picked = first_bindable_args(json_reader, [((), {"default": {}}), ((), {})])
+        if picked is None:
+            raise RuntimeError("当前 AstrBot Web API 不支持 JSON 请求读取")
+        args, kwargs = picked
+        return await json_reader(*args, **kwargs)
     get_json = getattr(request, "get_json", None)
     if callable(get_json):
         return await get_json(silent=True)
@@ -478,11 +471,9 @@ async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict
     # 它们继续写孤儿容器——回滚后 main 从新 dict 读、协作对象写旧 dict，
     # 该会话主动回复静默停止直到重启。clear+update 保持容器身份不变。
     plugin._coordinator.restore_inplace(snapshot)
-    plugin._whitelist_runtime_umos.clear()
-    plugin._whitelist_runtime_umos.update(snapshot["whitelist_runtime_umos"])
+    restore_container_inplace(plugin._whitelist_runtime_umos, snapshot["whitelist_runtime_umos"])
     plugin._gate.restore(snapshot["gate"])
-    plugin.sessions.clear()
-    plugin.sessions.update(snapshot["sessions"])
+    restore_container_inplace(plugin.sessions, snapshot["sessions"])
     # 回滚后重新调度被白名单变更取消的延迟检查（已取消的任务对象
     # 不可复用，只能按默认 message_delay 语义重建）。
     for umo in snapshot["delay_umos"]:

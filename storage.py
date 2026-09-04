@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import tempfile
@@ -28,6 +27,7 @@ from .models import (
     Settings,
     as_int,
     as_timestamp,
+    first_bindable_args,
     history_display_name,
     now_ts,
 )
@@ -73,24 +73,13 @@ def _persist_config_obj(config_obj: Any, data: dict[str, Any]) -> bool:
     if config_obj is None or not hasattr(config_obj, "save_config"):
         return True
     save_config = config_obj.save_config
-    args: tuple[Any, ...]
+    picked = first_bindable_args(save_config, [((data,), {}), ((), {})])
+    if picked is None:
+        logger.warning("[%s] unsupported AstrBot config save signature", PLUGIN_ID)
+        return False
+    args, _kwargs = picked
     try:
-        signature = inspect.signature(save_config)
-    except (TypeError, ValueError):
-        args = (data,)
-    else:
-        try:
-            signature.bind(data)
-            args = (data,)
-        except TypeError:
-            try:
-                signature.bind()
-            except TypeError as exc:
-                logger.warning("[%s] unsupported AstrBot config save signature: %s", PLUGIN_ID, exc)
-                return False
-            args = ()
-    try:
-        save_config(*args)
+        save_config(*args, **_kwargs)
         return True
     except Exception as exc:
         logger.warning("[%s] failed to save AstrBot config: %s", PLUGIN_ID, exc)

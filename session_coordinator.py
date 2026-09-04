@@ -30,6 +30,7 @@ from .models import (
     MAX_SESSION_IMAGE_MEMORY_BYTES,
     PLUGIN_ID,
     now_ts,
+    restore_container_inplace,
 )
 from .session_gate import SessionGate
 
@@ -275,12 +276,9 @@ class SessionCoordinator:
 
     def restore_inplace(self, snapshot: dict[str, Any]) -> None:
         """原地写回三张协作表，不换 dict 对象（契约 §11）。"""
-        self._events.clear()
-        self._events.update(snapshot["last_events"])
-        self._event_at.clear()
-        self._event_at.update(snapshot["last_event_at"])
-        self._images.clear()
-        self._images.update(snapshot["recent_image_events"])
+        restore_container_inplace(self._events, snapshot["last_events"])
+        restore_container_inplace(self._event_at, snapshot["last_event_at"])
+        restore_container_inplace(self._images, snapshot["recent_image_events"])
         self._recount()
 
     # ------------------------------------------------------------------

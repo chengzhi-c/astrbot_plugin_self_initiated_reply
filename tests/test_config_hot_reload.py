@@ -390,7 +390,8 @@ def test_session_gate_restore_is_in_place_only() -> None:
     assert not rebound, (
         f"SessionGate.restore 出现属性重绑定 {sorted(rebound)}：等待者与运行中的 "
         f"async with 持有容器/Event/Lock 对象本身的引用，换掉容器身份会让它们读写"
-        f"孤儿表（契约 §11 B1）。改回 clear()+update() 原地恢复。"
+        f"孤儿表（契约 §11 B1）。改回原地恢复（clear()+update() 或 "
+        f"restore_container_inplace）。"
     )
     cleared = {
         ast.unparse(node.func.value).removeprefix("self.")
@@ -400,8 +401,17 @@ def test_session_gate_restore_is_in_place_only() -> None:
         and node.func.attr == "clear"
         and ast.unparse(node.func.value).startswith("self.")
     }
-    assert set(GATE_RESTORED_TABLES) <= cleared, (
-        f"restore 未清空全部三张表（实际 clear：{sorted(cleared)}）：漏清的表会残留回滚前的脏条目"
+    restored_via_helper = {
+        ast.unparse(node.args[0]).removeprefix("self.")
+        for node in ast.walk(restore_node)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "restore_container_inplace"
+        and node.args
+        and ast.unparse(node.args[0]).startswith("self.")
+    }
+    assert set(GATE_RESTORED_TABLES) <= (cleared | restored_via_helper), (
+        f"restore 未清空全部三张表（实际 clear：{sorted(cleared | restored_via_helper)}）："
+        f"漏清的表会残留回滚前的脏条目"
     )
 
 

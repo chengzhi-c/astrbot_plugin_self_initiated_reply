@@ -9,6 +9,8 @@ from collections.abc import Iterator
 from types import MappingProxyType
 from typing import Any
 
+from .models import restore_container_inplace
+
 
 class SessionGate:
     """维护每会话单调代次计数、运行中会话集合与并发锁。
@@ -102,12 +104,9 @@ class SessionGate:
         若保留已 set 状态，``scheduler`` 的 ``while is_running`` 循环每轮
         立即返回，紧密空转独占事件循环（整个 bot 卡死）。
         """
-        self._session_generation.clear()
-        self._session_generation.update(snap["generation"])
-        self._session_locks.clear()
-        self._session_locks.update(snap["locks"])
-        self._running_sessions.clear()
-        self._running_sessions.update(snap["running"])
+        restore_container_inplace(self._session_generation, snap["generation"])
+        restore_container_inplace(self._session_locks, snap["locks"])
+        restore_container_inplace(self._running_sessions, snap["running"])
         for umo, release in self._session_release.items():
             if umo in self._running_sessions:
                 # 仍标记运行中：清掉陈旧的 set，让等待者重新挂起而非空转。

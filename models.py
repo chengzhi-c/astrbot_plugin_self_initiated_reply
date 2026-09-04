@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 import re
@@ -305,6 +306,39 @@ def as_list(value: Any) -> list[str]:
 def choice(value: Any, allowed: set[str], default: str) -> str:
     normalized = str(value or "").strip().lower()
     return normalized if normalized in allowed else default
+
+
+def first_bindable_args(
+    func: Any, candidates: list[tuple[tuple[Any, ...], dict[str, Any]]]
+) -> tuple[tuple[Any, ...], dict[str, Any]] | None:
+    """返回首个可绑定到 ``func`` 签名的候选实参；都不匹配返回 None。
+
+    签名不可检查时返回首个候选（与各调用点原有回退一致）。只做 ``bind``
+    预检、绝不调用——函数体内的 TypeError 必须由调用方处理，在此重试意味
+    同一宿主调用可能执行两次（对落盘/LLM 即重复副作用）。
+    """
+    if not candidates:
+        return None
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return candidates[0]
+    for args, kwargs in candidates:
+        try:
+            signature.bind(*args, **kwargs)
+        except TypeError:
+            continue
+        return (args, kwargs)
+    return None
+
+
+def restore_container_inplace(target: Any, source: Any) -> None:
+    """原地恢复容器内容，不换容器对象。
+
+    等待者与运行中的 ``async with`` 持有容器本身的引用，重绑定会制造孤儿表。
+    """
+    target.clear()
+    target.update(source)
 
 
 def sanitize_prompt_variable(
