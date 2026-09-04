@@ -107,7 +107,11 @@ def main(*, require_release: bool = False) -> int:
         ["node", "--test", "tests/frontend_contract.test.mjs"],
     )
 
-    _run("pytest", [sys.executable, "-m", "pytest", "-q"])
+    _run(
+        "pytest",
+        # 覆盖率用路径方式（.）追踪——动态加载使模块名 cov 失效（实测）。
+        [sys.executable, "-m", "pytest", "-q", "--cov=.", "--cov-report=term-missing"],
+    )
 
     wheels, sdists = _release_artifacts()
     if len(wheels) != 1 or len(sdists) != 1:

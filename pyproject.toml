@@ -178,8 +178,8 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-# 覆盖率必须用路径方式（.）追踪——动态加载使模块名 cov 失效（实测）
-addopts = "--cov=. --cov-report=term-missing"
+# 覆盖率默认不开启：本地单测保持快速；跑门槛时由 CI test 作业与
+# scripts/gates.py 显式加 --cov（路径方式，见该两处注释）。
 
 [tool.coverage.run]
 # 生产口径：排除测试自身与 CI 工具脚本，恢复指标真实性

@@ -88,7 +88,9 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
       - name: Test
-        run: pytest --cov-report=xml
+        # 覆盖率用路径方式（.）追踪——动态加载使模块名 cov 失效（实测）。
+        # fail_under 门槛见 pyproject [tool.coverage.report]。
+        run: pytest --cov=. --cov-report=term-missing --cov-report=xml
       - name: Upload coverage artifact
         # 覆盖率产物只留 3.12 一份：无 job 消费它，三份全传只是占存储。
         if: matrix.python-version == '3.12'
