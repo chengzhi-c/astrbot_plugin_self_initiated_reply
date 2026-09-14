@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from .host_stubs import ROOT, install_astrbot_stubs, load_package
-from .source_contract import calls_in
+from .host_stubs import ROOT, capture_logs, install_astrbot_stubs, load_package
+from .source_contract import calls_in, method_source
 
 PACKAGE_NAME = "selfreply_vision_test_package"
 
@@ -348,8 +348,9 @@ def test_vision_service_snapshots_before_background_freeze(tmp_path: Path) -> No
         def __init__(self) -> None:
             self.captured: list[tuple[str, float, list[object]]] = []
 
-        def capture_images(self, umo: str, active_at: float, images: list[object]) -> None:
+        def capture_images(self, umo: str, active_at: float, images: list[object]) -> list[object]:
             self.captured.append((umo, active_at, images))
+            return images
 
     class Gate:
         @staticmethod
@@ -1603,3 +1604,44 @@ async def test_vision_service_blindspots() -> None:
     service_boom = make_service(boom_parser)
     # 5. capture 本地快照抛异常时被隔离并记录 debug，不阻断任务派发
     await service_boom.capture("u1", generation=1, active_at=1.0, images=[img])
+
+    freeze_src = method_source("image/vision_runtime.py", "VisionService._freeze_images")
+    assert "accepted_images is None" not in freeze_src
+    assert "len(accepted_images)" in freeze_src
+
+
+@pytest.mark.asyncio
+async def test_freeze_images_logs_accepted_count(caplog: object) -> None:
+    """capture_images 只收下部分图时，debug 计数必须用 accepted，不能用 cached。"""
+    import logging
+    from types import SimpleNamespace
+
+    _, image, _ = _load_modules()
+    vr = load_package(PACKAGE_NAME, "image.vision_runtime")
+    img_a = image.ImageInfo(url="http://example.com/a.png")
+    img_b = image.ImageInfo(url="http://example.com/b.png")
+    coordinator = SimpleNamespace(capture_images=lambda *args, **kwargs: [img_a])
+    parser = SimpleNamespace(
+        prepare_batch=lambda images, **kw: asyncio.sleep(0, result=[True] * len(images)),
+    )
+    service = vr.VisionService(
+        settings=SimpleNamespace(vision_timeout_sec=5),
+        bridge=None,
+        context=None,
+        source_cache_dir=Path("/tmp"),
+        data_root=Path("/tmp"),
+        coordinator=coordinator,
+        gate=SimpleNamespace(is_current=lambda *args: True),
+        is_stopping=lambda: False,
+        track_background_task=lambda coro: coro.close(),
+    )
+    service.get_image_parser = lambda *args: parser
+
+    with capture_logs(caplog, vr.logger, logging.DEBUG):
+        await service._freeze_images(
+            "u1", generation=1, active_at=1.0, images=[img_a, img_b]
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("captured 1/2 images" in message for message in messages)
+    assert not any("captured 2/2 images" in message for message in messages)
