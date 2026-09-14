@@ -78,13 +78,14 @@ async function serveStatic(request, response) {
 
 async function installBridge(page, options = {}) {
   await page.addInitScript(
-    ({ config, providersFail, saveMode, theme, dim, bold, refreshConfigPending }) => {
+    ({ config, providersFail, saveMode, theme, dim, bold, refreshConfigPending, themePending }) => {
       const state = {
         saveMode,
         saveAttempts: 0,
         config,
         configCalls: 0,
         refreshConfigPending,
+        themePending,
       };
       window.__bridgeCalls = [];
       window.__bridgeState = state;
@@ -105,7 +106,14 @@ async function installBridge(page, options = {}) {
             }
             return state.config;
           }
-          if (endpoint === "ui/theme") return { ok: true, theme, dim, bold };
+          if (endpoint === "ui/theme") {
+            if (state.themePending) {
+              return new Promise((resolve) => {
+                window.__resolveTheme = () => resolve({ ok: true, theme, dim, bold });
+              });
+            }
+            return { ok: true, theme, dim, bold };
+          }
           return { ok: true };
         },
         apiPost: async (endpoint, body) => {
@@ -143,6 +151,7 @@ async function installBridge(page, options = {}) {
       dim: Boolean(options.dim),
       bold: Boolean(options.bold),
       refreshConfigPending: Boolean(options.refreshConfigPending),
+      themePending: Boolean(options.themePending),
     }
   );
 }
@@ -366,6 +375,26 @@ test("dimming and bold restore from ui prefs", async ({ page }) => {
   await expect(page.locator("html")).toHaveClass(/bold-text/);
   await expect(page.locator("#dimBtn")).toHaveClass(/active/);
   await expect(page.locator("#boldBtn")).toHaveClass(/active/);
+  expect(errors).toEqual([]);
+});
+
+test("late theme prefs do not overwrite a dim click already made", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { themePending: true, dim: false, bold: false });
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.goto(`${baseUrl}${PAGE_PATH}`);
+  await expect(page.locator("#boot")).toHaveClass(/is-hidden/);
+  await expect.poll(() => page.evaluate(() => typeof window.__resolveTheme)).toBe("function");
+  await page.locator("#dimBtn").click();
+  await expect(page.locator("html")).toHaveClass(/dimmed/);
+  await page.evaluate(() => window.__resolveTheme());
+  await page.waitForTimeout(80);
+  await expect(page.locator("html")).toHaveClass(/dimmed/);
+  await expect(page.locator("#dimBtn")).toHaveClass(/active/);
   expect(errors).toEqual([]);
 });
 

@@ -173,6 +173,13 @@ export function applyBold(on) {
     /* ignore */
   }
 }
+let dimBoldTouched = false;
+export function markDimBoldTouched() {
+  dimBoldTouched = true;
+}
+export function dimBoldWasTouched() {
+  return dimBoldTouched;
+}
 export function restoreDimBold() {
   try {
     if (localStorage.getItem(DIM_KEY) === "1") applyDim(true);
@@ -186,12 +193,14 @@ export function bindDimBoldButtons(onChange) {
   const boldBtn = document.getElementById("boldBtn");
   if (dimBtn) {
     dimBtn.addEventListener("click", () => {
+      markDimBoldTouched();
       applyDim(!document.documentElement.classList.contains("dimmed"));
       onChange?.();
     });
   }
   if (boldBtn) {
     boldBtn.addEventListener("click", () => {
+      markDimBoldTouched();
       applyBold(!document.documentElement.classList.contains("bold-text"));
       onChange?.();
     });

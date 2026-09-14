@@ -22,6 +22,7 @@ import {
 	applyDim,
 	bindDimBoldButtons,
 	createScrollHandler,
+	dimBoldWasTouched,
 	hideBoot,
 	restoreDimBold,
 	setupMobileTabs,
@@ -453,6 +454,8 @@ loadAll()
 
 restoreTheme(apiGet).then((prefs) => {
 	if (prefs.theme !== currentTheme()) applyTheme(prefs.theme, els.themeToggle);
-	applyDim(prefs.dim);
-	applyBold(prefs.bold);
+	if (!dimBoldWasTouched()) {
+		applyDim(prefs.dim);
+		applyBold(prefs.bold);
+	}
 });

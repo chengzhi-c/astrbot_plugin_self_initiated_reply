@@ -16,7 +16,7 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 
 ## 设置页 chrome
 
-浅/深/跟随系统与压暗/粗体均经 `GET/POST ui/theme` 写入 `ui_prefs.json`（页面在 Dashboard iframe 内，localStorage 不可靠）。保存必须带齐三字段，禁止只写主题抹掉压暗/粗体。落盘与状态文件共用 `storage` 原子写。
+浅/深/跟随系统与压暗/粗体均经 `GET/POST ui/theme` 写入 `ui_prefs.json`（页面在 Dashboard iframe 内，localStorage 不可靠）。保存必须带齐三字段，禁止只写主题抹掉压暗/粗体。落盘与状态文件共用 `storage` 原子写。服务端 prefs 覆盖 localStorage，但 `GET ui/theme` 返回前用户已点过压暗/粗体则那次点击优先，迟到的 GET 不得抹掉。
 
 ## 默认值
 
