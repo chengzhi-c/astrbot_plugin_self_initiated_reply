@@ -15,12 +15,6 @@ import {
 } from "./frontend-core.mjs";
 export { WHITELIST_ILLEGAL_RE };
 const CONFIG_CONTROL_SELECTOR = "[data-config-key]";
-// 与 index.html 三个 data-config-control 控件对应的提交键。
-const PROVIDER_CONFIG_KEYS = [
-	"judge_provider_id",
-	"vision_provider_id",
-	"vision_judge_provider_id",
-];
 
 /** POST /config fields are declared by form data-config-key metadata. */
 function configControls(form) {
@@ -29,6 +23,12 @@ function configControls(form) {
 
 export function configSaveKeys(form) {
 	return configControls(form).map((control) => control.dataset.configKey);
+}
+
+function providerConfigKeys(form) {
+	return configControls(form)
+		.filter((control) => control.dataset.configControl)
+		.map((control) => control.dataset.configKey);
 }
 
 function configControlValue(control, providerControls, lastKnown = {}) {
@@ -403,7 +403,7 @@ export function createConfigIo(deps) {
 				lastKnownConfig,
 			);
 			let result;
-			for (const key of PROVIDER_CONFIG_KEYS) {
+			for (const key of providerConfigKeys(e.configForm)) {
 				if (providerNeedsManualInput(
 					body[key], getProviderOptions(), isProviderListAvailable(),
 				)) {
@@ -429,11 +429,10 @@ export function createConfigIo(deps) {
 					});
 				}
 				setSaveState("保存失败", "error");
-				if (
-					String(errorText).includes("非法字符") &&
-					e.whitelistInput &&
-					e.whitelistError
-				) {
+				const errorKey = configSaveKeys(e.configForm).find((key) =>
+					String(errorText).startsWith(`${key} `),
+				);
+				if (errorKey === "whitelist_sessions" && e.whitelistInput && e.whitelistError) {
 					e.whitelistInput.setAttribute("aria-invalid", "true");
 					e.whitelistError.textContent = errorText;
 					e.whitelistError.classList.add("show");

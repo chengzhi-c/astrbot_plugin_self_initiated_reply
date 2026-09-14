@@ -315,6 +315,8 @@ test("every data-config-control in the page is registered in config-io", async (
     [],
     `data-config-control 未在 providerControls 注册：${missing}`,
   );
+  assert.match(configIo, /function providerConfigKeys\(form\)/);
+  assert.doesNotMatch(configIo, /PROVIDER_CONFIG_KEYS/);
 });
 
 test("context-history setting describes its fallback behavior", async () => {
@@ -721,6 +723,146 @@ test("successful save applies the returned config and clears dirty state", async
   assert.equal(state.configRevision, TEST_REVISION);
   assert.equal(elements.configSaveState.textContent, "已保存");
   assert.equal(form.inert, false);
+});
+
+test("non-whitelist illegal-char save errors do not paint the whitelist field", async () => {
+  const classList = {
+    add() {},
+    remove() {},
+    toggle() {},
+  };
+  const fields = [
+    { dataset: { configKey: "whitelist_sessions", configTransform: "whitelist" }, value: "ok" },
+    { dataset: { configKey: "judge_provider_id", configControl: "judge" } },
+  ];
+  const form = {
+    classList,
+    inert: false,
+    querySelector: () => null,
+    querySelectorAll: () => fields,
+  };
+  const whitelistError = { textContent: "", classList };
+  const whitelistInput = {
+    ...fields[0],
+    removeAttribute() {},
+    setAttribute() {
+      throw new Error("whitelist should not be painted for bot_aliases errors");
+    },
+    focus() {
+      throw new Error("whitelist should not be focused for bot_aliases errors");
+    },
+  };
+  const elements = {
+    configForm: form,
+    whitelistInput,
+    whitelistError,
+    configSaveState: { textContent: "", classList },
+  };
+  const state = {
+    configLoaded: true,
+    savingConfig: false,
+    configRevision: TEST_REVISION,
+    isDirty: false,
+    requiresConfigRefresh: false,
+  };
+  const toasts = [];
+  const io = createConfigIo({
+    getEls: () => elements,
+    getState: () => state,
+    setState: (updates) => Object.assign(state, updates),
+    apiGet: async () => {
+      throw new Error("skip refresh");
+    },
+    apiPost: async () => ({
+      ok: false,
+      error: "bot_aliases 条目含非法字符",
+    }),
+    showToast: (msg) => toasts.push(msg),
+    setStatState() {},
+    renderPromptPreview() {},
+    judgeProviderControl: { value: () => "", sync() {} },
+    visionProviderControl: { value: () => "", sync() {} },
+    visionJudgeProviderControl: { value: () => "", sync() {} },
+    fmtBool: String,
+  });
+
+  await io.saveConfig({ preventDefault() {} });
+
+  assert.equal(whitelistError.textContent, "");
+  assert.ok(toasts.includes("bot_aliases 条目含非法字符"));
+});
+
+test("whitelist illegal-char save errors still paint the whitelist field", async () => {
+  const classList = {
+    added: [],
+    add(name) {
+      this.added.push(name);
+    },
+    remove() {},
+    toggle() {},
+  };
+  const fields = [
+    { dataset: { configKey: "whitelist_sessions", configTransform: "whitelist" }, value: "ok" },
+  ];
+  const form = {
+    classList,
+    inert: false,
+    querySelector: () => null,
+    querySelectorAll: () => fields,
+  };
+  const attrs = {};
+  const focused = [];
+  const whitelistError = { textContent: "", classList };
+  const whitelistInput = {
+    ...fields[0],
+    removeAttribute(name) {
+      delete attrs[name];
+    },
+    setAttribute(name, value) {
+      attrs[name] = value;
+    },
+    focus() {
+      focused.push("whitelist");
+    },
+  };
+  const elements = {
+    configForm: form,
+    whitelistInput,
+    whitelistError,
+    configSaveState: { textContent: "", classList },
+  };
+  const state = {
+    configLoaded: true,
+    savingConfig: false,
+    configRevision: TEST_REVISION,
+    isDirty: false,
+    requiresConfigRefresh: false,
+  };
+  const io = createConfigIo({
+    getEls: () => elements,
+    getState: () => state,
+    setState: (updates) => Object.assign(state, updates),
+    apiGet: async () => {
+      throw new Error("skip refresh");
+    },
+    apiPost: async () => ({
+      ok: false,
+      error: "whitelist_sessions 条目含非法字符",
+    }),
+    showToast() {},
+    setStatState() {},
+    renderPromptPreview() {},
+    judgeProviderControl: { value: () => "", sync() {} },
+    visionProviderControl: { value: () => "", sync() {} },
+    visionJudgeProviderControl: { value: () => "", sync() {} },
+    fmtBool: String,
+  });
+
+  await io.saveConfig({ preventDefault() {} });
+
+  assert.equal(attrs["aria-invalid"], "true");
+  assert.equal(whitelistError.textContent, "whitelist_sessions 条目含非法字符");
+  assert.deepEqual(focused, ["whitelist"]);
 });
 
 test("unknown provider id warns but does not block save", async () => {
