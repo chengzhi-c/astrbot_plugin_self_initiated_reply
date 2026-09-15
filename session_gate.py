@@ -54,6 +54,11 @@ class SessionGate:
         return self._session_generation.get(umo, 0)
 
     def is_current(self, umo: str, generation: int | None) -> bool:
+        """``generation`` 是否仍是该会话的当前代次。
+
+        ``None`` = 显式放弃代次防护（永远判 current），仅供调用方已自证代次
+        的路径使用；新增调用点必须传具体代次，不得以 ``None`` 走捷径。
+        """
         return generation is None or self._session_generation.get(umo, 0) == generation
 
     def lock_for(self, umo: str) -> asyncio.Lock:

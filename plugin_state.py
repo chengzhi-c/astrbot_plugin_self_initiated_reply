@@ -79,16 +79,30 @@ def refresh_admin_ids(plugin: SelfInitiatedReplyPlugin) -> set[str]:
     return plugin._admin_ids
 
 
+def _register_task(
+    plugin: SelfInitiatedReplyPlugin, coro: Coroutine[Any, Any, Any], *, critical: bool
+) -> asyncio.Task[Any]:
+    """统一任务注册：建 task、入注册表、挂丢弃回调；critical 额外入关键表。
+
+    语义名（``track_critical_task``/``track_background_task``）保留给调用点，
+    这里不重造"未就绪关闭 coro"等生命周期判断——那是
+    ``track_background_task`` 的职责。
+    """
+    task: asyncio.Task[Any] = asyncio.create_task(coro)
+    plugin._background_tasks.add(task)
+    if critical:
+        plugin._critical_tasks.add(task)
+    task.add_done_callback(plugin._background_tasks.discard)
+    if critical:
+        task.add_done_callback(plugin._critical_tasks.discard)
+    return task
+
+
 def track_critical_task(
     plugin: SelfInitiatedReplyPlugin, coro: Coroutine[Any, Any, Any]
 ) -> asyncio.Task[Any]:
     """Register a persistence task even while shutdown is already stopping."""
-    task: asyncio.Task[Any] = asyncio.create_task(coro)
-    plugin._background_tasks.add(task)
-    plugin._critical_tasks.add(task)
-    task.add_done_callback(plugin._background_tasks.discard)
-    task.add_done_callback(plugin._critical_tasks.discard)
-    return task
+    return _register_task(plugin, coro, critical=True)
 
 
 def state_for(plugin: SelfInitiatedReplyPlugin, umo: str) -> SessionState:
@@ -223,7 +237,4 @@ def track_background_task(
         except Exception:
             pass
         return None
-    task: asyncio.Task[Any] = asyncio.create_task(coro)
-    plugin._background_tasks.add(task)
-    task.add_done_callback(plugin._background_tasks.discard)
-    return task
+    return _register_task(plugin, coro, critical=False)

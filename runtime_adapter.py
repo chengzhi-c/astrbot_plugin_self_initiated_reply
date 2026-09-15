@@ -374,17 +374,17 @@ class AstrBotRuntimeAdapter:
     # 也是测试替换点），路径解析失败由 resolve_paths 让异常传播、加载期即崩——
     # 吞异常静默回退会让状态写到错误路径后无声丢失。结构决策见 docs/DECISIONS.md。
 
-    def final_tool_ids(self, req: Any) -> list[str] | None:
-        """Enumerate the tool ids that would actually reach the provider.
+    def _tool_list(self, req: Any) -> list[str] | None:
+        """共享工具枚举前奏：哨兵/None/tools 三段判定。
 
-        AstrBot resolves tools from ``req.func_tool`` at reset/run time, so the
-        request object is the authoritative post-build snapshot. Returns
-        ``None`` when the tool set cannot be enumerated (callers must fail
-        closed).
+        枚举失败统一 DEBUG——决策与告警归调用方（``filter_final_tools`` 升
+        WARNING 并中止，``final_tool_ids`` 保持 ``None`` 语义），否则单次失败
+        会产生重复告警（实测 2 条）。返回 ``None`` 表示无法枚举，调用方必须
+        各自 fail closed；``[]`` 与 ``None`` 的区分见 ``final_tool_ids``。
 
-        ``func_tool`` 属性缺失与显式 ``None`` 分开处理：后者是
-        宿主声明「本次无工具」，枚举结果就是空列表；前者是读不到该字段本身，
-        返回 ``[]`` 会把"查不到"谎报成"查过了、是空的"，故归入枚举失败返回
+        ``func_tool`` 属性缺失与显式 ``None`` 分开处理：后者是宿主声明
+        「本次无工具」，枚举结果就是空列表；前者是读不到该字段本身，返回
+        ``[]`` 会把"查不到"谎报成"查过了、是空的"，故归入枚举失败返回
         ``None``。
         """
         tool_set: Any = getattr(req, "func_tool", _MISSING)  # Any：见 filter_final_tools 说明
@@ -399,8 +399,6 @@ class AstrBotRuntimeAdapter:
             return []
         tools = getattr(tool_set, "tools", None)
         if tools is None:
-            # DEBUG 而非 WARNING：本方法是被 filter_final_tools 复用的枚举器，
-            # 决策与告警归调用方，否则单次失败会产生重复告警（实测 2 条）。
             logger.debug(
                 "[%s] tool enumeration unavailable: func_tool has no 'tools' (type=%s)",
                 PLUGIN_ID,
@@ -416,6 +414,17 @@ class AstrBotRuntimeAdapter:
                 exc,
             )
             return None
+
+    def final_tool_ids(self, req: Any) -> list[str] | None:
+        """Enumerate the tool ids that would actually reach the provider.
+
+        AstrBot resolves tools from ``req.func_tool`` at reset/run time, so the
+        request object is the authoritative post-build snapshot. Returns
+        ``None`` when the tool set cannot be enumerated (callers must fail
+        closed); the sentinel/``None``/``tools`` discrimination lives in
+        ``_tool_list``.
+        """
+        return self._tool_list(req)
 
     def filter_final_tools(
         self,
@@ -452,26 +461,39 @@ class AstrBotRuntimeAdapter:
         # 默认值换成哨兵后 ``_T`` 是 ``object``，联合坍缩成 ``object``，下面的
         # ``tool_set.remove_tool`` 会被 mypy 判成 attr-defined 错误。宿主工具集本就
         # 是鸭子类型（能力由 validate 在加载期核验），这里保持 ``Any``。
-        tool_set: Any = getattr(req, "func_tool", _MISSING)
-        if tool_set is _MISSING:
-            logger.warning(
-                "[%s] tool boundary fail-closed: req has no 'func_tool' attribute "
-                "(type=%s); aborting proactive run",
-                PLUGIN_ID,
-                type(req).__name__,
-            )
+        # 哨兵/None/tools 的三段判定与枚举共用 _tool_list（DEBUG 统一记在
+        # 那边）；这里的 WARNING 是"无法核验工具边界 → 中止"的唯一告警点，
+        # 缺属性/无 tools 的形状细节由 _tool_list 的 DEBUG 承载。
+        tool_ids = self._tool_list(req)
+        if tool_ids is None:
+            # 契约钉住：fail-closed 恰好一条 WARNING 且须点名原因——缺属性点
+            # func_tool、无 tools 点 tools（test_missing_func_tool_attribute_
+            # fails_closed_not_open / test_fail_closed_warning_names_the_reason）。
+            # 枚举期异常的形状细节由 _tool_list 的 DEBUG 承载，此处仍归入
+            # "不可枚举"出口。
+            tool_set: Any = getattr(req, "func_tool", _MISSING)
+            if tool_set is _MISSING:
+                logger.warning(
+                    "[%s] tool boundary fail-closed: req has no 'func_tool' attribute "
+                    "(type=%s); aborting proactive run",
+                    PLUGIN_ID,
+                    type(req).__name__,
+                )
+            else:
+                logger.warning(
+                    "[%s] tool boundary fail-closed: func_tool has no enumerable 'tools' "
+                    "(type=%s); aborting proactive run",
+                    PLUGIN_ID,
+                    type(tool_set).__name__,
+                )
             return False
-        if tool_set is None:
-            return True  # No tool set at all: nothing can be called.
-        tools = getattr(tool_set, "tools", None)
-        if tools is None:
-            logger.warning(
-                "[%s] tool boundary fail-closed: func_tool has no enumerable 'tools' "
-                "(type=%s); aborting proactive run",
-                PLUGIN_ID,
-                type(tool_set).__name__,
-            )
-            return False
+        if not tool_ids:
+            # func_tool 显式 None（宿主声明本次无工具）或工具集本身为空：
+            # 无工具可调，两种模式的核验都平凡通过（与旧实现 None→直接放行、
+            # 空集→循环空转后核验通过等价）。
+            return True
+        tool_set = req.func_tool  # _tool_list 已排除 _MISSING/None tools
+        tools = tool_set.tools
         try:
             for tool in list(tools):
                 name = str(getattr(tool, "name", "") or "").strip()

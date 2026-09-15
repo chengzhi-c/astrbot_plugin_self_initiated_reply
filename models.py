@@ -1192,8 +1192,8 @@ class Settings:
     def from_config(cls, config: Any) -> Settings:
         """把宿主配置对象归一化为 ``Settings``：缺键取默认，超限截断，别名回退。
 
-        表驱动：逐字段手写的 118 行归一化已由 ``CONFIG_SPECS``
-        取代。每个键的类型/边界/旧键/上限都只在规格表里声明一次，此处只做遍历。
+        表驱动：逐字段手写的归一化已由 ``CONFIG_SPECS`` 取代。每个键的
+        类型/边界/旧键/上限都只在规格表里声明一次，此处只做遍历。
 
         输入不可信（用户手改 JSON、旧版本遗留键），因此每个字段都走类型强制 +
         边界裁剪，而不是直接取值。别名回退（如 ``whitelist`` → ``whitelist_sessions``）

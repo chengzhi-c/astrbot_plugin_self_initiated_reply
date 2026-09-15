@@ -47,7 +47,7 @@ from .storage import _write_json_atomic
 # 切正式键，存量配置由 Settings.from_config 回退读取迁移，一致性守卫见
 # tests/test_config_schema.py。
 #
-# 改为从 models.CONFIG_SPECS 派生，不再手抄 34 行。此前新增一个
+# 改为从 models.CONFIG_SPECS 派生，不再手抄清单。此前新增一个
 # 键要同时改 schema / Settings 字段 / from_config / to_config_dict / 本名单 /
 # _parse_config_updates 六处，漏一处即静默失效（漏本名单 → 面板提交被 400 拒）。
 CONFIG_SCHEMA_KEYS = frozenset(spec.key for spec in CONFIG_SPECS)
@@ -366,8 +366,8 @@ async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str,
 def _parse_config_updates(data: Any) -> dict[str, Any]:
     """从请求体提取合法配置变更并做严格类型校验；非法字段抛 ValueError。
 
-    表驱动：此前 34 个键各写一段 ``if key in data``，119 行、
-    圈复杂度 38（全仓最差）。真正的问题不是长度而是「新增键要记得同时改这里」，
+    表驱动：此前每个键各写一段 ``if key in data``，圈复杂度全仓最差。
+    真正的问题不是长度而是「新增键要记得同时改这里」，
     漏一处该键就被静默丢弃——面板上能改、保存返回成功、值不生效。
 
     与 ``Settings.from_config`` 的关键差异（不可统一，故意分开）：这里对非法

@@ -319,6 +319,17 @@ async def test_local_gate_silence(tmp_path: Path) -> None:
     assert maker.local_gate(state, force=False) == "静默时间不足：10s / 60s。"
 
 
+async def test_local_gate_silence_without_activity_record(tmp_path: Path) -> None:
+    """从未活跃（无活动时间戳）不得报"静默时间不足"。
+
+    静默不足有明确的等待时长可展示；无活动记录连判定基线都没有，沿用
+    「静默时间不足：0s / 60s」会让运营误以为配置没生效而不是会话太冷清。
+    """
+    _, models, maker, _, _ = _make_decision(tmp_path, {"min_silence_sec": 60})
+    state = _state(models, active_at=0.0)
+    assert maker.local_gate(state, force=False) == "会话暂无活动记录，无法判断静默。"
+
+
 async def test_local_gate_silence_uses_check_start_activity(tmp_path: Path) -> None:
     """在途检查的静默按检查开始时的活动时间算，不被后来的句号刷新。"""
     _, models, maker, clock_value, _ = _make_decision(tmp_path, {"min_silence_sec": 25})

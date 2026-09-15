@@ -17,7 +17,7 @@ from typing import Any
 from astrbot.api import logger
 from astrbot.api.star import Context
 
-from .models import PLUGIN_ID, MessageRecord, history_display_name
+from .models import PLUGIN_ID, MessageRecord, first_bindable_args, history_display_name
 from .utils import content_to_text, maybe_await, redact_exc_text
 
 
@@ -125,32 +125,24 @@ class AstrBotBridge:
 
     @staticmethod
     async def _call_first_supported(func: Any, umo: str, log_name: str) -> Any:
+        # bind 预检与候选构造共用 models.first_bindable_args（"预检绝不调用、
+        # 函数体内 TypeError 不重试"的双副作用约定锚定在那边）；这里只负责
+        # 调用与失败告警。签名不可检查时该函数回首个候选，与原回退一致。
+        chosen = first_bindable_args(func, AstrBotBridge._method_call_options(func, umo))
+        if chosen is None:
+            logger.debug(
+                "[%s] %s unsupported signature: no bindable candidate",
+                PLUGIN_ID,
+                log_name,
+            )
+            return None
+        args, kwargs = chosen
         try:
-            signature = inspect.signature(func)
-        except (TypeError, ValueError):
-            args, kwargs = AstrBotBridge._method_call_options(func, umo)[0]
-            try:
-                return await maybe_await(func(*args, **kwargs))
-            except Exception as exc:
-                # 宿主方法失败常把带凭证的请求 URL 写进异常文本，日志同样要脱敏。
-                logger.warning("[%s] %s failed: %s", PLUGIN_ID, log_name, redact_exc_text(exc))
-                raise
-
-        last_type_error: TypeError | None = None
-        for args, kwargs in AstrBotBridge._method_call_options(func, umo):
-            try:
-                signature.bind(*args, **kwargs)
-            except TypeError as exc:
-                last_type_error = exc
-                continue
-            try:
-                return await maybe_await(func(*args, **kwargs))
-            except Exception as exc:
-                logger.warning("[%s] %s failed: %s", PLUGIN_ID, log_name, redact_exc_text(exc))
-                raise
-        if last_type_error:
-            logger.debug("[%s] %s unsupported signature: %s", PLUGIN_ID, log_name, last_type_error)
-        return None
+            return await maybe_await(func(*args, **kwargs))
+        except Exception as exc:
+            # 宿主方法失败常把带凭证的请求 URL 写进异常文本，日志同样要脱敏。
+            logger.warning("[%s] %s failed: %s", PLUGIN_ID, log_name, redact_exc_text(exc))
+            raise
 
     async def llm_generate(
         self,

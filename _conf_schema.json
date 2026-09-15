@@ -125,7 +125,7 @@
   },
   "check_interval_sec": {
     "type": "int",
-    "description": "后台巡检间隔（秒）",
+    "description": "后台巡检间隔（秒，实际周期还叠加各会话检查耗时，巡检为串行）",
     "hint": "定时检查白名单会话是否适合主动回应。",
     "default": 300,
     "slider": {

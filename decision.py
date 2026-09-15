@@ -95,10 +95,15 @@ class DecisionMaker:
         active_for_silence = (
             state.last_active_at if silence_active_at is None else silence_active_at
         )
+        if not active_for_silence:
+            # 从未活跃与"静默中"是两回事：静默不足有明确的等待时长可展示，
+            # 无活动记录连判定基线都没有——沿用"静默时间不足"文案会让运营
+            # 误以为配置没生效而不是会话太冷清。
+            return "会话暂无活动记录，无法判断静默。"
         silence_left = state.remaining_silence_sec(
             self.settings.min_silence_sec, self._clock(), active_at=active_for_silence
         )
-        if silence_left > 0 or not active_for_silence:
+        if silence_left > 0:
             # max(0, ...)：silence_left 可以大于 min_silence_sec
             # ——载入时时间戳被钳到 now + MAX_CLOCK_SKEW_SEC，最多仍能超出一个偏移量，
             # 差值为负会向运营者显示「静默时间不足：-300s / 45s」这种自相矛盾的文案。
