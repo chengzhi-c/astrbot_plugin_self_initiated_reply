@@ -23,7 +23,11 @@ from .storage import (
     build_sessions_payload,
     write_sessions_payload,
 )
-from .utils import event_sender_id, event_sender_name, session_group_id
+from .utils import (
+    event_sender_id,
+    event_sender_name,
+    whitelist_storage_key,
+)
 
 if TYPE_CHECKING:
     from .main import SelfInitiatedReplyPlugin
@@ -105,18 +109,21 @@ def track_critical_task(
 
 
 def state_for(plugin: SelfInitiatedReplyPlugin, umo: str) -> SessionState:
-    state = plugin.sessions.get(umo)
-    if state is None:
-        legacy_key = session_group_id(umo)
-        if legacy_key:
-            state = plugin.sessions.pop(legacy_key, None)
+    """取（必要时创建）会话状态。**不做 legacy 迁移**——那是一次性迁移，
+    在 ``load_sessions`` 里完成；此函数在热路径上被反复调用，不做写旁路。
+
+    状态键在此派生（``whitelist_storage_key``）：调用方一律传 UMO，不各自
+    先算键再传——那样「状态键是什么」就散落在每个调用点，改口径要全仓搜。
+    """
+    key = whitelist_storage_key(umo)
+    state = plugin.sessions.get(key)
     if state is None:
         state = SessionState(recent=deque(maxlen=plugin.settings.recent_message_limit))
     else:
         limit = plugin.settings.recent_message_limit
         if state.recent.maxlen != limit:
             state.recent = deque(state.recent, maxlen=limit)
-    plugin.sessions[umo] = state
+    plugin.sessions[key] = state
     state.refresh_day()
     return state
 
@@ -156,15 +163,19 @@ def append_recent_user_message(
     return stamped
 
 
+def _build_payload(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
+    """构造状态快照 payload；两条落盘路径共用同一份构造逻辑。"""
+    return build_sessions_payload(
+        plugin.sessions,
+        plugin.settings.whitelist,
+        plugin.settings.recent_message_limit,
+    )
+
+
 def save_storage_snapshot(plugin: SelfInitiatedReplyPlugin) -> bool:
     # 直接使用本模块全局名：测试 patch ``plugin_state.write_sessions_payload`` 即可生效。
     try:
-        payload = build_sessions_payload(
-            plugin.sessions,
-            plugin.settings.whitelist,
-            plugin.settings.recent_message_limit,
-        )
-        return write_sessions_payload(plugin._storage_path, payload)
+        return write_sessions_payload(plugin._storage_path, _build_payload(plugin))
     except Exception as exc:
         logger.error("[%s] failed to prepare state snapshot: %s", PLUGIN_ID, exc, exc_info=True)
         return False
@@ -177,11 +188,7 @@ def save_storage_sync(plugin: SelfInitiatedReplyPlugin) -> None:
 
 async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
     async with plugin._save_lock:
-        payload = build_sessions_payload(
-            plugin.sessions,
-            plugin.settings.whitelist,
-            plugin.settings.recent_message_limit,
-        )
+        payload = _build_payload(plugin)
         write_task = asyncio.create_task(
             asyncio.to_thread(write_sessions_payload, plugin._storage_path, payload)
         )

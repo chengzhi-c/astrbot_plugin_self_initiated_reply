@@ -65,24 +65,25 @@ def _accepted_content(
         event,
         skip_stickers=plugin.settings.vision_skip_stickers,
     )
-    if should_ignore_event(
+    ignored = should_ignore_event(
         event,
         text,
         vision_has_images=has_images,
         ignored_sender_ids=plugin.settings.ignored_sender_ids,
-    ):
+    )
+    empty = not clean_text and not has_images
+    if ignored or empty:
+        # 语义单点：任何被入口接住的消息（含被忽略与空内容）都推进代次，作废
+        # 未发出的旧回复（契约 §6.3）。两个分支此前各写一份调用。
         if plugin.settings.abandon_stale_on_new_message:
             plugin._coordinator.invalidate(umo)
+    if ignored:
         if not is_self_message(event) and is_explicit_direct_call(event, text):
             state = plugin._state_for(state_key)
             state.last_active_at = now_ts()
             state.last_active_sender_id = event_sender_id(event)
         return None
-    if not clean_text and not has_images:
-        # abandon_stale 语义与 ignored 分支一致：任何被入口接住的消息（含空内容）
-        # 都推进代次，作废未发出的旧回复（契约 §6.3）。
-        if plugin.settings.abandon_stale_on_new_message:
-            plugin._coordinator.invalidate(umo)
+    if empty:
         return None
     return clean_text or "[图片]", has_images
 

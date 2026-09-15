@@ -32,7 +32,7 @@ from .models import (
     history_display_name,
     now_ts,
 )
-from .utils import session_whitelisted, whitelist_storage_key
+from .utils import is_full_umo, session_group_id, session_whitelisted, whitelist_storage_key
 
 
 def _config_to_dict(config_obj: Any) -> dict[str, Any]:
@@ -245,13 +245,51 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
         except Exception as exc:
             logger.warning("[%s] skipped malformed session state %s: %s", PLUGIN_ID, umo, exc)
 
+    # 迁移必须先于补空状态：反过来时目标键已被塞进空壳「占位」，
+    # 迁移判据会把空壳当成"目标已有自己的状态"而丢弃 legacy 数据。
+    _migrate_legacy_group_keys(sessions, whitelist)
+
     for umo in whitelist:
         key = str(umo).strip()
         # 只为完整 UMO 补空状态：裸群号只是白名单的通配写法，真实状态键恒为
         # 完整 UMO（whitelist_storage_key 契约），空壳条目无人读写却每轮落盘。
-        if ":" in key:
+        if is_full_umo(key):
             sessions.setdefault(key, SessionState(recent=deque(maxlen=recent_limit)))
     return sessions
+
+
+def _migrate_legacy_group_keys(sessions: dict[str, SessionState], whitelist: set[str]) -> None:
+    """把历史裸群号键的状态并入唯一匹配的完整 UMO。
+
+    历史上状态键曾是裸群号（早先 ``state_for`` 在每次访问时 pop 迁移）。迁移
+    必须在此一次性完成：热路径迁移在多平台同群号时由**首个访问者**继承整份
+    历史，其余平台永远拿不到；而且那是在只读函数里做写操作，与
+    ``read_session_state`` 自陈的「不创建、不迁移」相矛盾。
+
+    能在本函数看到的裸群号键，必然同时还在白名单里（``session_whitelisted``
+    按群号通配放行）——白名单若已改写成完整 UMO，裸键在载入过滤时就已被丢弃，
+    本函数无从施救。所以候选来源取「载入的会话键 ∪ 白名单里的完整 UMO」：
+    后者接住"裸键在盘、目标键尚无记录"这一形态（此时目标键只存在于白名单）。
+
+    判据：候选必须**恰好一个**才迁移。多平台同群号时保持原样，绝不猜平台。
+    目标键已有记录时只淘汰裸键、不覆盖——否则 legacy 的每日配额记账会顶掉
+    新键当日的计数。
+    """
+    candidates: set[str] = set()
+    for key in (*sessions, *whitelist):
+        candidate = str(key).strip()
+        if is_full_umo(candidate):
+            candidates.add(candidate)
+    for legacy_key in [key for key in sessions if not is_full_umo(key)]:
+        matched = {key for key in candidates if session_group_id(key) == legacy_key}
+        if len(matched) != 1:
+            continue
+        target = next(iter(matched))
+        if target in sessions:
+            # 目标已有记录：只淘汰裸键，不覆盖（否则 legacy 的当日配额会顶掉新键的计数）。
+            del sessions[legacy_key]
+            continue
+        sessions[target] = sessions.pop(legacy_key)
 
 
 def build_sessions_payload(

@@ -154,7 +154,9 @@ def test_parse_config_updates_formal_defaults() -> None:
     assert updates["cooldown_sec"] == 30
     assert updates["message_delay_sec"] == 60
     assert updates["decision_history_min_messages"] == 3
-    assert updates["decision_prompt_template"] == webapi.DEFAULT_DECISION_PROMPT_TEMPLATE
+    # 写侧只做类型/空白规范化，不回落内置模板：复位语义单点在读侧
+    # （models.coerce_config_value），落到响应里的默认值由 3.4 的锚定测试钉住。
+    assert updates["decision_prompt_template"] == ""
     assert updates["judge_provider_id"] == ""
     assert updates["vision_provider_id"] == "42"
     # 0 是 falsy：与 judge_provider_id 一致的规范化语义

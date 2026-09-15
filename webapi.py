@@ -25,7 +25,6 @@ except ImportError:  # pragma: no cover - compatibility with older AstrBot hosts
 from .models import (
     CONFIG_SPEC_BY_KEY,
     CONFIG_SPECS,
-    DEFAULT_DECISION_PROMPT_TEMPLATE,
     PLUGIN_ID,
     CheckTrigger,
     ConfigSpec,
@@ -146,7 +145,9 @@ async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
             "ok": True,
             "runtime_enabled": plugin.runtime_enabled,
             "config_revision": config_revision(plugin.settings),
-            "decision_prompt_default": DEFAULT_DECISION_PROMPT_TEMPLATE,
+            # 面板「恢复默认」填充值：与读侧落盘的默认同源于规格表
+            # （spec.reset_value），不在此处直接引用模板常量字形。
+            "decision_prompt_default": CONFIG_SPEC_BY_KEY["decision_prompt_template"].reset_value,
         }
         for spec in panel_config_specs():
             payload[spec.key] = spec.canonical_value(getattr(plugin.settings, spec.attr))
@@ -234,6 +235,10 @@ async def _api_get_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
 
 async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """更新插件页面 UI 偏好（持久化到 ui_prefs.json）。未带的键保持原值。"""
+    # 关停中拒写：与 config/cleanup 同口径。否则 teardown 之后落盘的偏好会在
+    # 下次启动被 load_ui_prefs 读回，用户看到的是「已被丢弃」的旧设置。
+    if plugin._stopping:
+        return {"ok": False, "error": "插件正在关闭"}
     try:
         data = await _request_json()
     except Exception:
@@ -329,7 +334,9 @@ async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str,
             raise ValueError("base_revision 必须是非空字符串")
         config_data = {key: value for key, value in data.items() if key != "base_revision"}
         current_revision = config_revision(plugin.settings)
-        if base_revision is not None and base_revision != current_revision:
+        # 比较前 strip：与入参校验（非空字符串）同口径，避免仅因首尾空白
+        # 被判 STALE_WRITE，让用户看到一次无意义的刷新要求。
+        if base_revision is not None and base_revision.strip() != current_revision:
             return {
                 "ok": False,
                 "error_code": "STALE_WRITE",
@@ -403,17 +410,18 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
             raise ValueError(f"{spec.key} 必须是 {'/'.join(sorted(spec.options))}")
         return value
     if spec.kind == "text":
-        # 空提交 = 恢复内置默认（面板留空即复位是产品语义，见 test_config_schema
-        # 的 _INTENTIONAL_EMPTY_DEFAULT）；复位值取自规格表 reset_default，读写两侧
-        # （models.coerce_config_value 与本函数）共用同一声明，无需同步第二处字面量。
-        return str(raw or "").strip() or spec.reset_default
+        # 只做类型与空白规范化。空提交 = 恢复内置默认（面板留空即复位，见
+        # test_config_schema 的 _INTENTIONAL_EMPTY_DEFAULT）由读侧
+        # models.coerce_config_value 单点实现，写侧再回落一次就是第二份口径。
+        return str(raw or "").strip()
     # kind == "str"：拒绝 bool/dict/list（str(True)="True"、str({'a':1})="{'a': 1}"
     # 落盘后永远匹配不到任何 provider，故障静默且不自愈）。int/float 沿用 falsy 规范化
     # （0→""、42→"42"，与历史面板行为一致，见 test_parse_config_updates_formal_defaults）。
-    # 长度上限由 coerce 读侧按 spec.max_len 统一截断。
+    # 长度上限由 coerce 读侧按 spec.max_len 统一截断。空值保持空串——
+    # coerce 的 str 分支同样不做默认回落，两侧口径一致。
     if isinstance(raw, (bool, dict, list)):
         raise ValueError(f"{spec.key} 必须是字符串")
-    return str(raw or "").strip() or spec.reset_default
+    return str(raw or "").strip()
 
 
 # 安全敏感配置键：变更记 INFO 审计日志。webapi 无独立鉴权，
@@ -640,7 +648,7 @@ def _log_audited_changes(
 
 
 async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """返回插件集成状态与会话级运行状态（调试面板导出）。
+    """返回插件集成状态与会话级运行状态。面板零消费，运维/排障专用。
 
     覆盖：生命周期、代次快照、运行中集合、任务数（延迟/运行中检查/后台）、
     缓存规模（事件/图片事件/会话）、每会话最近裁决原因。

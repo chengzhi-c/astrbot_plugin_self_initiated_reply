@@ -5,7 +5,7 @@ from __future__ import annotations
 import ntpath
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from html import unescape
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -51,7 +51,13 @@ def _parse_raw_cq_components(raw: Any) -> list[dict[str, Any]]:
 
 
 def _component_field(component: Any, name: str) -> Any:
-    """Read a component field across AstrBot objects and raw mapping shapes."""
+    """读组件字段：先组件本体、再嵌套 ``data``（AstrBot 与裸 mapping 两种形状）。
+
+    与 :func:`_field_value` 不是一个抽象，勿合并：本函数处理**组件特有的两层
+    回退**（``component`` → ``component.data``），后者是通用的单层取值（任何
+    Mapping 或带 ``get`` 的对象）。合并要么让通用函数多一个仅组件用的开关，
+    要么让组件读取丢掉"带 get 的非 Mapping 对象"这条路径。
+    """
     sources = [component]
     nested = (
         component.get("data") if isinstance(component, dict) else getattr(component, "data", None)
@@ -137,6 +143,10 @@ def _component_is_sticker(component: Any, *, raw_component: Any = None) -> bool:
 
 
 def _field_value(source: Any, name: str) -> Any:
+    """通用单层取值（Mapping → ``get`` 方法 → 属性），不查嵌套 ``data``。
+
+    组件字段请用 :func:`_component_field`：它在此基础上补了 ``data`` 回退。
+    """
     if isinstance(source, Mapping):
         return source.get(name)
     getter = getattr(source, "get", None)
@@ -180,6 +190,20 @@ def _raw_image_components(event: Any) -> list[Any]:
     if not isinstance(segments, (list, tuple)):
         return []
     return [component for component in segments if _component_type(component) in _IMAGE_TYPES]
+
+
+def _eligible_image_entries(event: Any, *, skip_stickers: bool) -> Iterator[tuple[Any, Any]]:
+    """产出参与判定的图片条目（``(归一化组件, 原始段)``），按需滤掉表情包。
+
+    ``has_images``（是否存在图片）与 ``extract_images``（能否抽出可用来源）是
+    两个判据，不能互相替代：组件存在但 url/file 全空时前者为真、后者为空，
+    ``message_ingress._accepted_content`` 的 "[图片]" 回落正依赖这一点。两者
+    此前各写一份"遍历 ``_image_entries`` + 判贴纸"，此处单点化。
+    """
+    for component, raw_component in _image_entries(event):
+        if skip_stickers and _component_is_sticker(component, raw_component=raw_component):
+            continue
+        yield component, raw_component
 
 
 def _image_entries(event: Any) -> list[tuple[Any, Any]]:
@@ -249,13 +273,13 @@ class ImageExtractor:
         images: list[ImageInfo] = []
         try:
             message_id = _event_message_id(event)
-            for component, raw_component in _image_entries(event):
+            for component, raw_component in _eligible_image_entries(
+                event, skip_stickers=skip_stickers
+            ):
                 is_sticker = _component_is_sticker(
                     component,
                     raw_component=raw_component,
                 )
-                if skip_stickers and is_sticker:
-                    continue
                 raw_url = _component_value(component, "url")
                 normalized_file = _component_value(component, "file", "path", "local_path")
                 # Only a non-mapping, normalized AstrBot component may mark an
@@ -303,17 +327,13 @@ class ImageExtractor:
 
     @staticmethod
     def has_images(event: AstrMessageEvent, *, skip_stickers: bool = False) -> bool:
+        """是否存在**参与判定**的图片组件（不要求能抽出可用来源）。
+
+        与 :meth:`extract_images` 共用 ``_eligible_image_entries`` 的过滤，但
+        不构造 ``ImageInfo``：只回答"这条消息有图吗"，用于决定是否走图片分支。
+        """
         try:
-            return any(
-                not (
-                    skip_stickers
-                    and _component_is_sticker(
-                        component,
-                        raw_component=raw_component,
-                    )
-                )
-                for component, raw_component in _image_entries(event)
-            )
+            return any(True for _ in _eligible_image_entries(event, skip_stickers=skip_stickers))
         except Exception:
             return False
 

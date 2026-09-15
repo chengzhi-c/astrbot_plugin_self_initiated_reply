@@ -48,6 +48,10 @@ STRING_LIST_ILLEGAL_RE = re.compile(r"[\x00-\x1f\"'\\]")
 MAX_BOT_ALIASES = 64
 MAX_IGNORED_SENDER_IDS = 1000
 MAX_QUIET_HOURS = 24
+# 历史消息缓存条数的默认值：``recent_message_limit`` 规格与 ``SessionState.recent``
+# 的兜底 maxlen 共用。两处各写 20 时，改默认值会漏掉「规格表新值 + 空会话仍按旧值
+# 建 deque」这一半，新会话的近期窗口与配置面板显示不一致。
+RECENT_MESSAGE_LIMIT_DEFAULT = 20
 MAX_RECENT_MESSAGE_LIMIT = 100  # 历史消息最大缓存数
 # 生成路径上下文（历史文本）总字符预算：宿主单条消息长度不受本插件约束，
 # 100 条缓存上限挡不住成本失控。判断路径已有 2000 cap（decision 提示词
@@ -242,6 +246,13 @@ _HOUR_SECONDS = 3600
 # 可打印字符的 Unicode 码点下界：控制字符（0x00–0x1F）一律从提示词变量里剔除。
 _PRINTABLE_CHAR_MIN = 32
 
+# 文本空白归一的正则常量住在 models：utils 依赖 models（依赖图叶子），反向会成环。
+# 此前 models 内联一份 ``re.sub(r"[^\S\n]+", ...)``、utils 各自编译一份，两边
+# 同时漂移就会让「同一段文本在不同路径被压缩成不同形状」。
+WHITESPACE_PATTERN = re.compile(r"\s+")
+# 行内空白：不含换行，用于保留多行结构时压缩空格
+INLINE_SPACE_PATTERN = re.compile(r"[^\S\n]+")
+
 
 def duration(seconds: float) -> str:
     seconds = max(0, int(seconds))
@@ -386,7 +397,7 @@ def sanitize_prompt_variable(
         for line in text.split("\n"):
             # 移除控制字符并压缩行内空白
             line = "".join(char for char in line if ord(char) >= _PRINTABLE_CHAR_MIN)
-            line = re.sub(r"[^\S\n]+", " ", line).strip()
+            line = INLINE_SPACE_PATTERN.sub(" ", line).strip()
             if line:
                 lines.append(line)
         return "\n".join(lines)
@@ -394,7 +405,7 @@ def sanitize_prompt_variable(
     # 3. 单行模式：换行、制表符归一为空格，并移除控制字符
     text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
     text = "".join(char for char in text if ord(char) >= _PRINTABLE_CHAR_MIN)
-    return re.sub(r"\s+", " ", text).strip()
+    return WHITESPACE_PATTERN.sub(" ", text).strip()
 
 
 @dataclass
@@ -495,9 +506,15 @@ class AttemptState(StrEnum):
     ABANDONED = "abandoned"
 
 
-@dataclass
+@dataclass(eq=False)
 class SendAttempt:
-    """One outbound call tracked by a pipeline-owned ledger."""
+    """One outbound call tracked by a pipeline-owned ledger.
+
+    ``eq=False``：账本按**身份**判定成员（``attempt not in self._attempts`` 走
+    ``==``）。值相等会让另一账本里同号同文的 attempt 冒充本账本成员——
+    ``attempt_id`` 每账本从 1 起，两个账本各发一条同样文本时字段全等——
+    于是 resolve/mark_in_flight 会把状态写到别的账本的 attempt 上。
+    """
 
     attempt_id: int
     kind: str
@@ -653,7 +670,9 @@ class SendOutcome:
 
 @dataclass
 class SessionState:
-    recent: deque[MessageRecord] = field(default_factory=lambda: deque(maxlen=20))
+    recent: deque[MessageRecord] = field(
+        default_factory=lambda: deque(maxlen=RECENT_MESSAGE_LIMIT_DEFAULT)
+    )
     last_active_at: float = 0.0
     last_active_sender_id: str = ""
     last_proactive_at: float = 0.0
@@ -764,10 +783,23 @@ class ConfigSpec:
     item_max_len: int | None = None
     item_pattern: str = ""
     empty_policy: str = ""
-    # 空提交复位的内置默认（目前唯一消费者是 text 类键）。读写两侧（webapi
-    # _strict_value 与 coerce_config_value）都从这里取值，不再各抄一份字面量。
+    # 空提交复位的内置默认（目前唯一消费者是 text 类键）。复位语义只在读侧
+    # coerce_config_value 实现一次，webapi._strict_value 不做回落，以免两处
+    # 各持一份口径（曾出现过「写侧落默认值、读侧再判差异」的误报链）。
     reset_default: Any = ""
     surfaces: frozenset[str] = frozenset({"host"})
+
+    @property
+    def reset_value(self) -> str:
+        """复位后的实际取值（``reset_default`` 的规范化口径）。
+
+        GET /config 的 ``decision_prompt_default``（面板「恢复默认」填充的值）
+        与 ``coerce_config_value`` 落盘的默认必须取同一个表达式：两处各写一次
+        ``str(...).strip()`` 时，只要常量字形带首尾空白，面板填回的默认就与
+        读侧落盘的默认不等，"恢复默认 → 保存"会被 ``_config_update_was_adjusted``
+        误报成改过字段。
+        """
+        return str(self.reset_default).strip()
 
     @property
     def attr(self) -> str:
@@ -898,7 +930,14 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         surfaces=_PANEL,
     ),
     ConfigSpec("max_daily_replies_per_session", "int", 5, 0, MAX_DAILY_REPLIES_LIMIT, step=1),
-    ConfigSpec("recent_message_limit", "int", 20, 3, MAX_RECENT_MESSAGE_LIMIT, step=1),
+    ConfigSpec(
+        "recent_message_limit",
+        "int",
+        RECENT_MESSAGE_LIMIT_DEFAULT,
+        3,
+        MAX_RECENT_MESSAGE_LIMIT,
+        step=1,
+    ),
     ConfigSpec(
         "quiet_hours",
         "list",
@@ -1066,17 +1105,19 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
     if spec.kind == "bool":
         return as_bool(raw, bool(fallback))
     if spec.kind == "int":
-        assert spec.minimum is not None and spec.maximum is not None
+        if spec.minimum is None or spec.maximum is None:
+            raise RuntimeError(f"{spec.key}: int 规格缺少 minimum/maximum")
         return as_int(raw, int(fallback), int(spec.minimum), int(spec.maximum))
     if spec.kind == "float":
-        assert spec.minimum is not None and spec.maximum is not None
+        if spec.minimum is None or spec.maximum is None:
+            raise RuntimeError(f"{spec.key}: float 规格缺少 minimum/maximum")
         return as_float(raw, float(fallback), float(spec.minimum), float(spec.maximum))
     if spec.kind == "enum":
         return choice(raw, set(spec.options), str(fallback))
     if spec.kind == "text":
-        # 空值回落默认模板：与 webapi._strict_value 的 text 分支是同一产品语义
-        # （面板留空即复位），复位值单源于规格表 reset_default，读写两侧不再各抄字面量。
-        text = str(raw or "").strip() or str(spec.reset_default).strip()
+        # 空值回落默认模板（面板留空即复位）：这条语义的唯一实现点在读侧——
+        # 写侧 webapi._strict_value 只规范化空白，复位值单源于规格表 reset_default。
+        text = str(raw or "").strip() or spec.reset_value
         if spec.max_len is not None and len(text) > spec.max_len:
             logger.warning(
                 "[%s] 判断提示词过长 (%d 字符)，已截断到 %d 字符",

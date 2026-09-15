@@ -33,7 +33,7 @@ from .models import (
     now_ts,
 )
 from .session_gate import SessionGate
-from .utils import session_is_private, whitelist_storage_key
+from .utils import is_full_umo, session_is_private
 
 
 class CheckSessionCallback(Protocol):
@@ -212,7 +212,7 @@ class SessionScheduler:
         force: bool,
         generation: int | None,
     ) -> bool:
-        state = self._state_for(whitelist_storage_key(umo))
+        state = self._state_for(umo)
         silence_left = self.remaining_silence_sec(state)
         silence_event: asyncio.Event | None = None
         try:
@@ -522,7 +522,7 @@ class SessionScheduler:
 
     def _runtime_umos_for_whitelist_item(self, item: str) -> set[str]:
         value = str(item or "").strip()
-        if ":" in value:
+        if is_full_umo(value):
             return {value}
         return set(self._whitelist_runtime_umos.get(value, set()))
 
@@ -570,7 +570,7 @@ class SessionScheduler:
                 return
             if not self._last_events.get(umo):
                 return
-            state = self._state_for(whitelist_storage_key(umo))
+            state = self._state_for(umo)
             if self.settings.patrol_inactive_after_sec and (
                 not state.last_active_at
                 or now - state.last_active_at > self.settings.patrol_inactive_after_sec
@@ -578,7 +578,7 @@ class SessionScheduler:
                 return
             if self._gate.is_running(umo):
                 return
-            generation = self._gate.generation_view.get(umo, 0)
+            generation = self._gate.current(umo)
             result = await self._check_session(
                 umo,
                 trigger=CheckTrigger.PATROL,

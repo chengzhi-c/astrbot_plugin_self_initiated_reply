@@ -151,6 +151,7 @@ class _GenerateRun:
         "outbound",
         "req",
         "build_result",
+        "quarantined",
     )
 
     def __init__(
@@ -186,6 +187,9 @@ class _GenerateRun:
         self.outbound: OutboundGateway | None = None
         self.req: Any = None
         self.build_result: Any = None
+        # 宿主吞掉取消、run_task 被隔离到后台时为真：此后不能摘除 send
+        # tracker，否则存活 agent 的工具直发变成裸发（绕过预算/代次/停止闸门）。
+        self.quarantined = False
 
     def partial_reply(self) -> PipelineReply:
         return PipelineReply(ledger=self.ledger)
@@ -201,7 +205,12 @@ class GenerationRunner:
     """一次主动回复生成的编排：工具边界、策略强制与超时/孤儿收敛。"""
 
     async def _graceful_stop(
-        self, run_task: asyncio.Task[Any], agent_runner: Any, *, cancel_first: bool
+        self,
+        run_task: asyncio.Task[Any],
+        agent_runner: Any,
+        *,
+        cancel_first: bool,
+        on_quarantine: Callable[[], None] | None = None,
     ) -> None:
         """request_stop 后宽限等待，超时或被再次取消才兜底取消。
 
@@ -210,7 +219,18 @@ class GenerationRunner:
         ``cancel_first=False``（超时）先给宿主 run_agent 优雅清理窗口。
         宽限耗尽仍未收敛都注入兜底取消，避免 run_agent 吞掉取消后留下
         孤儿任务。
+
+        ``on_quarantine`` 在**任务真正被隔离**时回调（宿主吞掉取消、任务仍
+        活着）：调用方据此保留发给它的工具直发闸门，见
+        ``_cleanup_generation_state``。收敛成功不回调。
         """
+
+        def quarantine(task: asyncio.Task[Any], reason: str) -> None:
+            if self._quarantine_task and not task.done():
+                self._quarantine_task(task, reason)
+                if on_quarantine is not None:
+                    on_quarantine()
+
         request_stop = getattr(agent_runner, "request_stop", None)
         if callable(request_stop):
             try:
@@ -226,8 +246,7 @@ class GenerationRunner:
             done, _ = await asyncio.wait({run_task}, timeout=grace_sec)
         except asyncio.CancelledError:
             run_task.cancel()
-            if self._quarantine_task and not run_task.done():
-                self._quarantine_task(run_task, "generation stop interrupted")
+            quarantine(run_task, "generation stop interrupted")
             raise
         if done:
             return
@@ -237,11 +256,10 @@ class GenerationRunner:
             done, _ = await asyncio.wait({run_task}, timeout=grace_sec)
         except asyncio.CancelledError:
             run_task.cancel()
-            if self._quarantine_task and not run_task.done():
-                self._quarantine_task(run_task, "generation cancellation interrupted")
+            quarantine(run_task, "generation cancellation interrupted")
             raise
-        if not done and self._quarantine_task:
-            self._quarantine_task(run_task, "agent runner ignored cancellation")
+        if not done:
+            quarantine(run_task, "agent runner ignored cancellation")
 
     def __init__(
         self,
@@ -383,7 +401,8 @@ class GenerationRunner:
                         run.umo,
                     )
                     return False
-                assert original_send is not None
+                if original_send is None:
+                    raise RuntimeError("event send 已接管却没有可调用的原发函数")
                 return await original_send(message)
             result = await outbound.send(message, kind="tool_direct")
             if not result.submitted:
@@ -470,10 +489,15 @@ class GenerationRunner:
     async def _run_agent_with_grace(self, run: _GenerateRun) -> None:
         """shield + 超时/取消优雅停止。"""
         build_result = run.build_result
-        assert build_result is not None
+        if build_result is None:
+            raise RuntimeError("run_agent 尚未产出 build_result 就进入运行阶段")
         run_task = asyncio.ensure_future(self._drain(build_result.agent_runner))
         self._background_tasks.add(run_task)
         run_task.add_done_callback(self._discard_background)
+
+        def mark_quarantined() -> None:
+            run.quarantined = True
+
         try:
             # shield：超时不硬取消 run_agent，先走优雅停止，让宿主
             # run_agent 正常清理内部任务（如 stop_watcher），避免
@@ -486,15 +510,26 @@ class GenerationRunner:
             # 调用方取消（force cancel / terminate）时，shield 保住的
             # run_task 不会自动停止：必须显式收敛，否则成为孤儿任务
             # 继续在后台运行，其工具直发还会绕过预算与代次闸门。
-            await self._graceful_stop(run_task, build_result.agent_runner, cancel_first=True)
+            await self._graceful_stop(
+                run_task,
+                build_result.agent_runner,
+                cancel_first=True,
+                on_quarantine=mark_quarantined,
+            )
             raise
         except TimeoutError:
-            await self._graceful_stop(run_task, build_result.agent_runner, cancel_first=False)
+            await self._graceful_stop(
+                run_task,
+                build_result.agent_runner,
+                cancel_first=False,
+                on_quarantine=mark_quarantined,
+            )
             raise
 
     def _finalize_text(self, run: _GenerateRun) -> PipelineReply:
         build_result = run.build_result
-        assert build_result is not None
+        if build_result is None:
+            raise RuntimeError("run_agent 尚未产出 build_result 就进入收尾阶段")
         response = build_result.agent_runner.get_final_llm_resp()
         reply_text = response_text(response)
         if reply_text:
@@ -506,7 +541,13 @@ class GenerationRunner:
         return PipelineReply(text=reply_text, ledger=run.ledger)
 
     def _cleanup_generation_state(self, run: _GenerateRun) -> None:
-        """四段独立静默清理：reset → 摘 send → 工具边界 → provider_request。"""
+        """四段独立静默清理：reset → 摘 send → 工具边界 → provider_request。
+
+        摘 send 一档受 ``run.quarantined`` 保护：被隔离的运行仍在后台跑，它
+        之后的工具直发必须继续经 tracker 受预算/代次/停止闸门约束。摘掉
+        tracker 等于给一个不受本插件控制的任务开放裸发通道；宁可让 tracker
+        随事件对象一起回收（下一个 generate 会覆盖它），也不留裸发窗口。
+        """
         # 以下四段清理各自独立静默兜底：finally 是唯一的回滚点，任一段失败都
         # 不能中断其余段。第一段必须排在摘除 send 之前。
         last_event = run.last_event
@@ -517,15 +558,23 @@ class GenerationRunner:
         except Exception:
             pass
         if run.tracker_installed and run.tracked_send is not None:
-            try:
-                # identity 守卫：只摘自己装的 tracker，不覆盖第三方包装。
-                if getattr(last_event, "send", None) is run.tracked_send:
-                    if run.had_instance_send:
-                        last_event.send = run.original_instance_send
-                    else:
-                        delattr(last_event, "send")
-            except Exception:
-                pass
+            if run.quarantined:
+                logger.warning(
+                    "[%s] send tracker kept for quarantined agent ledger_id=%s session=%s",
+                    PLUGIN_ID,
+                    run.ledger.ledger_id,
+                    run.umo,
+                )
+            else:
+                try:
+                    # identity 守卫：只摘自己装的 tracker，不覆盖第三方包装。
+                    if getattr(last_event, "send", None) is run.tracked_send:
+                        if run.had_instance_send:
+                            last_event.send = run.original_instance_send
+                        else:
+                            delattr(last_event, "send")
+                except Exception:
+                    pass
         try:
             if run.tool_boundary_state is not None:
                 self.restore_agent_tool_boundary(last_event, run.tool_boundary_state)

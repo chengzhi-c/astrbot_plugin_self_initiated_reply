@@ -26,7 +26,6 @@ from .utils import (
     collapse_whitespace,
     session_is_private,
     session_whitelisted,
-    whitelist_storage_key,
 )
 
 _MAX_RECORD_SAVE_ATTEMPTS = 2
@@ -165,7 +164,7 @@ class SessionPipeline:
             baseline = self._gate.current(umo)
             if baseline:
                 expected_generation = baseline
-        state = self._state_for(whitelist_storage_key(umo))
+        state = self._state_for(umo)
         observed_active_at = state.last_active_at
 
         state.refresh_day()

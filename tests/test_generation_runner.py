@@ -694,6 +694,57 @@ async def test_generate_quarantines_noncooperative_runner(tmp_path: Path) -> Non
     assert not background_tasks
 
 
+async def test_quarantined_run_keeps_tool_send_tracker(tmp_path: Path) -> None:
+    """宿主吞掉取消后，仍活着的 agent 的工具直发必须继续受 tracker 约束。
+
+    tracker 若在 cleanup 时被摘掉，那个被隔离到后台的任务之后每次工具直发都
+    绕过预算/代次/停止闸门——它不在本插件的控制流里，不会再有第二个 cleanup
+    来收口。守护方向是"宁留门不裸发"：tracker 随事件对象回收即可。
+    """
+    _, models, runner, runtime, _, background_tasks = _make_runner(tmp_path, grace_sec=0.01)
+    event = FakeEvent()
+    runner._last_events["s1"] = event
+    release = asyncio.Event()
+    started = asyncio.Event()
+    quarantined: list[asyncio.Task] = []
+
+    async def noncooperative_run(_runner):
+        started.set()
+        while not release.is_set():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                continue
+        if False:
+            yield None
+
+    runtime.run = lambda _runner, **_kwargs: noncooperative_run(_runner)
+    runner._quarantine_task = lambda task, reason: quarantined.append(task)
+    task = asyncio.create_task(runner.generate("s1", _state(models), force=True))
+    await started.wait()
+    installed = vars(event)["send"]  # tracker 已装上实例
+    task.cancel()
+    try:
+        # 放行必须写在 finally：断言失败时也要收敛 stubborn 任务，否则该任务
+        # 会一直吞取消，事件循环收尾挂死（红测复盘时正是这么卡住的）。
+        try:
+            await task
+            raise AssertionError("expected CancelledError")
+        except asyncio.CancelledError:
+            pass
+    finally:
+        release.set()
+
+    assert quarantined and quarantined[0] in background_tasks
+    assert vars(event).get("send") is installed, (
+        "被隔离的运行仍在后台，摘除 tracker 等于放行裸发（工具直发绕过预算/代次闸门）"
+    )
+
+    await asyncio.wait_for(quarantined[0], timeout=1)
+    await asyncio.sleep(0)
+    assert not background_tasks
+
+
 async def test_generate_cancel_converges_no_orphan(tmp_path: Path) -> None:
     _, models, runner, runtime, _, background_tasks = _make_runner(tmp_path)
     event = FakeEvent()

@@ -206,3 +206,9 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
 - wheel、sdist 和 deploy zip 必须从同一次 clean build 产生；发布脚本默认要求每类产物恰好一个，多个或坏 PEP 440 文件名直接失败，不按字典序猜测。
 - sdist 可以包含源码文档，但不得包含覆盖率文件、缓存、虚拟环境、`output/`、`dist/` 或机器特有绝对路径。
 - 普通本地代码门禁缺少发布产物时必须输出 `NOT RELEASE-VERIFIED`，不得输出发布级全绿；CI 发布 job 对 wheel、sdist、deploy zip 分别执行硬检查。
+
+## 13. 运维端点定位
+
+- GET /{PLUGIN_ID}/status（webapi._api_status）：**面板零消费、运维/排障专用**。
+  字段为诊断服务（生命周期、代次快照、任务与缓存规模、最近裁决原因），
+  前端不得把它当数据源；它与 /config 这类面板契约分开维护。

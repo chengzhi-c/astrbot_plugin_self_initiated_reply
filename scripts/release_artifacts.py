@@ -74,9 +74,20 @@ def expected_version(root: Path) -> str:
     return match.group(1).strip()
 
 
+def normalize_member(name: str) -> str:
+    """归档成员名的唯一规范化点：分隔符归一 + 去掉 hatchling 的 ``./`` 前缀。
+
+    必须用 ``removeprefix`` 而非 ``lstrip("./")``：后者按字符集剥离，会把
+    ``.github/x`` 削成 ``github/x``、``.gitignore`` 削成 ``gitignore``，
+    使以点开头的禁运前缀永远匹配不到（0.9.3 修复）。此处收敛了三个脚本里
+    手抄的同一表达式——各写一份时，某一处退回 ``lstrip`` 不会被察觉。
+    """
+    return name.replace("\\", "/").removeprefix("./")
+
+
 def validate_archive_member(name: str) -> str:
     """Return a relative archive path and reject traversal or absolute paths."""
-    normalized = name.replace("\\", "/")
+    normalized = normalize_member(name)
     if (
         not normalized
         or "\x00" in normalized
@@ -85,7 +96,7 @@ def validate_archive_member(name: str) -> str:
         or ".." in PurePosixPath(normalized).parts
     ):
         raise ArtifactError(f"unsafe archive member path: {name!r}")
-    return normalized.removeprefix("./")
+    return normalized
 
 
 def _parse_artifact(path: Path, kind: str) -> tuple[str, Version]:

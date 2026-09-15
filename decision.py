@@ -335,9 +335,11 @@ class DecisionMaker:
                 recent, max_length=2000, allow_newlines=True
             ),
         }
+        # 回落也用 strip 口径：模板常量若带首尾空白，这里会把它原样喂给模型，
+        # 而读侧/面板看到的默认值都是 strip 后的——同一默认值的两副面孔。
         raw = (
             str(self.settings.decision_prompt_template or "").strip()
-            or DEFAULT_DECISION_PROMPT_TEMPLATE
+            or DEFAULT_DECISION_PROMPT_TEMPLATE.strip()
         )
         rendered = re.sub(
             r"\{([a-zA-Z0-9_]+)\}",

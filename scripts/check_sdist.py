@@ -16,14 +16,18 @@ try:
         ArtifactError,
         expected_project_name,
         expected_version,
+        normalize_member,
         resolve_artifact,
+        validate_archive_member,
     )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
     from release_artifacts import (
         ArtifactError,
         expected_project_name,
         expected_version,
+        normalize_member,
         resolve_artifact,
+        validate_archive_member,
     )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +63,33 @@ MACHINE_PATH_PATTERNS = (
     re.compile(rb"(?<![A-Za-z])[A-Za-z]:[\\/][^\x00-\x20<>]+"),
     re.compile(rb"(?<![A-Za-z0-9])/(?:home|Users|root|tmp)/[^\x00-\x20<>]+"),
 )
+# 只对文本类文件做机器路径扫描。二进制（图片等）里出现 "C:\..." 字面量纯属
+# 巧合，那是假阳；sdist 里真正会携带本机路径的是源码、配置与文档。
+TEXT_SCAN_SUFFIXES = (
+    ".py",
+    ".pyi",
+    ".md",
+    ".txt",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".cfg",
+    ".ini",
+    ".html",
+    ".css",
+    ".mjs",
+    ".js",
+    ".ts",
+    ".sh",
+    ".in",
+)
+
+
+def _is_text_member(relative: str) -> bool:
+    """是否值得做机器路径扫描（见 ``TEXT_SCAN_SUFFIXES`` 注释）。"""
+    suffix = Path(relative).suffix.lower()
+    return suffix in TEXT_SCAN_SUFFIXES or not suffix
 
 
 def _machine_path_in(data: bytes) -> bytes | None:
@@ -74,7 +105,7 @@ def _expected_version() -> str:
 
 
 def _relative_name(name: str, root_name: str) -> str | None:
-    normalized = name.replace("\\", "/").removeprefix("./")
+    normalized = normalize_member(name)
     prefix = f"{root_name}/"
     if normalized == root_name:
         return ""
@@ -84,13 +115,17 @@ def _relative_name(name: str, root_name: str) -> str | None:
 
 
 def _is_forbidden(name: str) -> bool:
-    normalized = name.replace("\\", "/").removeprefix("./")
-    return (
-        any(fnmatch.fnmatch(normalized, pattern) for pattern in FORBIDDEN_GLOBS)
-        or normalized.startswith("/")
-        or bool(re.match(r"^[A-Za-z]:/", normalized))
-        or ".." in Path(normalized).parts
-    )
+    """禁运清单命中，或路径本身不安全（绝对路径、盘符、``..`` 穿越、NUL）。
+
+    不安全判据用 ``release_artifacts.validate_archive_member``：那边是权威字面量
+    集（比本文件原先的 ``^[A-Za-z]:/`` 更严，盘符后不跟斜杠也拒），且三个发布
+    脚本共用同一份。
+    """
+    try:
+        normalized = validate_archive_member(name)
+    except ArtifactError:
+        return True
+    return any(fnmatch.fnmatch(normalized, pattern) for pattern in FORBIDDEN_GLOBS)
 
 
 def main(sdist_path: str | Path | None = None) -> int:
@@ -124,7 +159,7 @@ def main(sdist_path: str | Path | None = None) -> int:
                     failures.append(f"invalid top-level path: {member.name}")
                     continue
                 if relative:
-                    if member.isfile():
+                    if member.isfile() and _is_text_member(relative):
                         payload = archive.extractfile(member)
                         if payload is not None:
                             machine_path = _machine_path_in(payload.read())

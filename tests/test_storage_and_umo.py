@@ -74,6 +74,22 @@ def test_session_whitelisted_rejects_empty_umo() -> None:
     assert not utils.session_whitelisted("   ", {"12345"})
 
 
+def test_is_full_umo_matches_the_segment_anchor() -> None:
+    """完整 UMO 判据 = 恰好 3 段，与 session_group_id 同锚。
+
+    白名单里裸群号与完整 UMO 混存。此前 scheduler/whitelist 用 ``":" in value``
+    判"是不是完整 UMO"，段数语义并不等价：两段值（畸形条目）会被当成 UMO 直接用
+    于巡检，而这里返回 False 走群号查表。
+    """
+    _, utils, _ = _load_modules()
+    assert utils.is_full_umo("qq:GroupMessage:12345")
+    assert utils.is_full_umo("telegram:FriendMessage:9")
+    assert not utils.is_full_umo("12345")
+    assert not utils.is_full_umo("qq:12345")
+    assert not utils.is_full_umo("a:b:c:d")
+    assert not utils.is_full_umo("")
+
+
 def test_session_is_private_treats_non_group_as_private() -> None:
     """私聊门闩按「不是群」判，不写死 FriendMessage。"""
     _, utils, _ = _load_modules()
@@ -355,6 +371,94 @@ def test_version_mismatch_state_file_is_backed_up_and_best_effort_loaded(tmp_pat
     assert len(backups) == 1
     assert sessions["qq:GroupMessage:123"].last_active_at == 1.5
     assert sessions["qq:GroupMessage:123"].daily_count == 3
+
+
+def test_legacy_bare_group_key_inherits_state_from_target_free_whitelist(tmp_path: Path) -> None:
+    """裸键在盘、目标键尚无记录：并入白名单里唯一匹配的完整 UMO。
+
+    迁移此前藏在 `state_for` 的 read-path pop 里——多平台同群号时首个访问者
+    继承整份历史，其余平台永远拿不到，而且那是在只读函数里做写操作。
+    """
+    _, _, storage = _load_modules()
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps({"version": 4, "sessions": {"123": {"last_active_at": 7.5, "daily_count": 4}}}),
+        encoding="utf-8",
+    )
+
+    sessions = storage.load_sessions(path, {"123", "qq:GroupMessage:123"}, 5)
+
+    assert set(sessions) == {"qq:GroupMessage:123"}, "裸键必须在载入时迁移掉"
+    assert sessions["qq:GroupMessage:123"].last_active_at == 7.5
+    assert sessions["qq:GroupMessage:123"].daily_count == 4
+
+
+def test_legacy_bare_group_key_is_dropped_when_target_has_its_own_state(tmp_path: Path) -> None:
+    """目标键已有记录时只淘汰裸键，不覆盖——legacy 的当日配额不得顶掉新键计数。"""
+    _, _, storage = _load_modules()
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 4,
+                "sessions": {
+                    "123": {"last_active_at": 7.5, "daily_count": 4},
+                    "qq:GroupMessage:123": {"last_active_at": 1.0, "daily_count": 1},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sessions = storage.load_sessions(path, {"123"}, 5)
+
+    assert set(sessions) == {"qq:GroupMessage:123"}
+    assert sessions["qq:GroupMessage:123"].last_active_at == 1.0
+    assert sessions["qq:GroupMessage:123"].daily_count == 1, "新键的配额记账必须保留"
+
+
+def test_legacy_migration_never_guesses_platform_on_ambiguous_group(tmp_path: Path) -> None:
+    """同一群号对应多个平台 UMO：候选不唯一不迁移，绝不猜平台。"""
+    _, _, storage = _load_modules()
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 4,
+                "sessions": {
+                    "123": {"last_active_at": 7.5, "daily_count": 9},
+                    "qq:GroupMessage:123": {"last_active_at": 1.0},
+                    "telegram:GroupMessage:123": {"last_active_at": 2.0},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sessions = storage.load_sessions(path, {"123"}, 5)
+
+    assert set(sessions) == {"123", "qq:GroupMessage:123", "telegram:GroupMessage:123"}
+    assert sessions["123"].daily_count == 9, "候选不唯一时必须原样保留，等候选收敛"
+    assert sessions["qq:GroupMessage:123"].last_active_at == 1.0
+    assert sessions["telegram:GroupMessage:123"].last_active_at == 2.0
+
+
+def test_legacy_bare_group_key_without_candidate_is_kept(tmp_path: Path) -> None:
+    """白名单里没有完整 UMO 对应时不得凭空造键；记录保留，等候选收敛。
+
+    不迁移不等于删数据：白名单日后出现完整 UMO 时，下次启动仍能继承。
+    """
+    _, _, storage = _load_modules()
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps({"version": 4, "sessions": {"123": {"last_active_at": 7.5}}}),
+        encoding="utf-8",
+    )
+
+    sessions = storage.load_sessions(path, {"123"}, 5)
+
+    assert set(sessions) == {"123"}, "无候选时不得伪造 qq:/telegram: 目标键"
+    assert sessions["123"].last_active_at == 7.5
 
 
 def test_atomic_state_writer_leaves_previous_file_on_serialization_failure(tmp_path: Path) -> None:

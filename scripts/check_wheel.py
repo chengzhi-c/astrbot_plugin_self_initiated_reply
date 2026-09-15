@@ -27,6 +27,7 @@ try:
         ArtifactError,
         expected_project_name,
         expected_version,
+        normalize_member,
         resolve_artifact,
     )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
@@ -35,6 +36,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
         ArtifactError,
         expected_project_name,
         expected_version,
+        normalize_member,
         resolve_artifact,
     )
 
@@ -132,13 +134,13 @@ def _expected_version() -> str:
 
 
 def _normalize(name: str) -> str:
-    """wheel 内路径规范化。
+    """wheel 内路径规范化；实现单点在 ``release_artifacts.normalize_member``。
 
-    hatchling 生成的路径带 "./" 前缀。必须用 removeprefix 而非 lstrip("./")：
-    后者按字符集剥离，会把 ".github/..." 削成 "github/..."、".gitignore" 削成
-    "gitignore"，使三个以点开头的 FORBIDDEN_PREFIXES 永远匹配不到（0.9.3 修复）。
+    那个 ``removeprefix``/``lstrip`` 的区分（0.9.3 修复）只该存在于一处：
+    本文件与 check_sdist/make_release_zip 各抄一份时，任何一处退回 ``lstrip``
+    都会让以点开头的 FORBIDDEN_PREFIXES 静默失效。
     """
-    return name.replace("\\", "/").removeprefix("./")
+    return normalize_member(name)
 
 
 def _has_required_file(names: list[str], required: str) -> bool:

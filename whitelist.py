@@ -16,7 +16,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .models import PLUGIN_ID, Settings
-from .utils import session_group_id, session_whitelisted, whitelist_storage_key
+from .utils import is_full_umo, session_group_id, session_whitelisted, whitelist_storage_key
 
 
 class WhitelistManager:
@@ -63,7 +63,7 @@ class WhitelistManager:
         tracked = set(self._tracked_umos())
         tracked.update(self._sessions)
         tracked.update(
-            umo for values in self._runtime_umos.values() for umo in values if ":" in umo
+            umo for values in self._runtime_umos.values() for umo in values if is_full_umo(umo)
         )
         self.settings.whitelist = normalized
         invalid_sessions = {

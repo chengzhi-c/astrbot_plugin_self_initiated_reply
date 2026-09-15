@@ -21,14 +21,19 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import At
 
 from .models import (
+    INLINE_SPACE_PATTERN,
     PLUGIN_ID,
+    WHITESPACE_PATTERN,
     MessageRecord,
     ReadHistoryCallback,
     first_bindable_args,
     history_display_name,
 )
 
-# 预编译正则表达式以提升性能
+# 预编译正则以避免热路径反复编译；空白类的两个（WHITESPACE_PATTERN /
+# INLINE_SPACE_PATTERN）由 models 持有，见那边的注释（依赖方向）。
+# 例外：is_explicit_direct_call 的两条「@ 提及」模式由 self_id 拼出，
+# 只能在调用点构造（模式随事件变），不在此列。
 _AT_MENTION_PATTERN = re.compile(r"^(?:\[[^\]]*[Aa][Tt][^\]]*\]\s*)+")
 _CQ_AT_PATTERN = re.compile(r"^(?:\[CQ:at,[^\]]+\]\s*)+")
 _TEXT_AT_PATTERN = re.compile(r"^(?:@\S+\s*)+")
@@ -37,9 +42,12 @@ _INLINE_MENTION_PATTERN = re.compile(r"\[At:[^\]]+\]")
 _TOOL_CALL_LEAK_PATTERN = re.compile(r"^\s*\[(?:historical )?tool call\]", re.IGNORECASE)
 # 工具标记及其同行残留（不跨行，避免吃掉后续正常内容）
 _TOOL_CALL_INLINE_PATTERN = re.compile(r"\[(?:historical\s+)?tool\s+call\][^\n]*", re.IGNORECASE)
-_WHITESPACE_PATTERN = re.compile(r"\s+")
-# 行内空白：不含换行，用于保留多行结构时压缩空格
-_INLINE_SPACE_PATTERN = re.compile(r"[^\S\n]+")
+# 提示词/回复文本的剥离正则：都是静态模式，提前编译（原先在函数体内联 re.sub）
+_TRUNCATED_JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+_JSON_BODY_PATTERN = re.compile(r"\{[\s\S]*\}")
+_REPLY_FENCE_PATTERN = re.compile(r"^```(?:text)?\s*|\s*```$", re.IGNORECASE)
+_REPLY_PREFIX_PATTERN = re.compile(r"^(?:回复|答复)\s*[:：]\s*")
+_SENTENCE_TAIL_PATTERN = re.compile(r"^([\s\S]*[。！？.!?])[^。！？.!?]*$")
 
 ALIAS_REPLY_REQUEST_PATTERN = re.compile(
     r"(?:"
@@ -136,11 +144,11 @@ async def build_history_text(
 
 def parse_json(text: str) -> Any:
     text = str(text or "").strip()
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
+    text = _TRUNCATED_JSON_FENCE_PATTERN.sub("", text).strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        match = re.search(r"\{[\s\S]*\}", text)
+        match = _JSON_BODY_PATTERN.search(text)
         if not match:
             return None
         try:
@@ -255,6 +263,16 @@ def event_umo(event: AstrMessageEvent) -> str:
     if group_id and "group" in msg_type.lower():
         return f"{platform}:{msg_type}:{group_id}"
     return f"{platform}:{msg_type}:{session_id.strip()}"
+
+
+def is_full_umo(value: str) -> bool:
+    """是否 ``platform:message_type:session_id`` 三段完整 UMO。
+
+    与 :func:`session_group_id` 同锚（都按 ``_UMO_PARTS`` 判段数）：白名单里
+    裸群号与完整 UMO 混存，这个判据此前在 scheduler/whitelist 各写一份
+    ``":" in value``，与 ``_UMO_PARTS`` 的段数语义并不等价。
+    """
+    return str(value or "").count(":") == _UMO_PARTS - 1
 
 
 def session_group_id(umo: str) -> str:
@@ -410,7 +428,7 @@ def is_explicit_direct_call(event: AstrMessageEvent, text: str) -> bool:
 
 def collapse_whitespace(text: Any) -> str:
     """把连续空白压成单空格并去首尾。历史去重与工具直发去重共用。"""
-    return _WHITESPACE_PATTERN.sub(" ", str(text or "")).strip()
+    return WHITESPACE_PATTERN.sub(" ", str(text or "")).strip()
 
 
 def strip_leading_mentions(text: str) -> str:
@@ -438,7 +456,7 @@ def is_alias_call(text: str, aliases: list[str]) -> bool:
 def _compact_reply_request_text(text: str) -> str:
     # 去空白后硬截断：超长畸形输入（如粘贴长文本）只需检测头部语义，
     # 同时避免超长输入喂给后续正则造成线性放大。
-    return re.sub(r"\s+", "", str(text or "").lower())[:200]
+    return WHITESPACE_PATTERN.sub("", str(text or "").lower())[:200]
 
 
 def _alias_request_tail(text: str, aliases: list[str]) -> str:
@@ -558,8 +576,8 @@ def should_ignore_event(
 
 def clean_reply(text: str, *, allow_multiline: bool, max_chars: int) -> str:
     text = str(text or "").strip()
-    text = re.sub(r"^```(?:text)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
-    text = re.sub(r"^(?:回复|答复)\s*[:：]\s*", "", text).strip()
+    text = _REPLY_FENCE_PATTERN.sub("", text).strip()
+    text = _REPLY_PREFIX_PATTERN.sub("", text).strip()
 
     # 整条回复就是工具标记时直接丢弃
     if _TOOL_CALL_LEAK_PATTERN.match(text):
@@ -571,7 +589,7 @@ def clean_reply(text: str, *, allow_multiline: bool, max_chars: int) -> str:
     if allow_multiline:
         # 保留换行结构，只压缩行内空白并丢弃因过滤而变空的行
         text = text.replace("\r\n", "\n").replace("\r", "\n")
-        lines = [_INLINE_SPACE_PATTERN.sub(" ", line).strip() for line in text.split("\n")]
+        lines = [INLINE_SPACE_PATTERN.sub(" ", line).strip() for line in text.split("\n")]
         text = "\n".join(line for line in lines if line).strip()
     else:
         text = collapse_whitespace(text)
@@ -582,7 +600,7 @@ def clean_reply(text: str, *, allow_multiline: bool, max_chars: int) -> str:
     # max_chars 为 0 时视为无限制
     if max_chars > 0 and len(text) > max_chars:
         clipped = text[:max_chars].rstrip()
-        match = re.search(r"^([\s\S]*[。！？.!?])[^。！？.!?]*$", clipped)
+        match = _SENTENCE_TAIL_PATTERN.search(clipped)
         text = (match.group(1) if match else clipped).strip()
 
     return text

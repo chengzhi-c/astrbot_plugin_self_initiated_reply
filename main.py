@@ -163,7 +163,16 @@ class SelfInitiatedReplyPlugin(Star):
         # 改为通过 AstrBot 正常 LLM 管线自动触发，行为更接近 @Bot 回复。
         self.bridge = AstrBotBridge(context)
 
-        persist_settings_config(self._config_path, self.config, self.settings)
+        # 首次规范化落盘：把历史配置文件里的旧键写法（别名、超限值）写成正式
+        # 形状。失败只让 write_json_atomic 记一条 warning 的话，用户看到的是
+        # "配置正常加载、插件正常工作"，而磁盘上一直是旧形状——这里补一条
+        # ERROR，把"下次启动还会再迁一遍"的实情说清楚。
+        if not persist_settings_config(self._config_path, self.config, self.settings):
+            logger.error(
+                "[%s] 配置规范化落盘失败，本次运行仍用已加载配置：%s",
+                PLUGIN_ID,
+                self._config_path,
+            )
 
         self.sessions = load_sessions(
             self._storage_path,
@@ -638,7 +647,9 @@ class SelfInitiatedReplyPlugin(Star):
             event.set_extra(COMMAND_HANDLED_KEY, True)
         except Exception:
             # 老宿主可能未实现 set_extra。标记丢失只会让同一事件在后续 on_message
-            # 少一层去重保护（仍有指令前缀判定兜底），不足以让指令本身失败。
+            # 少一层去重保护——兜底是事件自身的 stop_event/is_stopped（指令分流
+            # 出口会 stop，重入时按 is_stopped 拦下），不是指令前缀判定：
+            # 前缀判定恰恰会让同一指令再次通过。
             pass
 
     def _cancel_background_tasks(self) -> None:

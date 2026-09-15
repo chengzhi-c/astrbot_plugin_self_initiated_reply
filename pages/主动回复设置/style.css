@@ -1,7 +1,16 @@
 /* =================================================================
    style.css — 业镜 · 主动回复设置页样式（零构建，node --check 直跑）
    =================================================================
-   令牌在 :root；其后为重置、骨架、控件、卡片、响应式、无障碍。
+   分节（与文件内的 "==== 标题 ====" 标记逐字同序，由
+   tests/test_stage3_single_source.py 断言两边一致）：
+     令牌（主题变量与深色两份）
+     重置与全局元素
+     骨架（外壳、顶栏、侧栏）
+     主控卡（.master 与读数）
+     面板与表单字段
+     控件（输入、开关、按钮）
+     浮层（toast/boot/移动端栏）
+     响应式与降级（媒体查询、减少动效）
    ================================================================= */
 /* SVG symbol 容器：视觉零占位（从 index.html 内联样式迁入，保首屏 CSS 单一来源） */
 .icon-sprite {
@@ -10,6 +19,8 @@
 	height: 0;
 	overflow: hidden;
 }
+
+/* ==== 令牌（主题变量与深色两份） ==== */
 
 :root {
 	color-scheme: light dark;
@@ -223,6 +234,8 @@
 	}
 }
 
+/* ==== 重置与全局元素 ==== */
+
 * {
 	box-sizing: border-box;
 	scrollbar-width: thin;
@@ -316,6 +329,8 @@ code {
 	outline: 3px solid var(--focus-color);
 	outline-offset: 2px;
 }
+
+/* ==== 骨架（外壳、顶栏、侧栏） ==== */
 .shell {
 	position: relative;
 	z-index: 1;
@@ -619,6 +634,8 @@ html.bold-text .form {
 	gap: 18px;
 	min-width: 0;
 }
+
+/* ==== 主控卡（.master 与读数） ==== */
 .master {
 	position: relative;
 	overflow: hidden;
@@ -843,6 +860,8 @@ body.is-ready .master,
 	background: var(--ornament);
 	box-shadow: 0 0 0 3px var(--ornament-soft);
 }
+
+/* ==== 面板与表单字段 ==== */
 .panel {
 	padding: 22px 24px;
 	min-width: 0;
@@ -1415,6 +1434,8 @@ textarea {
 .form-actions-hint {
 	margin-left: auto;
 }
+
+/* ==== 控件（输入、开关、按钮） ==== */
 .btn {
 	display: inline-flex;
 	align-items: center;
@@ -1574,6 +1595,8 @@ textarea {
 .mobile-save-state.is-pending {
 	color: var(--accent-text);
 }
+
+/* ==== 浮层（toast/boot/移动端栏） ==== */
 .toast {
 	position: fixed;
 	right: 24px;
@@ -1660,6 +1683,8 @@ textarea {
 .mobile-tabbar {
 	display: none;
 }
+
+/* ==== 响应式与降级（媒体查询、减少动效） ==== */
 @media (max-width: 1024px) {
 	:root {
 		--topbar-h: 64px;

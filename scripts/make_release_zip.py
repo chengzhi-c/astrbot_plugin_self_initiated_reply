@@ -33,6 +33,7 @@ try:
         REQUIRED_PAGE_FILES,
         ArtifactError,
         expected_project_name,
+        normalize_member,
         resolve_artifact,
         validate_archive_member,
     )
@@ -41,6 +42,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
         REQUIRED_PAGE_FILES,
         ArtifactError,
         expected_project_name,
+        normalize_member,
         resolve_artifact,
         validate_archive_member,
     )
@@ -57,10 +59,14 @@ REQUIRED = (
     "__init__.py",
     *REQUIRED_PAGE_FILES,
 )
-# 与 check_wheel.py 的 FORBIDDEN_PREFIXES 同源的开发物前缀。这里再查一遍不是
-# 冗余：wheel 与 zip 之间还有本脚本这一层转写，转写逻辑写错时 check_wheel 已经
-# 跑完了。
-DEV_PREFIXES = ("tests/", "scripts/", "docs/", ".github/", ".scratch/", "assets/")
+# 开发物前缀：直接取 check_wheel 的权威名单（13 条），不另抄一份窄名单。
+# 这里再查一遍不是冗余：wheel 与 zip 之间还有本脚本这一层转写，转写逻辑写错时
+# check_wheel 已经跑完了。但名单必须同源——各自维护时新增一条前缀只会补进
+# check_wheel，本脚本的转写层就少一道守卫。
+try:
+    from scripts.check_wheel import FORBIDDEN_PREFIXES as DEV_PREFIXES
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    from check_wheel import FORBIDDEN_PREFIXES as DEV_PREFIXES
 
 
 def main(wheel_path: str | Path | None = None) -> int:
@@ -94,9 +100,8 @@ def main(wheel_path: str | Path | None = None) -> int:
         return 1
     with src:
         for entry in src.infolist():
-            name = entry.filename.replace("\\", "/")
             try:
-                name = validate_archive_member(name)
+                name = validate_archive_member(entry.filename)
             except ArtifactError as exc:
                 failures.append(str(exc))
                 continue
@@ -105,7 +110,7 @@ def main(wheel_path: str | Path | None = None) -> int:
             if name.split("/", 1)[0].endswith(".dist-info"):
                 skipped += 1
                 continue
-            rel = name.removeprefix("./")
+            rel = normalize_member(name)
             copied.append(rel)
             payloads[rel] = src.read(entry)
 
