@@ -261,6 +261,46 @@ def test_text_segment_does_not_shift_raw_image_pairing() -> None:
     assert image.ImageExtractor.extract_images(event, skip_stickers=True) == []
 
 
+def test_has_images_without_sticker_filter_does_not_probe_sticker_fields() -> None:
+    """``skip_stickers=False`` 时 ``has_images`` 不得读贴纸字段。
+
+    贴纸判据要读 ``subType``/``is_sticker`` 等一组字段，而防御式宿主对象
+    对未知属性抛的可能是非 ``AttributeError``（例如 ``__getattr__`` 里
+    ``raise RuntimeError``）。``has_images`` 用 ``except Exception: False``
+    兜底，于是多读一次字段就等于给纯图片消息新开一条"判定为无图片 → 事件被
+    当空内容丢弃"的路径（``message_ingress._accepted_content`` 的 empty 分支）。
+    关闭贴纸过滤时本就不需要该判据，一次都不该读。
+    """
+    _, image, _ = _load_modules()
+
+    class DefensiveImage:
+        """基础字段可读，只有贴纸判据要读的 ``subType`` 抛非 AttributeError。"""
+
+        type = "image"
+        url = "https://cdn.example.test/photo.png"
+        data = None
+
+        @property
+        def subType(self):
+            raise RuntimeError("subType 解析失败")
+
+    class Event:
+        message_id = "message-defensive"
+
+        @staticmethod
+        def get_messages():
+            return [DefensiveImage()]
+
+    event = Event()
+    assert image.ImageExtractor.has_images(event) is True, (
+        "skip_stickers=False 时不该读贴纸字段：组件字段抛错被当成「没有图片」，"
+        "纯图片消息会被整条丢弃"
+    )
+
+    # 开启贴纸过滤时该字段是判据本身，异常仍按"无图片"降级（既有行为）。
+    assert image.ImageExtractor.has_images(event, skip_stickers=True) is False
+
+
 def test_raw_non_image_cq_segments_do_not_shift_pairing() -> None:
     """裸 CQ 文本里的非图片段（如 ``[CQ:at]``）不得进入原始图片序列。
 

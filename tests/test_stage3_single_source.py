@@ -14,7 +14,14 @@ import ast
 import re
 from pathlib import Path
 
-from .source_contract import callers_of, calls_in, method_source, module_ast, source_of
+from .source_contract import (
+    _lookup,
+    callers_of,
+    calls_in,
+    method_source,
+    module_ast,
+    source_of,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,6 +29,36 @@ ROOT = Path(__file__).resolve().parents[1]
 def _call_count(rel: str, qualname: str, target: str) -> int:
     """某个定义体内调用某目标表达式的次数。"""
     return sum(1 for name in calls_in(rel, qualname) if name == target)
+
+
+def _production_modules() -> list[str]:
+    """全仓生产模块的相对路径（含 image/ 与 scripts/，不含 tests/）。"""
+    modules: list[str] = []
+    for pattern in ("*.py", "image/*.py", "scripts/*.py"):
+        modules.extend(path.relative_to(ROOT).as_posix() for path in sorted(ROOT.glob(pattern)))
+    return modules
+
+
+def _name_references(rel: str, target: str) -> list[str]:
+    """模块内对该标识符的**任意**引用（AST 级，注释与文档串不计）。
+
+    覆盖 ``Name``/属性访问/导入别名/``getattr`` 的字符串实参四种引入方式——
+    只匹配 ``ast.Name`` 时，``_u.whitelist_storage_key`` 与
+    ``getattr(_u, "whitelist_storage_key")`` 这两类写法都能溜过去。
+    """
+    hits: list[str] = []
+    for node in ast.walk(module_ast(rel)):
+        if isinstance(node, ast.Name) and node.id == target:
+            hits.append(f"line {node.lineno}: {node.id}")
+        elif isinstance(node, ast.Attribute) and node.attr == target:
+            hits.append(f"line {node.lineno}: {ast.unparse(node)[:60]}")
+        elif isinstance(node, ast.alias) and node.name == target:
+            hits.append(f"line {node.lineno}: import {node.name}")
+        elif (
+            isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value == target
+        ):
+            hits.append(f"line {node.lineno}: {node.value!r}")
+    return hits
 
 
 def _asserts_in(rel: str) -> list[str]:
@@ -167,11 +204,14 @@ def test_status_endpoint_is_declared_ops_only() -> None:
 
 
 def test_legacy_state_migration_is_not_on_the_read_path() -> None:
-    """``state_for`` 不得再 pop legacy 键；迁移是 ``load_sessions`` 的唯一调用。
+    """``state_for`` 不得再改写 ``sessions``；迁移是 ``load_sessions`` 的唯一调用。
 
     用调用者清单而不是子串匹配：子串断言里在 ``load_sessions`` 留一句带该名的
-    注释就能通过，而"谁在调用"才是这条契约本身。``state_for`` 一侧同时禁
-    ``pop`` 与 ``del``（同一写旁路的两种写法）。
+    注释就能通过，而"谁在调用"才是这条契约本身。且清单要扫**全仓**——只看
+    storage.py 时，在别处新加一个调用点不会被发现。
+
+    ``state_for`` 一侧禁的是整类写旁路：``del``/``pop``/``popitem``/``clear``/
+    ``update``/``setdefault`` 都是"顺手改一下"的不同写法，只挡其中两种等于没挡。
     """
     for node in ast.walk(module_ast("plugin_state.py")):
         if not (isinstance(node, ast.FunctionDef) and node.name == "state_for"):
@@ -180,15 +220,25 @@ def test_legacy_state_migration_is_not_on_the_read_path() -> None:
             ast.unparse(child)
             for child in ast.walk(node)
             if isinstance(child, ast.Delete)
-            or (isinstance(child, ast.Call) and ast.unparse(child.func).endswith(".pop"))
+            or (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Attribute)
+                and child.func.attr in {"pop", "popitem", "clear", "update", "setdefault"}
+                and "sessions" in ast.unparse(child.func.value)
+            )
         ]
         assert not writes, f"state_for 又在热路径上做写操作（迁移/清理）：{writes}"
         break
     else:
         raise AssertionError("plugin_state.py 里找不到 state_for")
 
-    assert callers_of("storage.py", "_migrate_legacy_group_keys") == ["load_sessions"], (
-        "legacy 迁移的调用点不再是 load_sessions 单点"
+    callers = [
+        (rel, name)
+        for rel in _production_modules()
+        for name in callers_of(rel, "_migrate_legacy_group_keys")
+    ]
+    assert callers == [("storage.py", "load_sessions")], (
+        f"legacy 迁移的调用点不再是 load_sessions 单点：{callers}"
     )
 
 
@@ -267,27 +317,22 @@ def test_storage_key_is_derived_in_plugin_state_only() -> None:
     ``whitelist_storage_key`` 是「状态键是什么」的唯一命名接缝。调用方各自
     先算键再传时，改一次口径要全仓搜；入口（message_ingress/commands）、
     scheduler、pipeline、whitelist 都曾各算一份。
-    """
-    for rel in (
-        "scheduler.py",
-        "session_pipeline.py",
-        "whitelist.py",
-        "message_ingress.py",
-        "commands.py",
-    ):
-        references = [
-            f"line {node.lineno}"
-            for node in ast.walk(module_ast(rel))
-            if (isinstance(node, ast.Name) and node.id == "whitelist_storage_key")
-            or (
-                isinstance(node, ast.ImportFrom)
-                and any(alias.name == "whitelist_storage_key" for alias in node.names)
-            )
-        ]
-        assert not references, f"{rel} 又自行派生状态键：{references}"
 
-    # storage 是键的落地实现（读写都按它落盘），plugin_state 是热路径入口，
-    # 两处以外的消费点都被上面的循环排除。
+    判据用标识符级扫描而非 ``ast.Name`` 匹配：``_u.whitelist_storage_key``、
+    ``getattr(_u, "whitelist_storage_key")`` 与导入别名都是同一契约的绕过写法。
+    扫描面覆盖**全部**生产模块（排除持有实现的三处），不再限定 5 个文件——
+    限定清单时，往任何未列出的模块里加调用点都不会被发现。
+    """
+    allowed = {"utils.py", "storage.py", "plugin_state.py"}
+    offenders = {
+        rel: hits
+        for rel in _production_modules()
+        if rel not in allowed
+        for hits in [_name_references(rel, "whitelist_storage_key")]
+        if hits
+    }
+    assert not offenders, f"这些模块又自行派生状态键：{offenders}"
+
     assert "whitelist_storage_key(umo)" in method_source("plugin_state.py", "state_for")
 
 
@@ -363,24 +408,52 @@ def test_startup_persist_failure_is_not_swallowed() -> None:
     assert _call_count("main.py", "SelfInitiatedReplyPlugin.__init__", "logger.error") >= 1
 
 
+def _reset_value_expressions(rel: str, qualname: str) -> list[str]:
+    """定义体内取 ``CONFIG_SPEC_BY_KEY["decision_prompt_template"].reset_value`` 的表达式。
+
+    AST 级判定：``"reset_value" in 源码`` 这类子串检查会被注释满足（上一轮
+    P2 批评过的同名注释手法），而且读法要钉准是**规格表取默认值**这一条，
+    不是随便一处属性访问。
+    """
+    hits: list[str] = []
+    for node in ast.walk(_lookup(rel, qualname)):
+        if not (isinstance(node, ast.Attribute) and node.attr == "reset_value"):
+            continue
+        subscript = node.value
+        if not isinstance(subscript, ast.Subscript):
+            continue
+        table = ast.unparse(subscript.value)
+        key = subscript.slice
+        if table == "CONFIG_SPEC_BY_KEY" and ast.unparse(key) == "'decision_prompt_template'":
+            hits.append(ast.unparse(node))
+    return hits
+
+
 def test_default_prompt_is_consumed_through_the_spec() -> None:
     """默认判断提示词只经 ``ConfigSpec.reset_value`` 消费。
 
     同一默认值此前有四处各自的 ``.strip()`` 口径（coerce 收口、webapi 面板填充、
     decision 回落、``Settings.decision_prompt_custom`` 的比对）。模板常量字形一旦
     带首尾空白，四副面孔就会漂移成「恢复默认 → 保存被误报改过字段」与"喂给模型的
-    默认值不等于面板显示的默认值"。本断言钉住消费面：models 之外不得再出现模板
-    常量的名字，三个消费点都必须读规格表的规范化取值。
+    默认值不等于面板显示的默认值"。本断言钉住消费面：除 models.py（定义与
+    ``reset_default`` 声明）外，全仓生产模块都不得再出现模板常量名；三个消费点
+    必须写规格表取值这一条表达式——均按 AST 判，注释与文档串不算数。
     """
-    for rel in ("decision.py", "webapi.py", "plugin_state.py", "main.py"):
-        assert "DEFAULT_DECISION_PROMPT_TEMPLATE" not in source_of(rel), (
-            f"{rel} 又直接引用模板常量：默认值的 strip 口径应是 spec.reset_value"
-        )
+    offenders = {
+        rel: hits
+        for rel in _production_modules()
+        if rel != "models.py"
+        for hits in [_name_references(rel, "DEFAULT_DECISION_PROMPT_TEMPLATE")]
+        if hits
+    }
+    assert not offenders, f"这些模块又直接引用模板常量：{offenders}"
+
     for rel, qualname in (
         ("decision.py", "build_decision_prompt"),
         ("webapi.py", "_api_get_config"),
+        ("models.py", "decision_prompt_custom"),
     ):
-        assert "reset_value" in method_source(rel, qualname), f"{rel}.{qualname} 未从规格表取默认值"
-    assert 'CONFIG_SPEC_BY_KEY["decision_prompt_template"].reset_value' in method_source(
-        "models.py", "decision_prompt_custom"
-    )
+        assert _reset_value_expressions(rel, qualname), (
+            f"{rel}.{qualname} 未从规格表取默认值："
+            f"{_name_references(rel, 'reset_value') or '（无 reset_value 引用）'}"
+        )
