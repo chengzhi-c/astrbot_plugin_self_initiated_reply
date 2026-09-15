@@ -416,6 +416,32 @@ async def test_deliver_suppressed_with_directs_records(tmp_path: Path) -> None:
     assert state.daily_count == 0
 
 
+async def test_deliver_suppressed_while_stopping_reports_stop(tmp_path: Path) -> None:
+    """停止成因的 SUPPRESSED 回显停止文案，不误报「会话已更新」。
+
+    send_reply 的 SUPPRESSED 有两类成因：代次已变（generation changed）与
+    插件停止（plugin is stopping）。统一回显 STALE_REPLY_MESSAGE 会把停止
+    期间的抑制误报成会话更新，误导排障方向。
+    """
+    _, models, runner, _ = _make_runner(tmp_path)
+    runner.send_reply = FakeSender(
+        models.SendOutcome(models.SendStatus.SUPPRESSED, "plugin is stopping")
+    )
+    state = _state(models)
+    result = await runner.deliver_reply(
+        "s1",
+        state,
+        "你好",
+        0,
+        ledger=models.AttemptLedger(),
+        expected_generation=None,
+        force=False,
+        trigger="patrol",
+    )
+
+    assert result == "插件正在停止，放弃回复。"
+
+
 # ============================================================================
 # 发送前门卫
 # ============================================================================

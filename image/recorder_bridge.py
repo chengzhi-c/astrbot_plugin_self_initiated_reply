@@ -63,6 +63,10 @@ class MessageRecorderBridge:
                     (item for item in image_components if str(item.get("url") or "") == image_url),
                     None,
                 )
+                # 多图记录里 URL 未命中时必须拒绝盲取首图：首图组件属于另一张
+                # 图，盲 fallback 会让 Vision 描述错图（单图宽容取用见下方）。
+                if selected is None and len(image_components) > 1:
+                    return None
             selected = selected or image_components[0]
             local_path = str(selected.get("local_path") or "").strip()
             if not local_path:

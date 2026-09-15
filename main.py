@@ -673,18 +673,12 @@ class SelfInitiatedReplyPlugin(Star):
         if not tasks:
             return
 
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + TERMINATE_TASK_TIMEOUT_SEC
         _, pending = await asyncio.wait(tasks, timeout=TERMINATE_TASK_TIMEOUT_SEC)
-        if pending:
-            for task in pending:
-                task.cancel()
-            remaining = max(0.0, deadline - loop.time())
-            if remaining:
-                _, pending = await asyncio.wait(pending, timeout=remaining)
-        if pending:
-            for task in pending:
-                self._quarantine_task(task, "shutdown deadline exceeded")
+        for task in pending:
+            task.cancel()
+            # 超时即取消并隔离：不再有第二次等待窗口——硬窗口语义（契约 §5）
+            # 要求 terminate 有界，取消后的清理只由任务自身的 done 回调收尾。
+            self._quarantine_task(task, "shutdown deadline exceeded")
         self._background_tasks.difference_update(task for task in tasks if task.done())
 
     async def _save_final_state_with_deadline(self) -> None:

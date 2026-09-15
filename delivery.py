@@ -143,6 +143,11 @@ class DeliveryRunner:
                 if not self._gate.is_current(umo, expected_generation):
                     return STALE_REPLY_MESSAGE
                 if sent.status is SendStatus.SUPPRESSED:
+                    # SUPPRESSED 有两类成因：代次已变与插件停止。停止成因回显
+                    # 停止文案——统一报「会话已更新」会把关停期间的抑制误导向
+                    # 排查会话代次。两类成因都不计失败、不重试。
+                    if "stopping" in sent.detail:
+                        return "插件正在停止，放弃回复。"
                     return STALE_REPLY_MESSAGE
                 return "主动发送失败。"
         else:

@@ -238,8 +238,10 @@ class ImageExtractor:
         ``url`` 里放的非 http(s) 降级为 file）。
 
         ``trusted_local_path`` 只在**非 Mapping** 的归一化组件且来源是绝对本地
-        路径时为真：原始 mapping 可能携带用户/平台可控数据，默认不可信，下游
-        ``_file_to_data_url`` 据此决定是否放行本地读取（防任意文件读取外传）。
+        路径时为真：它只作宿主临时图的**快照分流提示**（``snapshot_local_sources``
+        据此决定是否抢在事件回收前落一份副本）。本地读取的放行判据与之无关——
+        唯一判据是路径落在允许根内（契约 §7.1，``_file_to_data_url`` 的 allowlist），
+        宿主 aiocqhttp 通用分支的 ``file`` 是对端可控值，恰好也能满足本标记。
 
         失败时：整体 try 包裹，任何宿主结构异常只记 debug 并返回**已抽到的部分**
         （宁少不炸——图片是增强信息，缺失只降级为纯文本主动回复）。
