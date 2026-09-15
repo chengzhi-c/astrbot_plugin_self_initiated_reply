@@ -29,6 +29,7 @@ from .models import (
     MAX_IMAGE_MEMORY_BYTES,
     MAX_SESSION_IMAGE_MEMORY_BYTES,
     PLUGIN_ID,
+    SessionContainers,
     now_ts,
     restore_container_inplace,
 )
@@ -58,18 +59,16 @@ class SessionCoordinator:
     def __init__(
         self,
         *,
-        events: dict[str, Any],
-        event_at: dict[str, float],
-        images: dict[str, Any],
+        containers: SessionContainers,
         gate: SessionGate,
         cancel_delay: Callable[[str, bool], None],
         notify_silence: Callable[[str], None],
         max_image_memory_bytes: int = MAX_IMAGE_MEMORY_BYTES,
         max_session_image_memory_bytes: int = MAX_SESSION_IMAGE_MEMORY_BYTES,
     ) -> None:
-        self._events = events
-        self._event_at = event_at
-        self._images = images
+        self._events = containers.last_events
+        self._event_at = containers.last_event_at
+        self._images = containers.recent_image_events
         self._gate = gate
         self._cancel_delay = cancel_delay
         self._notify_silence = notify_silence

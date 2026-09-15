@@ -426,6 +426,68 @@ def test_whitespace_patterns_are_not_recompiled_inline() -> None:
 
 
 # ============================================================================
+# 4.4 装配面：共享容器经 SessionContainers 单点交接
+# ============================================================================
+
+
+def test_shared_containers_have_a_single_assembly_point() -> None:
+    """需要多个容器的协作者一律经 ``SessionContainers`` 取，不各传各的。
+
+    收拢前的形式是 scheduler 收 7 个、coordinator 收 3 个、whitelist 收 2 个
+    容器参数，同一批对象在三处各写一遍；改动容器集合（如新增一张表）必须
+    同时改三处签名与 main 的三处调用，漏一处就是 B1 的温床。收拢后
+    「哪些容器由 main 共享」只有 ``models.SessionContainers`` 一处声明。
+    """
+    models = source_of("models.py")
+    assert "class SessionContainers:" in models
+
+    # 三个多容器消费者：不得再出现逐容器参数或逐容器赋值
+    for rel, forbidden_params in (
+        ("scheduler.py", ("last_events:", "recent_image_events:", "delay_tasks:")),
+        ("session_coordinator.py", ("events:", "event_at:", "images:")),
+        ("whitelist.py", ("sessions:", "runtime_umos:")),
+    ):
+        signature = method_source(rel, "__init__")
+        leaked = [name for name in forbidden_params if name in signature]
+        assert not leaked, f"{rel}.__init__ 又逐容器收参：{leaked}（应经 SessionContainers）"
+
+    # 容器字段与 main 侧的属性一一对得上（容器集合若增删，这条会指出来）
+    declared = {
+        node.target.id
+        for node in ast.walk(_lookup("models.py", "SessionContainers"))
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    assert declared == {
+        "last_events",
+        "last_event_at",
+        "recent_image_events",
+        "whitelist_runtime_umos",
+        "delay_tasks",
+        "running_check_tasks",
+        "background_tasks",
+        "sessions",
+    }, f"SessionContainers 字段漂移：{sorted(declared)}"
+
+    # gate 的三张表刻意不在其中（§11 B3：release 表不参与快照恢复）
+    assert not (declared & {"_session_generation", "_running_sessions", "_session_locks"})
+
+
+def test_scheduler_and_coordinator_share_one_containers_instance() -> None:
+    """装配时传给各协作者的必须是**同一个** SessionContainers 对象。
+
+    若 main 每次调用都现造一个 SessionContainers，字段虽同名却指向不同字典，
+    容器身份契约（§11 B1）立刻失效且无任何报错——正是该契约要防的静默形态。
+    """
+    body = method_source("main.py", "_assemble_components")
+    assert body.count("self._containers") >= 3, (
+        "装配段没有把同一份 self._containers 交给各协作者（现造对象会让容器身份分叉）"
+    )
+    assert "SessionContainers(" not in body, (
+        "装配段内又新建 SessionContainers：应为 __init__ 里创建一次、此处复用"
+    )
+
+
+# ============================================================================
 # 3.19 首次规范化落盘的失败必须可见
 # ============================================================================
 

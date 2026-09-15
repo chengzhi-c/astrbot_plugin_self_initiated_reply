@@ -673,6 +673,29 @@ class AttemptLedger:
 
 
 @dataclass(frozen=True)
+class SessionContainers:
+    """main 侧共享容器的收拢视图（按名字交给需要多个容器的协作者）。
+
+    存在的理由是把「这些集合必须始终保持同一身份」这条承重契约（见
+    ``docs/BEHAVIOR_CONTRACT.md`` §11 B1）变成一个有名字的实体：改动容器集合时
+    只有这一处需要同步，文档与守卫也指向同一份清单。
+
+    ``frozen=True`` 只阻止字段重绑（该契约的失效形态之一）；容器内容仍按
+    B1 原地修改。**不**把 ``SessionGate`` 的三张表收进来：``release`` 表按
+    §11 B3 刻意不参与快照恢复，混进同一对象会诱导"整对象恢复"这种错误写法。
+    """
+
+    last_events: dict[str, Any]
+    last_event_at: dict[str, float]
+    recent_image_events: dict[str, Any]
+    whitelist_runtime_umos: dict[str, set[str]]
+    delay_tasks: dict[str, Any]
+    running_check_tasks: dict[str, Any]
+    background_tasks: set[Any]
+    sessions: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class SendOutcome:
     status: SendStatus
     detail: str = ""

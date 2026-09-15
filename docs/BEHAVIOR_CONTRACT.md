@@ -195,6 +195,11 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
   已不运行的 `set()`（唤醒，避免等一个不会到来的信号）。任务其实已结束的情况由
   §5 的超时与轮次上限兜底。
 
+容器在装配时收进 `models.SessionContainers`（frozen dataclass）再交给需要多个容器的
+协作者（scheduler / session_coordinator / whitelist）。它只是**同一批容器对象的命名
+视图**：`frozen` 锁的是字段重绑，容器内容仍按 B1 原地改；`SessionGate` 的三张表刻意
+不在其中（release 表按 B3 不参与恢复，混进来会诱导"整对象恢复"这种错误写法）。
+
 守卫方式：`tests/test_config_hot_reload.py` 从源码反推持有者绑定并逐个断言容器
 身份不变（`is` 比较），另有一条完整性守卫防止新增绑定漏登记——手写清单不会自动
 跟上代码，漏登记的绑定就是下一个无人看守的 B1。绑定数量以该文件的

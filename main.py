@@ -84,6 +84,7 @@ from .models import (
     SESSION_CANCEL_COMMAND_ACTIONS,
     TERMINATE_TASK_TIMEOUT_SEC,
     PluginLifecycle,
+    SessionContainers,
     SessionState,
     Settings,
     now_ts,
@@ -211,6 +212,19 @@ class SelfInitiatedReplyPlugin(Star):
         self._last_decisions: dict[str, dict[str, Any]] = {}
         self._refresh_admin_ids()
 
+        # 共享容器收拢为一个对象后交给协作者（§11 B1：身份必须稳定）。
+        # main 侧仍保留各自的属性名：回滚路径（webapi._restore_plugin_state）
+        # 与容器身份守卫都按这些名字工作。
+        self._containers = SessionContainers(
+            last_events=self._last_events,
+            last_event_at=self._last_event_at,
+            recent_image_events=self._recent_image_events,
+            whitelist_runtime_umos=self._whitelist_runtime_umos,
+            delay_tasks=self._delay_tasks,
+            running_check_tasks=self._running_check_tasks,
+            background_tasks=self._background_tasks,
+            sessions=self.sessions,
+        )
         self._assemble_components()
 
         self._save_storage_sync()
@@ -246,9 +260,7 @@ class SelfInitiatedReplyPlugin(Star):
     def _assemble_components(self) -> None:
         """接线协作对象。须在 gate/状态容器就绪之后、ensure_task 之前调用。"""
         self._coordinator = SessionCoordinator(
-            events=self._last_events,
-            event_at=self._last_event_at,
-            images=self._recent_image_events,
+            containers=self._containers,
             gate=self._gate,
             cancel_delay=lambda umo, force: self._scheduler.cancel_delay(umo, force=force),
             notify_silence=lambda umo: self._scheduler.notify_activity(umo),
@@ -281,13 +293,7 @@ class SelfInitiatedReplyPlugin(Star):
             ),
             clear_event=self._coordinator.clear_event,
             drop_older_images=self._coordinator.drop_older_than,
-            last_events=self._last_events,
-            last_event_at=self._last_event_at,
-            recent_image_events=self._recent_image_events,
-            whitelist_runtime_umos=self._whitelist_runtime_umos,
-            delay_tasks=self._delay_tasks,
-            running_check_tasks=self._running_check_tasks,
-            background_tasks=self._background_tasks,
+            containers=self._containers,
             quarantine_task=self._quarantine_task,
         )
         self._scheduler.last_cleanup_at = now_ts()
@@ -344,14 +350,13 @@ class SelfInitiatedReplyPlugin(Star):
             ensure_state=lambda umo: self._state_for(umo),
             invalidate=lambda umo: self._coordinator.invalidate(umo),
             prune=lambda umo: self._prune_session(umo),
-            sessions=self.sessions,
+            containers=self._containers,
             tracked_umos=lambda: (
                 set(self._last_events)
                 | set(self._delay_tasks)
                 | set(self._running_sessions)
                 | set(self._session_locks)
             ),
-            runtime_umos=self._whitelist_runtime_umos,
         )
 
         self._pipeline = SessionPipeline(

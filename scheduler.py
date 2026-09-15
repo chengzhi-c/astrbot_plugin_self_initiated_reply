@@ -28,6 +28,7 @@ from .models import (
     RELEASE_WAIT_TIMEOUT_SEC,
     TERMINATE_TASK_TIMEOUT_SEC,
     CheckTrigger,
+    SessionContainers,
     SessionState,
     Settings,
     now_ts,
@@ -59,13 +60,7 @@ class SessionScheduler:
         check_session: CheckSessionCallback,
         clear_event: Callable[[str, float], None],
         drop_older_images: Callable[[float], None],
-        last_events: dict[str, Any],
-        last_event_at: dict[str, float],
-        recent_image_events: dict[str, Any],
-        whitelist_runtime_umos: dict[str, set[str]],
-        delay_tasks: dict[str, asyncio.Task[Any]],
-        running_check_tasks: dict[str, asyncio.Task[Any]],
-        background_tasks: set[asyncio.Task[Any]],
+        containers: SessionContainers,
         quarantine_task: Callable[[asyncio.Task[Any], str], None] | None = None,
     ) -> None:
         self.settings = settings
@@ -77,13 +72,16 @@ class SessionScheduler:
         self._check_session = check_session
         self._clear_event = clear_event
         self._drop_older_images = drop_older_images
-        self._last_events = last_events
-        self._last_event_at = last_event_at
-        self._recent_image_events = recent_image_events
-        self._whitelist_runtime_umos = whitelist_runtime_umos
-        self._delay_tasks = delay_tasks
-        self._running_check_tasks = running_check_tasks
-        self._background_tasks = background_tasks
+        # 内部仍用各自的私有属性名：这里只是取用同一批容器对象，
+        # 名字保留是为了让既有调用点与守卫（CONTAINER_HOLDERS 按属性名枚举）
+        # 不必跟着改。
+        self._last_events = containers.last_events
+        self._last_event_at = containers.last_event_at
+        self._recent_image_events = containers.recent_image_events
+        self._whitelist_runtime_umos = containers.whitelist_runtime_umos
+        self._delay_tasks = containers.delay_tasks
+        self._running_check_tasks = containers.running_check_tasks
+        self._background_tasks = containers.background_tasks
         self._quarantine_task = quarantine_task
         self._silence_events: dict[str, asyncio.Event] = {}
         self._leak_warned: set[str] = set()

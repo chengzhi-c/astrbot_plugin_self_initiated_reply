@@ -47,9 +47,16 @@ def _make_scheduler(tmp_path: Path, config: dict | None = None):
     background_tasks: set[asyncio.Task] = set()
     coordinator_mod = importlib.import_module(f"{PACKAGE_NAME}.session_coordinator")
     coordinator = coordinator_mod.SessionCoordinator(
-        events=last_events,
-        event_at=last_event_at,
-        images=recent_image_events,
+        containers=models.SessionContainers(
+            last_events=last_events,
+            last_event_at=last_event_at,
+            recent_image_events=recent_image_events,
+            whitelist_runtime_umos=whitelist_runtime_umos,
+            delay_tasks=delay_tasks,
+            running_check_tasks=running_check_tasks,
+            background_tasks=background_tasks,
+            sessions={},
+        ),
         gate=gate,
         cancel_delay=lambda umo, force: None,
         notify_silence=lambda umo: None,
@@ -69,13 +76,16 @@ def _make_scheduler(tmp_path: Path, config: dict | None = None):
         check_session=check_session,
         clear_event=coordinator.clear_event,
         drop_older_images=coordinator.drop_older_than,
-        last_events=last_events,
-        last_event_at=last_event_at,
-        recent_image_events=recent_image_events,
-        whitelist_runtime_umos=whitelist_runtime_umos,
-        delay_tasks=delay_tasks,
-        running_check_tasks=running_check_tasks,
-        background_tasks=background_tasks,
+        containers=models.SessionContainers(
+            last_events=last_events,
+            last_event_at=last_event_at,
+            recent_image_events=recent_image_events,
+            whitelist_runtime_umos=whitelist_runtime_umos,
+            delay_tasks=delay_tasks,
+            running_check_tasks=running_check_tasks,
+            background_tasks=background_tasks,
+            sessions={},
+        ),
     )
     return scheduler_mod, models, scheduler, state_map, checks
 

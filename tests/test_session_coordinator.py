@@ -40,9 +40,11 @@ def _make_coordinator():
         is_running=lambda umo: umo in running,
     )
     coordinator = mod.SessionCoordinator(
-        events=events,
-        event_at=event_at,
-        images=images,
+        containers=SimpleNamespace(
+            last_events=events,
+            last_event_at=event_at,
+            recent_image_events=images,
+        ),
         gate=gate,
         cancel_delay=lambda umo, force: cancelled.append((umo, force)),
         notify_silence=lambda umo: notified.append(umo),
@@ -260,9 +262,7 @@ def test_in_memory_image_index_enforces_session_and_global_byte_budgets() -> Non
     module = _coordinator_module()
     images: dict[str, object] = {}
     coordinator = module.SessionCoordinator(
-        events={},
-        event_at={},
-        images=images,
+        containers=SimpleNamespace(last_events={}, last_event_at={}, recent_image_events=images),
         gate=SimpleNamespace(advance=lambda _umo: 1),
         cancel_delay=lambda _umo, _force: None,
         notify_silence=lambda _umo: None,
@@ -289,9 +289,7 @@ def test_image_budget_recomputes_global_bytes_after_session_eviction() -> None:
     module = _coordinator_module()
     images: dict[str, object] = {}
     coordinator = module.SessionCoordinator(
-        events={},
-        event_at={},
-        images=images,
+        containers=SimpleNamespace(last_events={}, last_event_at={}, recent_image_events=images),
         gate=SimpleNamespace(advance=lambda _umo: 1),
         cancel_delay=lambda _umo, _force: None,
         notify_silence=lambda _umo: None,
@@ -324,9 +322,7 @@ def _budget_coordinator(module, *, global_bytes: int, session_bytes: int):
 
     images: dict[str, object] = {}
     coordinator = module.SessionCoordinator(
-        events={},
-        event_at={},
-        images=images,
+        containers=SimpleNamespace(last_events={}, last_event_at={}, recent_image_events=images),
         gate=SimpleNamespace(advance=lambda _umo: 1),
         cancel_delay=lambda _umo, _force: None,
         notify_silence=lambda _umo: None,
