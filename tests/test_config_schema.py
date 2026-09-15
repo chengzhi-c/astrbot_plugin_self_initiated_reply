@@ -101,14 +101,68 @@ def test_phase_d_config_revision_is_canonical_and_restart_stable() -> None:
     assert models.config_revision(first).startswith("sha256:")
 
 
-def test_sdist_excludes_worktree_artifacts() -> None:
-    """sdist 不能把本地截图、测试、缓存或构建物带入源码发布物。"""
+def test_sdist_forbidden_patterns_are_excluded_by_pyproject() -> None:
+    """check_sdist 禁止的每类开发物，pyproject sdist exclude 都必须真的排掉。
+
+    与 ``test_wheel_forbidden_patterns_are_excluded_by_pyproject`` 同款互锁，
+    原先 sdist 侧只有 4 条字面子集断言、与 check_sdist 名单无关联——漂移
+    （check_sdist 禁了、exclude 没排）会静默通过，直到发布作业才红。
+
+    比对方式同样不比字符串：两侧语法不同（check_sdist 用 fnmatch 的
+    ``__pycache__/**``，hatchling 用 gitwildmatch），给每个禁止模式造代表性
+    路径用 hatchling 同款 GitIgnoreSpec 真跑 exclude。
+    """
+    import runpy
     import tomllib
 
-    with (ROOT / "pyproject.toml").open("rb") as handle:
-        project = tomllib.load(handle)
-    excludes = set(project["tool"]["hatch"]["build"]["targets"]["sdist"]["exclude"])
-    assert {"output/**", "tests/**", "dist/**", "**/__pycache__/**"} <= excludes
+    import pathspec
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    excludes = [
+        str(entry).strip()
+        for entry in pyproject["tool"]["hatch"]["build"]["targets"]["sdist"].get(
+            "exclude", []
+        )
+    ]
+    spec = pathspec.GitIgnoreSpec.from_lines(excludes)
+    check_sdist = runpy.run_path(str(ROOT / "scripts" / "check_sdist.py"))
+
+    # 每个禁止模式的代表性路径。根层 + 嵌套探针都要：fnmatch 的 `__pycache__/**`
+    # 带根锚只排根层，`**/__pycache__/**` 才排嵌套层；探针覆盖两条才防单条漏排。
+    samples = {
+        ".coverage": [".coverage"],
+        ".coverage.*": [".coverage.host.pid1234.PROBE"],
+        "coverage.*": ["coverage.json", "coverage.xml", "coverage.PROBE"],
+        "output/**": ["output/playwright/probe.png"],
+        "dist/**": ["dist/probe.tar.gz"],
+        ".pytest_cache/**": [".pytest_cache/CACHEDIR.TAG"],
+        ".ruff_cache/**": [".ruff_cache/probe"],
+        ".mypy_cache/**": [".mypy_cache/3.13/probe.json"],
+        "**/__pycache__/**": ["image/__pycache__/PROBE"],
+        "__pycache__/**": ["__pycache__/PROBE"],
+        "*.pyc": ["probe.pyc", "image/probe.pyc"],
+        "*.egg-info/**": ["astrbot_plugin_self_initiated_reply.egg-info/PKG-INFO"],
+        ".venv/**": [".venv/Scripts/python.exe"],
+        "venv/**": ["venv/Scripts/python.exe"],
+        ".tox/**": [".tox/probe"],
+        ".git/**": [".git/config"],
+    }
+    guarded = set(check_sdist["FORBIDDEN_GLOBS"])
+    # 新增禁止模式却没给探针 → 这里先红，逼着补样本而不是静默漏测
+    assert guarded == set(samples), (
+        f"check_sdist 的禁运名单与本用例的探针表不同步："
+        f"缺探针 {sorted(guarded - set(samples))}，多余探针 {sorted(set(samples) - guarded)}"
+    )
+
+    unmatched = {
+        pattern: [path for path in paths if not spec.match_file(path)]
+        for pattern, paths in samples.items()
+    }
+    unmatched = {pattern: paths for pattern, paths in unmatched.items() if paths}
+    assert not unmatched, (
+        f"check_sdist 禁止但 pyproject sdist exclude 匹配不到：{unmatched}。"
+        f"这类文件一旦出现在工作树就会进 sdist，失败只在发布作业才暴露。"
+    )
 
 
 def test_phase_d_set_normalization_deduplicates_before_capacity() -> None:

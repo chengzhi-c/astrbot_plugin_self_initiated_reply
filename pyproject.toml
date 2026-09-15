@@ -148,6 +148,9 @@ exclude = [
 [tool.hatch.build.targets.sdist]
 # sdist 也必须是可复现的源码发布物；工作树中的浏览器截图、测试、缓存和构建产物
 # 不属于安装输入，尤其不能因本地未跟踪 output/ 被意外带入归档。
+# 与 scripts/check_sdist.py FORBIDDEN_GLOBS 的逐条一致性由
+# tests/test_config_schema.py::test_sdist_forbidden_patterns_are_excluded_by_pyproject
+# 以 pathspec 真匹配钉住（与上方 wheel exclude 的守卫同款）。
 exclude = [
   "output/**",
   "tests/**",
@@ -159,6 +162,12 @@ exclude = [
   ".pytest_cache/**",
   ".ruff_cache/**",
   ".mypy_cache/**",
+  "*.pyc",
+  "*.egg-info/**",
+  ".venv/**",
+  "venv/**",
+  ".tox/**",
+  ".git/**",
 ]
 
 [tool.ruff]
