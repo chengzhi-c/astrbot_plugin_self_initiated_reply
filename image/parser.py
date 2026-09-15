@@ -21,6 +21,7 @@ import httpx
 from astrbot.api import logger
 
 from ..models import (
+    MAX_IMAGE_BYTES,
     MAX_IMAGE_CACHE_BYTES,
     MAX_IMAGE_DESCRIPTION_CACHE_BYTES,
     PLUGIN_ID,
@@ -37,7 +38,7 @@ from ._support import (
     sniff_image_mime,
     to_data_url,
 )
-from .recorder_bridge import MAX_IMAGE_BYTES, MessageRecorderBridge
+from .recorder_bridge import MessageRecorderBridge
 
 VISION_PROMPT_VERSION = "v1"
 
@@ -768,6 +769,22 @@ class ImageParser:
             return None
 
     async def _fetch_image_data_url(self, url: str) -> str | None:
+        """下载远程图片；整个下载（DNS+连接+读取）受单图超时约束，超限返回 None。
+
+        没有这层预算时：DNS 在线程里不受事件循环超时约束、httpx 的 timeout
+        只作用于单次操作，慢速滴流式响应体可让读取无限拖延——解析路径会一直
+        占着主动检查协程，而不是降级为"本次不带图"。取消只作用于协程：卡在
+        getaddrinfo 的线程会自然结束。
+        """
+        try:
+            return await asyncio.wait_for(
+                self._download_image_data_url(url), timeout=self._timeout_sec
+            )
+        except TimeoutError:
+            logger.info("[%s] image download timed out", PLUGIN_ID)
+            return None
+
+    async def _download_image_data_url(self, url: str) -> str | None:
         """下载远程图片并编码为 ``data:`` URL，失败返回 ``None``。
 
         安全约束（每条都是拒绝理由，不可为兼容性放宽）：仅走固定地址传输（SSRF 防护，

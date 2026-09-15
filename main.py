@@ -149,7 +149,7 @@ class SelfInitiatedReplyPlugin(Star):
         super().__init__(context)
         self.context = context
         self.config = config if config is not None else {}
-        self._config_path, self._storage_path, self._data_path = resolve_paths(
+        self._config_path, self._storage_path, self._data_root = resolve_paths(
             self.config,
             get_config_path=get_astrbot_config_path,
             get_plugin_data_path=get_astrbot_plugin_data_path,
@@ -249,7 +249,7 @@ class SelfInitiatedReplyPlugin(Star):
             bridge=self.bridge,
             context=self.context,
             source_cache_dir=self._image_cache_dir,
-            data_root=self._data_path,
+            data_root=self._data_root,
             coordinator=self._coordinator,
             gate=self._gate,
             is_stopping=lambda: self._stopping,

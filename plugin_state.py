@@ -64,7 +64,7 @@ def refresh_admin_ids(plugin: SelfInitiatedReplyPlugin) -> set[str]:
     if now - plugin._admin_probe_ts < ADMIN_REFRESH_WINDOW_SEC:
         return plugin._admin_ids
     plugin._admin_probe_ts = now
-    path = plugin._data_path / "cmd_config.json"
+    path = plugin._data_root / "cmd_config.json"
     try:
         if path.exists():
             mtime = path.stat().st_mtime

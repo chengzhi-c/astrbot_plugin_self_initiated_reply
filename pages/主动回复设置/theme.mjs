@@ -45,7 +45,8 @@ export async function restoreTheme(apiGet) {
     const saved =
       result && result.ok !== false ? String(result.theme || "auto").trim() : "auto";
     const resolved = saved === "light" || saved === "dark" ? saved : "auto";
-    cacheThemeLocally(resolved);
+    /* 本地缓存由调用方守卫后的 applyTheme 落盘：此处若直写，在途响应会把用户
+       刚点击的主题从 localStorage 覆盖回旧值（下一次冷启动主题回退）。 */
     return {
       theme: resolved,
       dim: Boolean(result && result.dim),

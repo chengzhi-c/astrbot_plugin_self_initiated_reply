@@ -11,6 +11,8 @@ import hashlib
 import os
 import socket
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,11 +23,16 @@ from .test_vision import PACKAGE_NAME, _load_modules
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode("ascii")
 PNG_DIGEST = hashlib.sha256(PNG_BYTES).hexdigest()
-MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 def _parser_module():
     return sys.modules[f"{PACKAGE_NAME}.image.parser"]
+
+
+def _max_image_bytes() -> int:
+    """从源读单图字节上限：夹具不再复制字面量（阈值单一事实源在 models.py）。"""
+    _load_modules()
+    return _parser_module().MAX_IMAGE_BYTES
 
 
 # ============================================================================
@@ -1188,7 +1195,7 @@ def test_fetch_http_error_status_returns_none(monkeypatch) -> None:
 def test_fetch_content_length_too_big_returns_none(monkeypatch) -> None:
     image = _make_fetch_env(
         monkeypatch,
-        _make_response(headers={"content-length": str(MAX_IMAGE_BYTES + 1)}, chunks=[PNG_BYTES]),
+        _make_response(headers={"content-length": str(_max_image_bytes() + 1)}, chunks=[PNG_BYTES]),
     )
     assert _fetch_result(image) is None
 
@@ -1204,7 +1211,7 @@ def test_fetch_bad_content_length_header_ignored(monkeypatch) -> None:
 def test_fetch_stream_exceeds_limit_returns_none(monkeypatch) -> None:
     image = _make_fetch_env(
         monkeypatch,
-        _make_response(chunks=[b"x" * (MAX_IMAGE_BYTES + 1)]),
+        _make_response(chunks=[b"x" * (_max_image_bytes() + 1)]),
     )
     assert _fetch_result(image) is None
 
@@ -1253,3 +1260,63 @@ def test_fetch_unsafe_url_returns_none(monkeypatch) -> None:
     monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: None)
     parser = image.ImageParser(object())
     assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) is None
+
+
+def _stalling_response():
+    """响应体永不结束：首块之后一直等待（慢速滴流的极端形态）。"""
+
+    async def aiter_bytes():
+        yield PNG_BYTES[:8]
+        await asyncio.sleep(3600)
+
+    return SimpleNamespace(status_code=200, headers={}, aiter_bytes=aiter_bytes)
+
+
+def test_fetch_stalled_stream_times_out(monkeypatch) -> None:
+    """挂起的响应体不得无限拖住下载：整体超时兜底必须生效。
+
+    裸 httpx 的 timeout 只覆盖单次操作；慢速滴流每块都"按时"到达时读取
+    可以永远进行。本用例借测试侧 wait_for 兜底：内部若没有超时，这里会以
+    TimeoutError 失败，而不是等到 elapse 断言。
+    """
+    image = _make_fetch_env(monkeypatch, _stalling_response())
+    parser = image.ImageParser(object(), timeout_sec=1.0)
+    start = time.monotonic()
+    result = asyncio.run(
+        asyncio.wait_for(parser._fetch_image_data_url("https://cdn.example/x.png"), timeout=3.0)
+    )
+    elapsed = time.monotonic() - start
+    assert result is None
+    assert elapsed < 2.5
+
+
+def test_fetch_slow_dns_times_out(monkeypatch) -> None:
+    """DNS 解析卡住（线程内阻塞）同样要被整体超时覆盖。
+
+    getaddrinfo 在线程里跑，不受事件循环超时约束；没有整体预算时解析协程
+    会一直等线程。release 事件让线程随用例立即退出，避免 loop 关闭时 join。
+    """
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    release = threading.Event()
+
+    def slow_resolve(_host: str) -> str:
+        release.wait(5.0)
+        return "93.184.216.34"
+
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", slow_resolve)
+    parser = image.ImageParser(object(), timeout_sec=1.0)
+
+    async def scenario() -> tuple[str | None, float]:
+        try:
+            start = time.monotonic()
+            result = await asyncio.wait_for(
+                parser._fetch_image_data_url("https://cdn.example/x.png"), timeout=3.0
+            )
+            return result, time.monotonic() - start
+        finally:
+            release.set()
+
+    result, elapsed = asyncio.run(scenario())
+    assert result is None
+    assert elapsed < 2.5

@@ -16,7 +16,7 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 
 ## 设置页 chrome
 
-浅/深/跟随系统与压暗/粗体均经 `GET/POST ui/theme` 写入 `ui_prefs.json`（页面在 Dashboard iframe 内，localStorage 不可靠）。保存必须带齐三字段，禁止只写主题抹掉压暗/粗体。落盘与状态文件共用 `storage` 原子写。服务端 prefs 覆盖 localStorage，但 `GET ui/theme` 返回前用户已点过压暗/粗体则那次点击优先，迟到的 GET 不得抹掉。
+浅/深/跟随系统与压暗/粗体均经 `GET/POST ui/theme` 写入 `ui_prefs.json`（页面在 Dashboard iframe 内，localStorage 不可靠）。保存必须带齐三字段，禁止只写主题抹掉压暗/粗体。落盘与状态文件共用 `storage` 原子写。服务端 prefs 覆盖 localStorage，但 `GET ui/theme` 返回前用户已点过主题、压暗或粗体则那次点击优先，迟到的 GET 不得抹掉；本地缓存也只能经守卫后的 `applyTheme` 落盘（`restoreTheme` 不自行写缓存）。
 
 ## 默认值
 
@@ -68,7 +68,9 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 
 远程图片使用 `httpx` + `httpcore` 的固定地址传输：DNS 只在每个请求入口解析一次，
 TCP 连接使用已验证 IP，原 hostname 继续承担 Host/SNI；环境代理关闭，重定向由 HTTPX
-逐跳重新进入传输层。图片描述 LRU 同时受条目数和字节预算约束，磁盘不可用时的 data URL
+逐跳重新进入传输层。下载全过程（DNS、连接、流式读取）受单图超时预算约束：httpx 的
+timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住解析，超限按下载失败降级。
+图片描述 LRU 同时受条目数和字节预算约束，磁盘不可用时的 data URL
 索引受全局/会话原始载荷预算约束。事件清理只删除事件引用，图片索引由独立保护窗口回收；
 失效和终止才清理两者。运行时依赖由 `pyproject.toml` 与宿主兼容检查锁定。
 

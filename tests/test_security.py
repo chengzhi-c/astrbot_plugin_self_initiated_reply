@@ -843,7 +843,7 @@ def test_admin_ids_hot_reload_on_file_change(tmp_path: Path) -> None:
     """运行期修改 cmd_config.json 必须生效（mtime 缓存热读）；删除文件回退缓存。"""
 
     async def scenario(plugin, main):
-        cmd = plugin._data_path / "cmd_config.json"
+        cmd = plugin._data_root / "cmd_config.json"
         assert plugin._refresh_admin_ids() == set()  # 初始无文件
 
         cmd.write_text('{"admins_id": ["111"]}', encoding="utf-8")

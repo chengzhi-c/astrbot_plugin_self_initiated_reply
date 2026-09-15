@@ -398,6 +398,26 @@ test("late theme prefs do not overwrite a dim click already made", async ({ page
   expect(errors).toEqual([]);
 });
 
+test("late theme prefs do not overwrite a theme click already made", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { themePending: true, theme: "dark", dim: false, bold: false });
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.goto(`${baseUrl}${PAGE_PATH}`);
+  await expect(page.locator("#boot")).toHaveClass(/is-hidden/);
+  await expect.poll(() => page.evaluate(() => typeof window.__resolveTheme)).toBe("function");
+  await page.locator("#themeToggle").click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.evaluate(() => window.__resolveTheme());
+  await page.waitForTimeout(80);
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  expect(await page.evaluate(() => localStorage.getItem("selfreply-theme"))).toBe("light");
+  expect(errors).toEqual([]);
+});
+
 test("compact more-actions menu exposes auxiliary controls", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await installBridge(page);

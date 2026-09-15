@@ -180,6 +180,15 @@ export function markDimBoldTouched() {
 export function dimBoldWasTouched() {
   return dimBoldTouched;
 }
+/* 主题与压暗/粗体同属"用户即时选择优先于迟到服务端值"：GET ui/theme 在途最长
+   FETCH_TIMEOUT_MS，期间点过主题就不得被旧响应覆盖（DECISIONS「设置页 chrome」）。 */
+let themeTouched = false;
+export function markThemeTouched() {
+  themeTouched = true;
+}
+export function themeWasTouched() {
+  return themeTouched;
+}
 export function restoreDimBold() {
   try {
     if (localStorage.getItem(DIM_KEY) === "1") applyDim(true);

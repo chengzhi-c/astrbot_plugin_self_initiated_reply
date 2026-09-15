@@ -25,7 +25,6 @@ ALLOWED_IMAGE_PORTS = frozenset({80, 443})
 # 2 是实测够用的保守值；六处字面量收敛到此。
 VISION_MAX_CONCURRENT = 2
 
-IMAGE_SNIFF_BYTES = 12
 _JPEG_PREFIX = b"\xff\xd8\xff"
 _PNG_PREFIX = b"\x89PNG\r\n\x1a\n"
 _GIF_PREFIXES = (b"GIF87a", b"GIF89a")

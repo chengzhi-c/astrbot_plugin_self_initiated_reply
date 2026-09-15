@@ -24,10 +24,12 @@ import {
 	createScrollHandler,
 	dimBoldWasTouched,
 	hideBoot,
+	markThemeTouched,
 	restoreDimBold,
 	setupMobileTabs,
 	setupMoreActionsMenu,
 	setupNav,
+	themeWasTouched,
 	updateNavFades,
 	updateTopbarStuck,
 } from "./chrome.mjs";
@@ -383,6 +385,7 @@ if (els.configForm) {
 if (els.themeToggle) {
 	els.themeToggle.addEventListener("click", () => {
 		const next = nextTheme();
+		markThemeTouched();
 		applyTheme(next, els.themeToggle);
 		persistTheme(next, apiPost);
 	});
@@ -453,7 +456,8 @@ loadAll()
 	});
 
 restoreTheme(apiGet).then((prefs) => {
-	if (prefs.theme !== currentTheme()) applyTheme(prefs.theme, els.themeToggle);
+	if (!themeWasTouched() && prefs.theme !== currentTheme())
+		applyTheme(prefs.theme, els.themeToggle);
 	if (!dimBoldWasTouched()) {
 		applyDim(prefs.dim);
 		applyBold(prefs.bold);

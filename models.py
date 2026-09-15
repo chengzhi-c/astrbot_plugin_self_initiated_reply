@@ -51,6 +51,7 @@ MAX_DAILY_REPLIES_LIMIT = 1000  # 每日回复次数上限
 MAX_VISION_IMAGES = 5  # 单次主动回复最多解析的图片数
 MAX_VISION_IMAGE_AGE_SEC = 86400  # 图片上下文最长保留时间
 MAX_VISION_TIMEOUT_SEC = 120  # 单张图片解析超时上限
+MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 单张图片字节上限（远程下载与本地读取共用）
 MAX_CACHED_IMAGE_EVENTS = 20  # 每会话临时保留的含图事件数
 MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024  # 图片冻结缓存总容量上限
 MAX_IMAGE_DESCRIPTION_CACHE_BYTES = 512 * 1024  # Vision 描述内存缓存上限
