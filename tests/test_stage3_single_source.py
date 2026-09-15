@@ -177,6 +177,48 @@ def test_sticker_filtering_has_one_traversal() -> None:
     )
     assert "_eligible_image_entries" in callers_of("image/extractor.py", "_component_is_sticker")
 
+    # 贴纸判据只在 skip_stickers 为真时计算：无条件计算会给 has_images 新开一条
+    # "读组件字段抛非 AttributeError → 判为无图片 → 纯图片消息被丢弃"的路径
+    # （has_images 用 except Exception 兜底）。守卫分两层——源码层禁掉无条件形态，
+    # 行为层由 tests/test_vision.py 的 subType 抛错用例钉住。
+    body = method_source("image/extractor.py", "_eligible_image_entries")
+    assert "if skip_stickers and _component_is_sticker(" in body, (
+        "贴纸判据脱离 skip_stickers 短路：has_images(skip_stickers=False) 会去读"
+        "贴纸字段，组件抛非 AttributeError 时纯图片消息被整条丢弃"
+    )
+
+
+def test_suppressed_branches_use_codes_not_detail_text() -> None:
+    """SUPPRESSED 的成因分支必须判 ``code``，不得再拿 ``detail`` 文案做判据。
+
+    ``detail`` 是给人看的日志文本。``"stopping" in sent.detail`` 这类判定会在
+    改措辞时静默失效（把"plugin is stopping"改成"stopping due to teardown"
+    仍命中，改成"插件正在停止"就不命中了），而控制流不该依赖文案。同时钉住
+    构造面：每个 SUPPRESSED 的 SendOutcome 都要带 code，否则新加的分支漏填，
+    调用方拿到的成因恒为 None、静默走错分支。
+    """
+    delivery = source_of("delivery.py")
+    assert '"stopping" in' not in delivery, "delivery 又拿 detail 文案做分支判据"
+
+    missing: list[str] = []
+    for rel in ("delivery.py", "outbound.py"):
+        for node in ast.walk(module_ast(rel)):
+            if not isinstance(node, ast.Call) or ast.unparse(node.func) != "SendOutcome":
+                continue
+            rendered = ast.unparse(node)
+            if "SendStatus.SUPPRESSED" not in rendered:
+                continue
+            if not any(
+                isinstance(arg, ast.Attribute)
+                and isinstance(arg.value, ast.Name)
+                and arg.value.id == "SuppressCode"
+                for arg in node.args
+            ):
+                missing.append(f"{rel}: line {node.lineno}: {rendered[:80]}")
+    assert not missing, f"这些 SUPPRESSED 构造点没有声明成因 code：{missing}"
+
+    assert "SuppressCode.STOPPING" in method_source("delivery.py", "deliver_reply")
+
 
 # ============================================================================
 # 3.9 / 3.18 webapi：关停门与运维端点定位

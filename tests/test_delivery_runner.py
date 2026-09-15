@@ -425,7 +425,11 @@ async def test_deliver_suppressed_while_stopping_reports_stop(tmp_path: Path) ->
     """
     _, models, runner, _ = _make_runner(tmp_path)
     runner.send_reply = FakeSender(
-        models.SendOutcome(models.SendStatus.SUPPRESSED, "plugin is stopping")
+        models.SendOutcome(
+            models.SendStatus.SUPPRESSED,
+            "plugin is stopping",
+            models.SuppressCode.STOPPING,
+        )
     )
     state = _state(models)
     result = await runner.deliver_reply(
@@ -440,6 +444,61 @@ async def test_deliver_suppressed_while_stopping_reports_stop(tmp_path: Path) ->
     )
 
     assert result == "插件正在停止，放弃回复。"
+
+
+async def test_deliver_stopping_suppression_is_read_from_code_not_detail(tmp_path: Path) -> None:
+    """判定取 ``code``：detail 措辞变化不得改变回显文案。
+
+    与上一条配对——上一条走生产构造路径（detail 与 code 一致），这一条把
+    detail 换成不含 "stopping" 字样的措辞、code 仍为 STOPPING：靠文案判定的
+    实现会在这里退回 STALE_REPLY_MESSAGE，把停止期间的抑制误报成会话更新。
+    """
+    _, models, runner, _ = _make_runner(tmp_path)
+    runner.send_reply = FakeSender(
+        models.SendOutcome(
+            models.SendStatus.SUPPRESSED,
+            "插件正在停止，放弃回复。",  # 措辞里没有 "stopping"
+            models.SuppressCode.STOPPING,
+        )
+    )
+    state = _state(models)
+    result = await runner.deliver_reply(
+        "s1",
+        state,
+        "你好",
+        0,
+        ledger=models.AttemptLedger(),
+        expected_generation=None,
+        force=False,
+        trigger="patrol",
+    )
+
+    assert result == "插件正在停止，放弃回复。"
+
+
+async def test_deliver_non_stopping_suppression_stays_stale(tmp_path: Path) -> None:
+    """非停止成因（代次已变）的 SUPPRESSED 回 STALE_REPLY_MESSAGE。"""
+    _, models, runner, _ = _make_runner(tmp_path)
+    runner.send_reply = FakeSender(
+        models.SendOutcome(
+            models.SendStatus.SUPPRESSED,
+            "generation changed before send",
+            models.SuppressCode.GENERATION_CHANGED,
+        )
+    )
+    state = _state(models)
+    result = await runner.deliver_reply(
+        "s1",
+        state,
+        "你好",
+        0,
+        ledger=models.AttemptLedger(),
+        expected_generation=None,
+        force=False,
+        trigger="patrol",
+    )
+
+    assert result == "会话已更新，放弃旧回复。"
 
 
 # ============================================================================

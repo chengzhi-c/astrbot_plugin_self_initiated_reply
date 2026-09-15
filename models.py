@@ -486,6 +486,20 @@ class SendStatus(StrEnum):
     SUPPRESSED = "suppressed"
 
 
+class SuppressCode(StrEnum):
+    """SUPPRESSED 的机器可判成因。
+
+    ``detail`` 是给人看的自由文本，不能拿它做分支——``"stopping" in detail``
+    这类判定会在措辞调整时静默失效（改文案不该改变控制流）。调用方要区分的
+    成因放这里，``detail`` 只进日志。
+    """
+
+    STOPPING = "stopping"
+    GENERATION_CHANGED = "generation_changed"
+    BUDGET = "budget"
+    GATE_REJECTED = "gate_rejected"
+
+
 class PluginLifecycle(StrEnum):
     """Plugin-level lifecycle owned by ``SelfInitiatedReplyPlugin``."""
 
@@ -662,6 +676,7 @@ class AttemptLedger:
 class SendOutcome:
     status: SendStatus
     detail: str = ""
+    code: SuppressCode | None = None
 
     @property
     def delivered(self) -> bool:

@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .models import AttemptLedger, SendOutcome, SendStatus
+from .models import AttemptLedger, SendOutcome, SendStatus, SuppressCode
 
 
 @dataclass(frozen=True)
@@ -82,15 +82,27 @@ class OutboundGateway:
             return OutboundResult(outcome)
         if is_direct:
             if self._direct_send_count >= self._max_direct_sends:
-                outcome = SendOutcome(SendStatus.SUPPRESSED, "direct send budget exhausted")
+                outcome = SendOutcome(
+                    SendStatus.SUPPRESSED,
+                    "direct send budget exhausted",
+                    SuppressCode.BUDGET,
+                )
                 self._ledger.finish_before_submit(attempt, outcome.status)
                 return OutboundResult(outcome)
             if self._direct_fail_count >= self._max_direct_sends:
-                outcome = SendOutcome(SendStatus.SUPPRESSED, "direct send failure budget exhausted")
+                outcome = SendOutcome(
+                    SendStatus.SUPPRESSED,
+                    "direct send failure budget exhausted",
+                    SuppressCode.BUDGET,
+                )
                 self._ledger.finish_before_submit(attempt, outcome.status)
                 return OutboundResult(outcome)
             if self._allow_direct is not None and not self._allow_direct():
-                outcome = SendOutcome(SendStatus.SUPPRESSED, "direct send gate rejected")
+                outcome = SendOutcome(
+                    SendStatus.SUPPRESSED,
+                    "direct send gate rejected",
+                    SuppressCode.GATE_REJECTED,
+                )
                 self._ledger.finish_before_submit(attempt, outcome.status)
                 return OutboundResult(outcome)
             self._direct_send_count += 1

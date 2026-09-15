@@ -34,6 +34,7 @@ from .models import (
     SendStatus,
     SessionState,
     Settings,
+    SuppressCode,
     now_ts,
 )
 from .outbound import OutboundGateway
@@ -146,7 +147,9 @@ class DeliveryRunner:
                     # SUPPRESSED 有两类成因：代次已变与插件停止。停止成因回显
                     # 停止文案——统一报「会话已更新」会把关停期间的抑制误导向
                     # 排查会话代次。两类成因都不计失败、不重试。
-                    if "stopping" in sent.detail:
+                    # 判据取 code 而非 detail 文案：detail 是日志文本，改措辞
+                    # 不该改变控制流（此处曾靠 "stopping" 子串判定）。
+                    if sent.code is SuppressCode.STOPPING:
                         return "插件正在停止，放弃回复。"
                     return STALE_REPLY_MESSAGE
                 return "主动发送失败。"
@@ -214,7 +217,7 @@ class DeliveryRunner:
                 ledger.ledger_id,
                 umo,
             )
-            return SendOutcome(SendStatus.SUPPRESSED, "plugin is stopping")
+            return SendOutcome(SendStatus.SUPPRESSED, "plugin is stopping", SuppressCode.STOPPING)
         if not self._gate.is_current(umo, expected_generation):
             logger.info(
                 "[%s] suppress stale reply before hooks ledger_id=%s session=%s",
@@ -222,7 +225,11 @@ class DeliveryRunner:
                 ledger.ledger_id,
                 umo,
             )
-            return SendOutcome(SendStatus.SUPPRESSED, "generation changed before hooks")
+            return SendOutcome(
+                SendStatus.SUPPRESSED,
+                "generation changed before hooks",
+                SuppressCode.GENERATION_CHANGED,
+            )
 
         last_event = self._last_events.get(umo)
         if last_event:
@@ -275,7 +282,11 @@ class DeliveryRunner:
                     ledger_id,
                     umo,
                 )
-                return SendOutcome(SendStatus.SUPPRESSED, "generation changed after decorating")
+                return SendOutcome(
+                    SendStatus.SUPPRESSED,
+                    "generation changed after decorating",
+                    SuppressCode.GENERATION_CHANGED,
+                )
             if self._is_stopping():
                 self._clear_result(last_event)
                 logger.info(
@@ -285,7 +296,11 @@ class DeliveryRunner:
                     ledger_id,
                     umo,
                 )
-                return SendOutcome(SendStatus.SUPPRESSED, "plugin is stopping")
+                return SendOutcome(
+                    SendStatus.SUPPRESSED,
+                    "plugin is stopping",
+                    SuppressCode.STOPPING,
+                )
             result = last_event.get_result()
             if result is None or not result.chain:
                 self._clear_result(last_event)
@@ -306,7 +321,11 @@ class DeliveryRunner:
                     ledger_id,
                     umo,
                 )
-                return SendOutcome(SendStatus.SUPPRESSED, "generation changed before send")
+                return SendOutcome(
+                    SendStatus.SUPPRESSED,
+                    "generation changed before send",
+                    SuppressCode.GENERATION_CHANGED,
+                )
             logger.debug(
                 "[%s] event send begin ledger_id=%s session=%s chars=%d chain_items=%d",
                 PLUGIN_ID,
@@ -395,7 +414,11 @@ class DeliveryRunner:
                 ledger_id,
                 umo,
             )
-            return SendOutcome(SendStatus.SUPPRESSED, "generation changed before context send")
+            return SendOutcome(
+                SendStatus.SUPPRESSED,
+                "generation changed before context send",
+                SuppressCode.GENERATION_CHANGED,
+            )
         # send_started 取自 ``OutboundResult.submitted``（DELIVERED/UNKNOWN 为真），
         # 与事件路径上方那处同源：是否已提交由 gateway 的分类结果决定，不靠此处
         # 枚举失败场景。下方 ``except`` 必须条件式归类，两个方向的代价不对称——
