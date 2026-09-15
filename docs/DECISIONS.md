@@ -57,6 +57,19 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 新抽象必须已有第二个实现或第二个调用方。新门禁必须证明现有 ruff/pytest 抓不到。
 不为覆盖率补行，不为文件变少合并领域模块。
 
+## 兼容层签名探测
+
+宿主公开层（`adapters`）的签名探测只有一个出口：`_signature_or_none` /
+`_keyword_names`。kwargs 过滤、绑定预检与候选构造都从它取参数名集，
+改兼容规则只动这里；「预检绝不调用、函数体内 TypeError 不重试」的
+双副作用约定锚定在 `models.first_bindable_args`。
+
+## SUPPRESSED 文案按成因分流
+
+`send_reply` 的 SUPPRESSED 有两类成因：代次已变（`STALE_REPLY_MESSAGE`）
+与插件停止（「插件正在停止，放弃回复。」）。两类都不计失败、不重试；
+文案分流只为排障方向准确，不改变记账语义。
+
 ## 阈值分工
 
 安全上限（防 OOM/费用爆炸/性能降级）在 `models.py` 顶部常量；行为调参（静默等待余量、
@@ -64,7 +77,13 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 `models.py`，避免依赖图叶子继续膨胀。
 
 
-发布脚本不再按文件名字典序猜测目标 wheel。`release_artifacts.py` 使用 `packaging` 解析 wheel/sdist 文件名中的 PEP 440 版本；默认发现多个候选或坏文件名直接失败，只有显式路径能消除歧义。`check_wheel.py`、`check_sdist.py` 与部署 zip 共享同一解析器。`gates.py` 的普通本地模式在缺 wheel/sdist 时只报告 `NOT RELEASE-VERIFIED`，`--release` 则非零退出；CI build 独立检查 wheel、sdist 和 deploy zip。
+发布脚本不再按文件名字典序猜测目标 wheel。`release_artifacts.py` 使用 `packaging` 解析 wheel/sdist 文件名中的 PEP 440 版本；默认发现多个候选或坏文件名直接失败，只有显式路径能消除歧义。`check_wheel.py`、`check_sdist.py` 与部署 zip 共享同一解析器。`gates.py` 的普通本地模式在缺 wheel/sdist 时只报告 `NOT RELEASE-VERIFIED`，`--release` 则非零退出；CI build 独立检查 wheel、sdist 和 deploy zip。本地门禁的 ruff 检查与 CI lint 同口径（`ruff check .`，git 仓库内默认尊重 `.gitignore`，`.venv/` 已列入忽略）。
+
+`recorder_bridge` 按平台消息 ID 查本地图片时，多图记录里 URL 未命中必须拒绝
+盲取首图（首图属于另一张图，错配会让 Vision 描述错图）；单图消息宽容取用
+唯一组件是安全的。`gates`/`compat` 的处理器数量上限
+`EXPECTED_HANDLER_COUNT` 以 `scripts/compat_check.py` 为单一事实源，
+`tests/test_host_contract.py` 经 import 引用。
 
 远程图片使用 `httpx` + `httpcore` 的固定地址传输：DNS 只在每个请求入口解析一次，
 TCP 连接使用已验证 IP，原 hostname 继续承担 Host/SNI；环境代理关闭，重定向由 HTTPX
