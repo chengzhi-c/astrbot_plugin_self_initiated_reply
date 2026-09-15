@@ -377,12 +377,14 @@ export function createConfigIo(deps) {
 			showToast("配置尚未成功加载，请先刷新页面");
 			return;
 		}
-		if (!validateAll()) {
-			showToast("部分数值超出允许范围，请检查标红字段");
-			return;
-		}
+		// 白名单校验先行短路：两个校验器都会 focus 各自首个非法字段，
+		// 若数值校验后跑，白名单的焦点会被抢走、错误提示跳变。
 		if (!validateWhitelist()) {
 			showToast("白名单有非法条目，请检查标红区域");
+			return;
+		}
+		if (!validateAll()) {
+			showToast("部分数值超出允许范围，请检查标红字段");
 			return;
 		}
 		const e = els();
@@ -466,9 +468,6 @@ export function createConfigIo(deps) {
 				: [];
 			applyConfigPayload(savedConfig);
 			setSaveState("已保存", "ok");
-			if (e.whitelistCount && Array.isArray(body.whitelist_sessions)) {
-				e.whitelistCount.textContent = String(body.whitelist_sessions.length);
-			}
 			const labels = adjustedFieldLabels(adjusted);
 			showToast(
 				labels.length

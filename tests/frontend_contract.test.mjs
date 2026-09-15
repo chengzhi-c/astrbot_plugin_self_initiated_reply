@@ -725,6 +725,129 @@ test("successful save applies the returned config and clears dirty state", async
   assert.equal(form.inert, false);
 });
 
+test("saved whitelist count reflects the server-normalized payload", async () => {
+  // 服务端归一化（去重/裁剪）后计数以返回值为准：applyConfigPayload 已按
+  // 归一化白名单刷新过计数，保存分支若再用提交时的 body 长度覆盖，会展示
+  // 与实际生效不一致的数字。
+  const classList = { add() {}, remove() {}, toggle() {} };
+  const field = (key, value = "", dataset = {}) => ({
+    dataset: { configKey: key, ...dataset },
+    type: "text",
+    value,
+  });
+  const number = (key, value) => ({ dataset: { configKey: key }, type: "number", value });
+  const checkbox = (key, checked = false) => ({
+    dataset: { configKey: key },
+    type: "checkbox",
+    checked,
+  });
+  const providerField = (key, control) => ({
+    dataset: { configKey: key, configControl: control },
+  });
+  const fields = [
+    checkbox("enabled", true),
+    checkbox("enabled_private_sessions", true),
+    checkbox("abandon_stale_on_new_message", false),
+    checkbox("decision_model_enabled", true),
+    providerField("judge_provider_id", "judge"),
+    number("decision_temperature", "0.3"),
+    number("decision_timeout_sec", "21"),
+    field("decision_prompt_template", "prompt", { configTransform: "trim" }),
+    number("decision_history_min_messages", "6"),
+    number("message_delay_sec", "61"),
+    number("min_silence_sec", "46"),
+    number("cooldown_sec", "901"),
+    checkbox("vision_judge_enabled", true),
+    checkbox("vision_main_enabled", true),
+    checkbox("vision_skip_stickers", true),
+    providerField("vision_provider_id", "vision"),
+    providerField("vision_judge_provider_id", "visionJudge"),
+    number("vision_max_images", "3"),
+    number("vision_image_age_sec", "301"),
+    number("vision_timeout_sec", "22"),
+    checkbox("proactive_inherit_tools", true),
+    field("whitelist_sessions", "group:a\ngroup:b", { configTransform: "whitelist" }),
+  ];
+  const form = {
+    classList,
+    inert: true,
+    querySelector: () => null,
+    querySelectorAll: () => fields,
+  };
+  const elements = {
+    configForm: form,
+    whitelistInput: fields.at(-1),
+    whitelistCount: { textContent: "" },
+    decisionPromptInput: { dataset: {}, value: "prompt" },
+    selfStatus: { textContent: "" },
+    decisionModelStatus: { textContent: "" },
+    configSaveState: { textContent: "", classList },
+  };
+  const state = {
+    configLoaded: true,
+    savingConfig: false,
+    configRevision: TEST_REVISION,
+    isDirty: true,
+    requiresConfigRefresh: false,
+  };
+  const provider = (value) => ({ value: () => value, sync() {} });
+  const controls = {
+    judge: provider("judge"),
+    vision: provider("vision"),
+    visionJudge: provider("vision-judge"),
+  };
+  const savedKeys = Object.fromEntries(configSaveKeys(form).map((key) => [key, true]));
+  const io = createConfigIo({
+    getEls: () => elements,
+    getState: () => state,
+    setState: (updates) => Object.assign(state, updates),
+    apiGet: async () => {
+      throw new Error("skip refresh");
+    },
+    // 服务端把提交的两条归一化成一条（例如去重/裁剪后仅剩 group:a）。
+    apiPost: async () => ({
+      ok: true,
+      config: {
+        ...savedKeys,
+        ok: true,
+        enabled: true,
+        whitelist_sessions: ["group:a"],
+        decision_prompt_default: "prompt",
+        config_revision: TEST_REVISION,
+      },
+      config_revision: TEST_REVISION,
+      runtime_enabled: true,
+      adjusted_fields: [],
+    }),
+    showToast() {},
+    setStatState() {},
+    renderPromptPreview() {},
+    judgeProviderControl: controls.judge,
+    visionProviderControl: controls.vision,
+    visionJudgeProviderControl: controls.visionJudge,
+    fmtBool: String,
+  });
+
+  await io.saveConfig({ preventDefault() {} });
+
+  assert.equal(elements.whitelistInput.value, "group:a");
+  assert.equal(elements.whitelistCount.textContent, "1");
+});
+
+test("save validation guards on whitelist before the numeric scan", async () => {
+  // 焦点唯一归属：白名单非法时校验必须短路返回，不再跑数值校验——
+  // 两个校验器都会 focus 各自首个非法字段，后跑者抢焦点、错误提示跳变。
+  const source = await readFile(join(pageDir, "config-io.mjs"), "utf8");
+  const whitelistGuard = source.indexOf("if (!validateWhitelist()) {");
+  const numericGuard = source.indexOf("if (!validateAll()) {");
+  assert.ok(whitelistGuard !== -1, "saveConfig must guard on validateWhitelist()");
+  assert.ok(numericGuard !== -1, "saveConfig must guard on validateAll()");
+  assert.ok(
+    whitelistGuard < numericGuard,
+    "validateWhitelist() must run before validateAll() so the whitelist focus is not stolen back",
+  );
+});
+
 test("non-whitelist illegal-char save errors do not paint the whitelist field", async () => {
   const classList = {
     add() {},

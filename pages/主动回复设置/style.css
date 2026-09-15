@@ -99,6 +99,9 @@
 :root[data-theme="light"] {
 	color-scheme: light;
 }
+/* 深色令牌两份中的"显式深色"份：@media (prefers-color-scheme: dark) 内的
+   :root:not([data-theme]) 块（跟随系统主题）与本块逐字一致，改值须两处同改，
+   由 frontend_contract 的 token-identical 测试锁定漂移。 */
 :root[data-theme="dark"] {
 	color-scheme: dark;
 	--bg: #0e0b08;
@@ -155,6 +158,8 @@
 :root[data-theme="dark"] .theme-toggle .icon-dark {
 	color: var(--spirit);
 }
+/* 跟随系统主题的深色令牌份（与上方 :root[data-theme="dark"] 块逐字一致，
+   改值须两处同改，由 frontend_contract 的 token-identical 测试锁定漂移）。 */
 @media (prefers-color-scheme: dark) {
 	:root:not([data-theme]) {
 		color-scheme: dark;

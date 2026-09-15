@@ -31,6 +31,8 @@ FALLBACK_EXCLUDED_DIRS = {
     "__pycache__",
     "build",
     "dist",
+    "node_modules",
+    "output",
     "venv",
 }
 

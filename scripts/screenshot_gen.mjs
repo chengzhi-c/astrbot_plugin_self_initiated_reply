@@ -6,7 +6,7 @@ import { configPayload } from "../tests/fixtures/config-payload.mjs";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
-import { extname, resolve } from "node:path";
+import { extname, resolve, sep } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const PAGE_PATH =
@@ -82,6 +82,12 @@ test.beforeAll(async () => {
 			url.pathname === "/" ? PAGE_PATH : url.pathname,
 		);
 		const filePath = resolve(ROOT, "." + decoded);
+		// 与 frontend_browser.test.mjs 同款越界守卫：/..%2f 等编码穿越不得
+		// 读到 ROOT 之外的文件。仅本地手动短时运行，对齐成本一行。
+		if (filePath !== ROOT && !filePath.startsWith(`${ROOT}${sep}`)) {
+			res.writeHead(403).end();
+			return;
+		}
 		try {
 			const fileStat = await stat(filePath);
 			if (!fileStat.isFile()) throw new Error("not a file");
