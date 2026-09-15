@@ -147,6 +147,58 @@ def test_recent_message_limit_hot_reload_rebuilds_existing_deques(tmp_path) -> N
     with_plugin(tmp_path, scenario)
 
 
+def test_rollback_restores_session_history_trimmed_during_apply_window(tmp_path) -> None:
+    """回滚快照必须深保护会话历史：应用窗口内被新 limit 裁剪的历史不可丢。
+
+    缺陷：快照对 sessions 只做浅拷贝（dict(plugin.sessions)），SessionState
+    是共享引用。应用失败回滚恢复的是同一个已被新 recent_message_limit
+    裁小的 deque——历史消息永久丢失，与 `_apply_config_updates` 自称的
+    "任何失败回滚全部运行态"不符。
+    """
+
+    async def scenario(plugin, main):
+        models = sys.modules[f"{PACKAGE}.models"]
+        state = plugin._state_for(UMO)
+        for index in range(8):
+            state.recent.append(
+                models.MessageRecord(role="user", name="U", text=f"m{index}", at=float(index))
+            )
+        original_limit = plugin.settings.recent_message_limit
+        original_state = plugin.sessions[UMO]
+        assert original_limit >= 8
+
+        real_persist = plugin._persist_config
+        calls = {"count": 0}
+
+        async def trim_then_fail():
+            calls["count"] += 1
+            if calls["count"] == 1:
+                # 模拟 await 窗口内到达的消息事件：读取路径按已应用的新
+                # limit 惰性重建 deque，把历史裁小
+                plugin._state_for(UMO)
+                raise OSError("disk full")
+            await real_persist()
+
+        plugin._persist_config = trim_then_fail
+        try:
+            web = sys.modules["astrbot.api.web"]
+            web.request.payload = {"recent_message_limit": 3}
+            result = await plugin._api_post_config()
+            assert result["ok"] is False
+        finally:
+            plugin._persist_config = real_persist
+
+        # 回滚后：对象身份不变（在途任务持引用）、上限恢复、历史完整
+        restored = plugin.sessions[UMO]
+        assert restored is original_state
+        assert restored.recent.maxlen == original_limit, "回滚未恢复 deque 上限"
+        assert [item.text for item in restored.recent] == [f"m{i}" for i in range(8)], (
+            "回滚未恢复被窗口内裁剪的历史"
+        )
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_settings_apply_preserves_identity() -> None:
     """Settings.apply 原地写入全部字段，对象身份不变（无 __slots__/frozen 前提）。"""
     from .host_stubs import load_package

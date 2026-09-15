@@ -90,6 +90,20 @@ async def test_keep_normal_message() -> None:
     assert _should_ignore(events, event, "普通消息", vision=False) is False
 
 
+def test_cq_at_requires_digit_boundary() -> None:
+    """CQ @ 判定要求数字边界：他人 QQ 号以 self_id 结尾时不得误判为点名。
+
+    `[CQ:at,qq=456123]` 在 self_id=123 下若被误判，该消息会被
+    should_ignore_event 当作直接点名静默丢弃、不进观察窗口。
+    """
+    events = _events_module()
+    event = _FakeEvent(self_id="123")
+    assert events.is_explicit_direct_call(event, "[CQ:at,qq=123]") is True
+    assert events.is_explicit_direct_call(event, "[CQ:at,qq=456123]") is False
+    assert events.is_explicit_direct_call(event, "[At:123]") is True
+    assert events.is_explicit_direct_call(event, "[At:456123]") is False
+
+
 def test_handle_incoming_message_blindspots(tmp_path) -> None:
     """覆盖 message_ingress: 指令消息直接返回、忽略消息时更新活跃时间/作废旧任务。"""
     from .host_stubs import with_plugin
@@ -113,7 +127,8 @@ def test_handle_incoming_message_blindspots(tmp_path) -> None:
         direct_event = _make_event(message_str="@Bot 出来聊聊")
         direct_event.is_at_or_wake_command = True
         await ingress.handle_incoming_message(plugin, direct_event)
-        state = plugin._state_for(main.whitelist_storage_key(main.event_umo(direct_event)))
+        utils = sys.modules[f"{main.__package__}.utils"]
+        state = plugin._state_for(utils.whitelist_storage_key(utils.event_umo(direct_event)))
         assert state.last_active_at > 0
 
         # 4. 开启 abandon_stale_on_new_message 且纯空格消息

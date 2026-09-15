@@ -1638,9 +1638,7 @@ async def test_freeze_images_logs_accepted_count(caplog: object) -> None:
     service.get_image_parser = lambda *args: parser
 
     with capture_logs(caplog, vr.logger, logging.DEBUG):
-        await service._freeze_images(
-            "u1", generation=1, active_at=1.0, images=[img_a, img_b]
-        )
+        await service._freeze_images("u1", generation=1, active_at=1.0, images=[img_a, img_b])
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("captured 1/2 images" in message for message in messages)

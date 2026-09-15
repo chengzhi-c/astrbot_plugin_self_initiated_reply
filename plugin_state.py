@@ -109,6 +109,16 @@ def state_for(plugin: SelfInitiatedReplyPlugin, umo: str) -> SessionState:
     return state
 
 
+def read_session_state(plugin: SelfInitiatedReplyPlugin, key: str) -> SessionState:
+    """只读取会话状态：不创建、不滞留、不做 legacy 迁移、不刷新日期。
+
+    供 status/debug 等只读指令组装参数——用 ``state_for`` 会把非白名单
+    会话的空状态隐式创建并滞留在内存（写盘侧会过滤，但条目只有
+    ``_prune_session`` 能回收）。无状态时返回一次性空对象。
+    """
+    return plugin.sessions.get(key) or SessionState()
+
+
 def append_recent_user_message(
     plugin: SelfInitiatedReplyPlugin,
     event: Any,

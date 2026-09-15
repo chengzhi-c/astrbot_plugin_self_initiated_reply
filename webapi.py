@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import math
+from collections import deque
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,7 @@ from .models import (
     PLUGIN_ID,
     CheckTrigger,
     ConfigSpec,
+    SessionState,
     Settings,
     config_revision,
     first_bindable_args,
@@ -198,7 +200,9 @@ def _strict_bool(value: Any, field: str) -> bool:
 def _load_ui_prefs(plugin: SelfInitiatedReplyPlugin) -> tuple[str, bool, bool]:
     """从 ui_prefs.json 加载主题/压暗/粗体；损坏或缺失回退 auto + 关。"""
     try:
-        raw = json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8"))
+        # utf-8-sig 与状态文件（storage.py）同口径：BOM 头一并吞掉，
+        # 历史/外部编辑器产物不因编码差异丢用户偏好。
+        raw = json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8-sig"))
         theme = str(raw.get("theme", "auto")).strip()
         dim = raw.get("dim", False)
         bold = raw.get("bold", False)
@@ -270,12 +274,12 @@ async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]
 
 
 def _strict_int(value: Any, field: str) -> int:
-    if isinstance(value, bool):
+    # 只接受真 int（bool 是 int 子类须显式排除）：int(1.5) 与 int("5") 会静默
+    # 截断/解析，前端无从得知值被改写——与同文件布尔/枚举/列表的严格 400
+    # 口径对齐。API 客户端只有本插件设置页，表单数字字段不产生浮点/数字字符串。
+    if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(f"{field} 必须是整数")
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{field} 必须是整数") from exc
+    return value
 
 
 def _string_list(data: dict[str, Any], key: str) -> list[str]:
@@ -446,7 +450,14 @@ _AUDITED_CONFIG_KEYS = tuple(spec.key for spec in CONFIG_SPECS if spec.audited)
 
 
 def _snapshot_plugin_state(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """对应用配置前会变更的全部运行态做快照，供回滚恢复。"""
+    """对应用配置前会变更的全部运行态做快照，供回滚恢复。
+
+    ``sessions`` 只深保护 ``recent`` 列表：它是唯一会被窗口内消息入口
+    （``plugin_state.state_for`` 按新 ``recent_message_limit`` 惰性重建）
+    **不可逆裁剪**的字段，共享引用会让回滚恢复一个已被裁小的 deque。
+    其余标量字段的窗口内变更按现行语义保留——那是对真实事件的记录，
+    回滚不应抹掉。
+    """
     return {
         "settings": copy.deepcopy(plugin.settings),
         "runtime_enabled": plugin.runtime_enabled,
@@ -455,9 +466,30 @@ def _snapshot_plugin_state(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
             key: set(values) for key, values in plugin._whitelist_runtime_umos.items()
         },
         "gate": plugin._gate.snapshot(),
-        "sessions": dict(plugin.sessions),
+        "sessions": {key: list(state.recent) for key, state in plugin.sessions.items()},
         "delay_umos": set(plugin._delay_tasks),
     }
+
+
+def _restore_session_history(plugin: SelfInitiatedReplyPlugin, saved: dict[str, list[Any]]) -> None:
+    """逐键恢复会话历史，保持 sessions dict 与存活 SessionState 的对象身份。
+
+    身份契约（B1 的对象版）：在途检查任务持有 ``SessionState`` 引用，
+    整表换对象会让它们写孤儿状态。故存活键**原地**重绑 ``recent``
+    （deque 的生产持有均为瞬时读取，重绑安全），新增键才插入新对象，
+    窗口内新增的键删除。``maxlen`` 用回滚后的 settings——快照时刻的
+    上限可能已被本次（失败的）应用改小。
+    """
+    limit = plugin.settings.recent_message_limit
+    for key in list(plugin.sessions):
+        if key not in saved:
+            del plugin.sessions[key]
+    for key, records in saved.items():
+        state = plugin.sessions.get(key)
+        if state is None:
+            plugin.sessions[key] = SessionState(recent=deque(records, maxlen=limit))
+        else:
+            state.recent = deque(records, maxlen=limit)
 
 
 async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict[str, Any]) -> None:
@@ -473,7 +505,7 @@ async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict
     plugin._coordinator.restore_inplace(snapshot)
     restore_container_inplace(plugin._whitelist_runtime_umos, snapshot["whitelist_runtime_umos"])
     plugin._gate.restore(snapshot["gate"])
-    restore_container_inplace(plugin.sessions, snapshot["sessions"])
+    _restore_session_history(plugin, snapshot["sessions"])
     # 回滚后重新调度被白名单变更取消的延迟检查（已取消的任务对象
     # 不可复用，只能按默认 message_delay 语义重建）。
     for umo in snapshot["delay_umos"]:

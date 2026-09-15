@@ -792,6 +792,27 @@ def test_api_post_config_rejects_illegal_whitelist_chars(tmp_path: Path) -> None
     with_plugin(tmp_path, scenario)
 
 
+def test_api_post_config_rejects_non_integer_numbers(tmp_path: Path) -> None:
+    """整数字段必须拒绝浮点与数字字符串，不得静默截断。
+
+    报错文案是「必须是整数」却放行 ``1.5`` → 1，前端无从得知值被改写；
+    同文件的布尔/枚举/列表均严格 400，此处对齐同一口径。
+    """
+
+    async def scenario(plugin, main):
+        web = sys.modules["astrbot.api.web"]
+        for bad in (1.5, "5", True):
+            web.request.payload = {"min_silence_sec": bad}
+            result = await plugin._api_post_config()
+            assert result.get("ok") is False, f"应拒绝 {bad!r}"
+            assert "min_silence_sec 必须是整数" in result.get("error", "")
+        web.request.payload = {"min_silence_sec": 45}
+        result = await plugin._api_post_config()
+        assert result.get("ok") is True
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_whitelist_runtime_umos_reclaimed_when_inactive(tmp_path: Path) -> None:
     """清理循环末尾必须回收长期无活动的运行时 UMO 映射，避免只增不减。"""
 

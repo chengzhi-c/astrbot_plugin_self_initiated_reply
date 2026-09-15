@@ -107,6 +107,30 @@ async def test_add_rolls_back_in_memory_on_persist_failure(tmp_path: Path) -> No
     assert ctx.persistence.save_calls == 2
 
 
+async def test_add_failure_rollback_leaves_no_session_residue(tmp_path: Path) -> None:
+    """add 落盘失败回滚后不得残留 ensured 空状态（契约守卫）。
+
+    该不变量由**间接机制**维持：``_ensure_state`` 在 commit 前执行，回滚
+    路径 ``replace(old_whitelist)`` 的 prune 级联恰好把它回收。若未来有人
+    改动 replace 的回滚（如 B2 修复把 prune 状态改为仅快照复活），这条
+    级联断裂即静默残留——此用例锁住该关系。
+    """
+    _, _, models = _load_modules()
+    umo = _umo_with_group()
+    ctx = FakeCtx(models)
+    manager = ctx.make_manager()
+    ctx.persistence.save_fail = True
+
+    try:
+        await manager.add(umo)
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError:
+        pass
+
+    assert ctx.settings.whitelist == set()
+    assert umo not in ctx.sessions, "回滚后 ensured 空状态残留"
+
+
 async def test_remove_rolls_back_in_memory_on_persist_failure(tmp_path: Path) -> None:
     _, _, models = _load_modules()
     umo = _umo_with_group()

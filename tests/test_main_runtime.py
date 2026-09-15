@@ -523,7 +523,11 @@ def test_degraded_state_rejects_new_spawn_and_force_check(tmp_path: Path) -> Non
         assert result == "插件未启用。"
         event = _make_event()
         plugin._last_events[UMO] = event
-        assert await plugin._command_text(event, "check") == "插件未启用。"
+        # check 的拒绝文案必须点明降级原因：降级不是"未启用"，
+        # 说错会让运营去改配置而不是重启插件。
+        assert await plugin._command_text(event, "check") == (
+            "插件已降级，无法手动检查（需重启插件恢复）。"
+        )
         assert plugin._last_events[UMO] is event
 
     with_plugin(tmp_path, scenario)
@@ -541,6 +545,37 @@ async def _drive_decorated_status(plugin, event) -> str:
     async for result in plugin.selfreply_status(event):
         texts.append(getattr(result, "text", "") or str(result))
     return "\n".join(texts)
+
+
+def test_status_debug_do_not_create_session_state(tmp_path: Path) -> None:
+    """status/debug 是只读指令：非白名单会话不得隐式创建并滞留内存状态条目。
+
+    缺陷：两条出口都用 `_state_for` 组装参数，对不存在 key 创建并滞留
+    SessionState，只有 `_prune_session` 能回收。写盘侧会过滤（不会复活），
+    但只读指令留下永久内存条目与该过滤心智模型不一致。
+    """
+
+    async def scenario(plugin, main):
+        import sys
+
+        utils = sys.modules[f"{main.__package__}.utils"]
+        event = _make_event(umo="fake:group:999")
+        key = utils.whitelist_storage_key(utils.event_umo(event))
+        assert key not in plugin.sessions
+
+        text = await plugin._command_text(event, "status")
+        assert "主动回复状态" in text
+        assert key not in plugin.sessions, "status 隐式创建了会话状态"
+
+        decorated = await _drive_decorated_status(plugin, event)
+        assert "主动回复状态" in decorated
+        assert key not in plugin.sessions, "装饰器 status 隐式创建了会话状态"
+
+        debug_text = await plugin._command_text(event, "debug")
+        assert "主动回复调试信息" in debug_text
+        assert key not in plugin.sessions, "debug 隐式创建了会话状态"
+
+    with_plugin(tmp_path, scenario)
 
 
 def test_degraded_lifecycle_is_visible_in_status_and_add_message(tmp_path: Path) -> None:
@@ -997,6 +1032,27 @@ def test_ui_theme_defaults_to_auto(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         cfg = await plugin._api_get_ui_theme()
         assert cfg == {"ok": True, "theme": "auto", "dim": False, "bold": False}
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_ui_theme_loads_from_bom_file(tmp_path: Path) -> None:
+    """带 BOM 的 ui_prefs.json 必须能读取（与状态文件的 utf-8-sig 口径一致）。
+
+    缺陷：``_load_ui_prefs`` 用 utf-8 读，BOM 会让 json.loads 失败回退默认，
+    历史文件/外部编辑器产物即丢用户偏好。写侧由本插件原子写（无 BOM），
+    本用例守读侧容错。
+    """
+
+    async def scenario(plugin, main):
+        import sys
+
+        plugin._ui_prefs_path.write_bytes(
+            b"\xef\xbb\xbf" + b'{"theme": "dark", "dim": true, "bold": true}'
+        )
+        webapi = sys.modules[f"{main.__package__}.webapi"]
+        theme, dim, bold = webapi.load_ui_prefs(plugin)
+        assert (theme, dim, bold) == ("dark", True, True)
 
     with_plugin(tmp_path, scenario)
 

@@ -66,11 +66,9 @@ get_astrbot_plugin_data_path = _AGENT_RUNTIME.capabilities.plugin_data_path_fn
 
 from .adapters import AstrBotBridge
 from .commands import (
-    debug_text,
     dispatch_command_action,
     help_text,
     list_text,
-    status_text,
 )
 from .decision import DECISION_MAX_TOKENS, DECISION_SYSTEM_PROMPT, DecisionMaker
 from .delivery import DeliveryRunner
@@ -110,14 +108,12 @@ from .storage import (
     persist_settings_config,
 )
 from .utils import (
-    event_sender_id,
     event_umo,
     is_admin_event,
     is_at_or_wake_command_event,
     is_explicit_direct_call,
     session_group_id,
     session_whitelisted,
-    whitelist_storage_key,
 )
 from .webapi import bind_api_handlers, load_ui_prefs, register_web_apis
 from .whitelist import WhitelistManager
@@ -585,17 +581,8 @@ class SelfInitiatedReplyPlugin(Star):
     async def selfreply_status(self, event: AstrMessageEvent) -> CommandReply:
         """状态：查看运行状态、判断模型和白名单信息。"""
         self._set_command_handled(event)
-        umo = event_umo(event)
-        state = self._state_for(whitelist_storage_key(umo)) if umo else SessionState()
-        yield event.plain_result(
-            status_text(
-                self.settings,
-                event,
-                state,
-                self.runtime_enabled,
-                self.lifecycle_state,
-            )
-        )
+        # 委托内联指令的分派出口：组装逻辑单点维护，两条出口不再镜像。
+        yield event.plain_result(await self._command_text(event, "status"))
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("list", alias={"ls", "whitelist"})
@@ -644,13 +631,8 @@ class SelfInitiatedReplyPlugin(Star):
     async def selfreply_debug(self, event: AstrMessageEvent) -> CommandReply:
         """调试：查看当前会话、发送者和触发识别信息。"""
         self._set_command_handled(event)
-        yield event.plain_result(
-            debug_text(
-                self.settings,
-                event,
-                ignored_sender=event_sender_id(event) in self.settings.ignored_sender_ids,
-            )
-        )
+        # 同 status：委托内联分派出口，组装逻辑单点维护。
+        yield event.plain_result(await self._command_text(event, "debug"))
 
     def _set_command_handled(self, event: AstrMessageEvent) -> None:
         try:

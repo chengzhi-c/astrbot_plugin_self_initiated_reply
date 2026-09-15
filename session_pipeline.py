@@ -30,6 +30,10 @@ from .utils import (
 )
 
 _MAX_RECORD_SAVE_ATTEMPTS = 2
+_RECORD_SAVE_RETRY_SEC = 0.5
+# 真实退避间隔：sleep(0) 只让出一个事件循环 tick，磁盘瞬时故障（Windows 文件
+# 占用、网络盘抖动）在零退避下两次必然背靠背失败，重试形同虚设。0.5s 足以跨过
+# 瞬时占用，又不会把 record task 拖出 §5 的收敛边界。
 
 
 def record_decision(
@@ -311,7 +315,7 @@ class SessionPipeline:
                     attempt_no + 1,
                 )
                 if attempt_no + 1 < _MAX_RECORD_SAVE_ATTEMPTS:
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(_RECORD_SAVE_RETRY_SEC)
             ledger.mark_record_failed("state persistence retries exhausted")
             return False
         except asyncio.CancelledError:

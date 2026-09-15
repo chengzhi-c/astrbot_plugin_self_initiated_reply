@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from astrbot.api.event import AstrMessageEvent
 
 from .models import CheckTrigger, SessionState, Settings, fmt_ts, now_ts
-from .plugin_state import append_recent_user_message
+from .plugin_state import append_recent_user_message, read_session_state
 from .utils import (
     clean_chat_text,
     event_group_id,
@@ -175,7 +175,8 @@ async def dispatch_command_action(
     if action == "help":
         return help_text()
     if action == "status":
-        state = plugin._state_for(whitelist_storage_key(umo)) if umo else SessionState()
+        # 只读组装：不得经 state_for 隐式创建并滞留非白名单会话的状态。
+        state = read_session_state(plugin, whitelist_storage_key(umo)) if umo else SessionState()
         return status_text(
             plugin.settings, event, state, plugin.runtime_enabled, plugin.lifecycle_state
         )
@@ -195,7 +196,11 @@ async def dispatch_command_action(
         return f"已移出主动回复白名单：{umo}" if removed else f"当前会话本不在主动回复白名单：{umo}"
     if action == "check":
         if not plugin._can_start_tasks():
-            return "插件未启用。"
+            # 文案按实际生命周期区分：DEGRADED 时插件是"已启用但降级"，
+            # 统一说"未启用"会误导运营去改配置而不是重启插件。
+            if plugin.lifecycle_state == "DEGRADED":
+                return "插件已降级，无法手动检查（需重启插件恢复）。"
+            return "插件未启用或正在关闭，无法手动检查。"
         generation = plugin._coordinator.invalidate(umo)
         plugin._coordinator.record_event(umo, event, now_ts())
         text = clean_chat_text(arg or strip_command_prefix(event_text(event)))

@@ -391,7 +391,12 @@ def is_explicit_direct_call(event: AstrMessageEvent, text: str) -> bool:
     if self_id:
         if re.search(rf"\[At:{re.escape(self_id)}\]", text, re.IGNORECASE):
             return True
-        if re.search(rf"\[CQ:at,[^\]]*(?:qq=)?{re.escape(self_id)}(?:\D|$)", text, re.IGNORECASE):
+        if re.search(
+            rf"\[CQ:at,[^\]]*(?:qq=)?(?<!\d){re.escape(self_id)}(?:\D|$)", text, re.IGNORECASE
+        ):
+            # (?<!\d)：数字边界不可省——省略时 [^\]]* 可吃掉 qq=456 的尾段，
+            # 让 self_id=123 误命中 [CQ:at,qq=456123]（他人 QQ 号以 self_id
+            # 结尾即被误判点名，消息被 should_ignore_event 静默丢弃）。
             return True
         for comp in event_components(event):
             if isinstance(comp, At) and str(getattr(comp, "qq", "")).strip() == self_id:

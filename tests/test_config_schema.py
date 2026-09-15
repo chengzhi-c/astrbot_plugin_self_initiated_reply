@@ -120,9 +120,7 @@ def test_sdist_forbidden_patterns_are_excluded_by_pyproject() -> None:
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     excludes = [
         str(entry).strip()
-        for entry in pyproject["tool"]["hatch"]["build"]["targets"]["sdist"].get(
-            "exclude", []
-        )
+        for entry in pyproject["tool"]["hatch"]["build"]["targets"]["sdist"].get("exclude", [])
     ]
     spec = pathspec.GitIgnoreSpec.from_lines(excludes)
     check_sdist = runpy.run_path(str(ROOT / "scripts" / "check_sdist.py"))
