@@ -292,7 +292,6 @@ def test_schedule_spawn_none_skips_registration(tmp_path: Path) -> None:
 
     def no_spawn(coro):
         coro.close()
-        return None
 
     scheduler._spawn = no_spawn
     scheduler.schedule_delayed_check("s1", delay_sec=0, trigger="message_delay", force=False)

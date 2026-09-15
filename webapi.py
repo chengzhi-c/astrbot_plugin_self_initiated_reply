@@ -52,6 +52,9 @@ from .storage import _write_json_atomic
 # _parse_config_updates 六处，漏一处即静默失效（漏本名单 → 面板提交被 400 拒）。
 CONFIG_SCHEMA_KEYS = frozenset(spec.key for spec in CONFIG_SPECS)
 
+# 宿主 provider 管理器返回的 (id, provider) 二元组长度（get_all_providers 的历史形态）。
+_PROVIDER_TUPLE_LEN = 2
+
 
 def _config_value(config: Any, key: str, default: Any = "") -> Any:
     if isinstance(config, dict):
@@ -120,7 +123,7 @@ def _collect_provider_options(plugin: SelfInitiatedReplyPlugin) -> list[dict[str
     seen: set[str] = set()
     for provider in providers:
         fallback_id = ""
-        if isinstance(provider, tuple) and len(provider) == 2:
+        if isinstance(provider, tuple) and len(provider) == _PROVIDER_TUPLE_LEN:
             fallback_id = str(provider[0] or "")
             provider = provider[1]
         option = _provider_option(provider, fallback_id)
@@ -594,13 +597,12 @@ async def _apply_config_updates(
                 config,
             )
         )
-        result = {
+        return {
             "ok": True,
             "config": config,
             "config_revision": config_revision(config),
             "adjusted_fields": adjusted_fields,
         }
-        return result
     except Exception:
         await _restore_plugin_state(plugin, snapshot)
         raise

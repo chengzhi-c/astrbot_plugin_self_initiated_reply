@@ -173,8 +173,7 @@ def _load_vision_image():
     package = types.ModuleType(vision.PACKAGE_NAME)
     package.__path__ = [str(root)]
     sys.modules[vision.PACKAGE_NAME] = package
-    image = importlib.import_module(f"{vision.PACKAGE_NAME}.image")
-    return image
+    return importlib.import_module(f"{vision.PACKAGE_NAME}.image")
 
 
 def _install_tool_injecting_pipeline(plugin, main, *, event):

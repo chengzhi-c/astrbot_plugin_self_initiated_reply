@@ -55,6 +55,10 @@ _UNABLE_PATTERNS = re.compile(
     r"无法.*获取|不能.*获取|抱歉.*图|sorry.*image",
     re.IGNORECASE,
 )
+# 模型答复至少要有这么长的正文，才值得匹配「无法描述」类拒答 pattern。
+_UNABLE_MIN_LENGTH = 10
+# HTTP 状态码 >= 该值即视为下载失败（图片 URL 通常是 302 后的 CDN，4xx/5xx 一律放弃）。
+_HTTP_ERROR_STATUS_MIN = 400
 
 _CacheEntry = tuple[float, Path, int, Path]
 
@@ -794,7 +798,7 @@ class ImageParser:
                 transport=transport,
             ) as client:
                 async with client.stream("GET", url) as response:
-                    if response.status_code >= 400:
+                    if response.status_code >= _HTTP_ERROR_STATUS_MIN:
                         return None
                     content_length = response.headers.get("content-length")
                     try:
@@ -821,4 +825,4 @@ class ImageParser:
     @staticmethod
     def _is_unable_to_describe(content: str) -> bool:
         stripped = str(content or "").strip()
-        return len(stripped) >= 10 and bool(_UNABLE_PATTERNS.search(stripped))
+        return len(stripped) >= _UNABLE_MIN_LENGTH and bool(_UNABLE_PATTERNS.search(stripped))

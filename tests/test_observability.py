@@ -132,8 +132,7 @@ def _make_scheduler(tmp_path: Path, scheduler, models):
     background_tasks: set[asyncio.Task] = set()
 
     def spawn(coro):
-        task = asyncio.create_task(coro)
-        return task
+        return asyncio.create_task(coro)
 
     def check_session(umo, *, trigger, force, expected_generation):
         return "ok"

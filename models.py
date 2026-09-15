@@ -228,13 +228,19 @@ def fmt_ts(ts: float | None) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
 
 
+_MINUTE_SECONDS = 60
+_HOUR_SECONDS = 3600
+# 可打印字符的 Unicode 码点下界：控制字符（0x00–0x1F）一律从提示词变量里剔除。
+_PRINTABLE_CHAR_MIN = 32
+
+
 def duration(seconds: float) -> str:
     seconds = max(0, int(seconds))
-    if seconds < 60:
+    if seconds < _MINUTE_SECONDS:
         return f"{seconds}s"
-    if seconds < 3600:
-        return f"{seconds // 60}m{seconds % 60}s"
-    return f"{seconds // 3600}h{seconds % 3600 // 60}m"
+    if seconds < _HOUR_SECONDS:
+        return f"{seconds // _MINUTE_SECONDS}m{seconds % _MINUTE_SECONDS}s"
+    return f"{seconds // _HOUR_SECONDS}h{seconds % _HOUR_SECONDS // _MINUTE_SECONDS}m"
 
 
 def as_bool(value: Any, default: bool = False) -> bool:
@@ -378,7 +384,7 @@ def sanitize_prompt_variable(
         lines = []
         for line in text.split("\n"):
             # 移除控制字符并压缩行内空白
-            line = "".join(char for char in line if ord(char) >= 32)
+            line = "".join(char for char in line if ord(char) >= _PRINTABLE_CHAR_MIN)
             line = re.sub(r"[^\S\n]+", " ", line).strip()
             if line:
                 lines.append(line)
@@ -386,7 +392,7 @@ def sanitize_prompt_variable(
 
     # 3. 单行模式：换行、制表符归一为空格，并移除控制字符
     text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
-    text = "".join(char for char in text if ord(char) >= 32)
+    text = "".join(char for char in text if ord(char) >= _PRINTABLE_CHAR_MIN)
     return re.sub(r"\s+", " ", text).strip()
 
 

@@ -740,8 +740,7 @@ def test_image_parser_concurrent_cancel_one_waiter_others_unaffected(tmp_path: P
         except asyncio.CancelledError:
             pass
         bridge.release.set()
-        results = await asyncio.gather(producer, waiter_b)
-        return results
+        return await asyncio.gather(producer, waiter_b)
 
     results = asyncio.run(main())
     assert results == ["一张图片", "一张图片"]

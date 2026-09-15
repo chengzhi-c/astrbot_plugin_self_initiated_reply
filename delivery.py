@@ -49,6 +49,8 @@ SaveStorageCallback = Callable[[], Awaitable[None]]
 CallHookCallback = Callable[[Any, Any], Awaitable[None]]
 ContextSendCallback = Callable[[str, Any], Awaitable[Any]]
 RuntimeCallback = Callable[[], Any]
+# DEBUG 日志里回复正文的预览长度上限（只在 log_reply_content 开启时输出）。
+_LOG_REPLY_PREVIEW_CHARS = 80
 
 
 class DeliveryRunner:
@@ -153,7 +155,11 @@ class DeliveryRunner:
             pass
 
         if self.settings.log_reply_content and reply:
-            preview = reply if len(reply) <= 80 else reply[:80] + "…"
+            preview = (
+                reply
+                if len(reply) <= _LOG_REPLY_PREVIEW_CHARS
+                else reply[:_LOG_REPLY_PREVIEW_CHARS] + "…"
+            )
             logger.debug(
                 "[%s] proactive reply sent ledger_id=%s session=%s chars=%d "
                 "direct_tools=%d text=%s",

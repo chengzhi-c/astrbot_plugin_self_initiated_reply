@@ -67,6 +67,10 @@ GENERAL_REPLY_REQUEST_PATTERNS = tuple(
 # 避免"为了安全"反而把日志行拉宽。
 LOG_URL_MAX_CHARS = 80
 _REDACTED_QUERY_MARK = "?<redacted>"
+# 判断模型 reason 的对外呈现长度上限：超长截断，只进日志/前端展示。
+DECISION_REASON_MAX_CHARS = 200
+# UMO（unified message object）为 platform:message_type:session_id 三段式。
+_UMO_PARTS = 3
 
 # 异常文本里的 URL 形态：scheme:// 开头，吃到引号/空白/括号为止。
 # 只认这一种形态（实证泄漏全部来自它），不做全文 secret 扫描（见方案 N7）。
@@ -176,8 +180,8 @@ def parse_decision_json(text: str) -> dict[str, Any] | None:
 
     # 规范化 reason
     reason = str(parsed.get("reason") or "未提供理由").strip()
-    if len(reason) > 200:
-        reason = reason[:200] + "..."
+    if len(reason) > DECISION_REASON_MAX_CHARS:
+        reason = reason[:DECISION_REASON_MAX_CHARS] + "..."
 
     return {
         "should_reply": should_reply,
@@ -243,8 +247,8 @@ def event_umo(event: AstrMessageEvent) -> str:
     raw = raw_umo(event)
     if not raw:
         return ""
-    parts = raw.split(":", 2)
-    if len(parts) < 3:
+    parts = raw.split(":", _UMO_PARTS - 1)
+    if len(parts) < _UMO_PARTS:
         return raw
     platform, msg_type, session_id = parts
     group_id = event_group_id(event)
@@ -254,8 +258,8 @@ def event_umo(event: AstrMessageEvent) -> str:
 
 
 def session_group_id(umo: str) -> str:
-    parts = str(umo or "").strip().split(":", 2)
-    if len(parts) == 3 and "group" in parts[1].lower():
+    parts = str(umo or "").strip().split(":", _UMO_PARTS - 1)
+    if len(parts) == _UMO_PARTS and "group" in parts[1].lower():
         return parts[2].strip()
     return ""
 
@@ -413,8 +417,7 @@ def strip_leading_mentions(text: str) -> str:
     raw = str(text or "").strip()
     raw = _AT_MENTION_PATTERN.sub("", raw).strip()
     raw = _CQ_AT_PATTERN.sub("", raw).strip()
-    raw = _TEXT_AT_PATTERN.sub("", raw).strip()
-    return raw
+    return _TEXT_AT_PATTERN.sub("", raw).strip()
 
 
 def clean_chat_text(text: str) -> str:

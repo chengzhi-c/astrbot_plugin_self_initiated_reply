@@ -43,6 +43,9 @@ from .utils import (
 DECISION_SYSTEM_PROMPT = "你是群聊主动回复时机判断器。只输出严格 JSON，不要输出解释。"
 # 裁决只输出短 JSON，120 token 足够且把判断调用成本封顶。
 DECISION_MAX_TOKENS = 120
+# 免打扰时段的时/分上下界（HH:MM 解析后的合法性校验）。
+_MAX_QUIET_HOUR = 23
+_MAX_QUIET_MINUTE = 59
 
 
 def _localtime_minutes() -> int:
@@ -138,7 +141,12 @@ class DecisionMaker:
             self._warn_invalid_quiet_hour(raw)
             return None
         sh, sm, eh, em = (int(part) for part in match.groups())
-        if sh > 23 or eh > 23 or sm > 59 or em > 59:
+        if (
+            sh > _MAX_QUIET_HOUR
+            or eh > _MAX_QUIET_HOUR
+            or sm > _MAX_QUIET_MINUTE
+            or em > _MAX_QUIET_MINUTE
+        ):
             self._warn_invalid_quiet_hour(raw)
             return None
         return sh * 60 + sm, eh * 60 + em
