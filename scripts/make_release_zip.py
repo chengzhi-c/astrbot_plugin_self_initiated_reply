@@ -15,7 +15,8 @@ assets/）。这里只读 wheel 并丢掉 pip 专用的 dist-info/ 元数据—�
 用法（发布目录必须只含一个目标 wheel；多个候选时显式传路径）：
 
     Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
-    python -m hatchling build
+    pip install hatch packaging   # 与 CI build 作业同命令
+    hatch build
     python scripts/check_wheel.py
     python scripts/check_sdist.py
     python scripts/make_release_zip.py

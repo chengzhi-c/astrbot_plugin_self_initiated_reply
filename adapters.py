@@ -324,7 +324,7 @@ class AstrBotBridge:
             history = json.loads(raw) if isinstance(raw, str) else raw
         except Exception as exc:
             logger.debug(
-                "[%s] read astrobot history failed session=%s error=%s", PLUGIN_ID, umo, exc
+                "[%s] read astrbot history failed session=%s error=%s", PLUGIN_ID, umo, exc
             )
             return []
         if not isinstance(history, list):

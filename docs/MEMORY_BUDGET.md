@@ -37,13 +37,13 @@ N = 活跃会话数（白名单上限 MAX_WHITELIST_SIZE = 1000）
 正常路径把冻结图片写入内容寻址的磁盘缓存，`ImageInfo.prepared_source` 只保留
 路径；磁盘不可用时才保留 data URL。内存回退按**原始载荷字节数**计数；热路径增量维护已入账字节，不再每次全量 `b64decode`。预算同时受：
 
-- `MAX_SESSION_IMAGE_MEMORY_BYTES = 16 MiB`：单会话图片索引预算；
-- `MAX_IMAGE_MEMORY_BYTES = 64 MiB`：所有会话图片索引共享预算；
-- `MAX_IMAGE_BYTES = 10 MiB`：单张图片输入上限。
+- `MAX_SESSION_IMAGE_MEMORY_BYTES = 16 * 1024 * 1024`：单会话图片索引预算；
+- `MAX_IMAGE_MEMORY_BYTES = 64 * 1024 * 1024`：所有会话图片索引共享预算；
+- `MAX_IMAGE_BYTES = 10 * 1024 * 1024`：单张图片输入上限。
 
 超出预算的图片不会进入会话索引，并记录 WARNING；淘汰按最旧图片事件进行，
-不会静默无限增长。Vision 描述缓存另受 `MAX_IMAGE_DESCRIPTION_CACHE_BYTES = 512 KiB`
-和 50 条条目上限约束。磁盘冻结缓存仍受 `MAX_IMAGE_CACHE_BYTES = 256 MiB`
+不会静默无限增长。Vision 描述缓存另受 `MAX_IMAGE_DESCRIPTION_CACHE_BYTES = 512 * 1024`
+和 50 条条目上限约束。磁盘冻结缓存仍受 `MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024`
 容量清理约束。
 
 ## 实测数据（CPython 3.14 / x64，sys.getsizeof 深度求和）
@@ -58,11 +58,15 @@ N = 活跃会话数（白名单上限 MAX_WHITELIST_SIZE = 1000）
 
 ## 常数与行为测试
 
+各常数的单位按**代码同型表达式**书写（可 grep 比对，避免 MiB/KiB 换算歧义）：
+
 - `MAX_CACHED_IMAGE_EVENTS × vision_max_images` = 每会话图片索引张数上限
-- `MAX_SESSION_IMAGE_MEMORY_BYTES` = 单会话 data URL 原始载荷字节上限
-- `MAX_IMAGE_MEMORY_BYTES` = 全局 data URL 原始载荷字节上限
-- `MAX_RECENT_MESSAGE_LIMIT` = 每会话历史消息条数上限（recent deque maxlen）
-- `MAX_IMAGE_BYTES` = 单张图片输入上限（`image/recorder_bridge.py`）
+- `MAX_SESSION_IMAGE_MEMORY_BYTES = 16 * 1024 * 1024` = 单会话 data URL 原始载荷字节上限
+- `MAX_IMAGE_MEMORY_BYTES = 64 * 1024 * 1024` = 全局 data URL 原始载荷字节上限
+- `MAX_IMAGE_DESCRIPTION_CACHE_BYTES = 512 * 1024` = Vision 描述内存缓存上限
+- `MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024` = 磁盘冻结缓存总容量上限
+- `MAX_RECENT_MESSAGE_LIMIT = 100` = 每会话历史消息条数上限（recent deque maxlen）
+- `MAX_IMAGE_BYTES = 10 * 1024 * 1024` = 单张图片输入上限
 
 字节预算行为：
 

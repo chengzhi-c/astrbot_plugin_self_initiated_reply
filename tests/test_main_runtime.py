@@ -970,7 +970,11 @@ def test_manual_check_records_sender_id(tmp_path: Path) -> None:
 
 
 def test_version_consistency_across_metadata() -> None:
-    """models / metadata.yaml / pyproject.toml / 双语 README 五源版本必须一致。
+    """版本号的每一处对外载体都必须与 ``PLUGIN_VERSION`` 一致。
+
+    载体：metadata.yaml、pyproject（经 hatchling 从 models.py 取值）、
+    README 徽章、CHANGELOG 最新发布行。README 自 0.9.3 起单语单徽章
+    （原 README.en.md 已并入英文摘要节），不再是"双语五源"。
 
     0.8.8 起 pyproject.toml 纳入守卫：0.8.7 发布时 pyproject 漏在守卫之外，
     导致 wheel 文件名与 dist-info 版本停留在 0.8.3（实测实锤），面板显示
@@ -1018,6 +1022,14 @@ def test_version_consistency_across_metadata() -> None:
     # 单一 README 单一徽章，不再有双语同步义务。
     readme = (root / "README.md").read_text(encoding="utf-8")
     assert f"-{version}-" in readme, "README.md badge 版本与 PLUGIN_VERSION 不一致"
+    # CHANGELOG 的最新发布版本行必须与 PLUGIN_VERSION 一致：两者都是"对外宣称的
+    # 当前版本"，此前无守卫，发版时漏写 changelog 会让用户看到的版本说明停留在上一版。
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    released = re.search(r"^## \[(\d+\.\d+\.\d+)\]", changelog, re.MULTILINE)
+    assert released is not None, "CHANGELOG.md 里找不到形如 '## [x.y.z]' 的发布版本行"
+    assert released.group(1) == version, (
+        f"CHANGELOG 最新发布版本 {released.group(1)!r} 与 PLUGIN_VERSION={version!r} 不一致"
+    )
     # 宿主下限声明保持一致
     assert '">=4.23.3,<5"' in metadata
 

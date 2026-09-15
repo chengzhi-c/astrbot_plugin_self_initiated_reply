@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -333,11 +333,11 @@ test("context-history setting describes its fallback behavior", async () => {
 
 test("CI runs the dependency-free frontend gate", async () => {
   const workflow = await readFile(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  // 只钉两条对"零依赖门禁还在跑"有决定意义的锚：frontend job 存在、且它执行
+  // node --test 跑契约文件。此前另有 3 条（setup-node 版本、通配符字面量、
+  // node --check 子串）——那些是**实现细节**：升级 action 版本或调整 glob 写法
+  // 都会变红，而红的原因与被守卫的契约（前端门禁不被误删）无关。
   assert.match(workflow, /^ {2}frontend:\r?\n/m);
-  assert.match(workflow, /actions\/setup-node@v4/);
-  // 覆盖全部设置页 JS/MJS，而不是只检查入口两文件。
-  assert.match(workflow, /pages\/主动回复设置\/\*\.\{js,mjs\}/);
-  assert.match(workflow, /node --check/);
   assert.match(workflow, /node --test tests\/frontend_contract\.test\.mjs/);
 });
 
@@ -1145,16 +1145,11 @@ test("prompt preview keeps unknown variables verbatim", () => {
   assert.ok(!out.includes("undefined"));
 });
 
-test("settings page JS sources keep lines under the maintainability cap", async () => {
-  const names = [
-    "app.js",
-    "chrome.mjs",
-    "config-form.mjs",
-    "config-io.mjs",
-    "frontend-core.mjs",
-    "providers.mjs",
-    "theme.mjs",
-  ];
+test("settings page JS sources keep lines within the width cap", async () => {
+  // 文件清单由目录派生，不手抄：手写清单在新增设置页脚本时不会自动跟上，
+  // 新文件的行宽就此无人看守（这类"名单腐烂"正是本套契约要防的形态）。
+  const names = (await readdir(pageDir)).filter((name) => /\.(js|mjs)$/.test(name)).sort();
+  assert.ok(names.includes("app.js"), "设置页脚本清单为空或目录读错");
   for (const name of names) {
     const text = await readFile(join(pageDir, name), "utf8");
     const lines = text.split(/\r?\n/);

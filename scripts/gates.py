@@ -20,6 +20,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = ROOT / "pages" / "主动回复设置"
 
+# 发布产物缺失时的构建指引。命令与 CI 的 build 作业逐字一致（`pip install
+# hatch packaging` + `hatch build`）：两边写法不同时，本地照提示构建会得到
+# 与 CI 不同的产物，而 check_wheel/check_sdist 只校验内容、不校验构建方式。
+_BUILD_HINT = (
+    "构建发布产物（与 CI build 作业同命令）：\n"
+    "  pip install hatch packaging\n"
+    "  hatch build\n"
+    "然后重跑本脚本以追加 wheel / sdist / deploy zip 三项检查。"
+)
+
 
 def _run(label: str, argv: list[str]) -> None:
     print(f"==> {label}")
@@ -68,6 +78,7 @@ def main(*, require_release: bool = False) -> int:
             "NOT RELEASE-VERIFIED: expected exactly one wheel and one sdist "
             f"(found wheel={len(wheels)}, sdist={len(sdists)})"
         )
+        print(_BUILD_HINT)
         if require_release:
             return 1
         print("OK: code gates passed; release artifacts were not verified")
