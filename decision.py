@@ -18,8 +18,8 @@ from typing import Any
 from astrbot.api import logger
 
 from .models import (
+    CONFIG_SPEC_BY_KEY,
     DECISION_JSON_CONTRACT,
-    DEFAULT_DECISION_PROMPT_TEMPLATE,
     PLUGIN_ID,
     REPLY_REQUEST_WINDOW_SEC,
     CheckTrigger,
@@ -335,11 +335,12 @@ class DecisionMaker:
                 recent, max_length=2000, allow_newlines=True
             ),
         }
-        # 回落也用 strip 口径：模板常量若带首尾空白，这里会把它原样喂给模型，
-        # 而读侧/面板看到的默认值都是 strip 后的——同一默认值的两副面孔。
+        # 回落取 ``ConfigSpec.reset_value``：与读侧落盘、面板「恢复默认」同一表达式。
+        # 若在此再写一次 ``.strip()``，模板常量字形带首尾空白时喂给模型的就是
+        # 另一副面孔的默认值。
         raw = (
             str(self.settings.decision_prompt_template or "").strip()
-            or DEFAULT_DECISION_PROMPT_TEMPLATE.strip()
+            or CONFIG_SPEC_BY_KEY["decision_prompt_template"].reset_value
         )
         rendered = re.sub(
             r"\{([a-zA-Z0-9_]+)\}",

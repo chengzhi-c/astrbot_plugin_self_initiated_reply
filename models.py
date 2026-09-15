@@ -1253,8 +1253,11 @@ class Settings:
 
     @property
     def decision_prompt_custom(self) -> bool:
+        """用户是否自定义了判断提示词（空值与内置默认都算「未自定义」）。"""
         prompt = str(self.decision_prompt_template or "").strip()
-        return bool(prompt and prompt != DEFAULT_DECISION_PROMPT_TEMPLATE.strip())
+        # 比照 ``ConfigSpec.reset_value`` 而非模板常量的字形：这里是第三种
+        # 口径（"与默认值相等即未自定义"），必须与读侧落盘、面板填充取同一表达式。
+        return bool(prompt and prompt != CONFIG_SPEC_BY_KEY["decision_prompt_template"].reset_value)
 
     def apply(self, other: Settings) -> None:
         """原地写入另一实例的全部字段，保持对象身份不变。

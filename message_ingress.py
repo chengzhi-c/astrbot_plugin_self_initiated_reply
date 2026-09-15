@@ -27,16 +27,13 @@ from .utils import (
     session_is_private,
     session_whitelisted,
     should_ignore_event,
-    whitelist_storage_key,
 )
 
 if TYPE_CHECKING:
     from .main import SelfInitiatedReplyPlugin
 
 
-def _eligible_session(
-    plugin: SelfInitiatedReplyPlugin, event: AstrMessageEvent
-) -> tuple[str, str] | None:
+def _eligible_session(plugin: SelfInitiatedReplyPlugin, event: AstrMessageEvent) -> str | None:
     if plugin._stopping or not plugin.runtime_enabled or event.is_stopped():
         return None
     umo = event_umo(event)
@@ -44,12 +41,15 @@ def _eligible_session(
         return None
     if session_is_private(umo) and not plugin.settings.enabled_private_sessions:
         return None
-    state_key = whitelist_storage_key(umo)
-    plugin._whitelist_runtime_umos.setdefault(state_key, set()).add(umo)
+    # 索引键取白名单项的写法（完整 UMO 一条、有群号再补一条），不是状态键：
+    # scheduler 与 whitelist.replace 都按白名单项查这张表。``event_umo`` 的输出
+    # 恒为已 strip 的规范写法（raw_umo 先 strip，重建时首尾字符非空白），所以
+    # 此处直接用 umo，无需再套一次状态键派生。
+    plugin._whitelist_runtime_umos.setdefault(umo, set()).add(umo)
     group_id = session_group_id(umo)
     if group_id:
         plugin._whitelist_runtime_umos.setdefault(group_id, set()).add(umo)
-    return umo, state_key
+    return umo
 
 
 def _accepted_content(
@@ -57,7 +57,6 @@ def _accepted_content(
     event: AstrMessageEvent,
     text: str,
     umo: str,
-    state_key: str,
 ) -> tuple[str, bool] | None:
     """Return normalized content, invalidating ignored or empty events."""
     clean_text = clean_chat_text(text)
@@ -79,7 +78,7 @@ def _accepted_content(
             plugin._coordinator.invalidate(umo)
     if ignored:
         if not is_self_message(event) and is_explicit_direct_call(event, text):
-            state = plugin._state_for(state_key)
+            state = plugin._state_for(umo)
             state.last_active_at = now_ts()
             state.last_active_sender_id = event_sender_id(event)
         return None
@@ -93,7 +92,6 @@ def _record_message(
     event: AstrMessageEvent,
     *,
     umo: str,
-    state_key: str,
     clean_text: str,
 ) -> tuple[int, float]:
     if plugin.settings.abandon_stale_on_new_message or not plugin._gate.current(umo):
@@ -103,7 +101,7 @@ def _record_message(
     active_at = append_recent_user_message(
         plugin,
         event,
-        state_key=state_key,
+        umo=umo,
         clean_text=clean_text,
     )
     plugin._coordinator.record_event(umo, event, active_at)
@@ -168,11 +166,10 @@ async def handle_incoming_message(
         await plugin._handle_inline_command(event, parsed)
         return
 
-    session = _eligible_session(plugin, event)
-    if session is None:
+    umo = _eligible_session(plugin, event)
+    if umo is None:
         return
-    umo, state_key = session
-    content = _accepted_content(plugin, event, text, umo, state_key)
+    content = _accepted_content(plugin, event, text, umo)
     if content is None:
         return
     clean_text, has_images = content
@@ -180,7 +177,6 @@ async def handle_incoming_message(
         plugin,
         event,
         umo=umo,
-        state_key=state_key,
         clean_text=clean_text,
     )
     if has_images:

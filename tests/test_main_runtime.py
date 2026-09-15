@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -1354,6 +1355,38 @@ def test_cooldown_skips_decision_model_after_proactive_reply(tmp_path: Path) -> 
         assert calls == []
 
     with_plugin(tmp_path, scenario, cooldown_sec=900, min_silence_sec=0)
+
+
+def test_startup_persist_failure_is_logged(tmp_path: Path, monkeypatch: Any, caplog: Any) -> None:
+    """``persist_settings_config`` 返回 False 时启动路径必须记 ERROR。
+
+    失败只由 ``write_json_atomic`` 记一条 warning 的话，用户看到的是"配置正常
+    加载、插件正常工作"，而磁盘上一直是旧形状、下次启动还会再迁一遍。行为断言
+    （而不是只看源码里有没有 ``if``）才能覆盖 ``if False and not persist(...)``
+    这类"保留了分支却不再执行"的形态。
+    """
+    from .host_stubs import capture_logs, load_main, messages_at_least
+
+    main = load_main()
+    calls: list[str] = []
+
+    def failing_persist(*args: Any, **kwargs: Any) -> bool:
+        calls.append("persist")
+        return False
+
+    monkeypatch.setattr(main, "persist_settings_config", failing_persist)
+
+    async def scenario(plugin, _main):
+        return None
+
+    with capture_logs(caplog, main.logger):
+        with_plugin(tmp_path, scenario)
+
+    assert calls == ["persist"], "启动路径没有调用 persist_settings_config"
+    errors = messages_at_least(caplog, logging.ERROR)
+    assert any("配置规范化落盘失败" in message for message in errors), (
+        f"落盘失败没有记 ERROR，实际日志：{errors}"
+    )
 
 
 def test_messages_during_running_check_coalesce_to_one_follow_up(tmp_path: Path) -> None:

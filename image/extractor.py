@@ -192,18 +192,22 @@ def _raw_image_components(event: Any) -> list[Any]:
     return [component for component in segments if _component_type(component) in _IMAGE_TYPES]
 
 
-def _eligible_image_entries(event: Any, *, skip_stickers: bool) -> Iterator[tuple[Any, Any]]:
-    """产出参与判定的图片条目（``(归一化组件, 原始段)``），按需滤掉表情包。
+def _eligible_image_entries(event: Any, *, skip_stickers: bool) -> Iterator[tuple[Any, Any, bool]]:
+    """产出参与判定的图片条目（``(归一化组件, 原始段, 是否贴纸)``），按需滤掉表情包。
 
     ``has_images``（是否存在图片）与 ``extract_images``（能否抽出可用来源）是
     两个判据，不能互相替代：组件存在但 url/file 全空时前者为真、后者为空，
     ``message_ingress._accepted_content`` 的 "[图片]" 回落正依赖这一点。两者
     此前各写一份"遍历 ``_image_entries`` + 判贴纸"，此处单点化。
+
+    贴纸判据随条目一并产出：``extract_images`` 无论如何都要它（写入
+    ``ImageInfo.is_sticker``），调用方再算一遍就是同一字段读两次。
     """
     for component, raw_component in _image_entries(event):
-        if skip_stickers and _component_is_sticker(component, raw_component=raw_component):
+        is_sticker = _component_is_sticker(component, raw_component=raw_component)
+        if skip_stickers and is_sticker:
             continue
-        yield component, raw_component
+        yield component, raw_component, is_sticker
 
 
 def _image_entries(event: Any) -> list[tuple[Any, Any]]:
@@ -273,13 +277,9 @@ class ImageExtractor:
         images: list[ImageInfo] = []
         try:
             message_id = _event_message_id(event)
-            for component, raw_component in _eligible_image_entries(
+            for component, raw_component, is_sticker in _eligible_image_entries(
                 event, skip_stickers=skip_stickers
             ):
-                is_sticker = _component_is_sticker(
-                    component,
-                    raw_component=raw_component,
-                )
                 raw_url = _component_value(component, "url")
                 normalized_file = _component_value(component, "file", "path", "local_path")
                 # Only a non-mapping, normalized AstrBot component may mark an

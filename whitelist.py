@@ -16,7 +16,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .models import PLUGIN_ID, Settings
-from .utils import is_full_umo, session_group_id, session_whitelisted, whitelist_storage_key
+from .utils import is_full_umo, session_group_id, session_whitelisted
 
 
 class WhitelistManager:
@@ -144,7 +144,7 @@ class WhitelistManager:
         existed = session_whitelisted(umo, self.settings.whitelist)
         old_whitelist = set(self.settings.whitelist)
         pruned = self.replace(old_whitelist | {umo})
-        self._ensure_state(whitelist_storage_key(umo))
+        self._ensure_state(umo)
         return not await self._commit_and_audit(
             label="add", umo=umo, old_whitelist=old_whitelist, pruned=pruned, existed=existed
         )

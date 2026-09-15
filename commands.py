@@ -25,7 +25,6 @@ from .utils import (
     raw_umo,
     session_whitelisted,
     strip_leading_mentions,
-    whitelist_storage_key,
 )
 
 if TYPE_CHECKING:
@@ -176,7 +175,7 @@ async def dispatch_command_action(
         return help_text()
     if action == "status":
         # 只读组装：不得经 state_for 隐式创建并滞留非白名单会话的状态。
-        state = read_session_state(plugin, whitelist_storage_key(umo)) if umo else SessionState()
+        state = read_session_state(plugin, umo) if umo else SessionState()
         return status_text(
             plugin.settings, event, state, plugin.runtime_enabled, plugin.lifecycle_state
         )
@@ -208,7 +207,7 @@ async def dispatch_command_action(
             append_recent_user_message(
                 plugin,
                 event,
-                state_key=whitelist_storage_key(umo),
+                umo=umo,
                 clean_text=text,
             )
         try:

@@ -167,11 +167,29 @@ def test_status_endpoint_is_declared_ops_only() -> None:
 
 
 def test_legacy_state_migration_is_not_on_the_read_path() -> None:
-    """``state_for`` 不得再 pop legacy 键；迁移只在 load_sessions 一侧。"""
-    assert "pop(" not in method_source("plugin_state.py", "state_for"), (
-        "state_for 又在热路径上做写操作（迁移/清理）"
+    """``state_for`` 不得再 pop legacy 键；迁移是 ``load_sessions`` 的唯一调用。
+
+    用调用者清单而不是子串匹配：子串断言里在 ``load_sessions`` 留一句带该名的
+    注释就能通过，而"谁在调用"才是这条契约本身。``state_for`` 一侧同时禁
+    ``pop`` 与 ``del``（同一写旁路的两种写法）。
+    """
+    for node in ast.walk(module_ast("plugin_state.py")):
+        if not (isinstance(node, ast.FunctionDef) and node.name == "state_for"):
+            continue
+        writes = [
+            ast.unparse(child)
+            for child in ast.walk(node)
+            if isinstance(child, ast.Delete)
+            or (isinstance(child, ast.Call) and ast.unparse(child.func).endswith(".pop"))
+        ]
+        assert not writes, f"state_for 又在热路径上做写操作（迁移/清理）：{writes}"
+        break
+    else:
+        raise AssertionError("plugin_state.py 里找不到 state_for")
+
+    assert callers_of("storage.py", "_migrate_legacy_group_keys") == ["load_sessions"], (
+        "legacy 迁移的调用点不再是 load_sessions 单点"
     )
-    assert "_migrate_legacy_group_keys" in method_source("storage.py", "load_sessions")
 
 
 # ============================================================================
@@ -244,16 +262,32 @@ def test_css_sections_match_header_declaration() -> None:
 
 
 def test_storage_key_is_derived_in_plugin_state_only() -> None:
-    """scheduler/pipeline 不再各自先算状态键再传给 ``state_for``。"""
-    for rel, qualname in (
-        ("scheduler.py", "_wait_for_minimum_silence"),
-        ("scheduler.py", "_patrol_one_session"),
-        ("session_pipeline.py", "check_session_locked"),
+    """状态键的派生点只有 ``plugin_state``：其余模块一律传 UMO，不自己算键。
+
+    ``whitelist_storage_key`` 是「状态键是什么」的唯一命名接缝。调用方各自
+    先算键再传时，改一次口径要全仓搜；入口（message_ingress/commands）、
+    scheduler、pipeline、whitelist 都曾各算一份。
+    """
+    for rel in (
+        "scheduler.py",
+        "session_pipeline.py",
+        "whitelist.py",
+        "message_ingress.py",
+        "commands.py",
     ):
-        body = method_source(rel, qualname)
-        assert "whitelist_storage_key(" not in body, (
-            f"{rel}.{qualname} 又自行计算状态键：派生点应只有 plugin_state.state_for"
-        )
+        references = [
+            f"line {node.lineno}"
+            for node in ast.walk(module_ast(rel))
+            if (isinstance(node, ast.Name) and node.id == "whitelist_storage_key")
+            or (
+                isinstance(node, ast.ImportFrom)
+                and any(alias.name == "whitelist_storage_key" for alias in node.names)
+            )
+        ]
+        assert not references, f"{rel} 又自行派生状态键：{references}"
+
+    # storage 是键的落地实现（读写都按它落盘），plugin_state 是热路径入口，
+    # 两处以外的消费点都被上面的循环排除。
     assert "whitelist_storage_key(umo)" in method_source("plugin_state.py", "state_for")
 
 
@@ -310,7 +344,14 @@ def test_whitespace_patterns_are_not_recompiled_inline() -> None:
 
 
 def test_startup_persist_failure_is_not_swallowed() -> None:
-    """``persist_settings_config`` 的返回值在启动路径上必须被消费。"""
+    """``persist_settings_config`` 的返回值在启动路径上必须被消费。
+
+    "被消费"的**行为**断言在 ``tests/test_main_runtime.py``
+    （``test_startup_persist_failure_is_logged``，注入返回 False 的实现后要求
+    出现 ERROR 日志）——本文件只补源码层的裸调用守卫：``if False and not
+    persist(...)`` 这类"保留了分支却不再执行"的写法行为测试能抓，而裸调用
+    与"只赋值不使用"只有这里能一眼看全。
+    """
     bare_calls = [
         ast.unparse(node)
         for node in ast.walk(module_ast("main.py"))
@@ -320,3 +361,26 @@ def test_startup_persist_failure_is_not_swallowed() -> None:
     ]
     assert not bare_calls, f"启动路径又吞掉了 persist_settings_config 的返回值：{bare_calls}"
     assert _call_count("main.py", "SelfInitiatedReplyPlugin.__init__", "logger.error") >= 1
+
+
+def test_default_prompt_is_consumed_through_the_spec() -> None:
+    """默认判断提示词只经 ``ConfigSpec.reset_value`` 消费。
+
+    同一默认值此前有四处各自的 ``.strip()`` 口径（coerce 收口、webapi 面板填充、
+    decision 回落、``Settings.decision_prompt_custom`` 的比对）。模板常量字形一旦
+    带首尾空白，四副面孔就会漂移成「恢复默认 → 保存被误报改过字段」与"喂给模型的
+    默认值不等于面板显示的默认值"。本断言钉住消费面：models 之外不得再出现模板
+    常量的名字，三个消费点都必须读规格表的规范化取值。
+    """
+    for rel in ("decision.py", "webapi.py", "plugin_state.py", "main.py"):
+        assert "DEFAULT_DECISION_PROMPT_TEMPLATE" not in source_of(rel), (
+            f"{rel} 又直接引用模板常量：默认值的 strip 口径应是 spec.reset_value"
+        )
+    for rel, qualname in (
+        ("decision.py", "build_decision_prompt"),
+        ("webapi.py", "_api_get_config"),
+    ):
+        assert "reset_value" in method_source(rel, qualname), f"{rel}.{qualname} 未从规格表取默认值"
+    assert 'CONFIG_SPEC_BY_KEY["decision_prompt_template"].reset_value' in method_source(
+        "models.py", "decision_prompt_custom"
+    )

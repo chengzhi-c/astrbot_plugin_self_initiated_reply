@@ -341,7 +341,7 @@ class SelfInitiatedReplyPlugin(Star):
             settings=self.settings,
             sync_whitelist=self._persist_config,
             save_storage=lambda: self._save_storage(),
-            ensure_state=lambda key: self._state_for(key),
+            ensure_state=lambda umo: self._state_for(umo),
             invalidate=lambda umo: self._coordinator.invalidate(umo),
             prune=lambda umo: self._prune_session(umo),
             sessions=self.sessions,
