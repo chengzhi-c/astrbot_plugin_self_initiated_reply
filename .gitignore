@@ -16,6 +16,9 @@ coverage.*
 .scratch/
 dist/
 data/
+# 本地虚拟环境（uv 默认名）：仓库根的 venv 不属于源码；此前漏列正是
+# scripts/gates.py 需要维护 40 行 tracked-files 文件列表喂 ruff 的根因。
+.venv/
 node_modules/
 output/playwright/
 output/preview/

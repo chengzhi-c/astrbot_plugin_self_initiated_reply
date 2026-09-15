@@ -311,7 +311,6 @@ def test_gates_reports_not_release_verified_without_artifacts(
     (page / "app.js").write_text("const ok = true;\n", encoding="utf-8")
     monkeypatch.setattr(gates, "ROOT", tmp_path)
     monkeypatch.setattr(gates, "PAGE", page)
-    monkeypatch.setattr(gates, "ruff_targets", lambda: ["main.py"])
     monkeypatch.setattr(gates, "_run", lambda _label, _argv: None)
 
     assert gates.main() == 0
@@ -339,7 +338,6 @@ def test_gates_release_mode_rejects_missing_artifacts(tmp_path: Path, monkeypatc
     (page / "app.js").write_text("const ok = true;\n", encoding="utf-8")
     monkeypatch.setattr(gates, "ROOT", tmp_path)
     monkeypatch.setattr(gates, "PAGE", page)
-    monkeypatch.setattr(gates, "ruff_targets", lambda: ["main.py"])
     monkeypatch.setattr(gates, "_run", lambda _label, _argv: None)
 
     assert gates.main(require_release=True) == 1

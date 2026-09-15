@@ -64,7 +64,7 @@ DANGEROUS_TOOL_MODULES = [
 # 2. 10 个子指令与指令组共用同一个 CommandReply 别名，别名一旦不可解析，
 #    9 个子指令会同时报错。
 #
-# 加指令时同步改这里与 tests/test_host_contract.py 的同名断言。
+# 加指令时同步改这里——tests/test_host_contract.py 经 import 引用本常量（单源）。
 EXPECTED_HANDLER_COUNT = 10
 
 

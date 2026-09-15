@@ -346,8 +346,11 @@ def test_command_handler_annotations_resolve_at_runtime() -> None:
         name for name in dir(plugin_cls) if name == "on_message" or name.startswith("selfreply")
     ]
     assert "on_message" in handler_names
-    # 指令族共 10 个（组本身 selfreply + 9 个子指令），少于此说明漏扫了。
-    assert len([n for n in handler_names if n.startswith("selfreply")]) == 10
+    # 指令族数量与 scripts/compat_check.py 的 EXPECTED_HANDLER_COUNT 同源：
+    # 少于该数说明漏扫了（脚本侧同名常量防「检查空转」假绿）。
+    from scripts.compat_check import EXPECTED_HANDLER_COUNT
+
+    assert len([n for n in handler_names if n.startswith("selfreply")]) == EXPECTED_HANDLER_COUNT
 
     for name in handler_names:
         target = getattr(plugin_cls, name)
