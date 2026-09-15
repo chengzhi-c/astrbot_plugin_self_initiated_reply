@@ -3,6 +3,14 @@
    =================================================================
    令牌在 :root；其后为重置、骨架、控件、卡片、响应式、无障碍。
    ================================================================= */
+/* SVG symbol 容器：视觉零占位（从 index.html 内联样式迁入，保首屏 CSS 单一来源） */
+.icon-sprite {
+	position: absolute;
+	width: 0;
+	height: 0;
+	overflow: hidden;
+}
+
 :root {
 	color-scheme: light dark;
 	--bg: #f0f2f7;
@@ -72,9 +80,11 @@
 	--tap: 44px;
 	--shell-pad: 28px;
 	--ease: cubic-bezier(0.16, 1, 0.3, 1);
+	--fs-100: 11px;
 	--fs-200: 12px;
 	--fs-300: 13px;
 	--fs-400: 14px;
+	--fs-500: 17px;
 	--fs-600: 18px;
 	--fs-700: 22px;
 	--sp-1: 2px;
@@ -87,7 +97,6 @@
 	--sp-8: 24px;
 	--topbar-h: 88px;
 
-	--skip-fg: #ffffff;
 	--on-accent: #ffffff;
 	--master-border: rgba(72, 84, 132, 0.35);
 	--master-sheen: rgba(72, 84, 132, 0.08);
@@ -137,7 +146,6 @@
 	--scroll-thumb: rgba(224, 160, 64, 0.24);
 	--toast-bg: rgba(26, 18, 12, 0.96);
 	--toast-text: #f7efe6;
-	--skip-fg: #0e0b08;
 	--on-accent: #0e0b08;
 	--master-border: rgba(224, 160, 64, 0.38);
 	--master-sheen: rgba(96, 64, 32, 0.55);
@@ -196,7 +204,6 @@
 	--scroll-thumb: rgba(224, 160, 64, 0.24);
 	--toast-bg: rgba(26, 18, 12, 0.96);
 	--toast-text: #f7efe6;
-	--skip-fg: #0e0b08;
 	--on-accent: #0e0b08;
 	--master-border: rgba(224, 160, 64, 0.38);
 	--master-sheen: rgba(96, 64, 32, 0.55);
@@ -300,8 +307,8 @@ code {
 	padding: 8px 16px;
 	border-radius: var(--radius-btn);
 	background: var(--accent);
-	color: var(--skip-fg);
-	font-size: 13px;
+	color: var(--on-accent);
+	font-size: var(--fs-300);
 	font-weight: 700;
 	text-decoration: none;
 	box-shadow: var(--shadow-drop);
@@ -441,7 +448,7 @@ details.panel {
 .sidenav-title {
 	margin: 0 4px 2px;
 	color: var(--faint);
-	font-size: 11px;
+	font-size: var(--fs-100);
 	font-weight: 700;
 	letter-spacing: 0.12em;
 	text-transform: uppercase;
@@ -553,7 +560,7 @@ details.panel {
 	color: var(--text-soft);
 	cursor: pointer;
 	font: inherit;
-	font-size: 13px;
+	font-size: var(--fs-300);
 	font-weight: 700;
 	box-shadow: var(--shadow-btn);
 	transition:
@@ -795,7 +802,7 @@ body.is-ready .master,
 .readout strong {
 	display: block;
 	margin-top: 3px;
-	font-size: 17px;
+	font-size: var(--fs-500);
 	font-weight: 700;
 	letter-spacing: -0.02em;
 	font-variant-numeric: tabular-nums;
@@ -876,9 +883,6 @@ body.is-ready .master,
 	margin-right: 0.3em;
 	vertical-align: -0.15em;
 	color: var(--accent);
-}
-.panel > .field + .muted {
-	margin-top: var(--sp-5);
 }
 .panel-collapsible {
 	padding: 0;
@@ -962,7 +966,7 @@ body.is-ready .master,
 	border-color: transparent;
 	background: var(--ornament-soft);
 	color: var(--stat-kicker);
-	font-size: 11px;
+	font-size: var(--fs-100);
 }
 .origin-count .origin-head {
 	min-height: 24px;
@@ -994,7 +998,7 @@ body.is-ready .master,
 	color: var(--accent-text);
 	cursor: pointer;
 	font: inherit;
-	font-size: 11px;
+	font-size: var(--fs-100);
 	font-weight: 700;
 	transition:
 		background 0.16s var(--ease),
@@ -1013,7 +1017,7 @@ body.is-ready .master,
 	border-radius: var(--radius-xs);
 	background: var(--surface-2);
 	border: 1px solid var(--border);
-	font-size: 12px;
+	font-size: var(--fs-200);
 	color: var(--muted);
 }
 .whitelist-summary {
@@ -1030,7 +1034,7 @@ body.is-ready .master,
 .field-label em {
 	font-style: normal;
 	font-weight: 500;
-	font-size: 11px;
+	font-size: var(--fs-100);
 	color: var(--faint);
 }
 input,
@@ -1105,7 +1109,7 @@ textarea {
 	gap: 5px;
 	align-items: center;
 	color: var(--danger);
-	font-size: 12px;
+	font-size: var(--fs-200);
 	font-weight: 500;
 	line-height: 1.5;
 }
@@ -1127,7 +1131,7 @@ textarea {
 }
 .field-hint {
 	color: var(--faint);
-	font-size: 12px;
+	font-size: var(--fs-200);
 	line-height: 1.6;
 }
 .field-hint::before {
@@ -1229,13 +1233,12 @@ textarea {
 }
 .provider-hint {
 	display: block;
-	font-size: 12px;
+	font-size: var(--fs-200);
 }
-.vision-provider-field {
-	display: grid;
+.vision-provider-field .provider-control {
+	/* vision 场景 select/input/button 纵排：列宽退化与 judge 的横排差异
+	   仅在网格列定义，其余共享 .provider-control 基础规则。 */
 	grid-template-columns: minmax(0, 1fr) auto;
-	gap: 8px;
-	align-items: center;
 }
 .field-grid > .provider-cell {
 	grid-column: span 2;
@@ -1299,7 +1302,7 @@ textarea {
 	border-radius: 999px;
 	background: var(--accent-soft);
 	color: var(--accent-text);
-	font-size: 11px;
+	font-size: var(--fs-100);
 	font-weight: 700;
 }
 .prompt-preview {
@@ -1313,7 +1316,7 @@ textarea {
 	color: var(--text-soft);
 	font-family:
 		"JetBrains Mono", Consolas, "Cascadia Mono", ui-monospace, monospace;
-	font-size: 12px;
+	font-size: var(--fs-200);
 	line-height: 1.7;
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
@@ -1343,7 +1346,7 @@ textarea {
 	padding: 10px 14px;
 	color: var(--text);
 	cursor: pointer;
-	font-size: 13px;
+	font-size: var(--fs-300);
 	font-weight: 700;
 	list-style: none;
 	transition: color 0.16s var(--ease);
@@ -1457,7 +1460,7 @@ textarea {
 		color-mix(in srgb, var(--accent), #ffffff 12%),
 		var(--accent)
 	);
-	color: var(--skip-fg);
+	color: var(--on-accent);
 	letter-spacing: 0.02em;
 	box-shadow: var(--shadow-drop);
 }
@@ -1515,7 +1518,7 @@ textarea {
 .btn.danger:hover {
 	border-color: var(--danger);
 	background: var(--danger);
-	color: var(--skip-fg);
+	color: var(--on-accent);
 	box-shadow: var(--shadow-drop);
 }
 .btn.danger:focus-visible {
@@ -1561,7 +1564,7 @@ textarea {
 	box-shadow: var(--focus-ring);
 }
 .save-state {
-	font-size: 13px;
+	font-size: var(--fs-300);
 	font-weight: 700;
 	color: var(--muted);
 	transition: color 0.16s var(--ease);
@@ -1817,7 +1820,7 @@ textarea {
 		flex: 1 1 auto;
 	}
 	.topbar .brand-text h1 {
-		font-size: 18px;
+		font-size: var(--fs-600);
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -1937,7 +1940,7 @@ textarea {
 		color: var(--muted);
 		cursor: pointer;
 		font: inherit;
-		font-size: 11px;
+		font-size: var(--fs-100);
 		font-weight: 700;
 		transition:
 			color 0.16s var(--ease),

@@ -1058,6 +1058,8 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
     if spec.kind == "enum":
         return choice(raw, set(spec.options), str(fallback))
     if spec.kind == "text":
+        # 空值回落默认模板：与 webapi._strict_value 的 text 分支是同一产品语义
+        # （面板留空即复位）在读写两侧的实现——新增 text 类配置键时两处需同步。
         text = str(raw or "").strip() or DEFAULT_DECISION_PROMPT_TEMPLATE.strip()
         if spec.max_len is not None and len(text) > spec.max_len:
             logger.warning(

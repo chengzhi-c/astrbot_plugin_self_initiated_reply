@@ -97,7 +97,7 @@ def list_text(settings: Settings) -> str:
 def status_text(
     settings: Settings,
     event: AstrMessageEvent,
-    state: object,
+    state: SessionState,
     runtime_enabled: bool,
     lifecycle: str,
 ) -> str:
@@ -136,8 +136,8 @@ def status_text(
             f"忽略发送者: {', '.join(sorted(settings.ignored_sender_ids)) or '-'}",
             f"冷却: {settings.cooldown_sec}s，今日上限: "
             f"{settings.max_daily_replies_per_session or '不限'}",
-            f"今日已回复: {getattr(state, 'daily_count', 0)}",
-            f"上次主动回复: {fmt_ts(getattr(state, 'last_proactive_at', 0.0))}",
+            f"今日已回复: {state.daily_count}",
+            f"上次主动回复: {fmt_ts(state.last_proactive_at)}",
             "回复生成: AstrBot 正常 LLM 管线模式",
             "表情包/LivingMemory: 由 AstrBot 主回复链中的插件自动处理",
         ]

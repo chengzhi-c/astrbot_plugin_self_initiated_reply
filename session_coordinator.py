@@ -145,7 +145,8 @@ class SessionCoordinator:
         return freed, key
 
     def _append_image_event(self, umo: str, timestamp: float, images: list[Any]) -> None:
-        # deque(maxlen=MAX_CACHED_IMAGE_EVENTS) 满员时自动逐出最旧事件，无需手工 popleft。
+        # 空图片列表也入队占位：事件的时间戳参与「该会话最近有无图片」的
+        # 判定与保护窗口，丢掉空事件会让时序断档；字节数为 0，预算无影响。
         image_events = self._images.setdefault(umo, deque(maxlen=MAX_CACHED_IMAGE_EVENTS))
         dropped = None
         if image_events.maxlen and len(image_events) == image_events.maxlen:

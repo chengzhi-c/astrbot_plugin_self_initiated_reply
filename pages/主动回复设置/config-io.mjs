@@ -13,7 +13,6 @@ import {
 	missingConfigPayloadKeys,
 	providerNeedsManualInput,
 } from "./frontend-core.mjs";
-export { WHITELIST_ILLEGAL_RE };
 const CONFIG_CONTROL_SELECTOR = "[data-config-key]";
 
 /** POST /config fields are declared by form data-config-key metadata. */
@@ -104,6 +103,12 @@ export function createConfigIo(deps) {
 		isProviderListAvailable = () => false,
 	} = deps;
 	const coordinator = requestCoordinator || createConfigRequestCoordinator();
+	// 三个 Provider 控件的唯一注册表：读写表单与保存请求共用同一映射。
+	const providerControls = () => ({
+		judge: judgeProviderControl,
+		vision: visionProviderControl,
+		visionJudge: visionJudgeProviderControl,
+	});
 	let numberFields = [];
 	let saveStateKind = "";
 	let lastKnownConfig = {};
@@ -275,12 +280,7 @@ export function createConfigIo(deps) {
 	}
 	function applyConfigPayload(config) {
 		const e = els();
-		const providerControls = {
-			judge: judgeProviderControl,
-			vision: visionProviderControl,
-			visionJudge: visionJudgeProviderControl,
-		};
-		loadConfigControls(e.configForm, config, providerControls);
+		loadConfigControls(e.configForm, config, providerControls());
 		e.decisionPromptInput.dataset.defaultPrompt =
 			config.decision_prompt_default || config.decision_prompt_template || "";
 		const whitelist = parseWhitelist(e.whitelistInput.value);
@@ -396,22 +396,18 @@ export function createConfigIo(deps) {
 		try {
 			const body = buildConfigSaveBody(
 				e.configForm,
-				{
-					judge: judgeProviderControl,
-					vision: visionProviderControl,
-					visionJudge: visionJudgeProviderControl,
-				},
+				providerControls(),
 				state.configRevision,
 				lastKnownConfig,
 			);
 			let result;
-			for (const key of providerConfigKeys(e.configForm)) {
-				if (providerNeedsManualInput(
+			const offList = providerConfigKeys(e.configForm).some((key) =>
+				providerNeedsManualInput(
 					body[key], getProviderOptions(), isProviderListAvailable(),
-				)) {
-					showToast("部分 Provider ID 不在列表中，已继续保存，请确认拼写无误");
-					break;
-				}
+				)
+			);
+			if (offList) {
+				showToast("部分 Provider ID 不在列表中，已继续保存，请确认拼写无误");
 			}
 			try {
 				result = await apiPost("config", body);

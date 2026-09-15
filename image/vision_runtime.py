@@ -59,6 +59,8 @@ class VisionService:
             return None
         timeout = float(self._settings.vision_timeout_sec)
         if self._parser_timeout != timeout:
+            # timeout 变化只会发生在改配置的瞬间：直接全量重建（描述 LRU 随
+            # 实例丢弃）比按 provider 逐个比对复杂度低，且该路径触发频率极低。
             self._parsers.clear()
             self._parser_timeout = timeout
         key = str(provider_id or "").strip()

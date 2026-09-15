@@ -304,7 +304,7 @@ test("every data-config-control in the page is registered in config-io", async (
     [...html.matchAll(/data-config-control="([^"]+)"/g)].map((m) => m[1]),
   );
   assert.ok(declared.size > 0, "index.html declares no data-config-control");
-  const registry = configIo.match(/const providerControls = \{([\s\S]*?)\};/);
+  const registry = configIo.match(/const providerControls = \(\) => \(\{([\s\S]*?)\}\);/);
   assert.ok(registry, "config-io.mjs providerControls registry not found");
   const registered = new Set(
     [...registry[1].matchAll(/(\w+):/g)].map((m) => m[1]),

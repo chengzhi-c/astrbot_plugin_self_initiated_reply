@@ -114,6 +114,8 @@ class DecisionMaker:
             return f"静默时间不足：{elapsed}s / {self.settings.min_silence_sec}s。"
         cooldown_left = self.settings.cooldown_sec - (self._clock() - state.last_proactive_at)
         if cooldown_left >= 1:
+            # 阈值取 1 秒而非 >0：亚秒剩余在文案上等于「冷却中：还剩 0s」，
+            # 语义矛盾；不足整秒直接放行，误差落在下一次触发上。
             return f"冷却中：还剩 {duration(cooldown_left)}。"
         if state.last_proactive_observed_at >= state.last_active_at:
             return "这条消息之后已经主动回复过。"
@@ -303,7 +305,11 @@ class DecisionMaker:
     async def build_decision_prompt(self, umo: str, state: SessionState, trigger: str) -> str:
         aliases = "、".join(self.settings.bot_aliases) or "未配置"
         recent = await self.build_recent_messages(
-            umo, state, limit=max(8, self.settings.decision_history_min_messages)
+            umo,
+            state,
+            # 下限 8：默认提示词明示「优先参考最近至少 8 条历史」，读太少会让
+            # 模型按提示词要求反复回宿主补历史；配置高于 8 时尊重配置。
+            limit=max(8, self.settings.decision_history_min_messages),
         )
         image_context = await self._build_image_context(
             umo,

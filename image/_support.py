@@ -83,6 +83,17 @@ def sniff_image_mime(data: bytes) -> str:
     return ""
 
 
+# MIME→扩展名映射：与 sniff_image_mime 支持的格式同址维护，
+# 新增可嗅探格式时两处一起改（内容寻址落盘与魔数校验共用同一格式集）。
+MIME_EXTENSIONS: dict[str, str] = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+}
+
+
 class ImageCache:
     """In-event-loop LRU bounded by entry count and UTF-8 bytes."""
 

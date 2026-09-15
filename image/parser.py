@@ -31,6 +31,7 @@ from ._support import (
     ALLOWED_IMAGE_PORTS,
     HTTP_SCHEMES,
     MAX_DESCRIPTION_CHARS,
+    MIME_EXTENSIONS,
     URL_SCHEMES,
     VISION_MAX_CONCURRENT,
     ImageCache,
@@ -51,7 +52,7 @@ VISION_SYSTEM_PROMPT_TEXT = (
 
 
 _UNABLE_PATTERNS = re.compile(
-    r"无法[查查看].*图|不能.*[查查看].*图|没有.*图片|未.*上传|"
+    r"无法[查看].*图|不能.*[查看].*图|没有.*图片|未.*上传|"
     r"图片.*失败|无法.*分析|不能.*分析|无法.*识别|不能.*识别|"
     r"无法.*获取|不能.*获取|抱歉.*图|sorry.*image",
     re.IGNORECASE,
@@ -301,6 +302,8 @@ class _FixedAddressTransport(httpx.AsyncBaseTransport):
         if scheme not in HTTP_SCHEMES or not host or port not in ALLOWED_IMAGE_PORTS:
             raise httpx.ConnectError(f"拒绝连接不安全的图片地址: {host}")
         resolver = self._resolver or _resolve_global_address
+        # 一次性注入地址只在首跳生效：消费后即清空，重定向等后续每跳都重新
+        # 解析并重新做公网校验（host 虽复用，地址不缓存）。
         address = self._address
         self._address = None
         address = address or await asyncio.to_thread(resolver, host)
@@ -482,8 +485,8 @@ class ImageParser:
         if not path.is_absolute():
             return False
         try:
-            # 不再传 trusted=True：这条路径的 file 值来自对端可控的
-            # OneBot 原始值，可信度判定统一交给 _file_to_data_url 的 allowlist。
+            # 这条路径的 file 值来自对端可控的 OneBot 原始值，可信度判定统一
+            # 交给 _file_to_data_url 的 allowlist（契约 §7.1）。
             data_url = await asyncio.to_thread(
                 self._file_to_data_url,
                 path,
@@ -706,13 +709,7 @@ class ImageParser:
         if not separator or ";base64" not in header:
             return None
         mime = header[5:].split(";", 1)[0].lower().strip()
-        extension = {
-            "image/jpeg": ".jpg",
-            "image/png": ".png",
-            "image/gif": ".gif",
-            "image/webp": ".webp",
-            "image/bmp": ".bmp",
-        }.get(mime)
+        extension = MIME_EXTENSIONS.get(mime)
         if not extension:
             return None
         try:

@@ -40,16 +40,9 @@ from .models import (
 )
 from .storage import write_json_atomic
 
-# 配置 schema 全键（_conf_schema.json，与正式键一一对应）。此名单之外的键
-# 一律 fail loud 拒绝，防止前端/未来代码提交新字段时被静默吞掉。
-# 历史兼容别名（cooldown_seconds/idle_trigger_seconds/min_context_messages/
-# proactive_threshold/vision_enabled/whitelist）已于 0.9.2 移除：随包前端已
-# 切正式键，存量配置由 Settings.from_config 回退读取迁移，一致性守卫见
-# tests/test_config_schema.py。
-#
-# 改为从 models.CONFIG_SPECS 派生，不再手抄清单。此前新增一个
-# 键要同时改 schema / Settings 字段 / from_config / to_config_dict / 本名单 /
-# _parse_config_updates 六处，漏一处即静默失效（漏本名单 → 面板提交被 400 拒）。
+# 配置 schema 全键：从 models.CONFIG_SPECS 派生（fail loud——此名单之外的
+# 提交键一律 400 拒绝，防止前端/未来代码提交新字段时被静默吞掉）。
+# 历史兼容别名由 Settings.from_config 的 legacy_keys 回退读取，不入本名单。
 CONFIG_SCHEMA_KEYS = frozenset(spec.key for spec in CONFIG_SPECS)
 
 # 宿主 provider 管理器返回的 (id, provider) 二元组长度（get_all_providers 的历史形态）。
@@ -251,7 +244,7 @@ async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]
     dim = plugin._ui_dim
     bold = plugin._ui_bold
     if "theme" not in data and "dim" not in data and "bold" not in data:
-        return {"ok": False, "error": "无效主题，可选值：auto / light / dark"}
+        return {"ok": False, "error": "未提供任何字段：theme / dim / bold 至少一个"}
     if "theme" in data:
         theme = str(data.get("theme", "")).strip()
         if theme not in {"auto", "light", "dark"}:
@@ -291,12 +284,13 @@ def _string_list(data: dict[str, Any], key: str) -> list[str]:
 
 
 def _strict_float(value: Any, field: str) -> float:
-    if isinstance(value, bool):
+    # 与 _strict_int 的口径差：JSON 数字无 int/float 之分（"9" 解析为 int），
+    # 故 int 与 float 都接受（bool 是 int 子类，显式排除）；字符串拒绝——
+    # float() 会静默解析数字字符串，让「前端只发 number」的约定在 API
+    # 直调场景静默失效，fail loud 优于静默纠偏。
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{field} 必须是数字")
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{field} 必须是数字") from exc
+    parsed = float(value)
     if not math.isfinite(parsed):
         raise ValueError(f"{field} 必须是有限数字")
     return parsed
@@ -414,7 +408,8 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
         return value
     if spec.kind == "text":
         # 空提交 = 恢复内置默认（面板留空即复位是产品语义，见 test_config_schema
-        # 的 _INTENTIONAL_EMPTY_DEFAULT）
+        # 的 _INTENTIONAL_EMPTY_DEFAULT）；与 models.coerce_config_value 的
+        # text 分支成对——新增 text 类配置键时两处需同步。
         return str(raw or "").strip() or DEFAULT_DECISION_PROMPT_TEMPLATE
     return str(raw or "").strip()
 
@@ -549,6 +544,9 @@ async def _apply_config_updates(
     snapshot = _snapshot_plugin_state(plugin)
     try:
         candidate = plugin.settings.to_config_dict()
+        # 幂等三层（均为刻意）：_strict_value 先拒绝类型错误（400），
+        # normalize_config_updates 负责列表/集合条目规范化与容量上限，
+        # from_config 在最终合并值上做数值夹取（与磁盘加载同一套边界）。
         normalized_updates = normalize_config_updates(updates)
         for key, value in normalized_updates.items():
             candidate[key] = value
