@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from .host_stubs import until, with_plugin
-from .test_main_runtime import UMO, _make_event, _PipelineTestAdapter
+from .host_stubs import PipelineTestAdapter, until, with_plugin
+from .test_main_runtime import UMO, _make_event
 
 
 def _load_main():
@@ -92,7 +92,7 @@ def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
             return gen()
 
         original_runtime = main._AGENT_RUNTIME
-        main._AGENT_RUNTIME = _PipelineTestAdapter(
+        main._AGENT_RUNTIME = PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
         original_grace = main.GRACEFUL_STOP_GRACE_SEC
@@ -291,7 +291,7 @@ def test_force_cancel_converges_before_grace_timeout(tmp_path: Path) -> None:
             return gen()
 
         original_runtime = main._AGENT_RUNTIME
-        main._AGENT_RUNTIME = _PipelineTestAdapter(
+        main._AGENT_RUNTIME = PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
         original_grace = main.GRACEFUL_STOP_GRACE_SEC
@@ -375,7 +375,7 @@ def test_context_send_none_is_delivered_and_writes_history(tmp_path: Path) -> No
             return gen()
 
         original_runtime = main._AGENT_RUNTIME
-        main._AGENT_RUNTIME = _PipelineTestAdapter(
+        main._AGENT_RUNTIME = PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
         try:

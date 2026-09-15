@@ -27,6 +27,8 @@ def _generation_module():
 
 
 class FakeToolSet:
+    # 与 host_stubs.FakeToolSet 有意不同形：本文件只测 generation 单元，接口面
+    # 刻意最小（ids() vs host_stubs 的 names()），避免单测隐式依赖完整宿主桩形状。
     def __init__(self) -> None:
         self.tools: list[SimpleNamespace] = []
 
@@ -38,6 +40,7 @@ class FakeToolSet:
 
 
 class FakeEvent:
+    # 极简版，与 host_stubs.FakeEvent（完整行为桩）有意不同形，理由同 FakeToolSet。
     def __init__(self) -> None:
         self.plugins_name: list[str] = ["other_plugin"]
         self._extras: dict[str, object] = {}
@@ -71,6 +74,8 @@ class FakeAgentRunner:
 
 
 class _FakeResetCoro:
+    # 与 host_stubs._FakeResetCoro 有意不同形：本版带 closed 状态供断言 close 被调，
+    # host_stubs 版是无状态 no-op。
     closed = False
 
     def close(self) -> None:
@@ -84,6 +89,8 @@ class _FakeResetCoro:
 
 
 class FakeBuildResult:
+    # 与 host_stubs.FakeBuildResult（keyword-only、含 provider）有意不同形：
+    # positional 三参构造让本文件大量内联构造保持紧凑，理由同上方 FakeToolSet。
     def __init__(self, agent_runner: object, provider_request: object, reset_coro: object | None):
         self.agent_runner = agent_runner
         self.provider_request = provider_request

@@ -18,9 +18,13 @@ import types
 from pathlib import Path
 from typing import Any
 
-from .host_stubs import install_astrbot_stubs, with_plugin
+from .host_stubs import (
+    PipelineTestAdapter,
+    install_astrbot_stubs,
+    with_plugin,
+)
 from .source_contract import calls_in, logger_levels_for, method_source
-from .test_main_runtime import UMO, _make_event, _PipelineTestAdapter
+from .test_main_runtime import UMO, _make_event
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -156,11 +160,6 @@ def test_config_mutations_share_one_lock_and_settings_normalizer(tmp_path: Path)
     with_plugin(tmp_path, scenario)
 
 
-if __name__ == "__main__":
-    import pytest
-
-    pytest.main([__file__, "-v"])
-
 # ============================================================================
 # 工具策略与配置回滚
 # ============================================================================
@@ -179,79 +178,15 @@ def _load_vision_image():
 
 
 def _install_tool_injecting_pipeline(plugin, main, *, event):
-    """构造 build 注入工具 + hook 注入工具的管线脚手架，返回控制器。"""
-    from types import SimpleNamespace
+    """r2/r3 的固定形态：3 标准工具 + hook 注入 + reset/prompts 双快照。
 
-    from .host_stubs import FakeBuildResult, _FakeResetCoro
+    泛化实现见 host_stubs.install_tool_injecting_pipeline。
+    """
+    from .host_stubs import install_tool_injecting_pipeline
 
-    class DirectSendingRunner:
-        def __init__(self, target_event):
-            self._target = target_event
-
-        def reset(self, **_):
-            return _FakeResetCoro()
-
-        def get_final_llm_resp(self):
-            return SimpleNamespace(completion_text="你好呀", result_chain=None)
-
-        def close(self):
-            pass
-
-    req_holder = {}
-    enforce_snapshots: list[list[str]] = []
-    reset_snapshots: list[list[str]] = []
-    prompts: list[str] = []
-
-    async def build_effect(kwargs, result):
-        req_holder["req"] = kwargs["req"]
-        prompts.append(str(getattr(kwargs["req"], "prompt", "") or ""))
-        tool_set = kwargs["req"].func_tool
-        for name in ("send_message_to_user", "web_search", "mcp_anything"):
-            tool_set.add_tool(SimpleNamespace(name=name))
-
-        async def _reset():
-            reset_snapshots.append(
-                sorted(main._AGENT_RUNTIME.final_tool_ids(req_holder["req"]) or [])
-            )
-
-        return FakeBuildResult(
-            agent_runner=DirectSendingRunner(event),
-            provider_request=kwargs["req"],
-            provider=None,
-            reset_coro=_reset(),
-        )
-
-    def run_effect(_runner, **_kwargs):
-        async def gen():
-            yield None
-
-        return gen()
-
-    original_runtime = main._AGENT_RUNTIME
-    main._AGENT_RUNTIME = _PipelineTestAdapter(
-        original_runtime, build_effect=build_effect, run_effect=run_effect
+    return install_tool_injecting_pipeline(
+        plugin, main, event=event, snapshot_reset=True, snapshot_prompts=True
     )
-    original_enforce = plugin._generation.enforce_final_tool_policy
-
-    def counting_enforce(req, inherit_tools):
-        ok = original_enforce(req, inherit_tools)
-        enforce_snapshots.append(sorted(main._AGENT_RUNTIME.final_tool_ids(req) or []))
-        if len(enforce_snapshots) == 1:
-            # 模拟 hook 在第一次 enforce 之后向 req 注入工具
-            req.func_tool.add_tool(SimpleNamespace(name="hook_injected"))
-        return ok
-
-    plugin._generation.enforce_final_tool_policy = counting_enforce
-    return {
-        "req_holder": req_holder,
-        "enforce_snapshots": enforce_snapshots,
-        "reset_snapshots": reset_snapshots,
-        "prompts": prompts,
-        "restore": lambda: (
-            setattr(plugin._generation, "enforce_final_tool_policy", original_enforce),
-            setattr(main, "_AGENT_RUNTIME", original_runtime),
-        ),
-    }
 
 
 async def _run_pipeline(plugin):
@@ -264,44 +199,12 @@ def test_r1_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> N
     """入口快照：运行中把开关改为 True 不得让本次运行 fail-open。"""
 
     async def scenario(plugin, main):
-        from types import SimpleNamespace
-
-        from .host_stubs import FakeBuildResult, _FakeResetCoro
-
         event = _make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         event.plugins_name = ["other_plugin"]
 
-        class DirectSendingRunner:
-            def __init__(self, target_event):
-                self._target = target_event
-
-            def reset(self, **_):
-                return _FakeResetCoro()
-
-            def get_final_llm_resp(self):
-                return SimpleNamespace(completion_text="你好呀", result_chain=None)
-
-            def close(self):
-                pass
-
-        req_holder = {}
-        enforce_snapshots: list[list[str]] = []
-
-        async def build_effect(kwargs, result):
-            req_holder["req"] = kwargs["req"]
-            tool_set = kwargs["req"].func_tool
-            for name in ("send_message_to_user", "web_search", "mcp_anything"):
-                tool_set.add_tool(SimpleNamespace(name=name))
-            return FakeBuildResult(
-                agent_runner=DirectSendingRunner(event),
-                provider_request=kwargs["req"],
-                provider=None,
-                reset_coro=_FakeResetCoro(),
-            )
-
-        def run_effect(_runner, **_kwargs):
+        def run_effect(runner, **_kwargs):
             async def gen():
                 # 模拟用户在一次主动运行中途保存配置开启继承
                 plugin.settings.proactive_inherit_tools = True
@@ -309,29 +212,18 @@ def test_r1_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> N
 
             return gen()
 
-        original_runtime = main._AGENT_RUNTIME
-        main._AGENT_RUNTIME = _PipelineTestAdapter(
-            original_runtime, build_effect=build_effect, run_effect=run_effect
-        )
-        original_enforce = plugin._generation.enforce_final_tool_policy
+        from .host_stubs import install_tool_injecting_pipeline
 
-        def counting_enforce(req, inherit_tools):
-            ok = original_enforce(req, inherit_tools)
-            enforce_snapshots.append(sorted(main._AGENT_RUNTIME.final_tool_ids(req) or []))
-            if len(enforce_snapshots) == 1:
-                req.func_tool.add_tool(SimpleNamespace(name="hook_injected"))
-            return ok
-
-        plugin._generation.enforce_final_tool_policy = counting_enforce
+        ctrl = install_tool_injecting_pipeline(plugin, main, event=event, run_effect=run_effect)
+        enforce_snapshots = ctrl["enforce_snapshots"]
         try:
             result = await _run_pipeline(plugin)
             assert result.text == "你好呀"
             # 快照为 False：即使运行中 settings 变为 True，enforce 仍按 False 清理
             assert enforce_snapshots == [[], []]
-            assert main._AGENT_RUNTIME.final_tool_ids(req_holder["req"]) == []
+            assert main._AGENT_RUNTIME.final_tool_ids(ctrl["req_holder"]["req"]) == []
         finally:
-            plugin._generation.enforce_final_tool_policy = original_enforce
-            main._AGENT_RUNTIME = original_runtime
+            ctrl["restore"]()
 
     with_plugin(tmp_path, scenario)
 
@@ -472,61 +364,23 @@ def _load_vision_main():
 def test_r6_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
     """继承模式放行普通工具，但宿主级危险工具（含 hook 注入）一律拒绝。"""
 
-    from types import SimpleNamespace
-
-    from .host_stubs import FakeBuildResult, _FakeResetCoro
-
     async def scenario(plugin, main):
         event = _make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
 
-        class DirectSendingRunner:
-            def reset(self, **_):
-                return _FakeResetCoro()
+        from .host_stubs import install_tool_injecting_pipeline
 
-            def get_final_llm_resp(self):
-                return SimpleNamespace(completion_text="你好呀", result_chain=None)
-
-            def close(self):
-                pass
-
-        enforce_snapshots: list[list[str]] = []
-
-        async def build_effect(kwargs, result):
-            tool_set = kwargs["req"].func_tool
+        ctrl = install_tool_injecting_pipeline(
+            plugin,
+            main,
+            event=event,
             # 普通插件工具 + 宿主级危险工具（cron，4.23.3 实测名 future_task）
-            for name in ("send_image", "future_task"):
-                tool_set.add_tool(SimpleNamespace(name=name))
-            return FakeBuildResult(
-                agent_runner=DirectSendingRunner(),
-                provider_request=kwargs["req"],
-                provider=None,
-                reset_coro=_FakeResetCoro(),
-            )
-
-        def run_effect(_runner, **_kwargs):
-            async def gen():
-                yield None
-
-            return gen()
-
-        original_runtime = main._AGENT_RUNTIME
-        main._AGENT_RUNTIME = _PipelineTestAdapter(
-            original_runtime, build_effect=build_effect, run_effect=run_effect
+            build_tools=("send_image", "future_task"),
+            # 模拟 hook 在第一次 enforce 后注入危险工具（kb agentic）与普通工具
+            first_enforce_tools=("astr_kb_search", "third_party_weather"),
         )
-        original_enforce = plugin._generation.enforce_final_tool_policy
-
-        def counting_enforce(req, inherit_tools):
-            ok = original_enforce(req, inherit_tools)
-            enforce_snapshots.append(sorted(main._AGENT_RUNTIME.final_tool_ids(req) or []))
-            if len(enforce_snapshots) == 1:
-                # 模拟 hook 在第一次 enforce 后注入危险工具（kb agentic）与普通工具
-                req.func_tool.add_tool(SimpleNamespace(name="astr_kb_search"))
-                req.func_tool.add_tool(SimpleNamespace(name="third_party_weather"))
-            return ok
-
-        plugin._generation.enforce_final_tool_policy = counting_enforce
+        enforce_snapshots = ctrl["enforce_snapshots"]
         try:
             result = await plugin._generation.generate(
                 UMO, plugin._state_for(UMO), expected_generation=1, force=True
@@ -536,8 +390,7 @@ def test_r6_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
             assert enforce_snapshots[0] == ["send_image"]
             assert enforce_snapshots[1] == ["send_image", "third_party_weather"]
         finally:
-            plugin._generation.enforce_final_tool_policy = original_enforce
-            main._AGENT_RUNTIME = original_runtime
+            ctrl["restore"]()
 
     with_plugin(tmp_path, scenario, proactive_inherit_tools=True)
 
@@ -555,36 +408,21 @@ def test_r7_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) ->
     from .host_stubs import _FakeMessageChain
 
     async def scenario(plugin, main):
+        from .host_stubs import DirectSendingRunner, FakeBuildResult, PipelineTestAdapter
+
         event = _make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         state = plugin._state_for(UMO)
         state.last_active_at = main.now_ts() - 300
 
-        class Runner:
-            def __init__(self, target):
-                self._target = target
-
-            def reset(self, **_):
-                from .host_stubs import _FakeResetCoro
-
-                return _FakeResetCoro()
-
-            def get_final_llm_resp(self):
-                return SimpleNamespace(completion_text="你好呀", result_chain=None)
-
-            def close(self):
-                pass
-
         async def build_effect(kwargs, result):
-            from .host_stubs import FakeBuildResult
-
             kwargs["req"].func_tool.add_tool(SimpleNamespace(name="send_image"))
             return FakeBuildResult(
-                agent_runner=Runner(event),
+                agent_runner=DirectSendingRunner(event),
                 provider_request=kwargs["req"],
                 provider=None,
-                reset_coro=Runner(event).reset(),
+                reset_coro=DirectSendingRunner(event).reset(),
             )
 
         def run_effect(_runner, **_kwargs):
@@ -598,7 +436,7 @@ def test_r7_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) ->
             return gen()
 
         original_runtime = main._AGENT_RUNTIME
-        main._AGENT_RUNTIME = _PipelineTestAdapter(
+        main._AGENT_RUNTIME = PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
         original_send_reply = plugin._delivery.send_reply
@@ -629,33 +467,22 @@ def test_r7_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) ->
 
 def test_r7_after_send_cancellation_records_delivered_attempt(tmp_path: Path) -> None:
     """Cancellation after a delivered send cannot erase the external side effect."""
-    from types import SimpleNamespace
-
-    from .host_stubs import FakeBuildResult, _FakeResetCoro
 
     async def scenario(plugin, main):
+        from .host_stubs import DirectSendingRunner, FakeBuildResult, PipelineTestAdapter
+
         event = _make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         state = plugin._state_for(UMO)
         state.last_active_at = main.now_ts() - 300
 
-        class Runner:
-            def reset(self, **_):
-                return _FakeResetCoro()
-
-            def get_final_llm_resp(self):
-                return SimpleNamespace(completion_text="after-send reply", result_chain=None)
-
-            def close(self):
-                pass
-
         async def build_effect(kwargs, result):
             return FakeBuildResult(
-                agent_runner=Runner(),
+                agent_runner=DirectSendingRunner(completion_text="after-send reply"),
                 provider_request=kwargs["req"],
                 provider=None,
-                reset_coro=_FakeResetCoro(),
+                reset_coro=DirectSendingRunner().reset(),
             )
 
         def run_effect(_runner, **_kwargs):
@@ -682,7 +509,7 @@ def test_r7_after_send_cancellation_records_delivered_attempt(tmp_path: Path) ->
             return await original_finalize(umo_arg, state_arg, ledger_arg, reply_arg, **kwargs)
 
         plugin._pipeline._finalize_ledger = capture_finalize
-        main._AGENT_RUNTIME = _PipelineTestAdapter(
+        main._AGENT_RUNTIME = PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
 
@@ -808,7 +635,7 @@ def test_r9_timeout_requests_graceful_stop(tmp_path: Path) -> None:
             return gen()
 
         original_runtime = main._AGENT_RUNTIME
-        main._AGENT_RUNTIME = _PipelineTestAdapter(
+        main._AGENT_RUNTIME = PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
         original_grace = main.GRACEFUL_STOP_GRACE_SEC
@@ -986,7 +813,7 @@ def test_r11_concurrent_checks_are_mutexed(tmp_path: Path) -> None:
             return gen()
 
         original_runtime = main._AGENT_RUNTIME
-        main._AGENT_RUNTIME = _PipelineTestAdapter(
+        main._AGENT_RUNTIME = PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
         try:
@@ -1258,7 +1085,7 @@ def test_r18_aba_old_task_does_not_revive_after_re_add(tmp_path: Path) -> None:
             return gen()
 
         original_runtime = main._AGENT_RUNTIME
-        main._AGENT_RUNTIME = _PipelineTestAdapter(
+        main._AGENT_RUNTIME = PipelineTestAdapter(
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
         try:

@@ -22,6 +22,7 @@ import pytest
 
 from .host_stubs import (
     FakeToolSet,
+    PipelineTestAdapter,
     reset_hook_calls,
     with_plugin,
 )
@@ -213,41 +214,12 @@ def test_enforce_final_tool_policy_fail_closed_aborts_run(tmp_path: Path) -> Non
     with_plugin(tmp_path, scenario)
 
 
-class _PipelineTestAdapter:
-    """Wrap the real runtime adapter; only build/run are injectable.
-
-    ``enforce``/``final_tool_ids``/``new_tool_set`` stay real so the integration
-    test exercises the actual tool-boundary logic.
-    """
-
-    def __init__(self, base, *, build_effect=None, run_effect=None):
-        self._base = base
-        self._build_effect = build_effect
-        self._run_effect = run_effect
-
-    async def build(self, **kwargs):
-        result = await self._base.build(**kwargs)
-        if self._build_effect is not None:
-            result = await self._build_effect(kwargs, result)
-        return result
-
-    def run(self, agent_runner, **kwargs):
-        if self._run_effect is not None:
-            return self._run_effect(agent_runner, **kwargs)
-        return self._base.run(agent_runner, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._base, name)
-
-
 def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> None:
     """核心管线集成：build 注入工具 → 两次 enforce 清空（含 hook 注入）→ run 期间
     tool_direct 直发被计数/抑制 → finally 恢复 event.send 与 plugins_name。"""
 
     async def scenario(plugin, main):
-        from types import SimpleNamespace
-
-        from .host_stubs import FakeBuildResult, _FakeMessageChain, _FakeResetCoro
+        from .host_stubs import _FakeMessageChain, install_tool_injecting_pipeline
 
         event = _make_event()
         plugin._last_events[UMO] = event
@@ -255,35 +227,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
         original_plugins_name = ["other_plugin"]
         event.plugins_name = list(original_plugins_name)
 
-        class DirectSendingRunner:
-            def __init__(self, target_event):
-                self._target = target_event
-
-            def reset(self, **_):
-                return _FakeResetCoro()
-
-            def get_final_llm_resp(self):
-                return SimpleNamespace(completion_text="你好呀", result_chain=None)
-
-            def close(self):
-                pass
-
-        req_holder = {}
-
-        async def build_effect(kwargs, result):
-            # 模拟宿主 build 在返回前注入工具（web search / proactive send / MCP）
-            req_holder["req"] = kwargs["req"]
-            tool_set = kwargs["req"].func_tool
-            for name in ("send_message_to_user", "web_search", "mcp_anything"):
-                tool_set.add_tool(SimpleNamespace(name=name))
-            return FakeBuildResult(
-                agent_runner=DirectSendingRunner(event),
-                provider_request=kwargs["req"],
-                provider=None,
-                reset_coro=_FakeResetCoro(),
-            )
-
-        def run_effect(_runner, **_kwargs):
+        def run_effect(runner, **_kwargs):
             async def gen():
                 # 预算内 2 次直发 + 1 次超预算（MAX_DIRECT_TOOL_SENDS = 2）
                 for i in range(3):
@@ -294,22 +238,8 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
 
             return gen()
 
-        original_runtime = main._AGENT_RUNTIME
-        main._AGENT_RUNTIME = _PipelineTestAdapter(
-            original_runtime, build_effect=build_effect, run_effect=run_effect
-        )
-        enforce_tool_snapshots: list[list[str]] = []
-        original_enforce = plugin._generation.enforce_final_tool_policy
-
-        def counting_enforce(req, inherit_tools):
-            ok = original_enforce(req, inherit_tools)
-            enforce_tool_snapshots.append(sorted(main._AGENT_RUNTIME.final_tool_ids(req) or []))
-            if len(enforce_tool_snapshots) == 1:
-                # 模拟 hook 在第一次 enforce 之后向 req 注入工具
-                req.func_tool.add_tool(SimpleNamespace(name="hook_injected"))
-            return ok
-
-        plugin._generation.enforce_final_tool_policy = counting_enforce
+        ctrl = install_tool_injecting_pipeline(plugin, main, event=event, run_effect=run_effect)
+        enforce_tool_snapshots = ctrl["enforce_snapshots"]
         try:
             state = plugin._state_for(UMO)
             token = plugin._gate.advance(UMO)
@@ -322,7 +252,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
             assert enforce_tool_snapshots[0] == []
             assert enforce_tool_snapshots[1] == []
             # run 结束时 req.func_tool 保持为空
-            assert main._AGENT_RUNTIME.final_tool_ids(req_holder["req"]) == []
+            assert main._AGENT_RUNTIME.final_tool_ids(ctrl["req_holder"]["req"]) == []
             # 直发计数：前 2 次被接受，第 3 次超预算抑制
             assert result.direct_send_count == 2
             assert len(result.direct_texts) == 2
@@ -332,8 +262,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
             assert event.plugins_name == original_plugins_name
             assert event.get_extra("provider_request") is None
         finally:
-            plugin._generation.enforce_final_tool_policy = original_enforce
-            main._AGENT_RUNTIME = original_runtime
+            ctrl["restore"]()
 
     with_plugin(tmp_path, scenario)
 
@@ -369,7 +298,7 @@ def test_pipeline_hook_early_exit_still_restores_event(tmp_path: Path) -> None:
             )
 
         original_runtime = main._AGENT_RUNTIME
-        main._AGENT_RUNTIME = _PipelineTestAdapter(original_runtime, build_effect=build_effect)
+        main._AGENT_RUNTIME = PipelineTestAdapter(original_runtime, build_effect=build_effect)
         original_hook = main.call_event_hook
         ran = []
 

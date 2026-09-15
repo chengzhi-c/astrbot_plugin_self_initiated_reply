@@ -16,6 +16,7 @@ import logging
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -435,6 +436,52 @@ class FakeBuildResult:
         self.reset_coro = reset_coro
 
 
+class DirectSendingRunner:
+    """管线脚手架共用 runner：固定返回 completion_text，其余全 no-op。
+
+    归一此前 5 处内联重复（test_main_runtime / test_regressions r1/r6/R7/R7b）。
+    需要不同行为（挂起、request_stop 计数）的用例自建 runner，勿加参数膨胀本类。
+    """
+
+    def __init__(self, target_event: Any = None, *, completion_text: str = "你好呀") -> None:
+        self._target = target_event
+        self._completion_text = completion_text
+
+    def reset(self, **_: Any) -> Any:
+        return _FakeResetCoro()
+
+    def request_stop(self) -> None:
+        pass
+
+    def get_final_llm_resp(self) -> Any:
+        return SimpleNamespace(completion_text=self._completion_text, result_chain=None)
+
+    def close(self) -> None:
+        pass
+
+
+def make_counting_enforce(
+    original_enforce: Any,
+    runtime: Any,
+    snapshots: list[list[str]],
+    first_enforce_tools: tuple[str, ...] = ("hook_injected",),
+):
+    """包装 enforce_final_tool_policy：快照每次清理结果，第一次后注入工具。
+
+    归一 4 处同构（hook 在两次 enforce 之间注入正是被测语义，不可省）。
+    """
+
+    def counting_enforce(req: Any, inherit_tools: Any) -> bool:
+        ok = original_enforce(req, inherit_tools)
+        snapshots.append(sorted(runtime.final_tool_ids(req) or []))
+        if len(snapshots) == 1:
+            for name in first_enforce_tools:
+                req.func_tool.add_tool(SimpleNamespace(name=name))
+        return ok
+
+    return counting_enforce
+
+
 class _FakeAgentRunner:
     def reset(self, **_: Any) -> Any:
         return _FakeResetCoro()
@@ -632,3 +679,102 @@ def make_plugin(tmp_path: Path, **config_overrides: Any) -> tuple[Any, types.Mod
 
     plugin = main.SelfInitiatedReplyPlugin(context, config)
     return plugin, main
+
+
+class PipelineTestAdapter:
+    """Wrap the real runtime adapter; only build/run are injectable.
+
+    ``enforce``/``final_tool_ids``/``new_tool_set`` stay real so the integration
+    test exercises the actual tool-boundary logic.
+    """
+
+    def __init__(self, base: Any, *, build_effect: Any = None, run_effect: Any = None) -> None:
+        self._base = base
+        self._build_effect = build_effect
+        self._run_effect = run_effect
+
+    async def build(self, **kwargs: Any) -> Any:
+        result = await self._base.build(**kwargs)
+        if self._build_effect is not None:
+            result = await self._build_effect(kwargs, result)
+        return result
+
+    def run(self, agent_runner: Any, **kwargs: Any) -> Any:
+        if self._run_effect is not None:
+            return self._run_effect(agent_runner, **kwargs)
+        return self._base.run(agent_runner, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._base, name)
+
+
+def install_tool_injecting_pipeline(
+    plugin: Any,
+    main: types.ModuleType,
+    *,
+    event: Any,
+    build_tools: tuple[str, ...] = ("send_message_to_user", "web_search", "mcp_anything"),
+    run_effect: Any = None,
+    first_enforce_tools: tuple[str, ...] = ("hook_injected",),
+    snapshot_reset: bool = False,
+    snapshot_prompts: bool = False,
+) -> dict[str, Any]:
+    """装配「build 注入工具 → 两次 enforce（第一次后注入）→ run」测试管线。
+
+    归一 test_main_runtime 与 test_regressions 的 4 处同构脚手架。run_effect
+    签名 ``(runner, **kwargs)``；不传则 run 空转。快照开关控制 reset 时工具集
+    快照与 build prompt 快照（不用快照的用例不背这份观测开销）。返回控制器
+    （快照列表 + restore），调用方须在 finally 里调 restore()。
+    """
+    req_holder: dict[str, Any] = {}
+    enforce_snapshots: list[list[str]] = []
+    reset_snapshots: list[list[str]] = []
+    prompts: list[str] = []
+
+    async def build_effect(kwargs: dict[str, Any], result: Any) -> Any:
+        req_holder["req"] = kwargs["req"]
+        if snapshot_prompts:
+            prompts.append(str(getattr(kwargs["req"], "prompt", "") or ""))
+        tool_set = kwargs["req"].func_tool
+        for name in build_tools:
+            tool_set.add_tool(SimpleNamespace(name=name))
+
+        async def _reset() -> None:
+            if snapshot_reset:
+                reset_snapshots.append(
+                    sorted(main._AGENT_RUNTIME.final_tool_ids(req_holder["req"]) or [])
+                )
+
+        return FakeBuildResult(
+            agent_runner=DirectSendingRunner(event),
+            provider_request=kwargs["req"],
+            provider=None,
+            reset_coro=_reset(),
+        )
+
+    def default_run_effect(_runner: Any, **_kwargs: Any) -> Any:
+        async def gen() -> Any:
+            yield None
+
+        return gen()
+
+    original_runtime = main._AGENT_RUNTIME
+    main._AGENT_RUNTIME = PipelineTestAdapter(
+        original_runtime,
+        build_effect=build_effect,
+        run_effect=run_effect or default_run_effect,
+    )
+    original_enforce = plugin._generation.enforce_final_tool_policy
+    plugin._generation.enforce_final_tool_policy = make_counting_enforce(
+        original_enforce, main._AGENT_RUNTIME, enforce_snapshots, first_enforce_tools
+    )
+    return {
+        "req_holder": req_holder,
+        "enforce_snapshots": enforce_snapshots,
+        "reset_snapshots": reset_snapshots,
+        "prompts": prompts,
+        "restore": lambda: (
+            setattr(plugin._generation, "enforce_final_tool_policy", original_enforce),
+            setattr(main, "_AGENT_RUNTIME", original_runtime),
+        ),
+    }
