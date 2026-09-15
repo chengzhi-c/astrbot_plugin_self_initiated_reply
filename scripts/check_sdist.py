@@ -12,9 +12,19 @@ from pathlib import Path
 from packaging.version import InvalidVersion, Version
 
 try:
-    from scripts.release_artifacts import ArtifactError, expected_project_name, resolve_artifact
+    from scripts.release_artifacts import (
+        ArtifactError,
+        expected_project_name,
+        expected_version,
+        resolve_artifact,
+    )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    from release_artifacts import ArtifactError, expected_project_name, resolve_artifact
+    from release_artifacts import (
+        ArtifactError,
+        expected_project_name,
+        expected_version,
+        resolve_artifact,
+    )
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_FILES = (
@@ -60,14 +70,7 @@ def _machine_path_in(data: bytes) -> bytes | None:
 
 
 def _expected_version() -> str:
-    match = re.search(
-        r"^version:\s*(.+)$",
-        (ROOT / "metadata.yaml").read_text(encoding="utf-8"),
-        re.MULTILINE,
-    )
-    if match is None:
-        raise ValueError("metadata.yaml is missing version")
-    return match.group(1).strip()
+    return expected_version(ROOT)
 
 
 def _relative_name(name: str, root_name: str) -> str | None:

@@ -221,7 +221,13 @@ export function createConfigIo(deps) {
 				described ? `${described} ${error.id}` : error.id,
 			);
 			input.insertAdjacentElement("afterend", error);
-			const field = { input, error, min, max };
+			const field = {
+				input,
+				error,
+				min,
+				max,
+				integer: input.hasAttribute("data-integer"),
+			};
 			numberFields.push(field);
 			input.addEventListener("input", () => validateField(field));
 			input.addEventListener("blur", () => validateField(field));
@@ -238,7 +244,12 @@ export function createConfigIo(deps) {
 		}
 	}
 	function validateField(field) {
-		const msg = numberFieldError(field.input.value, field.min, field.max);
+		const msg = numberFieldError(
+			field.input.value,
+			field.min,
+			field.max,
+			field.integer,
+		);
 		if (msg) {
 			field.input.setAttribute("aria-invalid", "true");
 			field.error.textContent = msg;
@@ -393,6 +404,9 @@ export function createConfigIo(deps) {
 		e.configForm.inert = true;
 		e.configForm.classList.add("is-saving");
 		setSaveState("保存中", "saving");
+		// 表单在保存期间 inert，此时 focus() 会被浏览器忽略：错误分支只登记
+		// 目标，等 finally 解除 inert 后再聚焦。
+		let pendingFocus = null;
 		try {
 			const body = buildConfigSaveBody(
 				e.configForm,
@@ -430,11 +444,27 @@ export function createConfigIo(deps) {
 				const errorKey = configSaveKeys(e.configForm).find((key) =>
 					String(errorText).startsWith(`${key} `),
 				);
-				if (errorKey === "whitelist_sessions" && e.whitelistInput && e.whitelistError) {
+				// 字段级定位：后端校验文案以「键名 + 空格」前缀自带定位（见 webapi
+				// 错误分级注释）。命中 number 控件时复用 validateField 的红字与
+				// aria-invalid；白名单保留专属错误框。此前只对白名单生效，其余
+				// 字段用户只能靠 toast 猜。
+				const numberField = errorKey
+					? numberFields.find((f) => f.input.dataset.configKey === errorKey)
+					: null;
+				if (numberField) {
+					numberField.input.setAttribute("aria-invalid", "true");
+					numberField.error.textContent = errorText;
+					numberField.error.classList.add("show");
+					pendingFocus = numberField.input;
+				} else if (
+					errorKey === "whitelist_sessions" &&
+					e.whitelistInput &&
+					e.whitelistError
+				) {
 					e.whitelistInput.setAttribute("aria-invalid", "true");
 					e.whitelistError.textContent = errorText;
 					e.whitelistError.classList.add("show");
-					e.whitelistInput.focus();
+					pendingFocus = e.whitelistInput;
 				}
 				showToast(errorText, true);
 				return;
@@ -474,6 +504,10 @@ export function createConfigIo(deps) {
 			setState({ savingConfig: false });
 			e.configForm.classList.remove("is-saving");
 			e.configForm.inert = false;
+			if (pendingFocus) {
+				pendingFocus.focus();
+				pendingFocus = null;
+			}
 			setSaving(false);
 		}
 	}

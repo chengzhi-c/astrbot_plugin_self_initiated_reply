@@ -476,3 +476,27 @@ def test_run_image_cleanup_uses_configured_age_window(tmp_path: Path) -> None:
     assert not expired.exists()
     assert fresh.exists()
     assert protected.exists()
+
+
+# ============================================================================
+# SessionGate.prune：锁持有者保护
+# ============================================================================
+
+
+async def test_prune_keeps_held_lock_and_reclaims_after_release() -> None:
+    """prune 不得摘走仍被旧检查持有的会话锁。
+
+    移出白名单→立即重加时，若锁被摘除，新检查拿到新锁对象，与仍在
+    await LLM 的旧检查并发；只有当代次门之外的锁互斥也成立，运行边界
+    才完整。锁释放后的下一次 prune 负责回收。
+    """
+    gate = _gate_module().SessionGate()
+    lock = gate.lock_for("s1")
+    await lock.acquire()
+    try:
+        gate.prune("s1")
+        assert gate.lock_for("s1") is lock, "仍被持有的锁被 prune 摘走"
+    finally:
+        lock.release()
+    gate.prune("s1")
+    assert gate.lock_for("s1") is not lock, "释放后的下一次 prune 应回收旧锁"

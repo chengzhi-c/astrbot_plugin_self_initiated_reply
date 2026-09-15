@@ -506,6 +506,42 @@ def test_parse_batch_preserves_input_order_and_results() -> None:
     assert results == ["desc:" + encoded[0][-6:], "desc:" + encoded[1][-6:]]
 
 
+def test_run_concurrent_isolates_single_image_failures(tmp_path: Path) -> None:
+    """单张图的漏网异常降级为 error_value，不得连带取消同批其余快照。
+
+    旧实现 gather 无 return_exceptions：fn 抛出未捕获异常时整批中断，
+    上层 vision_runtime 只能把整个识图阶段判失败（其余可成功的图全丢）。
+    """
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+
+    async def fn(info):
+        if "bad" in str(info.url):
+            raise TypeError("宿主形态漂移：未预期的属性类型")
+        return True
+
+    infos = [
+        image.ImageInfo(url="https://x/ok1"),
+        image.ImageInfo(url="https://x/bad"),
+        image.ImageInfo(url="https://x/ok2"),
+    ]
+    results = asyncio.run(parser._run_concurrent(infos, fn, max_concurrent=1, error_value=False))
+    assert results == [True, False, True]
+
+
+def test_snapshot_local_source_swallows_unexpected_errors(tmp_path: Path) -> None:
+    """快照单图的捕获面对齐 prepare()：任何异常只让该图不可用。"""
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+
+    def boom(*_args, **_kwargs):
+        raise ZeroDivisionError("非 OSError 族漏网")
+
+    parser._file_to_data_url = boom
+    info = image.ImageInfo(file_path=str(tmp_path / "x.png"), trusted_local_path=True)
+    assert asyncio.run(parser._snapshot_local_source(info)) is False
+
+
 # ============================================================================
 # parse()：降级与截断分支
 # ============================================================================
@@ -1252,6 +1288,67 @@ def test_fetch_client_exception_returns_none(monkeypatch) -> None:
     monkeypatch.setattr(parser_mod.httpx, "AsyncClient", ExplodingClient)
     parser = image.ImageParser(object())
     assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) is None
+
+
+def test_global_addresses_prefer_ipv4(monkeypatch) -> None:
+    """双栈域名必须 IPv4 优先。
+
+    纯字符串排序把 IPv6 顶到首位，而调用方只连第一个地址：本机 v6 无路由
+    （Docker 常态）时该站下载恒失败。
+    """
+    _load_modules()  # -k 筛选单跑时也要先装桩，不能依赖文件内顺序
+    parser_mod = _parser_module()
+    monkeypatch.setattr(
+        parser_mod.socket,
+        "getaddrinfo",
+        lambda *args: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2400:4000::1", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+        ],
+    )
+    assert parser_mod._global_addresses("dual.example") == ["93.184.216.34", "2400:4000::1"]
+    assert parser_mod._resolve_global_address("dual.example") == "93.184.216.34"
+
+
+def test_global_addresses_literal_unaffected(monkeypatch) -> None:
+    """字面 IP 直连路径不经过排序，v6 字面量仍可用。"""
+    _load_modules()  # 同上：字面 IP 路径同样要先注册包
+    parser_mod = _parser_module()
+    assert parser_mod._global_addresses("2400:4000::1") == ["2400:4000::1"]
+    assert parser_mod._global_addresses("93.184.216.34") == ["93.184.216.34"]
+
+
+def test_download_client_timeout_follows_budget(monkeypatch) -> None:
+    """httpx client 超时与整体预算同源（vision_timeout_sec），不再硬编码 15s。"""
+    captured: dict[str, object] = {}
+    response = _make_response(chunks=[PNG_BYTES])
+    image = _make_fetch_env(monkeypatch, response)
+    parser_mod = _parser_module()
+
+    class RecordingClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        def stream(self, _method, _url):
+            class _Ctx:
+                async def __aenter__(_inner):
+                    return response
+
+                async def __aexit__(_inner, *_exc):
+                    return False
+
+            return _Ctx()
+
+    monkeypatch.setattr(parser_mod.httpx, "AsyncClient", RecordingClient)
+    parser = image.ImageParser(object(), timeout_sec=42.0)
+    assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) == PNG_DATA_URL
+    assert captured["timeout"] == 42.0
 
 
 def test_fetch_unsafe_url_returns_none(monkeypatch) -> None:

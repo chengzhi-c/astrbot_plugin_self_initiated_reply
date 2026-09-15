@@ -128,14 +128,21 @@ class SessionCoordinator:
             self._session_bytes.pop(umo, None)
         self._total_bytes -= nbytes
 
-    def _evict_oldest_image_event(self, *, umo: str | None = None) -> tuple[int, str]:
+    def _evict_oldest_image_event(self, *, umo: str | None = None) -> tuple[int, str | None]:
+        """弹出全局（或指定会话）最旧的图片事件。
+
+        返回 ``(freed_bytes, evicted_key)``；``evicted_key is None`` 表示无可
+        弹出条目。**驱逐 0 字节条目是合法进展**：冻结到磁盘的图与刻意入队的
+        空占位事件都记 0 字节，调用方必须以 key 为 None 判停，而不是 freed 为
+        0——否则队首一个 0 字节条目就会掩盖其后仍可回收的 data URL。
+        """
         candidates = []
         events = self._images.items() if umo is None else [(umo, self._images.get(umo))]
         for key, image_events in events:
             if image_events:
                 candidates.append((image_events[0][0], key, image_events))
         if not candidates:
-            return 0, ""
+            return 0, None
         _, key, image_events = min(candidates, key=lambda item: item[0])
         _timestamp, evicted_images = image_events.popleft()
         if not image_events:
@@ -197,13 +204,13 @@ class SessionCoordinator:
                 self._session_bytes.get(umo, 0) + batch_bytes + image_bytes
                 > self._max_session_image_memory_bytes
             ):
-                freed, _ = self._evict_oldest_image_event(umo=umo)
-                if not freed:
+                _freed, evicted = self._evict_oldest_image_event(umo=umo)
+                if evicted is None:
                     break
 
             while self._total_bytes + batch_bytes + image_bytes > self._max_image_memory_bytes:
-                freed, _ = self._evict_oldest_image_event()
-                if not freed:
+                _freed, evicted = self._evict_oldest_image_event()
+                if evicted is None:
                     break
 
             if (

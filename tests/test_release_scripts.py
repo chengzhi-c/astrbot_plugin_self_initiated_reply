@@ -158,6 +158,43 @@ def test_wheel_checker_rejects_version_substring_match(tmp_path: Path, monkeypat
     assert "版本" in capsys.readouterr().out
 
 
+def test_release_checkers_agree_on_metadata_version_without_space(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``version:1.3.3``（冒号后无空格）两个 checker 必须同结论。
+
+    两处曾各写一份正则：check_wheel 的 ``^version: (.+)$`` 要求冒号后恰一个空格，
+    check_sdist 的 ``^version:\\s*(.+)$`` 不要求。同一份 metadata.yaml 因此在两个
+    脚本间得到「缺少 version 字段」与正常版本两种结论——改 metadata 排版就能让
+    其中一个门禁静默失效。
+    """
+    check_wheel = _load_script("check_wheel")
+    check_sdist = _load_script("check_sdist")
+    release_artifacts = _load_script("release_artifacts")
+    (tmp_path / "metadata.yaml").write_text("version:1.3.3\n", encoding="utf-8")
+    monkeypatch.setattr(check_wheel, "ROOT", tmp_path)
+    monkeypatch.setattr(check_sdist, "ROOT", tmp_path)
+
+    assert release_artifacts.expected_version(tmp_path) == "1.3.3"
+    assert check_sdist._expected_version() == "1.3.3"
+    assert check_wheel._expected_version() == "1.3.3"
+
+
+def test_release_checkers_reject_metadata_without_version(tmp_path: Path, monkeypatch) -> None:
+    """缺 version 字段时两边都报错，而不是静默返回空串。"""
+    check_sdist = _load_script("check_sdist")
+    release_artifacts = _load_script("release_artifacts")
+    (tmp_path / "metadata.yaml").write_text("name: pkg\n", encoding="utf-8")
+    monkeypatch.setattr(check_sdist, "ROOT", tmp_path)
+
+    with pytest.raises(release_artifacts.ArtifactError):
+        release_artifacts.expected_version(tmp_path)
+    # check_sdist 经 scripts.release_artifacts 导入，其 ArtifactError 与本测试
+    # 独立加载的那份不是同一个类对象。
+    with pytest.raises(check_sdist.ArtifactError):
+        check_sdist._expected_version()
+
+
 def test_wheel_checker_rejects_wrong_distribution_name(tmp_path: Path, monkeypatch, capsys) -> None:
     check_wheel = _load_script("check_wheel")
     _write_project_metadata(tmp_path)

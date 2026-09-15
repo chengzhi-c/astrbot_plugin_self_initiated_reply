@@ -175,16 +175,26 @@ class _Tool:
 
 
 class _ToolSet:
-    def __init__(self, tools, *, remove_boom: bool = False, none_after: bool = False) -> None:
+    def __init__(
+        self,
+        tools,
+        *,
+        remove_boom: bool = False,
+        none_after: bool = False,
+        remove_noop: bool = False,
+    ) -> None:
         self.tools = tools
         self._remove_boom = remove_boom
         self._none_after = none_after
+        self._remove_noop = remove_noop
 
     def remove_tool(self, name: str) -> None:
         if self._remove_boom:
             raise RuntimeError("remove broken")
         if self._none_after:
             self.tools = None
+            return
+        if self._remove_noop:
             return
         self.tools = [tool for tool in self.tools if tool.name != name]
 
@@ -234,6 +244,50 @@ def test_filter_final_tools_skip_nameless_and_fail_closed() -> None:
     assert (
         adapter.filter_final_tools(SimpleNamespace(func_tool=vanish_set), keep=frozenset()) is False
     )
+
+
+def test_filter_final_tools_violation_warning_names_offenders(caplog: object) -> None:
+    """keep 核验失败必须点名违规工具；匿名工具以 <unnamed> 呈现。
+
+    修复前该出口返回 False 却零日志（只有调用方一句泛化警告），匿名宿主
+    工具会静默中止整轮主动回复，无从排查。fail-closed 行为本身不变。
+    """
+    import logging
+
+    runtime = _load_adapter()
+    adapter = _adapter(runtime)
+
+    # remove_tool 成功但集合未变（宿主假移除）：具名违规 + 匿名各一
+    sneaky_set = _ToolSet([_Tool("rogue"), _Tool("")], remove_noop=True)
+    with caplog.at_level(logging.WARNING, logger="astrbot"):
+        assert (
+            adapter.filter_final_tools(
+                SimpleNamespace(func_tool=sneaky_set), keep=frozenset({"safe"})
+            )
+            is False
+        )
+    messages = [record.getMessage() for record in caplog.records]
+    named = [message for message in messages if "non-allowlisted tools remain" in message]
+    assert len(named) == 1, f"违规出口应有且仅有一条点名告警：{messages}"
+    assert "rogue" in named[0] and "<unnamed>" in named[0], named[0]
+
+
+def test_filter_final_tools_drop_violation_warning_names_offenders(caplog: object) -> None:
+    """drop 模式同理：危险工具移除失败也要点名。"""
+    import logging
+
+    runtime = _load_adapter()
+    adapter = _adapter(runtime)
+    sneaky_set = _ToolSet([_Tool("danger"), _Tool("ok")], remove_noop=True)
+    with caplog.at_level(logging.WARNING, logger="astrbot"):
+        assert (
+            adapter.filter_final_tools(
+                SimpleNamespace(func_tool=sneaky_set), drop=frozenset({"danger"})
+            )
+            is False
+        )
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("denied tools remain: danger" in message for message in messages), messages
 
 
 def test_missing_func_tool_attribute_fails_closed_not_open(caplog: object) -> None:

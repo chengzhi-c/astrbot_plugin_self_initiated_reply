@@ -921,6 +921,60 @@ async def test_build_context_text_merges_history_and_image(tmp_path: Path) -> No
     text = await runner.build_context_text("s1", state)
     assert "新消息" in text
     assert "[图片描述]" in text
+    # 短历史必须逐字不变：预算只裁病态长史，不触碰正常路径。
+    assert "省略" not in text
+
+
+async def test_build_context_text_caps_history_at_budget(tmp_path: Path) -> None:
+    """生成路径历史文本受总字符预算约束：保尾（最新）裁头（最早）。
+
+    修复前零预算：recent_message_limit 限条数不限长度，宿主超长消息
+    原样进主 Agent prompt，成本失控（判断路径有 2000 cap，生成没有）。
+    """
+    long_msg = "刷屏内容" * 4000  # 16000 字符，单条即超预算
+    _, models, _, _, _, _ = _make_runner(tmp_path)
+    _, models, runner, _, _, _ = _make_runner(
+        tmp_path,
+        history=[
+            models.MessageRecord(role="user", name="u", text=f"最早消息{long_msg}", at=1.0),
+            models.MessageRecord(role="user", name="u", text="最新消息", at=2.0),
+        ],
+    )
+    state = _state(models, recent=[])
+    text = await runner.build_context_text("s1", state)
+    # 断言用字面量而非常量：基线上常量不存在，字面量才能把「无预算」本身
+    # 暴露为失败，而不是退化成 AttributeError。
+    assert len(text) <= 6000
+    assert "最新消息" in text
+    assert "最早消息" not in text
+    assert "省略" in text
+
+
+def test_cap_context_text_degrades_gracefully_at_tiny_budgets() -> None:
+    """预算退化边界：非正预算原样返回，预算装不下一行时只留标记。
+
+    这两支在唯一调用点（6000 字符预算）不可达，但函数是 utils 的导出工具，
+    调用方变预算时不能静默截出空串或把标记也吃掉。
+    """
+    # 先装载动态包：-k 单跑时模块未注册，直接 import_module 会 ModuleNotFoundError。
+    _load_modules()
+    utils = importlib.import_module(f"{PACKAGE_NAME}.utils")
+    marker = "…省略"
+    body = "第一条\n第二条"
+
+    # 非正预算 = 关闭截断，逐字返回
+    assert utils.cap_context_text(body, 0, marker=marker) == body
+    assert utils.cap_context_text(body, -1, marker=marker) == body
+    # 未超限原样返回
+    assert utils.cap_context_text(body, len(body), marker=marker) == body
+    # 预算装不下任何一行：仍返回标记本身，不返回空串
+    tiny = utils.cap_context_text(body, len(marker) + 1, marker=marker)
+    assert tiny.startswith(marker)
+    assert len(tiny) <= len(marker) + 1
+    # 预算放不下一整行但为正：按字符保尾，且总长不超预算
+    tail_only = utils.cap_context_text(body, len(marker) + 2, marker=marker)
+    assert tail_only.endswith("条")
+    assert len(tail_only) <= len(marker) + 2
 
 
 # ============================================================================

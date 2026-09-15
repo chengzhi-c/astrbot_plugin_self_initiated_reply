@@ -521,8 +521,24 @@ class AstrBotRuntimeAdapter:
             )
             return False
         if keep is not None:
-            return all(name in keep for name in remaining)
-        return all(name not in drop for name in remaining)
+            violations = sorted({name or "<unnamed>" for name in remaining if name not in keep})
+            if violations:
+                logger.warning(
+                    "[%s] tool boundary fail-closed: non-allowlisted tools remain: %s",
+                    PLUGIN_ID,
+                    ", ".join(violations),
+                )
+                return False
+            return True
+        violations = sorted({name for name in remaining if name and name in drop})
+        if violations:
+            logger.warning(
+                "[%s] tool boundary fail-closed: denied tools remain: %s",
+                PLUGIN_ID,
+                ", ".join(violations),
+            )
+            return False
+        return True
 
     def new_build_config(self, **kwargs: Any) -> Any:
         config_type = self.capabilities.build_config

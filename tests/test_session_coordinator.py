@@ -298,6 +298,52 @@ def test_capture_images_hot_path_does_not_rescan_memory() -> None:
     )
 
 
+def _budget_coordinator(module, *, global_bytes: int, session_bytes: int):
+    from types import SimpleNamespace
+
+    images: dict[str, object] = {}
+    coordinator = module.SessionCoordinator(
+        events={},
+        event_at={},
+        images=images,
+        gate=SimpleNamespace(advance=lambda _umo: 1),
+        cancel_delay=lambda _umo, _force: None,
+        notify_silence=lambda _umo: None,
+        max_image_memory_bytes=global_bytes,
+        max_session_image_memory_bytes=session_bytes,
+    )
+    return coordinator, images
+
+
+def test_zero_byte_placeholder_at_queue_head_does_not_stall_eviction() -> None:
+    """空占位事件（0 字节，:172 刻意入队保时序）排在队首时不得终止驱逐。
+
+    旧实现以 ``freed==0`` 作"无可回收"哨兵：弹出 0 字节条目即 break，
+    其后真正占内存的 data: 事件无法驱逐，误判预算耗尽丢图。
+    """
+    module = _coordinator_module()
+    coordinator, _images = _budget_coordinator(module, global_bytes=10, session_bytes=4)
+
+    assert coordinator.capture_images("s1", 1.0, []) == []  # 空占位事件
+    assert len(coordinator.capture_images("s1", 2.0, [_PreparedImage(b"123")])) == 1
+    # 3 已占用 + 3 新图 > 4：必须先弹出 0 字节占位，再驱逐 3 字节事件才能接纳。
+    accepted = coordinator.capture_images("s1", 3.0, [_PreparedImage(b"abc")])
+    assert len(accepted) == 1
+
+
+def test_zero_byte_frozen_event_at_queue_head_does_not_stall_global_eviction() -> None:
+    """冻结到磁盘的图片按 0 字节记账；全局驱逐同样不得被队首 0 字节卡住。"""
+    module = _coordinator_module()
+    coordinator, _images = _budget_coordinator(module, global_bytes=6, session_bytes=6)
+
+    assert coordinator.capture_images("s1", 1.0, []) == []
+    assert len(coordinator.capture_images("s1", 2.0, [_PreparedImage(b"123")])) == 1
+    assert len(coordinator.capture_images("s2", 3.0, [_PreparedImage(b"456")])) == 1
+    # 全局 6 已满：s2 追加 3 字节需要驱逐全局最旧——先弹 0 字节占位再继续。
+    accepted = coordinator.capture_images("s2", 4.0, [_PreparedImage(b"abc")])
+    assert len(accepted) == 1
+
+
 def test_deque_overflow_keeps_byte_counters_in_sync() -> None:
     module = _coordinator_module()
     _, coordinator, ctx = _make_coordinator()

@@ -1197,6 +1197,65 @@ def test_period_during_generation_does_not_silence_skip_when_abandon_off(
     with_plugin(tmp_path, scenario, min_silence_sec=25, cooldown_sec=0)
 
 
+def _arrange_reply_flow(plugin, main, models):
+    """把 check_session_locked 推到「生成成功→投递→finally 记账」路径。"""
+
+    async def fake_decide(*_args, **_kwargs):
+        return {"should_reply": True, "reason": "测试", "elapsed_sec": 0.0}
+
+    async def fake_generate(_umo, _state, **kwargs):
+        ledger = kwargs.get("ledger") or models.AttemptLedger()
+        return models.PipelineReply(text="在呢", ledger=ledger)
+
+    plugin.settings.cooldown_sec = 0
+    plugin._decision.decide = fake_decide
+    plugin._generation.generate = fake_generate
+    return plugin._gate.current(UMO) or plugin._gate.advance(UMO)
+
+
+def test_check_session_registration_rejection_keeps_result_and_unmarks(tmp_path: Path) -> None:
+    """finally 注册被拒不得改写主链结果，也不得漏掉 unmark_running。"""
+
+    async def scenario(plugin, main):
+        models = importlib.import_module(main.__package__ + ".models")
+        token = _arrange_reply_flow(plugin, main, models)
+        plugin._pipeline._track_critical_task = lambda _coro: None
+
+        result = await plugin._pipeline.check_session_locked(
+            UMO, trigger="message_delay", force=True, expected_generation=token
+        )
+        assert result == "已主动回复。"
+        assert not plugin._gate.is_running(UMO)
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_check_session_finalizer_internal_rejection_keeps_result(tmp_path: Path) -> None:
+    """外层任务注册成功、_finalize_ledger 内部注册被拒：错误只留日志，结果不变。"""
+
+    async def scenario(plugin, main):
+        models = importlib.import_module(main.__package__ + ".models")
+        token = _arrange_reply_flow(plugin, main, models)
+        calls: list = []
+
+        def track(coro):
+            calls.append(coro)
+            if len(calls) == 1:
+                return asyncio.create_task(coro)
+            coro.close()
+            return None
+
+        plugin._pipeline._track_critical_task = track
+
+        result = await plugin._pipeline.check_session_locked(
+            UMO, trigger="message_delay", force=True, expected_generation=token
+        )
+        assert result == "已主动回复。"
+        assert not plugin._gate.is_running(UMO)
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_on_message_period_abandons_inflight_when_enabled(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin.settings.abandon_stale_on_new_message = True

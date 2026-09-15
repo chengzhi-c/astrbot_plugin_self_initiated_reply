@@ -1104,6 +1104,13 @@ test("empty number input is a validation error, not a silent fallback", () => {
   assert.ok(numberFieldError("99", 0, 30).includes("不能大于"));
 });
 
+test("integer number controls reject fractional input before save", () => {
+  assert.ok(numberFieldError("5.5", 0, 100, true).includes("整数"));
+  // step=5 只是滑杆增量，不是整除约束：47 必须合法，否则前端比后端更严。
+  assert.equal(numberFieldError("47", 0, 100, true), "");
+  assert.equal(numberFieldError("5.5", 0, 100), "");
+});
+
 test("validateWhitelistLines reports line numbers and reasons for malformed whitelist input", () => {
   const input = [
     "valid_session_1",

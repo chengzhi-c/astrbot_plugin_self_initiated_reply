@@ -20,22 +20,32 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-# astrbot 包 import 会在 cwd 生成运行时 data/ 目录：切到临时目录防污染工作区
-os.chdir(tempfile.mkdtemp(prefix="astrbot-compat-"))
 
-# 包导入兼容：优先用已安装的包（CI 的 pip install -e 后运行）；本地直接跑
-# 脚本而未安装时，以包名把仓库根注册进 sys.modules（与 tests 加载模式同源）。
-# Windows 中文路径下 editable 安装的 .pth 会被 pip 以错误编码写入导致 import
-# 失败（CI ubuntu UTF-8 无此问题），此回退保证本地也能验证。
-try:
-    import astrbot_plugin_self_initiated_reply  # noqa: F401
-except ModuleNotFoundError:
-    import types
 
-    _pkg = types.ModuleType("astrbot_plugin_self_initiated_reply")
-    _pkg.__path__ = [str(ROOT)]
-    sys.modules["astrbot_plugin_self_initiated_reply"] = _pkg
+def _bootstrap() -> None:
+    """进程级准备（sys.path / cwd / 假包注册），只在入口调用。
+
+    import 本模块必须无副作用：tests/test_host_contract.py 只为取
+    EXPECTED_HANDLER_COUNT 而 import，模块级 chdir 会把 pytest 进程的工作目录
+    切到临时目录、假包注册会顶掉 sys.modules 里的同名真包。
+    """
+    sys.path.insert(0, str(ROOT))
+    # astrbot 包 import 会在 cwd 生成运行时 data/ 目录：切到临时目录防污染工作区
+    os.chdir(tempfile.mkdtemp(prefix="astrbot-compat-"))
+
+    # 包导入兼容：优先用已安装的包（CI 的 pip install -e 后运行）；本地直接跑
+    # 脚本而未安装时，以包名把仓库根注册进 sys.modules（与 tests 加载模式同源）。
+    # Windows 中文路径下 editable 安装的 .pth 会被 pip 以错误编码写入导致 import
+    # 失败（CI ubuntu UTF-8 无此问题），此回退保证本地也能验证。
+    try:
+        import astrbot_plugin_self_initiated_reply  # noqa: F401
+    except ModuleNotFoundError:
+        import types
+
+        _pkg = types.ModuleType("astrbot_plugin_self_initiated_reply")
+        _pkg.__path__ = [str(ROOT)]
+        sys.modules["astrbot_plugin_self_initiated_reply"] = _pkg
+
 
 # 宿主危险内置工具模块：这些模块内所有 FunctionTool 子类的 name 必须全部被
 # models.HOST_DANGEROUS_TOOL_IDS 覆盖——宿主新增/改名危险工具时缺失即报错，
@@ -193,6 +203,7 @@ def run_contract_checks() -> int:
 
 
 def main() -> int:
+    _bootstrap()
     return run_contract_checks()
 
 

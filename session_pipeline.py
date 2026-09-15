@@ -232,22 +232,46 @@ class SessionPipeline:
                 silence_active_at=observed_active_at,
             )
         finally:
-            finalizer = self._create_critical_task(
-                self._finalize_ledger(
-                    umo,
-                    state,
-                    ledger,
-                    effective_reply,
-                    expected_generation=expected_generation,
-                    observed_active_at=observed_active_at,
-                )
-            )
             try:
-                await asyncio.shield(finalizer)
-            except asyncio.CancelledError:
-                await asyncio.shield(finalizer)
-                raise
+                try:
+                    finalizer = self._create_critical_task(
+                        self._finalize_ledger(
+                            umo,
+                            state,
+                            ledger,
+                            effective_reply,
+                            expected_generation=expected_generation,
+                            observed_active_at=observed_active_at,
+                        )
+                    )
+                except RuntimeError as exc:
+                    # 任务注册被拒（停止中 / 降级 / 隔离任务超限）：协程已被
+                    # _create_critical_task 关闭，账本停在 sealed、配额不记
+                    # （test_attempt_ledger 锚定）。只留日志——若让它从 finally
+                    # 传出，会改写主链已得出的结果或在途异常。
+                    logger.error(
+                        "[%s] proactive ledger finalizer registration rejected session=%s error=%s",
+                        PLUGIN_ID,
+                        umo,
+                        exc,
+                    )
+                else:
+                    try:
+                        await asyncio.shield(finalizer)
+                    except RuntimeError as exc:
+                        # finalizer 内部（_finalize_ledger 挂 record task 时）注册被拒
+                        # 的镜像出口：记账错误同样不外溢，理由同上。
+                        logger.error(
+                            "[%s] proactive ledger finalizer rejected session=%s error=%s",
+                            PLUGIN_ID,
+                            umo,
+                            exc,
+                        )
+                    except asyncio.CancelledError:
+                        await asyncio.shield(finalizer)
+                        raise
             finally:
+                # unmark 挂在最外层：注册被拒路径同样必经，否则会话永久卡在 running。
                 self._gate.unmark_running(umo)
 
     async def _record_ledger(

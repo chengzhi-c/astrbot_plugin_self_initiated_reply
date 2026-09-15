@@ -63,6 +63,9 @@ def _bootstrap():
         ({"vision_max_images": "x"}, "vision_max_images"),
         ({"vision_image_age_sec": "x"}, "vision_image_age_sec"),
         ({"vision_timeout_sec": "x"}, "vision_timeout_sec"),
+        ({"judge_provider_id": True}, "judge_provider_id"),
+        ({"vision_provider_id": {"a": 1}}, "vision_provider_id"),
+        ({"vision_judge_provider_id": ["a"]}, "vision_judge_provider_id"),
         ("not a dict", "请求体必须是 JSON 对象"),
         ({"whitelist_sessions": "abc"}, "whitelist_sessions 必须是数组"),
     ],
@@ -70,6 +73,34 @@ def _bootstrap():
 def test_parse_config_updates_rejects_invalid(payload: Any, field: str) -> None:
     with pytest.raises(ValueError):
         _webapi()._parse_config_updates(payload)
+
+
+def test_parse_config_updates_str_keys_accept_strings_and_none() -> None:
+    """str 键写侧严格类型但宽容取值：字符串照收（含超长，交由 coerce 截断），None 视作复位。"""
+    webapi = _webapi()
+    assert webapi._parse_config_updates({"judge_provider_id": "prov-1"})["judge_provider_id"] == (
+        "prov-1"
+    )
+    assert webapi._parse_config_updates({"judge_provider_id": None})["judge_provider_id"] == ""
+    long_value = webapi._parse_config_updates({"judge_provider_id": "p" * 300})
+    assert long_value["judge_provider_id"] == "p" * 300
+
+
+def test_str_provider_keys_truncate_on_persist(tmp_path) -> None:
+    """超长 provider id 经读侧 coerce 截断到 MAX_PROVIDER_ID_LEN 并留 warning。"""
+
+    async def scenario(plugin, main):
+        models = sys.modules[f"{PACKAGE}.models"]
+        web = sys.modules["astrbot.api.web"]
+        web.request.payload = {"judge_provider_id": "p" * (models.MAX_PROVIDER_ID_LEN + 50)}
+
+        result = await plugin._api_post_config()
+
+        assert result["ok"] is True
+        assert len(result["config"]["judge_provider_id"]) == models.MAX_PROVIDER_ID_LEN
+        assert plugin.settings.judge_provider_id == "p" * models.MAX_PROVIDER_ID_LEN
+
+    with_plugin(tmp_path, scenario)
 
 
 def test_parse_config_updates_whitelist_rules() -> None:
@@ -625,6 +656,28 @@ def test_api_post_config_returns_normalized_values(tmp_path) -> None:
         assert config["whitelist_sessions"] == sorted(whitelist)[: models.MAX_WHITELIST_SIZE]
         assert config["whitelist_sessions"] == sorted(config["whitelist_sessions"])
         assert plugin.settings.to_config_dict() == config
+        # 运行态必须回传：前端徽标按 result.runtime_enabled 刷新（缺失时 ?? 链会
+        # 静默回退到保存前的旧值，切换总开关后徽标不更新）。
+        assert "runtime_enabled" in result
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_api_post_config_returns_runtime_enabled_after_toggle(tmp_path) -> None:
+    """POST 关闭总开关后，响应里的 runtime_enabled 必须已是新运行态。"""
+
+    async def scenario(plugin, main):
+        web = sys.modules["astrbot.api.web"]
+        # 持久值与运行态都先置为启用，POST 才能命中「enabled 真正变化」分支。
+        plugin.settings.enabled = True
+        plugin.runtime_enabled = True
+        web.request.payload = {"enabled": False}
+
+        result = await plugin._api_post_config()
+
+        assert result["ok"] is True
+        assert result["runtime_enabled"] is False
+        assert plugin.runtime_enabled is False
 
     with_plugin(tmp_path, scenario)
 

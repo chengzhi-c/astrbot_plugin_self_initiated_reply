@@ -38,6 +38,9 @@ _INFO_WHITELIST = {
     # 运维状态：资源清理结果
     "[%s] cleaned up %d expired frozen images",
     "[%s] cleaned up %d cached events (total: %d)",
+    # 运维状态：生成上下文超字符预算（历史被裁，模型看到的比配置的少）。
+    # 非逐条消息高频：每次 check_session 的生成路径只打一次。
+    "[%s] proactive context over budget, oldest history dropped session=%s chars=%d budget=%d",
     # 运维状态：白名单管理操作（add/remove 共用一条参数化模板）
     "[%s] whitelist %s session=%s existed=%s total=%d",
     # 运维状态：判断结果（用户要求可见，每会话检查收敛点，非逐条消息高频）

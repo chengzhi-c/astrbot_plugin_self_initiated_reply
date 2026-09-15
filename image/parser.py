@@ -200,7 +200,11 @@ def _global_addresses(host: str) -> list[str]:
         parsed = [ipaddress.ip_address(address) for address in addresses]
         if not all(address.is_global for address in parsed):
             return []
-        return sorted(addresses)
+        # IPv4 优先、组内按字符串稳定排序：纯字符串排序会把双栈域名的 IPv6
+        # 顶到首位，而本机 v6 无路由（Docker 常态）时调用方只连第一个地址，
+        # 等于整站下载恒失败。不轮询下一地址：每次下载只 pin 一个已校验地址，
+        # 轮询会把一次下载拖成 N 倍时延，收益不抵复杂度。
+        return [str(ip) for ip in sorted(parsed, key=lambda ip: (ip.version, str(ip)))]
     return [str(literal)] if literal.is_global else []
 
 
@@ -447,16 +451,33 @@ class ImageParser:
 
     @staticmethod
     async def _run_concurrent(
-        images: list[ImageInfo], fn: Any, *, max_concurrent: int
+        images: list[ImageInfo], fn: Any, *, max_concurrent: int, error_value: Any
     ) -> list[Any]:
-        """并发执行 fn(image) 并保持输入顺序（三个批方法共用模板）。"""
+        """并发执行 fn(image) 并保持输入顺序（三个批方法共用模板）。
+
+        ``return_exceptions`` 隔离单图异常：一张图的漏网异常不得取消同批
+        其余快照，那会让上层把整个识图阶段判为失败。取消（CancelledError）
+        例外——它是控制流，必须原样上抛。
+        """
         semaphore = asyncio.Semaphore(max(1, int(max_concurrent)))
 
         async def run_one(image: ImageInfo) -> Any:
             async with semaphore:
                 return await fn(image)
 
-        return list(await asyncio.gather(*(run_one(image) for image in images)))
+        results = await asyncio.gather(
+            *(run_one(image) for image in images), return_exceptions=True
+        )
+        normalized: list[Any] = []
+        for result in results:
+            if isinstance(result, BaseException):
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                logger.debug("[%s] image batch step failed: %r", PLUGIN_ID, result)
+                normalized.append(error_value)
+            else:
+                normalized.append(result)
+        return normalized
 
     async def snapshot_local_sources(
         self, images: list[ImageInfo], *, max_concurrent: int = VISION_MAX_CONCURRENT
@@ -469,7 +490,7 @@ class ImageParser:
         ImageInfo paths remain subject to the normal cache-root restriction.
         """
         return await self._run_concurrent(
-            images, self._snapshot_local_source, max_concurrent=max_concurrent
+            images, self._snapshot_local_source, max_concurrent=max_concurrent, error_value=False
         )
 
     async def _snapshot_local_source(self, image_info: ImageInfo) -> bool:
@@ -505,7 +526,9 @@ class ImageParser:
                 cached_path.name,
             )
             return True
-        except (OSError, RuntimeError, ValueError) as exc:
+        except Exception as exc:
+            # 捕获面对齐 prepare()：窄捕获会让漏网异常穿过 gather 连带取消同批
+            # 其余快照；单图快照失败只该让这张图不可用。
             logger.debug("[%s] host image snapshot failed: %s", PLUGIN_ID, exc)
             return False
 
@@ -513,7 +536,9 @@ class ImageParser:
         self, images: list[ImageInfo], *, max_concurrent: int = VISION_MAX_CONCURRENT
     ) -> list[bool]:
         """Freeze image sources concurrently while preserving input order."""
-        return await self._run_concurrent(images, self.prepare, max_concurrent=max_concurrent)
+        return await self._run_concurrent(
+            images, self.prepare, max_concurrent=max_concurrent, error_value=False
+        )
 
     async def parse(self, image_info: ImageInfo, *, umo: str = "") -> str | None:
         """Parse one image and return a compact description, or ``None`` on failure."""
@@ -624,6 +649,7 @@ class ImageParser:
             images,
             lambda image: self.parse(image, umo=umo),
             max_concurrent=max_concurrent,
+            error_value=None,
         )
 
     async def _resolve_image_url(self, image_info: ImageInfo) -> str | None:
@@ -805,7 +831,9 @@ class ImageParser:
                 return None
             transport = _FixedAddressTransport(address=address)
             async with httpx.AsyncClient(
-                timeout=15,
+                # 单操作超时与整体预算同源（外层 wait_for 用同一 ``_timeout_sec``）：
+                # 此前硬编码 15s，配大 vision_timeout_sec 也永远吃不满，配小又形同虚设。
+                timeout=self._timeout_sec,
                 follow_redirects=True,  # 跟随重定向（QQ 图片 URL 通常会 302）
                 max_redirects=3,
                 trust_env=False,

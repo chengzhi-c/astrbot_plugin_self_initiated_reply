@@ -27,6 +27,7 @@ from .models import (
     HOST_DANGEROUS_TOOL_IDS,
     MAX_AGENT_STEPS,
     MAX_DIRECT_TOOL_SENDS,
+    MAX_GENERATION_CONTEXT_CHARS,
     MIN_RECENT_TEXT_RECORDS,
     PLUGIN_ID,
     PROACTIVE_ALLOWED_TOOL_IDS,
@@ -39,7 +40,7 @@ from .models import (
     Settings,
 )
 from .outbound import OutboundGateway
-from .utils import build_history_text, clean_reply, response_text
+from .utils import build_history_text, cap_context_text, clean_reply, response_text
 
 # 回复长度档位的措辞。档位值来自 _conf_schema 的 reply_length_mode；
 # 未知值按 balanced 兜底（配置漂移不应让 prompt 缺失长度约束）。
@@ -720,6 +721,22 @@ class GenerationRunner:
             limit=self.settings.recent_message_limit,
             min_text_records=min(MIN_RECENT_TEXT_RECORDS, self.settings.recent_message_limit),
         )
+        if len(context_text) > MAX_GENERATION_CONTEXT_CHARS:
+            # 历史是唯一无界项（识图描述有单图 MAX_DESCRIPTION_CHARS×条数上限）；
+            # 判断路径另有 2000 cap，生成路径此前零预算。
+            logger.info(
+                "[%s] proactive context over budget, oldest history dropped "
+                "session=%s chars=%d budget=%d",
+                PLUGIN_ID,
+                umo,
+                len(context_text),
+                MAX_GENERATION_CONTEXT_CHARS,
+            )
+            context_text = cap_context_text(
+                context_text,
+                MAX_GENERATION_CONTEXT_CHARS,
+                marker="…(更早历史因长度预算省略)",
+            )
         image_context = await self._build_image_context(
             umo,
             enabled=self.settings.vision_main_enabled,

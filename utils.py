@@ -495,6 +495,30 @@ def format_message_records(records: list[MessageRecord], *, limit: int) -> str:
     return "\n".join(lines)
 
 
+def cap_context_text(text: str, max_chars: int, *, marker: str) -> str:
+    """总字符预算内的保尾裁剪：历史越新越重要，超限只裁更早部分。
+
+    从行边界起裁（不截半条消息），加一行 ``marker`` 提示省略；总长
+    （含 marker）不超过 ``max_chars``。短文本原样返回。
+    """
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    lines = text.splitlines()
+    budget = max_chars - len(marker) - 1  # -1 为 marker 与正文间的换行
+    kept: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        addition = len(line) + (1 if kept else 0)
+        if used + addition > budget:
+            break
+        kept.insert(0, line)
+        used += addition
+    if not kept:
+        # 连一行都放不下：按字符保尾，至少让预算不为空转。
+        kept = [text[-budget:]] if budget > 0 else []
+    return "\n".join([marker, *kept])
+
+
 def count_text_records(records: list[MessageRecord]) -> int:
     return sum(1 for item in records if str(item.text or "").strip())
 

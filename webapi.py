@@ -279,8 +279,7 @@ def _strict_int(value: Any, field: str) -> int:
 
 def _string_list(data: dict[str, Any], key: str) -> list[str]:
     """规范化字符串列表；机器规则由对应 ``ConfigSpec`` 唯一拥有。"""
-    value = normalize_string_list(CONFIG_SPEC_BY_KEY[key], data[key], mode="api")
-    return sorted(value) if isinstance(value, set) else value
+    return normalize_string_list(CONFIG_SPEC_BY_KEY[key], data[key], mode="api")
 
 
 def _strict_float(value: Any, field: str) -> float:
@@ -408,10 +407,16 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
         return value
     if spec.kind == "text":
         # 空提交 = 恢复内置默认（面板留空即复位是产品语义，见 test_config_schema
-        # 的 _INTENTIONAL_EMPTY_DEFAULT）；与 models.coerce_config_value 的
-        # text 分支成对——新增 text 类配置键时两处需同步。
-        return str(raw or "").strip() or DEFAULT_DECISION_PROMPT_TEMPLATE
-    return str(raw or "").strip()
+        # 的 _INTENTIONAL_EMPTY_DEFAULT）；复位值取自规格表 reset_default，读写两侧
+        # （models.coerce_config_value 与本函数）共用同一声明，无需同步第二处字面量。
+        return str(raw or "").strip() or spec.reset_default
+    # kind == "str"：拒绝 bool/dict/list（str(True)="True"、str({'a':1})="{'a': 1}"
+    # 落盘后永远匹配不到任何 provider，故障静默且不自愈）。int/float 沿用 falsy 规范化
+    # （0→""、42→"42"，与历史面板行为一致，见 test_parse_config_updates_formal_defaults）。
+    # 长度上限由 coerce 读侧按 spec.max_len 统一截断。
+    if isinstance(raw, (bool, dict, list)):
+        raise ValueError(f"{spec.key} 必须是字符串")
+    return str(raw or "").strip() or spec.reset_default
 
 
 # 安全敏感配置键：变更记 INFO 审计日志。webapi 无独立鉴权，
@@ -598,6 +603,9 @@ async def _apply_config_updates(
             "ok": True,
             "config": config,
             "config_revision": config_revision(config),
+            # 面板保存后据此刷新运行态徽标：enabled 是持久配置，runtime_enabled
+            # 是本轮生效后的运行态，二者在 POST 边界上可能不同（见 _api_get_config 注释）。
+            "runtime_enabled": plugin.runtime_enabled,
             "adjusted_fields": adjusted_fields,
         }
     except Exception:

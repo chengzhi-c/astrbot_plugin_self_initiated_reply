@@ -26,6 +26,7 @@ try:
         REQUIRED_PAGE_FILES,
         ArtifactError,
         expected_project_name,
+        expected_version,
         resolve_artifact,
     )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
@@ -33,6 +34,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
         REQUIRED_PAGE_FILES,
         ArtifactError,
         expected_project_name,
+        expected_version,
         resolve_artifact,
     )
 
@@ -122,14 +124,11 @@ def _expected_runtime_dependencies() -> set[str]:
 
 def _expected_version() -> str:
     """metadata.yaml 的发布版本（wheel 文件名与 dist-info 的基准）。"""
-    import re
-
-    meta = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
-    match = re.search(r"^version: (.+)$", meta, re.M)
-    if match is None:
+    try:
+        return expected_version(ROOT)
+    except ArtifactError:
         print("FAIL: metadata.yaml 缺少 version 字段")
         sys.exit(1)
-    return match.group(1).strip()
 
 
 def _normalize(name: str) -> str:

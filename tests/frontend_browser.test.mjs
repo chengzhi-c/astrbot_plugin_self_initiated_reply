@@ -126,6 +126,11 @@ async function installBridge(page, options = {}) {
             if (state.saveMode === "fail-once" && state.saveAttempts === 1) {
               return { ok: false, error: "write failed" };
             }
+            if (state.saveMode === "field-error") {
+              // 模拟后端 _strict_int 的字段级拒绝：error 文案以「键名 + 空格」
+              // 前缀自带定位，驱动 saveConfig 的 numberField 标红路径。
+              return { ok: false, error: "cooldown_sec 必须是整数" };
+            }
             state.config = {
               ...state.config,
               ...body,
@@ -484,5 +489,46 @@ test("skip link and invalid whitelist stay keyboard-accessible", async ({ page }
   await expect(page.locator("#whitelistInput")).toHaveAttribute("aria-invalid", "true");
   await expect(page.locator("#whitelistInput")).toHaveAttribute("aria-describedby", "whitelistError");
   await expect(page.locator("#whitelistInput")).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test("integer controls reject fractional input before save", async ({ page }) => {
+  await installBridge(page);
+  const errors = await openPage(page);
+  await page.evaluate(() =>
+    document.querySelector('[data-config-key="cooldown_sec"]').scrollIntoView());
+
+  await page.locator("#cooldownInput").fill("90.5");
+  await page.locator("#cooldownInput").blur();
+  await expect(page.locator("#cooldownInputError")).toBeVisible();
+  await expect(page.locator("#cooldownInputError")).toContainText("请输入整数");
+  await expect(page.locator("#cooldownInput")).toHaveAttribute("aria-invalid", "true");
+
+  // step=5 只是滑杆增量，不是整除约束（后端 _strict_int 接受任意整数）：
+  // 47 必须保持合法，否则前端比后端更严，丧失既有功能。
+  await page.locator("#messageDelayInput").fill("47");
+  await page.locator("#messageDelayInput").blur();
+  await expect(page.locator("#messageDelayInputError")).toBeHidden();
+
+  await page.locator("#cooldownInput").fill("90");
+  await expect(page.locator("#cooldownInputError")).toBeHidden();
+  await page.locator("#saveTopBtn").click();
+  await expect(page.locator("#configSaveState")).toHaveClass(/is-ok/);
+  expect(errors).toEqual([]);
+});
+
+test("backend field errors paint the offending number control", async ({ page }) => {
+  await installBridge(page, { saveMode: "field-error" });
+  const errors = await openPage(page);
+  await page.evaluate(() =>
+    document.querySelector('[data-config-key="cooldown_sec"]').scrollIntoView());
+
+  await page.locator("#cooldownInput").fill("90");
+  await page.locator("#saveTopBtn").click();
+  // 此前该定位只对白名单生效，其它字段用户只能靠 toast 猜是哪个框。
+  await expect(page.locator("#cooldownInputError")).toBeVisible();
+  await expect(page.locator("#cooldownInputError")).toContainText("cooldown_sec 必须是整数");
+  await expect(page.locator("#cooldownInput")).toHaveAttribute("aria-invalid", "true");
+  await expect(page.locator("#cooldownInput")).toBeFocused();
   expect(errors).toEqual([]);
 });

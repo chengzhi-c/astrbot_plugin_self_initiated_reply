@@ -125,7 +125,12 @@ class SessionGate:
     def prune(self, umo: str) -> None:
         """会话移出白名单后回收全部映射与运行标记。"""
         self._session_generation.pop(umo, None)
-        self._session_locks.pop(umo, None)
+        # 仍被在途检查持有的锁**不摘**：摘走后重加白名单的新检查会拿到新锁
+        # 对象，与旧检查真正并发（代次门只在 check 点兜底，锁互斥必须连续）。
+        # 锁对象每 UMO 至多一个，由该会话下一次未持锁的 prune 回收。
+        held = self._session_locks.get(umo)
+        if held is not None and not held.locked():
+            self._session_locks.pop(umo, None)
         self._running_sessions.discard(umo)
         release = self._session_release.pop(umo, None)
         if release is not None:

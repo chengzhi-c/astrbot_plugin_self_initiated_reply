@@ -218,6 +218,8 @@ def test_frontend_number_bounds_match_panel_specs() -> None:
         spec_step = None if spec.step is None else float(spec.step)
         if html_step != spec_step:
             drift.append(f"{key}: HTML step={html_step} spec={spec_step}")
+        if ("data-integer" in tag) != (spec.kind == "int"):
+            drift.append(f"{key}: HTML data-integer vs spec kind={spec.kind}")
     missing = [
         spec.key
         for spec in models.panel_config_specs()
@@ -225,3 +227,20 @@ def test_frontend_number_bounds_match_panel_specs() -> None:
     ]
     assert not missing, f"panel 数值键没有 HTML number 控件：{missing}"
     assert not drift, "HTML number 边界与规格表漂移：\n" + "\n".join(drift)
+
+
+def test_frontend_prompt_textarea_maxlength_matches_backend() -> None:
+    """提示词输入框 maxlength 必须等于后端 max_len，防超长整段被后端拒收。"""
+    from .host_stubs import install_astrbot_stubs, load_package
+
+    install_astrbot_stubs()
+    models = load_package("selfreply_config_sot_package", "models")
+    html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
+    tag = re.search(r'<textarea\b[^>]*id="decisionPromptInput"[^>]*>', html)
+    assert tag is not None, "HTML 缺少 decisionPromptInput"
+    maxlength = re.search(r'maxlength="(\d+)"', tag.group(0))
+    assert maxlength is not None, "decisionPromptInput 缺少 maxlength"
+    spec = models.CONFIG_SPEC_BY_KEY["decision_prompt_template"]
+    assert int(maxlength.group(1)) == spec.max_len, (
+        f"textarea maxlength={maxlength.group(1)} spec={spec.max_len}"
+    )

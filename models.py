@@ -40,6 +40,8 @@ MAX_WHITELIST_SIZE = 1000  # 白名单最大条目数，防止性能降级
 MAX_STRING_LIST_ITEM_LEN = (
     200  # 字符串列表条目最大长度（白名单/别名/忽略名单等共用），防止垃圾长条目
 )
+# str 类键（provider id）的硬上限：与列表条目同宽，防止无限长字符串落盘。
+MAX_PROVIDER_ID_LEN = 200
 # 与前端 pages/主动回复设置/config-form.mjs 的 WHITELIST_ILLEGAL_RE 同字符集。
 # 控制字符 + 引号 + 反斜杠：过长文案截进 logger.warning 时不能伪造日志行。
 STRING_LIST_ILLEGAL_RE = re.compile(r"[\x00-\x1f\"'\\]")
@@ -47,6 +49,11 @@ MAX_BOT_ALIASES = 64
 MAX_IGNORED_SENDER_IDS = 1000
 MAX_QUIET_HOURS = 24
 MAX_RECENT_MESSAGE_LIMIT = 100  # 历史消息最大缓存数
+# 生成路径上下文（历史文本）总字符预算：宿主单条消息长度不受本插件约束，
+# 100 条缓存上限挡不住成本失控。判断路径已有 2000 cap（decision 提示词
+# 变量净化），生成路径此前零预算——长文群会把整段刷屏历史灌进主 Agent。
+# 6000 ≈ 默认 20 条 × 常见消息长度，正常会话永不触发，只裁病态长史。
+MAX_GENERATION_CONTEXT_CHARS = 6000
 MAX_DAILY_REPLIES_LIMIT = 1000  # 每日回复次数上限
 MAX_VISION_IMAGES = 5  # 单次主动回复最多解析的图片数
 MAX_VISION_IMAGE_AGE_SEC = 86400  # 图片上下文最长保留时间
@@ -732,6 +739,7 @@ class ConfigSpec:
         special/editor_mode/editor_language: schema 的 UI 专属字段。
         max_len/max_items: 硬上限（防 OOM 与费用滥用），超限截断并记 warning。
         item_max_len/item_pattern/empty_policy: list/set 条目的统一规范化规则。
+        reset_default: 空提交复位的内置默认（目前唯一消费者是 text 类键）。
         surfaces: 该键出现在哪些配置面。``host`` 为宿主 schema；
             ``panel`` 为自定义设置页。GET /config 与前端可写键都从此派生。
     """
@@ -755,6 +763,9 @@ class ConfigSpec:
     item_max_len: int | None = None
     item_pattern: str = ""
     empty_policy: str = ""
+    # 空提交复位的内置默认（目前唯一消费者是 text 类键）。读写两侧（webapi
+    # _strict_value 与 coerce_config_value）都从这里取值，不再各抄一份字面量。
+    reset_default: Any = ""
     surfaces: frozenset[str] = frozenset({"host"})
 
     @property
@@ -786,6 +797,7 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         "",
         special="select_provider",
         audited=True,
+        max_len=MAX_PROVIDER_ID_LEN,
         surfaces=_PANEL,
     ),
     ConfigSpec(
@@ -795,6 +807,7 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         editor_mode=True,
         editor_language="text",
         max_len=MAX_PROMPT_LENGTH,
+        reset_default=DEFAULT_DECISION_PROMPT_TEMPLATE,
         surfaces=_PANEL,
     ),
     ConfigSpec("decision_temperature", "float", 0.2, 0.0, 2.0, step=0.1, surfaces=_PANEL),
@@ -921,6 +934,7 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         "",
         special="select_provider",
         audited=True,
+        max_len=MAX_PROVIDER_ID_LEN,
         surfaces=_PANEL,
     ),
     ConfigSpec("vision_skip_stickers", "bool", False, surfaces=_PANEL),
@@ -930,6 +944,7 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         "",
         special="select_provider",
         audited=True,
+        max_len=MAX_PROVIDER_ID_LEN,
         surfaces=_PANEL,
     ),
     ConfigSpec("vision_max_images", "int", 2, 1, MAX_VISION_IMAGES, step=1, surfaces=_PANEL),
@@ -1059,8 +1074,8 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
         return choice(raw, set(spec.options), str(fallback))
     if spec.kind == "text":
         # 空值回落默认模板：与 webapi._strict_value 的 text 分支是同一产品语义
-        # （面板留空即复位）在读写两侧的实现——新增 text 类配置键时两处需同步。
-        text = str(raw or "").strip() or DEFAULT_DECISION_PROMPT_TEMPLATE.strip()
+        # （面板留空即复位），复位值单源于规格表 reset_default，读写两侧不再各抄字面量。
+        text = str(raw or "").strip() or str(spec.reset_default).strip()
         if spec.max_len is not None and len(text) > spec.max_len:
             logger.warning(
                 "[%s] 判断提示词过长 (%d 字符)，已截断到 %d 字符",
@@ -1079,6 +1094,18 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
                 return normalize_string_list(spec, fallback, mode="disk")
             except ValueError:
                 return normalize_string_list(spec, spec.default, mode="disk")
+    if spec.kind == "str":
+        text = str(raw or "").strip()
+        if spec.max_len is not None and len(text) > spec.max_len:
+            logger.warning(
+                "[%s] %s 过长 (%d 字符)，已截断到 %d 字符",
+                PLUGIN_ID,
+                spec.key,
+                len(text),
+                spec.max_len,
+            )
+            text = text[: spec.max_len]
+        return text
     return str(raw or "").strip()
 
 

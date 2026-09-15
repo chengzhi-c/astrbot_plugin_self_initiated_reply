@@ -57,6 +57,23 @@ def expected_project_name(root: Path) -> str:
     return canonicalize_name(name)
 
 
+def expected_version(root: Path) -> str:
+    """Return the release version declared in metadata.yaml.
+
+    check_wheel 与 check_sdist 的版本断言共用此处。两处实现此前有正则差：
+    ``^version: (.+)$`` 在 ``version:1.3.3`` 这类无空格写法下静默漏配，
+    同一份 metadata 在两个脚本里得到不同结论。
+    """
+    try:
+        meta = (root / "metadata.yaml").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ArtifactError("metadata.yaml 不可读") from exc
+    match = re.search(r"^version:\s*(.+)$", meta, re.MULTILINE)
+    if match is None:
+        raise ArtifactError("metadata.yaml 缺少 version 字段")
+    return match.group(1).strip()
+
+
 def validate_archive_member(name: str) -> str:
     """Return a relative archive path and reject traversal or absolute paths."""
     normalized = name.replace("\\", "/")
