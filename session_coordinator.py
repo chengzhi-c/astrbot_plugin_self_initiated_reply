@@ -92,21 +92,6 @@ class SessionCoordinator:
         self._event_at[umo] = at
         self._notify_silence(umo)
 
-    def _memory_bytes_for(self, umo: str | None = None) -> int:
-        """测试专用独立读侧：为 ``_recount`` 的增量计数提供独立重算预言。
-
-        生产热路径不得调用——生产走 ``_recount`` 的增量记账，这里每次全量
-        重扫（有守卫测试锁住该分工）。
-        """
-        events = self._images.items() if umo is None else [(umo, self._images.get(umo))]
-        return sum(
-            _prepared_memory_size(image)
-            for _key, image_events in events
-            if image_events
-            for _timestamp, images in image_events
-            for image in images
-        )
-
     def _recount(self) -> None:
         self._session_bytes.clear()
         self._total_bytes = 0

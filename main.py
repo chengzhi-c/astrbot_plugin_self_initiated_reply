@@ -279,7 +279,6 @@ class SelfInitiatedReplyPlugin(Star):
             delay_tasks=self._delay_tasks,
             running_check_tasks=self._running_check_tasks,
             background_tasks=self._background_tasks,
-            stop_timeout=lambda: TERMINATE_TASK_TIMEOUT_SEC,
             quarantine_task=self._quarantine_task,
         )
         self._scheduler.last_cleanup_at = now_ts()

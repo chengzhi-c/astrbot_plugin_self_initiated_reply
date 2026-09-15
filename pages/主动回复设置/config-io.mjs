@@ -346,7 +346,7 @@ export function createConfigIo(deps) {
 			applyConfigPayload(config);
 			return true;
 		} catch (error) {
-			if (coordinator.isCurrentLoad?.(requestEpoch) !== false) {
+			if (coordinator.isCurrentLoad(requestEpoch)) {
 				if (!getState().configLoaded) setState({ configLoaded: false });
 				setSaving(false);
 				if (initialLoad && e.configForm) e.configForm.inert = true;

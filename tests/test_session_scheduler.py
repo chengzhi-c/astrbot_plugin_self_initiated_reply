@@ -390,7 +390,7 @@ def test_patrol_disabled_does_not_spawn(tmp_path: Path) -> None:
     assert scheduler.patrol_task is None
 
 
-async def test_stop_patrol_quarantines_noncooperative_task(tmp_path: Path) -> None:
+async def test_stop_patrol_quarantines_noncooperative_task(tmp_path: Path, monkeypatch) -> None:
     _, _, scheduler, _, _ = _make_scheduler(tmp_path)
     release = asyncio.Event()
     quarantined: dict[str, object] = {}
@@ -408,7 +408,8 @@ async def test_stop_patrol_quarantines_noncooperative_task(tmp_path: Path) -> No
 
     task = asyncio.create_task(stubborn())
     scheduler._patrol_task = task
-    scheduler._stop_timeout = lambda: 0.01
+    # 超时单源：patch 模块常量（原为注入私有回调，参数已删）。
+    monkeypatch.setattr(_scheduler_module(), "TERMINATE_TASK_TIMEOUT_SEC", 0.01)
     scheduler._quarantine_task = quarantine
     stopping = asyncio.create_task(scheduler.stop_patrol())
     await asyncio.sleep(0.05)

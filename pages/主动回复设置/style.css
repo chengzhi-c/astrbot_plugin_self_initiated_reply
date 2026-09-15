@@ -49,7 +49,6 @@
 		0 0 0 2px var(--focus-offset-color), 0 0 0 4px var(--focus-color);
 	--ornament: var(--ornament-light);
 	--ornament-soft: var(--ornament-soft-light);
-	--mirror-well: #2d334d;
 	--spirit: #7fccce;
 	--spirit-soft: rgba(127, 204, 206, 0.14);
 	--info: #3d6ea8;
@@ -131,7 +130,6 @@
 	--focus-color: var(--focus-dark);
 	--ornament: var(--ornament-dark);
 	--ornament-soft: var(--ornament-soft-dark);
-	--mirror-well: #140d07;
 	--info: #9ec5ef;
 	--info-soft: rgba(158, 197, 239, 0.16);
 	--ok: #b8d89a;
@@ -189,7 +187,6 @@
 	--focus-color: var(--focus-dark);
 	--ornament: var(--ornament-dark);
 	--ornament-soft: var(--ornament-soft-dark);
-	--mirror-well: #140d07;
 	--info: #9ec5ef;
 	--info-soft: rgba(158, 197, 239, 0.16);
 	--ok: #b8d89a;
@@ -1520,10 +1517,6 @@ textarea {
 	background: var(--danger);
 	color: var(--on-accent);
 	box-shadow: var(--shadow-drop);
-}
-.btn.danger:focus-visible {
-	outline: 3px solid var(--focus-color);
-	outline-offset: 2px;
 }
 .reset-hint {
 	color: var(--muted);

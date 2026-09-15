@@ -52,13 +52,16 @@ class ImageInfo:
         return bool(self.url) or bool(self.file_path)
 
     def cache_key(self) -> str:
+        """缓存键：优先冻结后的本地副本，其次原 URL，最后本地路径。
+
+        ``file_path`` 分支不再有 guard：无任何来源的 ImageInfo 到不了这里
+        （extractor 跳过双空组件，parse 入口拒无源），故没有兜底键可言。
+        """
         if self.prepared_source:
             return f"prepared:{self.prepared_source}"
         if self.url:
             return f"url:{self.url}"
-        if self.file_path:
-            return f"file:{self.file_path}"
-        return f"id:{self.message_id}"
+        return f"file:{self.file_path}"
 
 
 def to_data_url(mime: str, content: bytes) -> str:

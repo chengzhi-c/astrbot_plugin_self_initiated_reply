@@ -63,10 +63,7 @@ class WhitelistManager:
         tracked = set(self._tracked_umos())
         tracked.update(self._sessions)
         tracked.update(
-            umo
-            for values in self._runtime_umos.values()
-            for umo in (values if isinstance(values, set) else {str(values)})
-            if ":" in umo
+            umo for values in self._runtime_umos.values() for umo in values if ":" in umo
         )
         self.settings.whitelist = normalized
         invalid_sessions = {
@@ -86,10 +83,9 @@ class WhitelistManager:
             # 挂起任务，由代次门使其退出，避免悬挂。
             self._prune(umo)
         for key, raw_values in list(self._runtime_umos.items()):
-            values = raw_values if isinstance(raw_values, set) else {str(raw_values)}
             values = {
                 value
-                for value in values
+                for value in raw_values
                 if value not in invalid_sessions and session_whitelisted(value, normalized)
             }
             if values:

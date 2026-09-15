@@ -69,13 +69,6 @@ class OutboundGateway:
         except Exception:
             return ""
 
-    @staticmethod
-    def _error_detail(exc: Exception) -> str:
-        try:
-            return str(exc)
-        except Exception:
-            return "sender raised an unprintable exception"
-
     async def send(self, message: Any, *, kind: str = "reply") -> OutboundResult:
         """Classify one outbound call and retain its evidence in the ledger."""
         is_direct = kind == "tool_direct"

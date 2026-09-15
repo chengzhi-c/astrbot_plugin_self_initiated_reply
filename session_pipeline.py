@@ -86,7 +86,10 @@ async def decide_session_reply(
         collapse_whitespace(result.get("reason") or "-"),
     )
     if not result.get("should_reply"):
-        return f"判断不回复：{result.get('reason') or '未说明'}"
+        # 契约（decide 侧）：should_reply=False 时已转成字符串返回，文案单源在
+        # decision。走到这里说明该契约被破坏——静默放行会造成"判断不该回复
+        # 却仍然生成并发送"。
+        raise RuntimeError("decide() must convert should_reply=False into a string")
     return result
 
 
@@ -377,10 +380,9 @@ class SessionPipeline:
     ) -> bool:
         """Seal one run and await its single record task, including cancellation."""
         ledger.seal()
-        # seal() 只把 open→sealed。recorded / record_failed 只能从 recording
-        # 经 mark_* 到达。finalize 是唯一 seal/record 调用点，每次检查只进一次
-        # finally，故下面两支今天不可达。保留是二次进入的纵深：重入时直接返回
-        # 终态，避免再挂一条 record task。同 delivery 复核点 3/4。
+        # seal() 只把 open→sealed，recorded / record_failed 只能从 recording 经
+        # mark_* 到达。这两支是重入终态（由 test_attempt_ledger 锚定）：二次进入
+        # 直接返回既有结论，不再挂第二条 record task。
         if ledger.phase == "recorded":
             return True
         if ledger.phase == "record_failed":

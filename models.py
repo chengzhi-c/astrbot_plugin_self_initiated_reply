@@ -132,8 +132,9 @@ HOST_DANGEROUS_TOOL_IDS: frozenset[str] = frozenset(
         "astr_kb_search",
     }
 )
-# 危险工具名启发式：仅用于清单漂移检测（测试 / compat），不替代 HOST_DANGEROUS_TOOL_IDS。
-# 运行路径仍以精确 denylist + 空 allowlist 为准，避免启发式误伤无害工具。
+# 危险工具名启发式：仅漂移守卫（tests/test_security.py）使用，不替代
+# HOST_DANGEROUS_TOOL_IDS。运行路径以精确 denylist + 空 allowlist 为准，
+# 避免启发式误伤无害工具。
 _HOST_DANGEROUS_TOOL_NAME_RE = re.compile(
     r"(future_task|shell_session|execute_(shell|ipython|python|browser)|"
     r"run_browser_skill|upload_file|download_file|file_(read|write|edit)_tool|"

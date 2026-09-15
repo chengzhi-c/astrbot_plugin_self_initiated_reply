@@ -80,6 +80,23 @@ def _images_for(coordinator, umo: str, *, age_sec: float = 3600.0):
     )
 
 
+def _bytes_for(module, images: dict, umo: str | None = None) -> int:
+    """测试侧独立重算，与被测的增量记账对读提供独立预言。
+
+    索引形状是 ``{umo: deque[(timestamp, [image, ...])]}``；这里全程重扫，
+    与生产热路径的增量记账互为对照。生产类不再带这条读侧——其唯一消费者
+    就是本文件。
+    """
+    events = images.items() if umo is None else [(umo, images.get(umo))]
+    return sum(
+        module._prepared_memory_size(image)
+        for _key, image_events in events
+        if image_events
+        for _timestamp, batch in image_events
+        for image in batch
+    )
+
+
 # ============================================================================
 # 失效级联单点
 # ============================================================================
@@ -257,11 +274,11 @@ def test_in_memory_image_index_enforces_session_and_global_byte_budgets() -> Non
         "s1", 1.0, [_PreparedImage(b"123"), _PreparedImage(b"456")]
     )
     assert len(accepted) == 1
-    assert coordinator._memory_bytes_for("s1") == 3
+    assert _bytes_for(module, images, "s1") == 3
 
     accepted = coordinator.capture_images("s2", 2.0, [_PreparedImage(b"789")])
     assert len(accepted) == 1
-    assert coordinator._memory_bytes_for() == 3
+    assert _bytes_for(module, images) == 3
     assert "s1" not in images
     assert "s2" in images
 
@@ -286,16 +303,20 @@ def test_image_budget_recomputes_global_bytes_after_session_eviction() -> None:
     accepted = coordinator.capture_images("s1", 2.0, [_PreparedImage(b"abc")])
 
     assert len(accepted) == 1
-    assert coordinator._memory_bytes_for() == 8
+    assert _bytes_for(module, images) == 8
     assert "s2" in images
 
 
 def test_capture_images_hot_path_does_not_rescan_memory() -> None:
+    """热路径必须走增量记账，不得全量重扫。
+
+    ``_recount`` 是唯一剩下的全量重扫实现（构造与显式恢复时调用）；捕获路径
+    若调它，每次接图都 O(会话数×事件数)。
+    """
     from .source_contract import calls_in
 
-    assert "self._memory_bytes_for" not in calls_in(
-        "session_coordinator.py", "SessionCoordinator.capture_images"
-    )
+    calls = calls_in("session_coordinator.py", "SessionCoordinator.capture_images")
+    assert "self._recount" not in calls
 
 
 def _budget_coordinator(module, *, global_bytes: int, session_bytes: int):
@@ -345,8 +366,7 @@ def test_zero_byte_frozen_event_at_queue_head_does_not_stall_global_eviction() -
 
 
 def test_deque_overflow_keeps_byte_counters_in_sync() -> None:
-    module = _coordinator_module()
-    _, coordinator, ctx = _make_coordinator()
+    module, coordinator, ctx = _make_coordinator()
     limit = module.MAX_CACHED_IMAGE_EVENTS
 
     for i in range(limit + 1):
@@ -354,45 +374,45 @@ def test_deque_overflow_keeps_byte_counters_in_sync() -> None:
         assert len(accepted) == 1
 
     assert len(ctx.images["s1"]) == limit
-    assert coordinator._total_bytes == coordinator._memory_bytes_for() == limit
+    assert coordinator._total_bytes == _bytes_for(module, ctx.images) == limit
 
 
 def test_reset_all_zeroes_image_byte_counters() -> None:
-    _, coordinator, _ = _make_coordinator()
+    module, coordinator, ctx = _make_coordinator()
     coordinator.capture_images("s1", 1.0, [_PreparedImage(b"123")])
 
     coordinator.reset_all()
 
     assert coordinator._total_bytes == 0
-    assert coordinator._memory_bytes_for() == 0
+    assert _bytes_for(module, ctx.images) == 0
 
 
 def test_clear_session_releases_image_byte_counters() -> None:
-    _, coordinator, _ = _make_coordinator()
+    module, coordinator, ctx = _make_coordinator()
     coordinator.capture_images("s1", 1.0, [_PreparedImage(b"123")])
     coordinator.capture_images("s2", 1.0, [_PreparedImage(b"45")])
 
     coordinator.clear_session("s1")
 
-    assert coordinator._total_bytes == coordinator._memory_bytes_for() == 2
+    assert coordinator._total_bytes == _bytes_for(module, ctx.images) == 2
 
 
 def test_restore_inplace_rebuilds_image_byte_counters() -> None:
-    _, coordinator, _ = _make_coordinator()
+    module, coordinator, ctx = _make_coordinator()
     coordinator.capture_images("s1", 1.0, [_PreparedImage(b"123")])
     snapshot = coordinator.snapshot()
     coordinator.reset_all()
 
     coordinator.restore_inplace(snapshot)
 
-    assert coordinator._total_bytes == coordinator._memory_bytes_for() == 3
+    assert coordinator._total_bytes == _bytes_for(module, ctx.images) == 3
 
 
 def test_drop_older_than_releases_image_byte_counters() -> None:
-    _, coordinator, _ = _make_coordinator()
+    module, coordinator, ctx = _make_coordinator()
     coordinator.capture_images("s1", 1.0, [_PreparedImage(b"123")])
     coordinator.capture_images("s1", 100.0, [_PreparedImage(b"4567")])
 
     coordinator.drop_older_than(50.0, umo="s1")
 
-    assert coordinator._total_bytes == coordinator._memory_bytes_for() == 4
+    assert coordinator._total_bytes == _bytes_for(module, ctx.images) == 4

@@ -66,7 +66,6 @@ class SessionScheduler:
         delay_tasks: dict[str, asyncio.Task[Any]],
         running_check_tasks: dict[str, asyncio.Task[Any]],
         background_tasks: set[asyncio.Task[Any]],
-        stop_timeout: Callable[[], float] | None = None,
         quarantine_task: Callable[[asyncio.Task[Any], str], None] | None = None,
     ) -> None:
         self.settings = settings
@@ -85,7 +84,6 @@ class SessionScheduler:
         self._delay_tasks = delay_tasks
         self._running_check_tasks = running_check_tasks
         self._background_tasks = background_tasks
-        self._stop_timeout = stop_timeout or (lambda: TERMINATE_TASK_TIMEOUT_SEC)
         self._quarantine_task = quarantine_task
         self._silence_events: dict[str, asyncio.Event] = {}
         self._leak_warned: set[str] = set()
@@ -607,7 +605,7 @@ class SessionScheduler:
         self._patrol_task = None
         if task and not task.done():
             task.cancel()
-            done, _ = await asyncio.wait({task}, timeout=max(0.0, self._stop_timeout()))
+            done, _ = await asyncio.wait({task}, timeout=max(0.0, TERMINATE_TASK_TIMEOUT_SEC))
             if not done and self._quarantine_task:
                 self._quarantine_task(task, "patrol stop deadline exceeded")
             elif done:

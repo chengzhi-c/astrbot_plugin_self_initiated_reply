@@ -337,14 +337,11 @@ async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str,
                 "config_revision": current_revision,
             }
         updates = _parse_config_updates(config_data)
-        result = await _apply_config_updates(
+        return await _apply_config_updates(
             plugin,
             updates,
             submitted=config_data,
         )
-        if base_revision is None:
-            result["unversioned_write"] = True
-        return result
     except ValueError as exc:
         # 校验失败的文案要回显：它由本模块自己构造，只含字段名与
         # 规则（"cooldown_sec 必须是整数"），不含内部路径/栈信息，且前端表单

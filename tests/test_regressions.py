@@ -726,10 +726,10 @@ def test_phase_d_concurrent_versioned_writers_have_one_winner(tmp_path: Path) ->
     with_plugin(tmp_path, scenario)
 
 
-def test_phase_d_unversioned_config_write_is_explicit_and_reports_adjustment(
+def test_phase_d_unversioned_config_write_reports_adjustment(
     tmp_path: Path,
 ) -> None:
-    """旧调用仍可写，但必须标记无版本；规范化字段必须返回给前端。"""
+    """旧调用（不带 base_revision）仍可写；规范化字段必须返回给前端。"""
 
     async def scenario(plugin, main):
         web = sys.modules["astrbot.api.web"]
@@ -738,7 +738,6 @@ def test_phase_d_unversioned_config_write_is_explicit_and_reports_adjustment(
         }
         result = await plugin._api_post_config()
         assert result["ok"] is True
-        assert result["unversioned_write"] is True
         assert "whitelist_sessions" in result["adjusted_fields"]
         assert plugin.settings.whitelist == {"a"}
 

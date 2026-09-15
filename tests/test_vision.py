@@ -1032,10 +1032,11 @@ def test_image_info_cache_key_prefers_url_then_file() -> None:
     _, image, _ = _load_modules()
     url_info = image.ImageInfo(url="https://x/y.png", file_path="/tmp/y.png")
     file_info = image.ImageInfo(file_path="/tmp/z.png")
+    prepared = image.ImageInfo(url="https://x/y.png", prepared_source="/tmp/frozen.png")
     empty_info = image.ImageInfo(message_id="m1")
     assert url_info.cache_key() == "url:https://x/y.png"
     assert file_info.cache_key() == "file:/tmp/z.png"
-    assert empty_info.cache_key() == "id:m1"
+    assert prepared.cache_key() == "prepared:/tmp/frozen.png"
     assert not empty_info.has_any_source
 
 
