@@ -302,14 +302,6 @@ def as_timestamp(value: Any, *, now: float | None = None) -> float:
     return as_float(value, 0.0, minimum=0.0, maximum=ceiling)
 
 
-def as_list(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if isinstance(value, str):
-        return [item.strip() for item in re.split(r"[\n,，]+", value) if item.strip()]
-    return []
-
-
 def choice(value: Any, allowed: set[str], default: str) -> str:
     normalized = str(value or "").strip().lower()
     return normalized if normalized in allowed else default
@@ -505,6 +497,20 @@ class SendAttempt:
     state: AttemptState = AttemptState.RESERVED
 
 
+# SendStatus → AttemptState 的两组固定映射。模块级常量：每次 resolve/
+# finish_before_submit 调用重建 dict 是纯浪费，且两表语义不同（in-flight
+# 出口 vs 预提交出口）不可合并。
+_IN_FLIGHT_OUTCOMES: dict[SendStatus, AttemptState] = {
+    SendStatus.DELIVERED: AttemptState.DELIVERED,
+    SendStatus.UNKNOWN: AttemptState.UNKNOWN,
+    SendStatus.FAILED_BEFORE_SUBMIT: AttemptState.FAILED_BEFORE_SUBMIT,
+}
+_PRE_SUBMIT_OUTCOMES: dict[SendStatus, AttemptState] = {
+    SendStatus.FAILED_BEFORE_SUBMIT: AttemptState.FAILED_BEFORE_SUBMIT,
+    SendStatus.SUPPRESSED: AttemptState.SUPPRESSED,
+}
+
+
 @dataclass
 class AttemptLedger:
     """Single source of outbound submission evidence for one pipeline run.
@@ -579,13 +585,8 @@ class AttemptLedger:
             return False
         if attempt.state is not AttemptState.IN_FLIGHT:
             raise RuntimeError("only an in-flight attempt can receive an adapter outcome")
-        states = {
-            SendStatus.DELIVERED: AttemptState.DELIVERED,
-            SendStatus.UNKNOWN: AttemptState.UNKNOWN,
-            SendStatus.FAILED_BEFORE_SUBMIT: AttemptState.FAILED_BEFORE_SUBMIT,
-        }
         try:
-            attempt.state = states[status]
+            attempt.state = _IN_FLIGHT_OUTCOMES[status]
         except KeyError as exc:
             raise ValueError(f"invalid in-flight outcome: {status}") from exc
         return True
@@ -595,12 +596,8 @@ class AttemptLedger:
             raise RuntimeError("cannot finish an attempt outside an open ledger")
         if attempt.state is not AttemptState.RESERVED:
             raise RuntimeError("only a reserved attempt can finish before adapter entry")
-        states = {
-            SendStatus.FAILED_BEFORE_SUBMIT: AttemptState.FAILED_BEFORE_SUBMIT,
-            SendStatus.SUPPRESSED: AttemptState.SUPPRESSED,
-        }
         try:
-            attempt.state = states[status]
+            attempt.state = _PRE_SUBMIT_OUTCOMES[status]
         except KeyError as exc:
             raise ValueError(f"invalid pre-submit outcome: {status}") from exc
 
@@ -1094,9 +1091,9 @@ def read_config_value(spec: ConfigSpec, config: Any) -> Any:
 
     只强制转换一次。曾经写成「先把旧键值 coerce 成 fallback，再把 fallback 当
     raw 二次 coerce」，对 list 类键会静默清空——``container="set"`` 的第一次
-    coerce 产出 ``set``，而 ``as_list`` 只认 list/str，第二次遇到 set 返回 ``[]``。
-    存量配置里只有 ``whitelist``（无 ``whitelist_sessions``）的用户会整表丢白名单。
-    规格表落地时由 ``test_spec_table_legacy_fallback_matches_from_config`` 抓到。
+    coerce 产出 ``set``，而列表条目归一化只认 list/str，第二次遇到 set 得
+    空列表。存量配置里只有 ``whitelist``（无 ``whitelist_sessions``）的用户
+    会整表丢白名单。规格表落地时由 ``test_spec_table_legacy_fallback_matches_from_config`` 抓到。
 
     ``fallback`` 的语义是「``raw`` 强制失败时落回哪个值」：正式键存在时落回旧键
     的值而非静态默认，这是 ``vision_enabled`` → 两个新开关的迁移语义（0.9.2）。

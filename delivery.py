@@ -246,7 +246,7 @@ class DeliveryRunner:
         reply: str,
         last_event: Any,
         *,
-        ledger: AttemptLedger | None,
+        ledger: AttemptLedger,
         expected_generation: int | None,
     ) -> SendOutcome:
         """事件路径投递：装饰钩子 → 代次复核 → 事件 send → 发送后钩子。
@@ -255,7 +255,6 @@ class DeliveryRunner:
         本方法是唯一会 ``set_result`` 的路径，故所有出口都必须经 ``_clear_result``
         回收（防结果泄漏到宿主后续流程）。
         """
-        ledger = ledger or AttemptLedger()
         ledger_id = ledger.ledger_id
         send_started = False
         try:
@@ -376,7 +375,7 @@ class DeliveryRunner:
         umo: str,
         reply: str,
         *,
-        ledger: AttemptLedger | None,
+        ledger: AttemptLedger,
         expected_generation: int | None,
     ) -> SendOutcome:
         """context 兜底投递：事件已不在手边时经宿主 ``Context.send_message`` 发送。
@@ -384,7 +383,6 @@ class DeliveryRunner:
         仅由 ``send_reply`` 在 ``last_event`` 为假时调用。本路径不 ``set_result``、
         不触发装饰与发送后钩子，故无 ``_clear_result`` 义务。
         """
-        ledger = ledger or AttemptLedger()
         ledger_id = ledger.ledger_id
         # 复核点 4/4（结构防线）：与复核点 1 之间没有真实挂起点——
         # ``await self._send_via_context(...)`` 只是进入协程，不向事件循环让出，

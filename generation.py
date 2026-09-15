@@ -320,7 +320,7 @@ class GenerationRunner:
             if early is not None:
                 return early
             built = await self._build_and_bound_tools(run)
-            if isinstance(built, PipelineReply):
+            if built is not None:
                 return built
             await self._run_agent_with_grace(run)
             return self._finalize_text(run)
@@ -677,7 +677,7 @@ class GenerationRunner:
                 # 因此只能静默；未复原仅影响该事件后续的插件归属标记。
                 pass
 
-    def main_agent_build_config(self, umo: str = "") -> Any:
+    def main_agent_build_config(self, umo: str) -> Any:
         provider_settings = {}
         try:
             config_obj = getattr(self._context, "astrbot_config", {})

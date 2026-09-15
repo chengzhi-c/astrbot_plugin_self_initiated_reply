@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from .host_stubs import load_package
+from .host_stubs import install_astrbot_stubs, load_package
 
 PACKAGE_NAME = "selfreply_outbound_test_package"
 
 
 def _load_gateway():
+    install_astrbot_stubs()  # 本文件不依赖其他测试先跑：outbound 经 models 引 astrbot.api
     return load_package(PACKAGE_NAME, "outbound")
 
 
@@ -34,9 +35,9 @@ def test_tool_direct_send_budget_is_consumed_before_adapter_call() -> None:
     assert first.outcome.status.value == "delivered"
     assert second.outcome.status.value == "delivered"
     assert third.outcome.status.value == "suppressed"
-    assert gateway.direct_send_count == 2
+    assert gateway.ledger.direct_send_count == 2
     assert len(sent) == 2
-    assert gateway.direct_texts == ("工具消息", "工具消息")
+    assert gateway.ledger.direct_texts == ("工具消息", "工具消息")
 
 
 def test_tool_direct_false_refunds_budget_and_keeps_count_in_sync() -> None:
@@ -64,8 +65,8 @@ def test_tool_direct_false_refunds_budget_and_keeps_count_in_sync() -> None:
     )
 
     assert result.outcome.status.value == "failed_before_submit"
-    assert gateway.direct_send_count == 0
-    assert gateway.direct_texts == ()
+    assert gateway.ledger.direct_send_count == 0
+    assert gateway.ledger.direct_texts == ()
     assert len(calls) == 1
 
 
@@ -100,7 +101,7 @@ def test_tool_direct_failures_are_bounded_after_refund() -> None:
         "suppressed",
     ]
     assert len(calls) == 2
-    assert gateway.direct_send_count == 0
+    assert gateway.ledger.direct_send_count == 0
 
 
 def test_tool_direct_exception_is_unknown_and_still_consumes_budget() -> None:
@@ -119,7 +120,7 @@ def test_tool_direct_exception_is_unknown_and_still_consumes_budget() -> None:
 
     assert first.outcome.status.value == "unknown"
     assert second.outcome.status.value == "suppressed"
-    assert gateway.direct_send_count == 1
+    assert gateway.ledger.direct_send_count == 1
 
 
 def test_context_none_result_is_unknown_while_event_none_is_delivered() -> None:

@@ -62,14 +62,6 @@ class OutboundGateway:
     def ledger(self) -> AttemptLedger:
         return self._ledger
 
-    @property
-    def direct_send_count(self) -> int:
-        return self._ledger.direct_send_count
-
-    @property
-    def direct_texts(self) -> tuple[str, ...]:
-        return self._ledger.direct_texts
-
     @staticmethod
     def _message_text(message: Any) -> str:
         try:
