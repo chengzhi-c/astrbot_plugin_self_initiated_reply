@@ -38,7 +38,7 @@ from .models import (
     panel_config_specs,
     restore_container_inplace,
 )
-from .storage import _write_json_atomic
+from .storage import write_json_atomic
 
 # 配置 schema 全键（_conf_schema.json，与正式键一一对应）。此名单之外的键
 # 一律 fail loud 拒绝，防止前端/未来代码提交新字段时被静默吞掉。
@@ -156,8 +156,7 @@ async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
             "decision_prompt_default": DEFAULT_DECISION_PROMPT_TEMPLATE,
         }
         for spec in panel_config_specs():
-            value = getattr(plugin.settings, spec.attr)
-            payload[spec.key] = sorted(value) if spec.container == "set" else value
+            payload[spec.key] = spec.canonical_value(getattr(plugin.settings, spec.attr))
         return payload
     except Exception as exc:
         # 详情只进服务端日志：异常文本可能带绝对路径、内部键名或
@@ -223,7 +222,7 @@ def _load_ui_prefs(plugin: SelfInitiatedReplyPlugin) -> tuple[str, bool, bool]:
 
 def _save_ui_prefs(plugin: SelfInitiatedReplyPlugin, theme: str, dim: bool, bold: bool) -> bool:
     """原子写入整份 UI 偏好，禁止只写 theme 抹掉 dim/bold。"""
-    return _write_json_atomic(plugin._ui_prefs_path, {"theme": theme, "dim": dim, "bold": bold})
+    return write_json_atomic(plugin._ui_prefs_path, {"theme": theme, "dim": dim, "bold": bold})
 
 
 def _ui_prefs_payload(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:

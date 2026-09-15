@@ -133,7 +133,7 @@ def test_write_json_atomic_unexpected_error(tmp_path: Path) -> None:
         def parent(self):
             raise RuntimeError("parent broken")
 
-    assert storage._write_json_atomic(WeirdPath(), {"a": 1}) is False
+    assert storage.write_json_atomic(WeirdPath(), {"a": 1}) is False
 
 
 def test_load_config_data_unexpected_error(caplog: object) -> None:

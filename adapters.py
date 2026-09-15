@@ -42,24 +42,42 @@ class AstrBotBridge:
         )
 
     @staticmethod
+    def _signature_or_none(func: Any) -> inspect.Signature | None:
+        """签名不可检查（内置/ C 扩展等）返回 None，调用点按原回退处理。"""
+        try:
+            return inspect.signature(func)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _keyword_names(func: Any) -> frozenset[str] | None:
+        """函数可按关键字接收的参数名集；**kwargs 形参返回 None（全部放行）。
+
+        签名探测的单一出口：宿主兼容层的 kwargs 过滤、绑定预检与候选构造
+        都以此为准，改兼容规则只动这里。
+        """
+        signature = AstrBotBridge._signature_or_none(func)
+        if signature is None:
+            return None
+        params = signature.parameters.values()
+        if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params):
+            return None
+        return frozenset(
+            name
+            for name, param in signature.parameters.items()
+            if param.kind
+            in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+        )
+
+    @staticmethod
     def _supported_kwargs(
         func: Any,
         kwargs: dict[str, Any],
         aliases: dict[str, tuple[str, ...]] | None = None,
     ) -> dict[str, Any]:
-        try:
-            signature = inspect.signature(func)
-        except (TypeError, ValueError):
+        supported = AstrBotBridge._keyword_names(func)
+        if supported is None:
             return kwargs
-        params = signature.parameters.values()
-        if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params):
-            return kwargs
-        supported = {
-            name
-            for name, param in signature.parameters.items()
-            if param.kind
-            in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
-        }
         mapped: dict[str, Any] = {}
         aliases = aliases or {}
         for key, value in kwargs.items():
@@ -78,14 +96,9 @@ class AstrBotBridge:
         aliases: dict[str, tuple[str, ...]] | None = None,
     ) -> Any:
         call_kwargs = AstrBotBridge._supported_kwargs(func, kwargs, aliases)
-        try:
-            signature = inspect.signature(func)
-        except (TypeError, ValueError):
-            signature = None
-        if signature is not None and not any(
-            param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()
-        ):
-            # 预校验参数绑定：只有签名不匹配（绑定失败）才回退 minimal；
+        signature = AstrBotBridge._signature_or_none(func)
+        # 预校验参数绑定：只有签名可检查（无 **kwargs）且绑定失败才回退 minimal；
+        if signature is not None:
             # 函数体内部抛出的 TypeError 直接上抛，绝不重试——重试意味着
             # 同一函数可能执行两次（对 LLM 调用即重复计费）。
             try:
@@ -102,12 +115,12 @@ class AstrBotBridge:
 
     @staticmethod
     def _method_call_options(func: Any, umo: str) -> list[tuple[tuple[Any, ...], dict[str, Any]]]:
-        try:
-            signature = inspect.signature(func)
-        except (TypeError, ValueError):
+        signature = AstrBotBridge._signature_or_none(func)
+        if signature is None:
             return [((), {"umo": umo}), ((umo,), {}), ((), {})]
         params = signature.parameters
-        if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()):
+        keyword_names = AstrBotBridge._keyword_names(func)
+        if keyword_names is None:
             return [((), {"umo": umo}), ((), {})]
         for name in ("umo", "session_id", "unified_msg_origin"):
             if name in params:

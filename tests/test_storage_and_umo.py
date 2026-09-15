@@ -330,7 +330,9 @@ def test_corrupt_state_file_is_backed_up_and_load_continues(tmp_path: Path) -> N
     backups = sorted(tmp_path.glob("state.json.corrupt-*"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == "{not valid json"
-    assert "123" in sessions  # 白名单会话仍以空状态创建
+    # 裸群号只是白名单通配写法，非状态键（whitelist_storage_key 契约），
+    # 不再为其预填空壳 SessionState——空壳无人读写却每轮落盘。
+    assert sessions == {}
 
 
 def test_version_mismatch_state_file_is_backed_up_and_best_effort_loaded(tmp_path: Path) -> None:

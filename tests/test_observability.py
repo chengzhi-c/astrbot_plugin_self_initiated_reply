@@ -38,9 +38,8 @@ _INFO_WHITELIST = {
     # 运维状态：资源清理结果
     "[%s] cleaned up %d expired frozen images",
     "[%s] cleaned up %d cached events (total: %d)",
-    # 运维状态：白名单管理操作
-    "[%s] whitelist add session=%s existed=%s total=%d",
-    "[%s] whitelist remove session=%s existed=%s total=%d",
+    # 运维状态：白名单管理操作（add/remove 共用一条参数化模板）
+    "[%s] whitelist %s session=%s existed=%s total=%d",
     # 运维状态：判断结果（用户要求可见，每会话检查收敛点，非逐条消息高频）
     "[%s] check result session=%s trigger=%s result=%s",
     # 运维状态：判断模型的最终裁决（0.9.5 用户要求可见）。与上一条同频——都在一次

@@ -159,14 +159,20 @@ class SessionCoordinator:
             self._total_bytes += nbytes
 
     def capture_images(self, umo: str, timestamp: float, cached_images: list[Any]) -> list[Any]:
-        """Write frozen images while enforcing global and per-session byte budgets."""
+        """Write frozen images while enforcing global and per-session byte budgets.
+
+        预算判定 = 实时记账表（``_session_bytes``/``_total_bytes``，驱逐的
+        ``_debit`` 同步就在单点）+ 本批已接受字节 ``batch_bytes``。不维护
+        局部镜像：驱逐后的增减手工同步正是预算漂移的来源；本批图片在
+        批量 ``_append_image_event`` 前不入表，故同批之间是互斥判定而非
+        先来者被后来者顶替（``accepted`` 的每张图必然仍在表内）。
+        """
         if not cached_images:
             self._append_image_event(umo, timestamp, [])
             return []
 
         accepted: list[Any] = []
-        session_bytes = self._session_bytes.get(umo, 0)
-        total_bytes = self._total_bytes
+        batch_bytes = 0
         for image in cached_images:
             image_bytes = _prepared_memory_size(image)
             if image_bytes > self._max_session_image_memory_bytes:
@@ -186,24 +192,23 @@ class SessionCoordinator:
                 )
                 continue
 
-            while session_bytes + image_bytes > self._max_session_image_memory_bytes:
+            while (
+                self._session_bytes.get(umo, 0) + batch_bytes + image_bytes
+                > self._max_session_image_memory_bytes
+            ):
                 freed, _ = self._evict_oldest_image_event(umo=umo)
                 if not freed:
                     break
-                session_bytes -= freed
-                total_bytes -= freed
 
-            while total_bytes + image_bytes > self._max_image_memory_bytes:
-                freed, evicted_key = self._evict_oldest_image_event()
+            while self._total_bytes + batch_bytes + image_bytes > self._max_image_memory_bytes:
+                freed, _ = self._evict_oldest_image_event()
                 if not freed:
                     break
-                total_bytes -= freed
-                if evicted_key == umo:
-                    session_bytes -= freed
 
             if (
-                session_bytes + image_bytes > self._max_session_image_memory_bytes
-                or total_bytes + image_bytes > self._max_image_memory_bytes
+                self._session_bytes.get(umo, 0) + batch_bytes + image_bytes
+                > self._max_session_image_memory_bytes
+                or self._total_bytes + batch_bytes + image_bytes > self._max_image_memory_bytes
             ):
                 logger.warning(
                     "[%s] image memory budget exhausted session=%s bytes=%d",
@@ -214,8 +219,7 @@ class SessionCoordinator:
                 continue
 
             accepted.append(image)
-            session_bytes += image_bytes
-            total_bytes += image_bytes
+            batch_bytes += image_bytes
 
         if accepted:
             self._append_image_event(umo, timestamp, accepted)

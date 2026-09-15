@@ -152,13 +152,13 @@ async def test_settings_config_write_offloads_file_io_to_thread(tmp_path: Path) 
 
     models, _, storage = _load_modules()
     threads: list[int] = []
-    original = storage._write_json_atomic
+    original = storage.write_json_atomic
 
     def probe(path, data):
         threads.append(threading.get_ident())
         return original(path, data)
 
-    storage._write_json_atomic = probe
+    storage.write_json_atomic = probe
     try:
         settings = models.Settings.from_config({})
         ok = await storage.apersist_settings_config(tmp_path / "cfg.json", {}, settings)
@@ -168,4 +168,4 @@ async def test_settings_config_write_offloads_file_io_to_thread(tmp_path: Path) 
             "配置写盘在事件循环线程内执行——fsync 会阻塞所有会话"
         )
     finally:
-        storage._write_json_atomic = original
+        storage.write_json_atomic = original

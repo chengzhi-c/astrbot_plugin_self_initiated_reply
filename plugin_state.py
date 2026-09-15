@@ -92,9 +92,8 @@ def _register_task(
     plugin._background_tasks.add(task)
     if critical:
         plugin._critical_tasks.add(task)
-    task.add_done_callback(plugin._background_tasks.discard)
-    if critical:
         task.add_done_callback(plugin._critical_tasks.discard)
+    task.add_done_callback(plugin._background_tasks.discard)
     return task
 
 
@@ -113,12 +112,11 @@ def state_for(plugin: SelfInitiatedReplyPlugin, umo: str) -> SessionState:
             state = plugin.sessions.pop(legacy_key, None)
     if state is None:
         state = SessionState(recent=deque(maxlen=plugin.settings.recent_message_limit))
-        plugin.sessions[umo] = state
     else:
-        plugin.sessions[umo] = state
         limit = plugin.settings.recent_message_limit
         if state.recent.maxlen != limit:
             state.recent = deque(state.recent, maxlen=limit)
+    plugin.sessions[umo] = state
     state.refresh_day()
     return state
 

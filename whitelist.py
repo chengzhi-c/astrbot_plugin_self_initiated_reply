@@ -122,21 +122,36 @@ class WhitelistManager:
                 )
             raise
 
+    async def _commit_and_audit(
+        self,
+        *,
+        label: str,
+        umo: str,
+        old_whitelist: set[str],
+        pruned: dict[str, Any],
+        existed: bool,
+    ) -> bool:
+        """add/remove 共用尾段：双写持久化（失败回滚在 commit_change 内）+ 审计日志。"""
+        await self.commit_change(old_whitelist, label, pruned)
+        logger.info(
+            "[%s] whitelist %s session=%s existed=%s total=%d",
+            PLUGIN_ID,
+            label,
+            umo,
+            existed,
+            len(self.settings.whitelist),
+        )
+        return existed
+
     async def add(self, umo: str) -> bool:
         """把当前会话加入白名单；返回是否为新加入（True）或已存在（False）。"""
         existed = session_whitelisted(umo, self.settings.whitelist)
         old_whitelist = set(self.settings.whitelist)
         pruned = self.replace(old_whitelist | {umo})
         self._ensure_state(whitelist_storage_key(umo))
-        await self.commit_change(old_whitelist, "add", pruned)
-        logger.info(
-            "[%s] whitelist add session=%s existed=%s total=%d",
-            PLUGIN_ID,
-            umo,
-            existed,
-            len(self.settings.whitelist),
+        return not await self._commit_and_audit(
+            label="add", umo=umo, old_whitelist=old_whitelist, pruned=pruned, existed=existed
         )
-        return not existed
 
     async def remove(self, umo: str) -> bool:
         """把当前会话（含其群组键）移出白名单；返回是否确实移出了（True）。"""
@@ -147,12 +162,6 @@ class WhitelistManager:
         if group_id:
             targets.add(group_id)
         pruned = self.replace(old_whitelist - targets)
-        await self.commit_change(old_whitelist, "remove", pruned)
-        logger.info(
-            "[%s] whitelist remove session=%s existed=%s total=%d",
-            PLUGIN_ID,
-            umo,
-            existed,
-            len(self.settings.whitelist),
+        return await self._commit_and_audit(
+            label="remove", umo=umo, old_whitelist=old_whitelist, pruned=pruned, existed=existed
         )
-        return existed

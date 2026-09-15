@@ -79,6 +79,8 @@ def _accepted_content(
             state.last_active_sender_id = event_sender_id(event)
         return None
     if not clean_text and not has_images:
+        # abandon_stale 语义与 ignored 分支一致：任何被入口接住的消息（含空内容）
+        # 都推进代次，作废未发出的旧回复（契约 §6.3）。
         if plugin.settings.abandon_stale_on_new_message:
             plugin._coordinator.invalidate(umo)
         return None

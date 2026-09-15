@@ -87,7 +87,7 @@ def _persist_config_obj(config_obj: Any, data: dict[str, Any]) -> bool:
     return False
 
 
-def _write_json_atomic(path: Path, data: dict[str, Any]) -> bool:
+def write_json_atomic(path: Path, data: dict[str, Any]) -> bool:
     tmp_path: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,7 +246,11 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
             logger.warning("[%s] skipped malformed session state %s: %s", PLUGIN_ID, umo, exc)
 
     for umo in whitelist:
-        sessions.setdefault(str(umo).strip(), SessionState(recent=deque(maxlen=recent_limit)))
+        key = str(umo).strip()
+        # 只为完整 UMO 补空状态：裸群号只是白名单的通配写法，真实状态键恒为
+        # 完整 UMO（whitelist_storage_key 契约），空壳条目无人读写却每轮落盘。
+        if ":" in key:
+            sessions.setdefault(key, SessionState(recent=deque(maxlen=recent_limit)))
     return sessions
 
 
@@ -283,7 +287,7 @@ def build_sessions_payload(
 
 
 def write_sessions_payload(path: Path, payload: dict[str, Any]) -> bool:
-    return _write_json_atomic(path, payload)
+    return write_json_atomic(path, payload)
 
 
 def persist_settings_config(path: Path, config_obj: Any, settings: Settings) -> bool:
@@ -293,7 +297,7 @@ def persist_settings_config(path: Path, config_obj: Any, settings: Settings) -> 
     此处不再单独处理。
     """
     data = settings.to_config_dict()
-    if not _write_json_atomic(path, data):
+    if not write_json_atomic(path, data):
         return False
     return _update_config_obj(config_obj, data) and _persist_config_obj(config_obj, data)
 
@@ -304,6 +308,6 @@ async def apersist_settings_config(path: Path, config_obj: Any, settings: Settin
     宿主 ``save_config`` 的线程安全性未知，仍在事件循环内同步执行。
     """
     data = settings.to_config_dict()
-    if not await asyncio.to_thread(_write_json_atomic, path, data):
+    if not await asyncio.to_thread(write_json_atomic, path, data):
         return False
     return _update_config_obj(config_obj, data) and _persist_config_obj(config_obj, data)

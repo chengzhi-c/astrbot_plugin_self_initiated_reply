@@ -769,6 +769,10 @@ class ConfigSpec:
             return "string"
         return self.kind
 
+    def canonical_value(self, value: Any) -> Any:
+        """set 容器按排序输出：JSON 无集合类型，无序写盘会让每次保存都产生伪 diff。"""
+        return sorted(value) if self.container == "set" else value
+
 
 _PANEL = frozenset({"host", "panel"})
 
@@ -1082,7 +1086,7 @@ def normalize_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     for key, value in updates.items():
         spec = CONFIG_SPEC_BY_KEY[key]
         value = coerce_config_value(spec, value, spec.default)
-        normalized[key] = sorted(value) if spec.container == "set" else value
+        normalized[key] = spec.canonical_value(value)
     return normalized
 
 
@@ -1221,14 +1225,10 @@ class Settings:
         by ``from_config`` but never written back: they are absent from
         ``_conf_schema.json``, so writing them makes the host settings panel
         render a stray editable text box that has no effect.
-
-        ``set`` 容器排序输出：JSON 无集合类型，且无序写盘会让每次保存都产生
-        伪 diff（配置文件被反复标记为已变更）。
         """
         payload: dict[str, Any] = {}
         for spec in CONFIG_SPECS:
-            value = getattr(self, spec.attr)
-            payload[spec.key] = sorted(value) if spec.container == "set" else value
+            payload[spec.key] = spec.canonical_value(getattr(self, spec.attr))
         return payload
 
 
