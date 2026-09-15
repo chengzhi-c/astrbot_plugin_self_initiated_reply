@@ -443,7 +443,9 @@
 
         <form id="configForm" class="form" novalidate inert>
           <!-- 第一层：开不开。总电闸，独占顶部 -->
-          <section class="master" id="selfStat">
+          <!-- tabindex=-1：skip-link 的落点必须可被程序聚焦，否则键盘用户
+               跳到此处后焦点仍留在文档开头，后续 Tab 又从顶栏开始。 -->
+          <section class="master" id="selfStat" tabindex="-1">
             <label class="master-switch">
               <input
                 type="checkbox"
@@ -682,7 +684,7 @@
                   >判断模型 Provider</label
                 >
                 <div class="provider-control">
-                  <select id="judgeProviderSelect">
+                  <select id="judgeProviderSelect" aria-describedby="providerHint">
                     <option value="">使用当前会话默认模型</option>
                   </select>
                   <button

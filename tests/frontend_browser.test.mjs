@@ -482,6 +482,12 @@ test("skip link and invalid whitelist stay keyboard-accessible", async ({ page }
   await expect(page.locator(".skip-link")).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.locator("#selfStat")).toBeInViewport();
+  // 仅 toBeInViewport 抓不住"焦点没落过去"：落点若无 tabindex="-1"，
+  // 浏览器不会聚焦它，键盘用户的后续 Tab 仍从文档开头（顶栏）重新开始，
+  // 跳过链接等于只滚动不跳过。这里钉住焦点本身。
+  await expect(page.locator("#selfStat")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.locator("#selfStat")).not.toBeFocused();
 
   await page.locator("#whitelistInput").fill('bad"quote');
   await page.locator("#saveTopBtn").click();
