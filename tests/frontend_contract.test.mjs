@@ -365,6 +365,19 @@ test("dark accent tokens are declared once and reused", async () => {
   assert.match(css, /prefers-color-scheme:\s*dark/);
 });
 
+test("styles do not target element ids", async () => {
+  // 样式不用 #id 选择器：ID 特异性(100)会压过类(10)，同一按钮的普通类规则
+  // 从此改不动它，只能靠再写一条更长的 ID 规则去覆盖（此前 4 个顶栏按钮各自
+  // 攒了 4–9 条 #id 规则）。id 仍是 JS 取节点的锚（getElementById 不动），
+  // 只有样式改用类。十六进制颜色与 url(#fragment) 不算选择器。
+  const css = await readFile(join(pageDir, "style.css"), "utf8");
+  const withoutColorsAndUrls = css
+    .replace(/url\(#[^)]*\)/g, "url()")
+    .replace(/#[0-9a-fA-F]{3,8}\b/g, "COLOR");
+  const idSelectors = withoutColorsAndUrls.match(/(^|[\s,{])(#[\w-]+)/gm) || [];
+  assert.deepEqual(idSelectors, [], `style.css 又用 ID 选择器做样式锚：${idSelectors}`);
+});
+
 test("the two dark token blocks stay token-identical", async () => {
   // 深色令牌写了两份：:root[data-theme="dark"]（显式深色）与
   // @media (prefers-color-scheme: dark) 下的 :root:not([data-theme])（跟随系统）。

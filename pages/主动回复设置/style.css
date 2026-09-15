@@ -622,8 +622,8 @@ html.bold-text body,
 html.bold-text .form {
 	font-weight: 600;
 }
-#dimBtn.active,
-#boldBtn.active {
+.action-dim.active,
+.action-bold.active {
 	border-color: var(--accent);
 	color: var(--accent-text);
 	background: color-mix(in srgb, var(--accent-soft) 60%, var(--surface));
@@ -1751,8 +1751,8 @@ textarea {
 		min-height: 260px;
 	}
 }
-.top-actions #dimBtn,
-.top-actions #boldBtn {
+.top-actions .action-dim,
+.top-actions .action-bold {
 	box-shadow: var(--shadow-drop);
 	width: var(--control-h);
 	min-width: var(--control-h);
@@ -1760,15 +1760,15 @@ textarea {
 	min-height: var(--control-h);
 	padding: 0;
 }
-.top-actions #dimBtn .inline-icon,
-.top-actions #boldBtn .inline-icon,
-.top-actions #refreshBtn .inline-icon {
+.top-actions .action-dim .inline-icon,
+.top-actions .action-bold .inline-icon,
+.top-actions .action-refresh .inline-icon {
 	width: 20px;
 	height: 20px;
 	margin: 0;
 	color: var(--text);
 }
-.top-actions #saveTopBtn,
+.top-actions .action-save,
 .form-actions .btn.primary,
 .mobile-savebar .btn.primary {
 	padding: 0 var(--sp-6);
@@ -1776,7 +1776,7 @@ textarea {
 	font-weight: 600;
 	letter-spacing: 0.04em;
 }
-.top-actions #saveTopBtn .inline-icon,
+.top-actions .action-save .inline-icon,
 .form-actions .btn.primary .inline-icon,
 .mobile-savebar .btn.primary .inline-icon {
 	width: 18px;
@@ -1784,7 +1784,7 @@ textarea {
 	margin: 0;
 	color: currentColor;
 }
-.top-actions #refreshBtn {
+.top-actions .action-refresh {
 	width: var(--control-h);
 	min-width: var(--control-h);
 	height: var(--control-h);
@@ -1794,27 +1794,27 @@ textarea {
 	border-radius: var(--radius-btn);
 	color: var(--text-soft);
 }
-.top-actions #refreshBtn:hover {
+.top-actions .action-refresh:hover {
 	border-color: var(--accent);
 	color: var(--accent-text);
 	background: var(--surface-hover);
 }
-.top-actions #refreshBtn:hover .inline-icon {
+.top-actions .action-refresh:hover .inline-icon {
 	color: var(--accent-text);
 }
-.top-actions #refreshBtn.is-loading .inline-icon {
+.top-actions .action-refresh.is-loading .inline-icon {
 	animation: spin 0.8s linear infinite;
 }
-.top-actions #refreshBtn:disabled {
+.top-actions .action-refresh:disabled {
 	cursor: progress;
 	opacity: 0.6;
 }
-.top-actions #refreshBtn.is-armed {
+.top-actions .action-refresh.is-armed {
 	border-color: var(--warn);
 	color: var(--warn);
 	background: var(--warn-soft);
 }
-.top-actions #refreshBtn.is-armed .inline-icon {
+.top-actions .action-refresh.is-armed .inline-icon {
 	color: var(--warn);
 }
 @media (max-width: 720px) {
@@ -1849,9 +1849,9 @@ textarea {
 		height: 36px;
 		border-radius: 10px;
 	}
-	.top-actions #dimBtn,
-	.top-actions #boldBtn,
-	.top-actions #refreshBtn {
+	.top-actions .action-dim,
+	.top-actions .action-bold,
+	.top-actions .action-refresh {
 		flex: none;
 		width: var(--tap);
 		height: var(--tap);
@@ -2055,7 +2055,7 @@ textarea {
 		min-width: 0;
 	}
 	.theme-toggle,
-	.top-actions #saveTopBtn {
+	.top-actions .action-save {
 		flex: none;
 		width: var(--tap);
 		min-width: var(--tap);
@@ -2064,7 +2064,7 @@ textarea {
 		padding: 0;
 		gap: 0;
 	}
-	.top-actions #saveTopBtn .btn-label {
+	.top-actions .action-save .btn-label {
 		display: none;
 	}
 }
