@@ -68,7 +68,6 @@ from .adapters import AstrBotBridge
 from .commands import (
     dispatch_command_action,
     help_text,
-    list_text,
 )
 from .decision import DECISION_MAX_TOKENS, DECISION_SYSTEM_PROMPT, DecisionMaker
 from .delivery import DeliveryRunner
@@ -587,7 +586,7 @@ class SelfInitiatedReplyPlugin(Star):
     async def selfreply_help(self, event: AstrMessageEvent) -> CommandReply:
         """帮助：显示主动回复指令说明。"""
         self._set_command_handled(event)
-        yield event.plain_result(help_text())
+        yield event.plain_result(await self._command_text(event, "help"))
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("status", alias={"stat"})
@@ -602,7 +601,7 @@ class SelfInitiatedReplyPlugin(Star):
     async def selfreply_list(self, event: AstrMessageEvent) -> CommandReply:
         """列表：查看主动回复白名单。"""
         self._set_command_handled(event)
-        yield event.plain_result(list_text(self.settings))
+        yield event.plain_result(await self._command_text(event, "list"))
 
     @permission_type(PermissionType.ADMIN)
     @selfreply.command("add")
