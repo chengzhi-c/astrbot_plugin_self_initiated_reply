@@ -348,6 +348,65 @@ test("theme localStorage key stays single-sourced with the HTML bootstrap", asyn
   assert.equal(html.split(THEME_KEY).length - 1, 1);
 });
 
+test("mobile tab groups stay in sync with the page section anchors", async () => {
+  // TAB_GROUPS 把侧栏分区 id 映射到移动端 tabbar 分组。分区改名或新增而漏改
+  // 映射表时，chrome.mjs 的 `TAB_GROUPS[target] || target` 兜底会静默降级为
+  // "不高亮任何 tab"——不抛异常、无日志，只有窄屏肉眼可能看出。
+  // 与 theme key / 主题标签同性质：跨源清单，靠这条钉在一起。
+  const [html, chrome] = await Promise.all([
+    readFile(join(pageDir, "index.html"), "utf8"),
+    readFile(join(pageDir, "chrome.mjs"), "utf8"),
+  ]);
+  const body = chrome.match(/const TAB_GROUPS = \{([\s\S]*?)\n\};/)?.[1];
+  assert.ok(body, "chrome.mjs 未声明 TAB_GROUPS");
+  const groups = new Map(
+    [...body.matchAll(/([A-Za-z_$][\w$]*|"[^"]*")\s*:\s*"([^"]*)"/g)].map((m) => [
+      m[1].replace(/"/g, ""),
+      m[2],
+    ])
+  );
+  assert.ok(groups.size > 0, "TAB_GROUPS 为空");
+
+  const sidenav = new Set(
+    [...html.matchAll(/<a\b[^>]*class="sidenav-link"[^>]*data-target="([^"]+)"/g)].map(
+      (m) => m[1]
+    )
+  );
+  const tabbar = new Set(
+    [...html.matchAll(/<button\b[^>]*class="mtab"[^>]*data-target="([^"]+)"/g)].map(
+      (m) => m[1]
+    )
+  );
+  assert.ok(sidenav.size > 0 && tabbar.size > 0, "index.html 缺少 data-target 锚点");
+  assert.deepEqual([...groups.keys()].sort(), [...sidenav].sort());
+  assert.deepEqual([...new Set(groups.values())].sort(), [...tabbar].sort());
+});
+
+test("responsive breakpoints stay in sync between chrome.mjs and the stylesheet", async () => {
+  // 这两处 JS 行为与 CSS 断点强耦合：更多操作菜单在 460px 上下切换折叠形态，
+  // 侧栏在 1024px 以下点击后自动收起。改 CSS 漏改 JS（或反之）只在断点附近的
+  // 一段宽度里表现异常，属静默错配。CSS 无法 import JS，故用守卫固定两侧，
+  // 而不是引入跨语言常量（那要破坏零构建承诺）。
+  const [chrome, css] = await Promise.all([
+    readFile(join(pageDir, "chrome.mjs"), "utf8"),
+    readFile(join(pageDir, "style.css"), "utf8"),
+  ]);
+  const widths = new Set([...chrome.matchAll(/max-width:\s*(\d+)px/g)].map((m) => m[1]));
+  assert.ok(widths.size > 0, "chrome.mjs 未声明任何 max-width 断点");
+  for (const width of widths) {
+    assert.match(
+      css,
+      new RegExp(`@media \\(max-width: ${width}px\\)`),
+      `chrome.mjs 使用 ${width}px 断点，但 style.css 没有同名 @media`
+    );
+  }
+  // 两个已知耦合值必须在两侧都出现：即便 JS 整体删掉断点也不得静默通过。
+  for (const width of ["460", "1024"]) {
+    assert.ok(widths.has(width), `chrome.mjs 不再使用 ${width}px 断点`);
+    assert.match(css, new RegExp(`@media \\(max-width: ${width}px\\)`));
+  }
+});
+
 test("frontend plugin id matches the backend package identity", async () => {
   const app = await readFile(join(pageDir, "app.js"), "utf8");
   const models = await readFile(join(root, "models.py"), "utf8");

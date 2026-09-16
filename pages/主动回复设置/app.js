@@ -1,7 +1,3 @@
-const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
-window.__selfreplyAppStarted = true;
-if (window.__selfreplyBootFailTimer)
-	window.clearTimeout(window.__selfreplyBootFailTimer);
 import {
 	FETCH_TIMEOUT_MS,
 	createConfigRequestCoordinator,
@@ -34,6 +30,11 @@ import {
 	updateTopbarStuck,
 } from "./chrome.mjs";
 import { createConfigIo } from "./config-io.mjs";
+
+const PLUGIN_ID = "astrbot_plugin_self_initiated_reply";
+window.__selfreplyAppStarted = true;
+if (window.__selfreplyBootFailTimer)
+	window.clearTimeout(window.__selfreplyBootFailTimer);
 
 let els = null;
 const $ = (id) => document.getElementById(id);

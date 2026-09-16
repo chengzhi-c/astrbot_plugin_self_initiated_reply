@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import sys
 
 from .test_vision import PACKAGE_NAME
@@ -136,3 +137,109 @@ def test_handle_incoming_message_blindspots(tmp_path) -> None:
         await ingress.handle_incoming_message(plugin, empty_event)
 
     with_plugin(tmp_path, scenario)
+
+
+class _SourcedImage:
+    """可抽出可用来源的图片组件（``url`` 非空）。"""
+
+    type = "image"
+    subType = 0
+    url = "https://cdn.example.test/photo.png"
+
+
+class _SourcelessImage:
+    """只有组件、无任何来源的图片：``has_images`` 为真而 ``extract_images`` 为空。
+
+    ``_accepted_content`` 的 "[图片]" 回落正依赖这两个判据不等价。
+    """
+
+    type = "image"
+    subType = 0
+
+
+def _spy_scheduler(plugin) -> list[str]:
+    """记录 ``schedule_delayed_check`` 的 umo 调用，仍执行原方法。"""
+    scheduled: list[str] = []
+    original = plugin._scheduler.schedule_delayed_check
+
+    def _spy(umo, **kwargs):
+        scheduled.append(umo)
+        return original(umo, **kwargs)
+
+    plugin._scheduler.schedule_delayed_check = _spy
+    return scheduled
+
+
+def test_image_capture_failure_does_not_break_the_scheduling_chain(tmp_path, caplog) -> None:
+    """图片抓取抛异常不得阻断消息调度链。
+
+    ``handle_incoming_message`` 把 ``_capture_images`` 包在 try/except 里，失败
+    只记 WARNING，之后仍要走事件回收与延迟检查。该不变量此前只由代码结构成立、
+    无用例锚定——重构掉 try/except 或把调度挪进 try 之前都不会有测试变红。
+    """
+    from .host_stubs import capture_logs, messages_at_least, with_plugin
+
+    async def scenario(plugin, main):
+        from .test_main_runtime import _make_event
+
+        ingress = sys.modules[f"{main.__package__}.message_ingress"]
+        assert plugin.settings.vision_enabled is True
+
+        scheduled = _spy_scheduler(plugin)
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("vision provider exploded")
+
+        plugin._vision.capture = _boom
+
+        event = _make_event(message_str="看看这张图")
+        event.is_at_or_wake_command = False
+        event.get_messages = lambda: [_SourcedImage()]
+
+        with capture_logs(caplog, ingress.logger, logging.WARNING):
+            await ingress.handle_incoming_message(plugin, event)
+
+        assert scheduled, "图片抓取失败后仍必须安排延迟检查"
+        warnings = messages_at_least(caplog, logging.WARNING)
+        assert any("image capture failed" in message for message in warnings), warnings
+
+    with_plugin(tmp_path, scenario, vision_main_enabled=True)
+
+
+def test_image_without_source_degrades_to_placeholder_and_still_schedules(tmp_path, caplog) -> None:
+    """有图片组件但抽不出来源时降级为 "[图片]"，且不重复抓取、不阻断调度。
+
+    与上一用例互为补：上一条走 ``_capture_images`` 抛异常，这条走
+    ``extract_images`` 返回空（``has_images`` 与 ``extract_images`` 判据不等价）。
+    """
+    from .host_stubs import capture_logs, messages_at_least, with_plugin
+
+    async def scenario(plugin, main):
+        from .test_main_runtime import _make_event
+
+        ingress = sys.modules[f"{main.__package__}.message_ingress"]
+        utils = sys.modules[f"{main.__package__}.utils"]
+        scheduled = _spy_scheduler(plugin)
+
+        captured: list[object] = []
+
+        async def _capture(*args, **kwargs):
+            captured.append((args, kwargs))
+
+        plugin._vision.capture = _capture
+
+        event = _make_event(message_str="   ")
+        event.is_at_or_wake_command = False
+        event.get_messages = lambda: [_SourcelessImage()]
+
+        with capture_logs(caplog, ingress.logger, logging.DEBUG):
+            await ingress.handle_incoming_message(plugin, event)
+
+        assert not captured, "无来源图片不得进入 Vision 抓取"
+        assert scheduled, "降级为 [图片] 后仍必须安排延迟检查"
+        state = plugin._state_for(utils.whitelist_storage_key(utils.event_umo(event)))
+        assert state.recent[-1].text == "[图片]"
+        debug_logs = messages_at_least(caplog, logging.DEBUG)
+        assert any("extract_images returned empty" in message for message in debug_logs), debug_logs
+
+    with_plugin(tmp_path, scenario, vision_main_enabled=True)

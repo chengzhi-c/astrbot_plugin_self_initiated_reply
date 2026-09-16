@@ -94,3 +94,20 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 失效和终止才清理两者。运行时依赖由 `pyproject.toml` 与宿主兼容检查锁定。
 
 覆盖率门槛以 `pyproject.toml` 的 `fail_under` 为准。
+
+## models.py 不拆分
+
+`models.py` 现约 1,370 行，承载五类职责：常量与工具函数、数据类与枚举、
+`AttemptLedger` 账本状态机、`ConfigSpec`/`Settings` 与 coerce/normalize、
+提示词模板。曾计划把配置子系统拆到独立 `config_spec.py`，实测成本后放弃。
+
+不拆的理由是扇入成本远大于文件长度的收益：`models` 被 **23 个生产文件**以 import
+语句直接引用，`Settings`、`SessionState` 与 `config_revision` 是全仓共享的叶子类型。
+把配置子系统搬到新模块要同时改这 23 处 import、`tests/source_contract.py` 的路径锚
+与 `pyproject.toml` 的 mypy 显式文件清单，属高 churn、零行为收益的重排；
+而"读一个文件要切换几次心智模型"的代价，靠下面的结构契约即可抵消。
+
+取而代之的守卫是结构契约而非文件边界：配置键的单源由 `ConfigSpec` 表 +
+`test_config_schema` 断言，前端可写键由 `test_config_source_of_truth` 与 panel
+面比对，镜像实现由 `test_stage3_single_source` 反推。新增职责时按同一方式加断言，
+不靠拆文件降低阅读成本。
