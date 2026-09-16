@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib
 import json
@@ -534,18 +535,104 @@ def test_degraded_state_rejects_new_spawn_and_force_check(tmp_path: Path) -> Non
     with_plugin(tmp_path, scenario)
 
 
-async def _drive_decorated_status(plugin, event) -> str:
-    """直接驱动 @selfreply.command("status") 那条装饰器出口，取回显文本。
+async def _drive_decorated(plugin, event, handler: str) -> str:
+    """直接驱动一条 ``@selfreply.command`` 装饰器出口，取回显文本。
 
-    host_stubs 的 command_group/permission_type 都是 passthrough，故被装饰的
-    async generator 保持原样可调用。这条 helper 只为覆盖装饰器路径：内联指令
-    走 dispatch_command_action，两条出口各自组装 status_text 参数，漏一处不会
-    被另一处发现。
+    host_stubs 的 ``@selfreply.command`` 是 passthrough，故被装饰的 async
+    generator 保持原样可调用。这条 helper 只为覆盖装饰器路径：内联指令走
+    ``_handle_inline_command``，两条出口的文本都在 ``_command_text`` 处取出，
+    漏一处不会被另一处发现。
     """
     texts = []
-    async for result in plugin.selfreply_status(event):
+    async for result in getattr(plugin, handler)(event):
         texts.append(getattr(result, "text", "") or str(result))
     return "\n".join(texts)
+
+
+async def _drive_decorated_status(plugin, event) -> str:
+    return await _drive_decorated(plugin, event, "selfreply_status")
+
+
+def _decorated_command_handlers() -> dict[str, str]:
+    """``main.py`` 里 ``@selfreply.command`` 的注册表：canonical 动作 → 属性名。
+
+    从源码取而不是猜 ``selfreply_<动作>`` 命名约定、也不是硬编码 9 个名字：
+    注册表是事实，重命名后本表自动跟上。指令组本体（``selfreply``）不在表内
+    也不可驱动——宿主装饰器已把该属性换成 RegisteringCommandable，真实宿主与
+    host_stubs 都是如此（见 compat_check 的 EXPECTED_HANDLER_COUNT）。
+    """
+    root = Path(__file__).resolve().parents[1]
+    tree = ast.parse((root / "main.py").read_text(encoding="utf-8"))
+    found: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Attribute)
+                and decorator.func.attr == "command"
+                and decorator.args
+                and isinstance(decorator.args[0], ast.Constant)
+            ):
+                continue
+            found[decorator.args[0].value] = node.name
+    return found
+
+
+def test_decorated_commands_delegate_to_the_shared_dispatch(tmp_path: Path) -> None:
+    """9 个子指令出口一律经 ``_command_text`` 并传自己的 canonical 动作名。
+
+    装饰器出口在生产不可达（priority=1000 的内联拦截先返回），于是它的形状漂移
+    无人可见：``selfreply_list`` 曾经直连 ``list_text()`` 而不经分派，把它的参数
+    写成 ``"status"`` 也不会有任何红灯。这里逐个驱动并断言分派参数与回显文本。
+
+    用行为记录器而不是源码匹配：断言的是"它调了谁、传了什么、回显了什么"，
+    与写法（直连 / 委托 / 再加一层）无关。只读动作另有出口文本等价断言。
+    """
+    handlers = _decorated_command_handlers()
+    assert len(handlers) == 9, f"main.py 里解析出 {len(handlers)} 个子指令（期望 9）"
+
+    async def scenario(plugin, main):
+        event = _make_event(umo=UMO)
+        original = plugin._command_text
+        calls: list[tuple[str, str]] = []
+
+        async def recorder(_event, action, arg=""):
+            calls.append((action, arg))
+            return f"<{action}>"
+
+        plugin._command_text = recorder
+        try:
+            for action, handler in sorted(handlers.items()):
+                text = await _drive_decorated(plugin, event, handler)
+                assert calls == [(action, "")], f"{handler} 没以 {action!r} 走单源分派：{calls}"
+                assert text == f"<{action}>", f"{handler} 没原样回显分派文本：{text!r}"
+                calls.clear()
+        finally:
+            plugin._command_text = original
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_decorated_readonly_commands_match_inline_dispatch_text(tmp_path: Path) -> None:
+    """只读子指令的两条出口必须取出同一份文本。
+
+    help/status/list/debug 不改状态，故同一状态下两侧文本应当逐字相等：任一侧
+    少传一个参数（lifecycle / last_decision / ignored_sender）都会分叉。
+    写动作（add/remove/on/off/check）不做等价断言——它们有副作用，第二次调用的
+    文案必然不同（如 add 第二次说"已在白名单中"），那样的断言会因状态耦合而假绿。
+    """
+    handlers = _decorated_command_handlers()
+
+    async def scenario(plugin, main):
+        event = _make_event(umo=UMO)
+        for action in ("help", "status", "list", "debug"):
+            inline = await plugin._command_text(event, action)
+            decorated = await _drive_decorated(plugin, event, handlers[action])
+            assert decorated == inline, f"{action} 两条出口文本不一致：{decorated!r} != {inline!r}"
+
+    with_plugin(tmp_path, scenario)
 
 
 def test_status_debug_do_not_create_session_state(tmp_path: Path) -> None:
