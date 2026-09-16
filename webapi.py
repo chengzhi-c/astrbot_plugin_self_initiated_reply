@@ -686,8 +686,8 @@ async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
             "whitelist_count": len(plugin.settings.whitelist),
             "decision_model_enabled": plugin.settings.decision_model_enabled,
             "gate": {
-                "generation": dict(getattr(plugin._gate, "generation_view", {})),
-                "running": sorted(getattr(plugin._gate, "running_sessions_view", frozenset())),
+                "generation": dict(plugin._gate.generation_view),
+                "running": sorted(plugin._gate.running_sessions_view),
             },
             "tasks": {
                 "delay": len(plugin._delay_tasks),

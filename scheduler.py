@@ -151,9 +151,7 @@ class SessionScheduler:
         if task is None:
             return
         self._delay_tasks[umo] = task
-        task.add_done_callback(
-            lambda done: self._discard_delay_task(umo, done)  # type: ignore[arg-type]
-        )
+        task.add_done_callback(lambda done: self._discard_delay_task(umo, done))
 
     def cancel_delay(self, umo: str, *, force: bool = False) -> None:
         task = self._delay_tasks.get(umo)
@@ -180,7 +178,9 @@ class SessionScheduler:
         if force and running_task and not running_task.done() and running_task is not task:
             running_task.cancel()
 
-    def _discard_delay_task(self, umo: str, task: asyncio.Task[Any]) -> None:
+    def _discard_delay_task(self, umo: str, task: asyncio.Future[Any]) -> None:
+        """``add_done_callback`` 回调：形参收 ``Future``——``add_done_callback`` 声明
+        传入的就是 ``Future``，写窄成 ``Task`` 只能靠 ignore 绕过类型检查。"""
         if self._delay_tasks.get(umo) is task:
             self._delay_tasks.pop(umo, None)
 
