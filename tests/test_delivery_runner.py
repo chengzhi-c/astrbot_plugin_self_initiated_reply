@@ -275,6 +275,32 @@ async def test_record_stale_generation_skips_observation_advance(tmp_path: Path)
     assert state.last_proactive_observed_at == 50.0  # 观察窗口未推进
 
 
+async def test_record_unconfirmed_stale_generation_skips_observation_advance(
+    tmp_path: Path,
+) -> None:
+    """UNKNOWN 也受代次门约束：代次已变时同样不得推进观察窗口（契约 §2）。
+
+    与上一条配对——上一条走 ``confirmed=True`` 的 ``elif`` 分支，这条走
+    ``confirmed=False`` 的内层代次判据。删掉内层判据时，一次「提交状态未知」的
+    旧事件会在新会话上把观察窗口推到旧事件时间，静默掩盖新消息。
+    """
+    _, models, runner, _ = _make_runner(tmp_path, gate_current=False)
+    state = _state(models)
+    runner.apply_proactive_state(
+        "s1",
+        state,
+        "你好",
+        0,
+        expected_generation=999,
+        observed_active_at=200.0,
+        confirmed=False,
+    )
+    ok = await runner.persist_proactive_state()
+    assert ok is True
+    assert state.daily_count == 1  # 提交已发生，配额与冷却照扣
+    assert state.last_proactive_observed_at == 50.0  # 但观察窗口不推进
+
+
 async def test_apply_then_persist_retry_does_not_duplicate_state(tmp_path: Path) -> None:
     """Save-only retries never increment quota or append history twice."""
     writes: list[str] = []

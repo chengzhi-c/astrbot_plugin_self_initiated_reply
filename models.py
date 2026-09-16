@@ -726,7 +726,6 @@ class SessionState:
         default_factory=lambda: deque(maxlen=RECENT_MESSAGE_LIMIT_DEFAULT)
     )
     last_active_at: float = 0.0
-    last_active_sender_id: str = ""
     last_proactive_at: float = 0.0
     last_proactive_observed_at: float = 0.0
     last_proactive_text: str = ""

@@ -100,6 +100,24 @@ jobs:
           path: coverage.xml
           if-no-files-found: error
 
+  mutation:
+    # 变异门禁（scripts/mutation_gate.py）：把「新测试必须实测能捕获目标缺陷」从人工
+    # 纪律变成断言。独立作业而不并进 test——注入期间会临时改写源码，与并行跑的
+    # 用例共享工作树会互相污染；需要 Node 是因为变异表里含前端契约条目。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Mutation gate
+        run: python scripts/mutation_gate.py
+
   build:
     runs-on: ubuntu-latest
     steps:

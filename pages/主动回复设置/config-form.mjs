@@ -59,7 +59,7 @@ export function summarizeWhitelist(text) {
     return `${base} · 超过 ${WHITELIST_MAX_COUNT} 条上限，多余条目会被截断或拒绝`;
   return base;
 }
-export const PROMPT_PREVIEW_VALUES = {
+const PROMPT_PREVIEW_VALUES = {
   session: "aiocqhttp:GroupMessage:123456789",
   trigger: "message_delay",
   bot_aliases: "阿绪, 咕咕",
@@ -73,7 +73,7 @@ export const PROMPT_PREVIEW_VALUES = {
   last_message_age_sec: "65",
   last_reply_age_sec: "900",
 };
-export function escapeHtml(str) {
+function escapeHtml(str) {
   return String(str || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -92,10 +92,10 @@ export function renderPromptTemplateHtml(template, values = PROMPT_PREVIEW_VALUE
   });
 }
 
-export const WHITELIST_ITEM_MAX_LEN = 200;
+const WHITELIST_ITEM_MAX_LEN = 200;
 export const WHITELIST_ILLEGAL_RE = /[\x00-\x1f"'\\]/;
 // 与后端 models.MAX_WHITELIST_SIZE 同值：只做计数警告，不拦截，后端为准。
-export const WHITELIST_MAX_COUNT = 1000;
+const WHITELIST_MAX_COUNT = 1000;
 
 export function validateWhitelistLines(text) {
   // 与 parseWhitelist 同一切分：保存按条目发包，校验必须按条目报，否则

@@ -623,6 +623,46 @@ def test_degraded_lifecycle_is_visible_in_status_and_add_message(tmp_path: Path)
     with_plugin(tmp_path, scenario)
 
 
+def test_status_recent_decision_line_comes_from_last_decisions(tmp_path: Path) -> None:
+    """/selfreply status 的「最近裁决」行必须来自本会话的最近裁决（README 排障指引）。
+
+    两条出口（内联 dispatch 与装饰器命令）都要显式传参：漏传一处只会让那条出口
+    静默显示「暂无记录」，排障时反而以为插件从没裁决过。
+    """
+
+    async def scenario(plugin, main):
+        commands = importlib.import_module(main.__package__ + ".commands")
+        utils = importlib.import_module(main.__package__ + ".utils")
+        event = _make_event(umo=UMO)
+        umo = utils.event_umo(event)
+
+        # 还没裁决过：必须明说「暂无记录」，而不是省略这一行。
+        text = await plugin._command_text(event, "status")
+        assert "最近裁决: 暂无记录" in text
+        assert "最近裁决: 暂无记录" in await _drive_decorated_status(plugin, event)
+
+        plugin._last_decisions[umo] = {
+            "at": 1_700_000_000.0,
+            "trigger": "manual",
+            "should_reply": False,
+            "reason": "判断不回复：这条消息不需要接话",
+        }
+        text = await plugin._command_text(event, "status")
+        assert "不接话" in text
+        assert "这条消息不需要接话" in text
+        decorated = await _drive_decorated_status(plugin, event)
+        assert "不接话" in decorated, "装饰器 /selfreply status 没传最近裁决"
+
+        # 原因可能是多行自由文本（模型 JSON / 异常文本），回显必须折单行并截断。
+        plugin._last_decisions[umo]["reason"] = "首行\n次行 " + "很长的理由" * 30
+        line = commands.recent_decision_line(plugin._last_decisions[umo])
+        assert line.count("\n") == 0
+        assert line.endswith("…")
+        assert len(line.split(" · ", 1)[1]) <= 60
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_terminate_quarantines_noncooperative_runner(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         release = asyncio.Event()
@@ -962,7 +1002,6 @@ def test_manual_check_records_sender_id(tmp_path: Path) -> None:
             state = plugin._state_for(UMO)
             assert state.recent, "check 未写入历史"
             assert state.recent[-1].sender_id == "sender-42"
-            assert state.last_active_sender_id == "sender-42"
         finally:
             plugin._pipeline.check_session = original_check
 

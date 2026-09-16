@@ -199,7 +199,6 @@ def _load_recent_records(
 def _load_session_record(raw: dict[Any, Any], recent_limit: int, load_now: float) -> SessionState:
     state = SessionState(recent=deque(maxlen=recent_limit))
     state.last_active_at = as_timestamp(raw.get("last_active_at"), now=load_now)
-    state.last_active_sender_id = str(raw.get("last_active_sender_id") or "")
     state.last_proactive_at = as_timestamp(raw.get("last_proactive_at"), now=load_now)
     state.last_proactive_observed_at = as_timestamp(
         raw.get("last_proactive_observed_at"), now=load_now
@@ -304,7 +303,6 @@ def build_sessions_payload(
         key = whitelist_storage_key(umo)
         payload["sessions"][key] = {
             "last_active_at": state.last_active_at,
-            "last_active_sender_id": state.last_active_sender_id,
             "last_proactive_at": state.last_proactive_at,
             "last_proactive_observed_at": state.last_proactive_observed_at,
             "last_proactive_text": state.last_proactive_text,

@@ -276,6 +276,37 @@ def test_malformed_session_record_does_not_abort_load(tmp_path: Path) -> None:
     assert "qq:GroupMessage:789" not in sessions
 
 
+def test_retired_session_field_in_old_payload_is_ignored_on_load(tmp_path: Path) -> None:
+    """旧 state.json 里已退场的字段（如 last_active_sender_id）不得让加载失败。
+
+    字段删除后，磁盘上旧文件的载荷形状仍比代码多键：读取侧全走 ``raw.get``，
+    多余键会被忽略，不需要 STATE_VERSION 迁移。这条把「删字段不需迁移」钉住。
+    """
+    _, _, storage = _load_modules()
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 4,
+                "sessions": {
+                    "qq:GroupMessage:123": {
+                        "last_active_at": 1.5,
+                        "last_active_sender_id": "sender-42",
+                        "daily_count": 3,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sessions = storage.load_sessions(path, {"123"}, 5)
+    state = sessions["qq:GroupMessage:123"]
+    assert state.last_active_at == 1.5
+    assert state.daily_count == 3
+    assert not hasattr(state, "last_active_sender_id")
+
+
 # ============================================================================
 # 外部时间戳两侧钳位（配对 models.MAX_CLOCK_SKEW_SEC）
 # ============================================================================

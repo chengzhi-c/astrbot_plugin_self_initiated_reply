@@ -5,7 +5,7 @@
     python scripts/gates.py
 
 顺序：ruff check → ruff format --check → mypy → version →
-前端 syntax + contract → pytest。存在完整 wheel/sdist 时追加发布产物检查；
+前端 syntax + contract → pytest → 变异门禁。存在完整 wheel/sdist 时追加发布产物检查；
 `--release` 要求发布产物齐全。无产物的普通本地模式只报告 `NOT RELEASE-VERIFIED`，
 不会输出发布级全绿。
 """
@@ -71,6 +71,9 @@ def main(*, require_release: bool = False) -> int:
         # 覆盖率用路径方式（.）追踪——动态加载使模块名 cov 失效（实测）。
         [sys.executable, "-m", "pytest", "-q", "--cov=.", "--cov-report=term-missing"],
     )
+    # 放在 pytest 之后：变异门禁会临时改写源码并逐字节恢复，此时全量用例已跑完，
+    # 两者不共享同一轮工作树状态。
+    _run("mutation gate", [sys.executable, "scripts/mutation_gate.py"])
 
     wheels, sdists = _release_artifacts()
     if len(wheels) != 1 or len(sdists) != 1:

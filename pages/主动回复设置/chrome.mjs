@@ -10,7 +10,7 @@ const TAB_GROUPS = {
   "sec-runtime": "sec-runtime",
   "sec-vision": "sec-runtime",
 };
-export function prefersReducedMotion() {
+function prefersReducedMotion() {
   return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 export function setupMoreActionsMenu(els) {
@@ -68,7 +68,7 @@ function syncMobileTabs(els, active) {
     else tab.removeAttribute("aria-current");
   });
 }
-export function setCurrentNav(els, active) {
+function setCurrentNav(els, active) {
   document.querySelectorAll(".sidenav-link").forEach((link) => {
     const on = link === active;
     link.classList.toggle("is-current", on);
@@ -174,7 +174,7 @@ export function applyBold(on) {
   }
 }
 let dimBoldTouched = false;
-export function markDimBoldTouched() {
+function markDimBoldTouched() {
   dimBoldTouched = true;
 }
 export function dimBoldWasTouched() {

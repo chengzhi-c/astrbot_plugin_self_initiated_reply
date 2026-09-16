@@ -63,8 +63,10 @@ MACHINE_PATH_PATTERNS = (
     re.compile(rb"(?<![A-Za-z])[A-Za-z]:[\\/][^\x00-\x20<>]+"),
     re.compile(rb"(?<![A-Za-z0-9])/(?:home|Users|root|tmp)/[^\x00-\x20<>]+"),
 )
-# 只对文本类文件做机器路径扫描。二进制（图片等）里出现 "C:\..." 字面量纯属
-# 巧合，那是假阳；sdist 里真正会携带本机路径的是源码、配置与文档。
+# 只对文本类文件做机器路径扫描。二进制（图片等）里出现「盘符 + 路径分隔符」这种形态
+# 纯属巧合，那是假阳；sdist 里真正会携带本机路径的是源码、配置与文档。
+# 本注释不写盘符字面量：本文件本身在 sdist 内，写示例会让 _machine_path_in 扫中自己，
+# 门禁恒红（实测：干净 HEAD 上 hatchling 构建 sdist 后 check_sdist 必失败）。
 TEXT_SCAN_SUFFIXES = (
     ".py",
     ".pyi",

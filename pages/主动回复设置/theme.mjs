@@ -1,5 +1,5 @@
 export const THEME_KEY = "selfreply-theme";
-export const THEME_CYCLE = ["auto", "light", "dark"];
+const THEME_CYCLE = ["auto", "light", "dark"];
 export const THEME_LABELS = {
   auto: "跟随系统",
   light: "浅色 · 慈爱之惠",
@@ -9,7 +9,7 @@ export function currentTheme() {
   const value = document.documentElement.getAttribute("data-theme");
   return value === "light" || value === "dark" ? value : "auto";
 }
-export function cacheThemeLocally(theme) {
+function cacheThemeLocally(theme) {
   try {
     if (theme === "auto") localStorage.removeItem(THEME_KEY);
     else localStorage.setItem(THEME_KEY, theme);
