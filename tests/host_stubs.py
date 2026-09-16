@@ -116,6 +116,20 @@ def install_astrbot_stubs() -> None:
         components.File = type("File", (), {})
     if not hasattr(components, "Video"):
         components.Video = type("Video", (), {})
+    if not hasattr(components, "Reply"):
+
+        class _FakeReply:
+            """引用组件桩：只承载 ``id``（production 只构造引用，不读其它字段）。"""
+
+            def __init__(self, id: Any = "", **_: Any) -> None:
+                self.id = id
+
+            def __str__(self) -> str:
+                # 宿主 MessageChain.get_plain_text 只拼接 Plain 组件，桩同样不让
+                # 引用进入正文，否则 sent_texts / get_plain_text 断言会被 repr 污染。
+                return ""
+
+        components.Reply = _FakeReply
 
     if not hasattr(msg_evt_result, "MessageEventResult"):
         msg_evt_result.MessageEventResult = _FakeMessageEventResult

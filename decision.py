@@ -33,6 +33,7 @@ from .models import (
 )
 from .utils import (
     build_history_text,
+    cap_context_text,
     latest_user_text,
     looks_like_reply_request,
     parse_decision_json,
@@ -43,6 +44,18 @@ from .utils import (
 DECISION_SYSTEM_PROMPT = "你是群聊主动回复时机判断器。只输出严格 JSON，不要输出解释。"
 # 裁决只输出短 JSON，120 token 足够且把判断调用成本封顶。
 DECISION_MAX_TOKENS = 120
+# 判断上下文（多行聊天记录）的字符预算：与生成路径的 MAX_GENERATION_CONTEXT_CHARS
+# 同口径但更小——判断只需回答"此刻该不该接"，输入越短越省越快。
+# 超预算时**保尾**：越新的消息越重要（默认模板明示「优先参考最近至少 8 条」），
+# 截头会先丢掉最新几条，与提示词要求相反。
+MAX_DECISION_CONTEXT_CHARS = 2000
+# 引用决定的可选输出约定，只在 quote_mode=model 时追加：判断模型是高频调用，
+# 不引用引用的用户不该多背一个输出字段（少一个字段就少一分跑偏机会）。
+QUOTE_DECISION_HINT = (
+    "另请在 JSON 中给出可选字段 quote：true 表示这句回复应该引用最后一条消息"
+    "（例如在回应某个人的具体问题、对话已往下走了几句、或需要点明在接谁的话时），"
+    "false 表示不必引用。"
+)
 # 免打扰时段的时/分上下界（HH:MM 解析后的合法性校验）。
 _MAX_QUIET_HOUR = 23
 _MAX_QUIET_MINUTE = 59
@@ -197,13 +210,22 @@ class DecisionMaker:
             intent_reason = (
                 "" if trigger == CheckTrigger.PATROL else self.recent_reply_request_reason(state)
             )
-            decision = (
-                {"should_reply": True, "reason": intent_reason, "elapsed_sec": 0.0}
-                if intent_reason
-                else await self.ask_decision_model(umo, state, trigger=trigger)
-            )
+            # 明确请求默认直通（"在吗 / 有人吗 / 说句话 / 发表情包"这类句子的意图
+            # 本身已足够明确）；开启 reply_request_requires_model 后改为交给判断
+            # 模型裁决——提示词对这些请求才真正参与决策。
+            if intent_reason and not self.settings.reply_request_requires_model:
+                decision = {
+                    "should_reply": True,
+                    "reason": intent_reason,
+                    "elapsed_sec": 0.0,
+                }
+            else:
+                decision = await self.ask_decision_model(umo, state, trigger=trigger)
         if not decision.get("should_reply"):
             return f"判断不回复：{decision.get('reason') or '未说明'}"
+        # quote 是可选字段：只有真被模型裁决过的路径才带值，直通/强制路径缺省
+        # None =「模型没说」，由投递侧按 quote_mode 兜底。
+        decision.setdefault("quote", None)
         return decision
 
     # ------------------------------------------------------------------
@@ -295,6 +317,7 @@ class DecisionMaker:
         return {
             "should_reply": parsed["should_reply"],
             "reason": parsed["reason"],
+            "quote": parsed["quote"],
             "elapsed_sec": self._clock() - started,
         }
 
@@ -330,9 +353,14 @@ class DecisionMaker:
                 int(self._clock() - state.last_proactive_at) if state.last_proactive_at else -1
             ),
             "latest_message": sanitize_prompt_variable(latest, max_length=500),
-            # recent_messages 是多行聊天记录，保留换行才能让模型区分发言人和轮次
-            "recent_messages": sanitize_prompt_variable(
-                recent, max_length=2000, allow_newlines=True
+            # recent_messages 是多行聊天记录：保留换行才能让模型区分发言人与轮次；
+            # 超预算时保尾（越新越重要），与生成路径 cap_context_text 同口径。
+            # 不能用 sanitize_prompt_variable 自带的截断——那是保头，会先丢掉最新
+            # 几条，恰好与模板里「优先参考最近至少 8 条」的要求相反。
+            "recent_messages": cap_context_text(
+                sanitize_prompt_variable(recent, max_length=None, allow_newlines=True),
+                MAX_DECISION_CONTEXT_CHARS,
+                marker="…(更早历史因长度预算省略)",
             ),
         }
         # 回落取 ``ConfigSpec.reset_value``：与读侧落盘、面板「恢复默认」同一表达式。
@@ -351,6 +379,10 @@ class DecisionMaker:
             rendered = rendered.strip() + "\n\n最近消息:\n" + values["recent_messages"]
         if "should_reply" not in rendered or "reason" not in rendered:
             rendered = rendered.rstrip() + "\n\n" + DECISION_JSON_CONTRACT
+        # 引用决定只在 model 模式下要求模型给出；用户模板里若已自带 quote 约定
+        # 就不再追加（避免重复指令）。
+        if self.settings.quote_mode == "model" and "quote" not in rendered:
+            rendered = rendered.rstrip() + "\n\n" + QUOTE_DECISION_HINT
         return rendered.strip()
 
     async def build_recent_messages(self, umo: str, state: SessionState, *, limit: int) -> str:

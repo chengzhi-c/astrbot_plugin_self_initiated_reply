@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from astrbot.api import logger
 
 from ..models import PLUGIN_ID
+from ..utils import event_message_id
 from ._support import HTTP_SCHEMES, URL_SCHEMES, ImageInfo
 
 if TYPE_CHECKING:
@@ -229,25 +230,8 @@ def _image_entries(event: Any) -> list[tuple[Any, Any]]:
 
 
 def _event_message_id(event: Any) -> str:
-    for name in ("message_id", "msg_id"):
-        value = getattr(event, name, None)
-        if value:
-            return str(value).strip()
-    message_obj = getattr(event, "message_obj", None)
-    for name in ("message_id", "msg_id"):
-        value = getattr(message_obj, name, None)
-        if value:
-            return str(value).strip()
-    getter = getattr(event, "get_message_id", None)
-    if callable(getter):
-        try:
-            return str(getter() or "").strip()
-        except Exception:
-            # 宿主 get_message_id 的实现不受本插件约束（可能依赖已失效的连接态）。
-            # 消息 ID 仅用于图片缓存去重与日志定位，取不到就返回空串走无 ID 路径，
-            # 不能让取 ID 失败中断整条图片提取。
-            pass
-    return ""
+    """消息 ID（图片缓存去重与引用共用同一口径，实现在 ``utils.event_message_id``）。"""
+    return event_message_id(event)
 
 
 class ImageExtractor:

@@ -233,6 +233,8 @@ class SessionPipeline:
                 force=force,
                 trigger=trigger,
                 silence_active_at=observed_active_at,
+                # 判断模型给出的引用决定（None = 未表态，由投递侧按模式兜底）
+                quote=decision.get("quote"),
             )
         finally:
             try:
