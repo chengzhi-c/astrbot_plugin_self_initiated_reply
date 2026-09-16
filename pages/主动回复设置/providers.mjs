@@ -4,7 +4,8 @@ import { providerNeedsManualInput } from "./frontend-core.mjs";
  *          button: HTMLButtonElement|null, placeholder: string}} refs
  * @param {{ getOptions: () => any[], isListAvailable: () => boolean,
  *           showToast: (msg: string) => void,
- *           onModeChange?: (manual: boolean) => void }} deps
+ *           onModeChange?: (manual: boolean) => void,
+ *           onDirty?: () => void }} deps
  */
 export function createProviderControl(refs, deps) {
   let manual = false;

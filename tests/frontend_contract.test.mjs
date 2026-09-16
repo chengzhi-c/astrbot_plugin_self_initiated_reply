@@ -182,10 +182,6 @@ test("config request coordinator protects load epochs and unknown writes", () =>
   const forced = coordinator.beginLoad(true);
   coordinator.markEdited();
   assert.equal(coordinator.canApplyLoad(forced, true, true), false);
-  coordinator.markWriteUnknown();
-  assert.equal(coordinator.writeUnknown, true);
-  coordinator.clearWriteUnknown();
-  assert.equal(coordinator.writeUnknown, false);
 });
 
 test("config payload requires ok true and write-critical fields", () => {
@@ -1238,4 +1234,124 @@ test("settings page JS sources keep lines within the width cap", async () => {
       );
     }
   }
+});
+
+test("a failed POST leaves the page requiring a refresh before the next save", async () => {
+  // 保存请求结果未知（异常/超时）是"必须刷新才能再写"的两条路径之一：该状态
+  // 一旦丢失，页面会带着旧 revision 再提交一次，而服务端可能已经写入。
+  // 进入状态与阻挡第二次提交都要成立，缺一不可。
+  const classList = { add() {}, remove() {}, toggle() {} };
+  const fields = [
+    { dataset: { configKey: "enabled" }, type: "checkbox", checked: true },
+  ];
+  const form = {
+    classList,
+    inert: false,
+    querySelector: () => null,
+    querySelectorAll: () => fields,
+  };
+  const elements = {
+    configForm: form,
+    configSaveState: { textContent: "", classList },
+  };
+  const state = {
+    configLoaded: true,
+    savingConfig: false,
+    configRevision: TEST_REVISION,
+    isDirty: false,
+    requiresConfigRefresh: false,
+  };
+  const toasts = [];
+  let posts = 0;
+  const io = createConfigIo({
+    getEls: () => elements,
+    getState: () => state,
+    setState: (updates) => Object.assign(state, updates),
+    apiGet: async () => {
+      throw new Error("skip refresh");
+    },
+    apiPost: async () => {
+      posts += 1;
+      throw new Error("Failed to fetch");
+    },
+    showToast: (message) => toasts.push(message),
+    setStatState() {},
+    renderPromptPreview() {},
+    judgeProviderControl: { value: () => "", sync() {} },
+    visionProviderControl: { value: () => "", sync() {} },
+    visionJudgeProviderControl: { value: () => "", sync() {} },
+    fmtBool: String,
+  });
+
+  await io.saveConfig({ preventDefault() {} });
+
+  assert.equal(posts, 1);
+  assert.equal(state.requiresConfigRefresh, true);
+  assert.ok(toasts.some((message) => message.includes("保存状态未知")));
+
+  await io.saveConfig({ preventDefault() {} });
+  assert.equal(posts, 1, "未知写入后不得在刷新前再次提交");
+});
+
+test("a STALE_WRITE response adopts the server revision and requires a refresh", async () => {
+  // 迟到旧写被服务端拒绝时，客户端必须接受服务端返回的新 revision 并进入
+  // "必须刷新"，否则会继续拿旧 revision 重试（永远 STALE_WRITE）。
+  const classList = { add() {}, remove() {}, toggle() {} };
+  const fields = [
+    { dataset: { configKey: "enabled" }, type: "checkbox", checked: true },
+  ];
+  const form = {
+    classList,
+    inert: false,
+    querySelector: () => null,
+    querySelectorAll: () => fields,
+  };
+  const elements = {
+    configForm: form,
+    configSaveState: { textContent: "", classList },
+  };
+  const newerRevision = `sha256:${"b".repeat(64)}`;
+  const state = {
+    configLoaded: true,
+    savingConfig: false,
+    configRevision: TEST_REVISION,
+    isDirty: false,
+    requiresConfigRefresh: false,
+  };
+  const toasts = [];
+  let posts = 0;
+  const io = createConfigIo({
+    getEls: () => elements,
+    getState: () => state,
+    setState: (updates) => Object.assign(state, updates),
+    apiGet: async () => {
+      throw new Error("skip refresh");
+    },
+    apiPost: async () => {
+      posts += 1;
+      return {
+        ok: false,
+        error: "配置已被其他请求修改",
+        error_code: "STALE_WRITE",
+        config_revision: newerRevision,
+      };
+    },
+    showToast: (message) => toasts.push(message),
+    setStatState() {},
+    renderPromptPreview() {},
+    judgeProviderControl: { value: () => "", sync() {} },
+    visionProviderControl: { value: () => "", sync() {} },
+    visionJudgeProviderControl: { value: () => "", sync() {} },
+    fmtBool: String,
+  });
+
+  await io.saveConfig({ preventDefault() {} });
+
+  assert.equal(posts, 1);
+  assert.equal(state.configRevision, newerRevision);
+  assert.equal(state.requiresConfigRefresh, true);
+  assert.ok(toasts.some((message) => message.includes("配置已被其他请求修改")));
+
+  await io.saveConfig({ preventDefault() {} });
+  assert.equal(posts, 1, "STALE_WRITE 后不得在刷新前再次提交");
 });

@@ -311,7 +311,6 @@ export function createConfigIo(deps) {
 				: "已暂停（/off）"
 			: "关闭";
 		setStatState(e.selfStat, runtimeOn ? "is-on" : "is-off");
-		coordinator.clearWriteUnknown();
 		setState({
 			configLoaded: true,
 			configRevision: config.config_revision,
@@ -380,7 +379,7 @@ export function createConfigIo(deps) {
 			showToast("正在保存…");
 			return;
 		}
-		if (state.requiresConfigRefresh || coordinator.writeUnknown) {
+		if (state.requiresConfigRefresh) {
 			showToast("保存状态未知，请刷新配置后重试");
 			return;
 		}
@@ -426,7 +425,6 @@ export function createConfigIo(deps) {
 			try {
 				result = await apiPost("config", body);
 			} catch (error) {
-				coordinator.markWriteUnknown();
 				setState({ requiresConfigRefresh: true });
 				setSaveState("保存状态未知", "error");
 				showToast("保存状态未知，请刷新配置后重试", true);
@@ -483,7 +481,6 @@ export function createConfigIo(deps) {
 				savedConfig,
 				configControls(e.configForm).map((control) => control.dataset.configKey),
 			)) {
-				coordinator.markWriteUnknown();
 				setState({ requiresConfigRefresh: true });
 				setSaveState("保存状态未知", "error");
 				showToast("保存状态未知，请刷新配置后重试", true);
