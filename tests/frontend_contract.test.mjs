@@ -214,6 +214,36 @@ test("config payload requires ok true and write-critical fields", () => {
     ),
     false,
   );
+  // 正向对照：否则下面那批负例被一个「恒 false」的实现也能满足。
+  assert.equal(
+    isSuccessfulConfigPayload({
+      ok: true,
+      enabled: true,
+      whitelist_sessions: [],
+      config_revision: TEST_REVISION,
+    }),
+    true,
+  );
+});
+
+test("config payload rejects a malformed config_revision", () => {
+  // config_revision 是保存时的 CAS 期望值（POST body 的 base_revision）：形状不对
+  // 时必须判加载失败。放宽成「只要是个字符串」会让 revision 退化为常量，乐观并发
+  // 控制在最上层静默失效（两次并发保存都「成功」，后者覆盖前者）——而页面其余
+  // 逻辑全部照常工作，只有这个函数变红能发现。
+  const rejected = ["", "sha256:", "sha256:short", `sha256:${"A".repeat(64)}`, 123, null];
+  for (const revision of rejected) {
+    assert.equal(
+      isSuccessfulConfigPayload({
+        ok: true,
+        enabled: true,
+        whitelist_sessions: [],
+        config_revision: revision,
+      }),
+      false,
+      `config_revision=${JSON.stringify(revision)} 应判加载失败`,
+    );
+  }
 });
 
 test("config load failure names the missing fields", async () => {

@@ -17,7 +17,6 @@ from .plugin_state import append_recent_user_message
 from .utils import (
     clean_chat_text,
     event_extra,
-    event_sender_id,
     event_text,
     event_umo,
     is_explicit_direct_call,
@@ -80,7 +79,6 @@ def _accepted_content(
         if not is_self_message(event) and is_explicit_direct_call(event, text):
             state = plugin._state_for(umo)
             state.last_active_at = now_ts()
-            state.last_active_sender_id = event_sender_id(event)
             if plugin.settings.skip_after_direct_call:
                 # 这条 @Bot/唤醒消息由 AstrBot 正常回复（不经过本插件），因此把它
                 # 记为「这条消息之后 Bot 已经回应过」：同一批消息不再触发主动回复，

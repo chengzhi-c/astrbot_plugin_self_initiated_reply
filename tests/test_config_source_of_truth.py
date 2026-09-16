@@ -178,7 +178,9 @@ def test_frontend_whitelist_max_count_matches_backend() -> None:
     install_astrbot_stubs()
     models = load_package("selfreply_config_sot_package", "models")
     form = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
-    match = re.search(r"export const WHITELIST_MAX_COUNT = (\d+);", form)
+    # 不锚 ``export``：该常量只在 config-form.mjs 内部使用，是否对外暴露与本守卫
+    # 要守的「前端上限 == 后端上限」无关，锚它会让一次纯可见性收敛误报漂移。
+    match = re.search(r"(?:export )?const WHITELIST_MAX_COUNT = (\d+);", form)
     assert match, "WHITELIST_MAX_COUNT not found"
     assert int(match.group(1)) == models.MAX_WHITELIST_SIZE, (
         f"前后端白名单上限漂移：前端 {match.group(1)}，后端 {models.MAX_WHITELIST_SIZE}"

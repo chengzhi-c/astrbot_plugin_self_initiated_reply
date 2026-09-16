@@ -251,6 +251,11 @@ def test_fetch_uses_direct_fixed_transport_and_disables_env_proxy(monkeypatch) -
     assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) == PNG_DATA_URL
     assert captured["trust_env"] is False
     assert isinstance(captured["transport"], parser_mod._FixedAddressTransport)
+    # 契约 §8：关闭环境代理、跟随重定向但**最多 3 次**（每次重定向都要重新解析并
+    # 校验地址，否则一次 302 可以把已经校验过的公网地址换成内网地址）。
+    assert captured["follow_redirects"] is True
+    assert captured["max_redirects"] == 3
+    assert captured["timeout"] == parser._timeout_sec
 
 
 def test_fixed_transport_preserves_host_and_default_tls_port(monkeypatch) -> None:

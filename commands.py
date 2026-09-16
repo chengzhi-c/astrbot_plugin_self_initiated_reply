@@ -6,7 +6,7 @@ check/on/off 等有副作用分支，经 plugin 回调访问状态（测试可�
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from astrbot.api.event import AstrMessageEvent
 
@@ -14,6 +14,7 @@ from .models import CheckTrigger, SessionState, Settings, fmt_ts, now_ts
 from .plugin_state import append_recent_user_message, read_session_state
 from .utils import (
     clean_chat_text,
+    collapse_whitespace,
     event_group_id,
     event_self_id,
     event_sender_id,
@@ -93,19 +94,39 @@ def list_text(settings: Settings) -> str:
     return "主动回复白名单：\n" + "\n".join(f"- {item}" for item in sorted(settings.whitelist))
 
 
+# 最近裁决一行的原因截断长度：reason 会引用 40 字用户原文（明确请求直通）或脱敏后的
+# 异常文本（模型异常），不截断会把一整段塞进指令回显。
+_RECENT_DECISION_REASON_MAX = 60
+
+
+def recent_decision_line(decision: dict[str, Any] | None) -> str:
+    """把本会话最近一次裁决渲染成一行（与 ``GET /status`` 的 ``last_decisions`` 同源）。"""
+    if not decision:
+        return "最近裁决: 暂无记录"
+    verdict = "接话" if decision.get("should_reply") else "不接话"
+    # reason 可能是多行（模型 JSON 自由文本），先折成单行再截断，保证回显行数稳定。
+    reason = collapse_whitespace(decision.get("reason") or "未说明")
+    if len(reason) > _RECENT_DECISION_REASON_MAX:
+        reason = reason[: _RECENT_DECISION_REASON_MAX - 1] + "…"
+    return f"最近裁决: {fmt_ts(decision.get('at'))} {verdict} · {reason}"
+
+
 def status_text(
     settings: Settings,
     event: AstrMessageEvent,
     state: SessionState,
     runtime_enabled: bool,
     lifecycle: str,
+    last_decision: dict[str, Any] | None,
 ) -> str:
     """渲染 /selfreply status 文本。
 
-    ``lifecycle`` 必填且无默认值：降级是单向门，``runtime_enabled`` 读持久配置
-    仍为 True，只有 lifecycle 能说明插件实际已拒绝一切新工作。给默认值会让新增
-    调用点静默回落 "RUNNING" 而谎报正常（装饰器命令就漏过一次），故由签名强制
-    每个调用方显式表态。
+    ``lifecycle`` 与 ``last_decision`` 必填且无默认值：降级是单向门，
+    ``runtime_enabled`` 读持久配置仍为 True，只有 lifecycle 能说明插件实际已
+    拒绝一切新工作。给默认值会让新增调用点静默回落 "RUNNING" 而谎报正常
+    （装饰器命令就漏过一次），故由签名强制每个调用方显式表态。
+    ``last_decision`` 同理：它是本会话最近一次裁决（``_last_decisions``，与
+    ``GET /status`` 同源），拿不到就得显式传 None，而不是让新调用点默默不显示。
     """
     umo = event_umo(event)
     # STOPPING 与 DEGRADED 分开措辞：前者是正常关停，后者才需要重启恢复。
@@ -137,6 +158,7 @@ def status_text(
             f"{settings.max_daily_replies_per_session or '不限'}",
             f"今日已回复: {state.daily_count}",
             f"上次主动回复: {fmt_ts(state.last_proactive_at)}",
+            recent_decision_line(last_decision),
             "回复生成: AstrBot 正常 LLM 管线模式",
             "表情包/LivingMemory: 由 AstrBot 主回复链中的插件自动处理",
         ]
@@ -177,7 +199,12 @@ async def dispatch_command_action(
         # 只读组装：不得经 state_for 隐式创建并滞留非白名单会话的状态。
         state = read_session_state(plugin, umo) if umo else SessionState()
         return status_text(
-            plugin.settings, event, state, plugin.runtime_enabled, plugin.lifecycle_state
+            plugin.settings,
+            event,
+            state,
+            plugin.runtime_enabled,
+            plugin.lifecycle_state,
+            plugin._last_decisions.get(umo) if umo else None,
         )
     if action == "list":
         return list_text(plugin.settings)

@@ -4,7 +4,7 @@
 - 裁决入口 decide 可独立单测（假模型 + 假时钟）
 - 提示词注入清理（不可信用户内容不能改变任务边界、JSON 契约防伪造）
 - 判断模型关闭/超时/坏 JSON/解析失败四类降级路径的行为与文案不变
-- 局部闸门（免打扰/日配额/静默/冷却/观察窗口）顺序与文案
+- 局部闸门（免打扰/日配额/静默/冷却/观察窗口）单独文案与**同时挂起时的归因顺序**
 """
 
 from __future__ import annotations
@@ -398,6 +398,48 @@ async def test_local_gate_allows_when_everything_passes(tmp_path: Path) -> None:
     clock_value[0] = 1000.0
     state = _state(models, active_at=800.0, observed_at=0.0)
     assert maker.local_gate(state, force=False) == ""
+
+
+async def test_local_gate_reason_precedence_matches_contract_order(tmp_path: Path) -> None:
+    """多闸门同时挂起时的归因顺序（契约 §4）：免打扰 > 日配额 > 静默 > 冷却 > 观察窗口。
+
+    上面逐条用例只钉单个闸门的文案；这条钉「同时挂起时谁说话」。顺序错了不会让
+    任何单闸门用例变红，但挂在最前面的闸门才是运营者看到的归因：按错误提示去调
+    静默秒数 / 冷却时间都不会生效（对应项根本没参与判定）。
+    """
+    config = {
+        "quiet_hours": ["23:00-02:00"],
+        "min_silence_sec": 3600,
+        "cooldown_sec": 300,
+        "max_daily_replies_per_session": 3,
+    }
+    # 四个闸门全挂起：active_at=900 静默不足、proactive_at=990 冷却中、
+    # daily_count=3 达日配额、observed_at=950 已回复过。
+    _, models, maker, clock_value, _ = _make_decision(tmp_path, config, minutes_now=23 * 60)
+    clock_value[0] = 1000.0
+    state = _state(models, active_at=900.0, proactive_at=990.0, observed_at=950.0, daily_count=3)
+    assert maker.local_gate(state, force=False) == "免打扰时段。"
+
+    # 走出免打扰：日配额 > 静默（静默此时仍未满足，但配额优先级更高）
+    _, models, maker, clock_value, _ = _make_decision(tmp_path, config, minutes_now=12 * 60)
+    clock_value[0] = 1000.0
+    state = _state(models, active_at=900.0, proactive_at=990.0, observed_at=950.0, daily_count=3)
+    assert maker.local_gate(state, force=False) == "今日主动回复次数已达上限。"
+    state.daily_count = 0
+    assert maker.local_gate(state, force=False) == "静默时间不足：100s / 3600s。"
+
+    # 静默也让开：无活动记录 > 冷却 > 观察窗口
+    _, models, maker, clock_value, _ = _make_decision(
+        tmp_path, {**config, "min_silence_sec": 60}, minutes_now=12 * 60
+    )
+    clock_value[0] = 1050.0
+    state = _state(models, active_at=800.0, proactive_at=990.0, observed_at=950.0)
+    assert maker.local_gate(state, force=False) == "冷却中：还剩 4m0s。"
+    state.last_active_at = 0.0
+    assert maker.local_gate(state, force=False) == "会话暂无活动记录，无法判断静默。"
+    state.last_active_at = 800.0
+    state.last_proactive_at = 700.0
+    assert maker.local_gate(state, force=False) == "这条消息之后已经主动回复过。"
 
 
 async def test_in_quiet_hours_crosses_midnight(tmp_path: Path) -> None:

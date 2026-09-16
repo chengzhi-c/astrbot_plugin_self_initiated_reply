@@ -152,12 +152,12 @@ def append_recent_user_message(
     stamped = now_ts() if active_at is None else active_at
     state = plugin._state_for(umo)
     state.last_active_at = stamped
-    state.last_active_sender_id = event_sender_id(event)
+    sender_id = event_sender_id(event)
     state.recent.append(
         MessageRecord(
             role="user",
             name=event_sender_name(event),
-            sender_id=state.last_active_sender_id,
+            sender_id=sender_id,
             text=clean_text,
             at=stamped,
         )

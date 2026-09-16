@@ -650,6 +650,48 @@ test("image cache cleanup reports the count and surfaces failures", async ({ pag
   expect(errors).toEqual([]);
 });
 
+test("faint hint token clears WCAG AA on both themes and both surfaces", async ({ page }) => {
+  // style.css 的 --faint 注释手算了四组对比度（浅色 5.11/4.77，深色 5.39/4.97），
+  // 但没有任何断言：把令牌改浅（或改暗）一档就跌破 AA，而全套用例照绿——11–12px
+  // 小字号提示文字最先不可读。这里取实际计算值复算，不信任注释里的数字。
+  await openPage(page);
+  const measured = await page.evaluate(() => {
+    const probe = (variable, property) => {
+      const el = document.createElement("div");
+      el.style.setProperty(property, `var(${variable})`);
+      document.body.appendChild(el);
+      const value = getComputedStyle(el).getPropertyValue(property);
+      el.remove();
+      return value.trim();
+    };
+    const luminance = (color) => {
+      const [r, g, b] = color.match(/[\d.]+/g).slice(0, 3).map(Number);
+      const channel = (value) => {
+        const scaled = value / 255;
+        return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    };
+    const rows = [];
+    for (const theme of ["light", "dark"]) {
+      document.documentElement.setAttribute("data-theme", theme);
+      const faint = luminance(probe("--faint", "color"));
+      for (const surface of ["--surface", "--surface-2"]) {
+        const background = luminance(probe(surface, "background-color"));
+        const [bright, dim] = [faint, background].sort((a, b) => b - a);
+        rows.push({ theme, surface, ratio: (bright + 0.05) / (dim + 0.05) });
+      }
+    }
+    return rows;
+  });
+
+  expect(measured).toHaveLength(4);
+  for (const { theme, surface, ratio } of measured) {
+    // 4.5:1 是正文级 AA（11–12px 提示文字属于正文级，不算大字号）。
+    expect(ratio, `${theme} 主题 ${surface} 底的 --faint 对比度`).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
 test("mobile tab click moves both the tab and the sidenav current state", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await installBridge(page);

@@ -14,6 +14,7 @@ import ast
 import re
 from pathlib import Path
 
+from .host_stubs import load_package
 from .source_contract import (
     _lookup,
     callers_of,
@@ -561,3 +562,45 @@ def test_default_prompt_is_consumed_through_the_spec() -> None:
             f"{rel}.{qualname} 未从规格表取默认值："
             f"{_name_references(rel, 'reset_value') or '（无 reset_value 引用）'}"
         )
+
+
+# ============================================================================
+# 3.20 指令清单：README / metadata.help / help_text 三面与解析器同源
+# ============================================================================
+
+# 取的是「/selfreply」后缀里第一个词；字符类里不含反引号/书名号/括号，
+# 所以 `/selfreply add`、`/selfreply check [content]`、`/selfreply <动作>`
+# 三种写法分别得到 add / check / 无（裸指令）。
+_SELFREPLY_REFERENCE_RE = re.compile(r"/selfreply(?:[ \t]+([A-Za-z_][A-Za-z0-9_-]*))?")
+_COMMAND_SURFACES = ("README.md", "metadata.yaml")
+
+
+def test_documented_commands_parse_and_cover_every_action() -> None:
+    """三处对外可见的指令清单必须真能解析，且不漏 `COMMAND_ALIASES` 的动作。
+
+    两个方向都守：① 文档写了 `/selfreply xxx` 而解析器认不出（改名/打错/说明书
+    先改了）——用户照文档操作会没任何反应；② 新增动作但三处说明都没写
+    ——`metadata.yaml` 的 help 是宿主安装界面唯一展示面，漏写等于用户看不见。
+    这里**真跑** `parse_command_text`，不比对文本：指令解析的唯一判据是它。
+    """
+    commands = load_package("selfreply_command_surface_package", "commands")
+    surfaces = {rel: (ROOT / rel).read_text(encoding="utf-8") for rel in _COMMAND_SURFACES}
+    surfaces["commands.help_text()"] = commands.help_text()
+
+    covered: set[str] = set()
+    unreachable: list[str] = []
+    for name, text in surfaces.items():
+        references = _SELFREPLY_REFERENCE_RE.findall(text)
+        # 防空转：某个面被清空时守卫不得静默变成恒绿。
+        assert references, f"{name} 里再找不到 /selfreply 指令引用"
+        for token in references:
+            command = f"/selfreply {token}" if token else "/selfreply"
+            parsed = commands.parse_command_text(command)
+            if parsed is None:
+                unreachable.append(f"{name}: {command}")
+            else:
+                covered.add(parsed[0])
+
+    assert not unreachable, f"这些文档里的指令根本解析不出来：{unreachable}"
+    missing = sorted(set(commands.COMMAND_ALIASES) - covered)
+    assert not missing, f"这些动作在三处说明里都没出现：{missing}"
