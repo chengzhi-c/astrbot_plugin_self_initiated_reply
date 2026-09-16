@@ -966,6 +966,59 @@ async def test_main_agent_build_config_defaults(tmp_path: Path) -> None:
     assert config.kwargs["add_cron_tools"] is False
 
 
+async def test_main_agent_build_config_prefers_session_provider_settings(tmp_path: Path) -> None:
+    """会话级 provider_settings 优先于宿主全局；取不到时降级为宿主默认。
+
+    会话级读取（``get_config(umo)``）是可选能力，失败必须静默——但不能因为"可选"
+    就重来不读：那样只需把这段删掉，超时/安全策略全部静默换成宿主默认也无测试变红。
+    """
+    _, _, runner, runtime, _, _ = _make_runner(tmp_path)
+
+    class BuildConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    runtime.new_build_config = lambda **kwargs: BuildConfig(**kwargs)
+    host_level = {"provider_settings": {"tool_call_timeout": 11}}
+    session_level = {
+        "provider_settings": {
+            "tool_call_timeout": 7,
+            "llm_safety_mode": False,
+            "safety_mode_strategy": "tool_call",
+        }
+    }
+    runner._context = SimpleNamespace(
+        astrbot_config=host_level,
+        get_config=lambda umo: session_level if umo == "s1" else host_level,
+    )
+
+    session = runner.main_agent_build_config("s1")
+    assert session.kwargs["tool_call_timeout"] == 7
+    assert session.kwargs["provider_settings"] == session_level["provider_settings"]
+    assert session.kwargs["llm_safety_mode"] is False
+    assert session.kwargs["safety_mode_strategy"] == "tool_call"
+
+    # 空 umo：无会话可查，只读宿主全局
+    blank = runner.main_agent_build_config("")
+    assert blank.kwargs["tool_call_timeout"] == 11
+
+    def boom(_umo):
+        raise RuntimeError("host get_config unavailable")
+
+    runner._context = SimpleNamespace(astrbot_config=host_level, get_config=boom)
+    degraded = runner.main_agent_build_config("s1")
+    assert degraded.kwargs["tool_call_timeout"] == 60, "取不到会话配置必须落到宿主默认"
+    assert degraded.kwargs["provider_settings"] == {}
+
+    # 返回对象不是 Mapping：同样降级，不得把异常外泄到构建链
+    runner._context = SimpleNamespace(
+        astrbot_config={}, get_config=lambda _umo: ["not", "a", "mapping"]
+    )
+    not_mapping = runner.main_agent_build_config("s1")
+    assert not_mapping.kwargs["tool_call_timeout"] == 60
+    assert not_mapping.kwargs["provider_settings"] == {}
+
+
 async def test_build_context_text_merges_history_and_image(tmp_path: Path) -> None:
     _, models, runner, _, _, _ = _make_runner(tmp_path, image_context="[图片描述]")
     state = _state(models, recent=[("user", "新消息", 990.0)])
@@ -1022,6 +1075,10 @@ def test_cap_context_text_degrades_gracefully_at_tiny_budgets() -> None:
     tiny = utils.cap_context_text(body, len(marker) + 1, marker=marker)
     assert tiny.startswith(marker)
     assert len(tiny) <= len(marker) + 1
+    # 预算连标记都装不下：仍返回标记本身，总长允许略超预算（docstring 已声明该例外）
+    for budget in (1, len(marker) - 1, len(marker)):
+        cramped = utils.cap_context_text(body, budget, marker=marker)
+        assert cramped == marker, f"预算 {budget}：必须保留省略标记，不得返回空串或丢标记"
     # 预算放不下一整行但为正：按字符保尾，且总长不超预算
     tail_only = utils.cap_context_text(body, len(marker) + 2, marker=marker)
     assert tail_only.endswith("条")

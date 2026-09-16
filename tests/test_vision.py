@@ -1575,6 +1575,67 @@ def test_host_platform_adapters_do_not_use_system_tmp_path() -> None:
 
 
 @pytest.mark.asyncio
+async def test_vision_service_build_context_attaches_image_descriptions() -> None:
+    """build_context 主路径：识图描述必须经不可信头拼进上下文。
+
+    没有这条，识图抓取、冻结、缓存全做完而描述永不进提示词也无测试变红——
+    整条通路静默失效（抓取侧有自己的单测，唯 build_context 无）。
+    """
+    _, image, _ = _load_modules()
+    vr = load_package(PACKAGE_NAME, "image.vision_runtime")
+    support = load_package(PACKAGE_NAME, "image._support")
+
+    settings = SimpleNamespace(
+        vision_timeout_sec=5,
+        vision_image_age_sec=300,
+        vision_skip_stickers=False,
+        vision_max_images=3,
+    )
+    first = image.ImageInfo(url="http://example.com/a.png")
+    second = image.ImageInfo(url="http://example.com/b.png")
+    inspected: dict[str, object] = {}
+    coordinator = SimpleNamespace(
+        images_for=lambda *args, **kwargs: inspected.update(kwargs) or [first, second]
+    )
+    gate = SimpleNamespace(is_current=lambda *args: True)
+
+    async def parse_batch(images, **kwargs):
+        inspected["images"] = list(images)
+        inspected.update(kwargs)
+        return ["窗台上的猫", None]
+
+    service = vr.VisionService(
+        settings=settings,
+        bridge=None,
+        context=None,
+        source_cache_dir=Path("/tmp"),
+        data_root=Path("/tmp"),
+        coordinator=coordinator,
+        gate=gate,
+        is_stopping=lambda: False,
+        track_background_task=lambda coro: coro.close(),
+    )
+    parser = SimpleNamespace(parse_batch=parse_batch)
+    resolver_args: list[tuple] = []
+
+    def resolve_parser(*args):
+        resolver_args.append(args)
+        return parser
+
+    service.get_image_parser = resolve_parser
+
+    text = await service.build_context("u1", enabled=True, provider_id="prov-2")
+
+    assert resolver_args == [("prov-2",)], "会话级 vision provider 未透传给解析器"
+    assert inspected["images"] == [first, second]
+    assert inspected["umo"] == "u1"
+    assert inspected["max_concurrent"] == min(support.VISION_MAX_CONCURRENT, 3)
+    assert "不可信聊天上下文" in text
+    assert "- 图片 1: 窗台上的猫" in text
+    assert "图片 2" not in text, "空描述必须留下编号空洞，不得补位或压缩"
+    assert text.index("不可信") < text.index("窗台上的猫")
+
+
 async def test_vision_service_blindspots() -> None:
     """覆盖 vision_runtime: build_context、_freeze_images 与本地快照异常分支。"""
     import asyncio

@@ -457,6 +457,35 @@ async def test_deliver_suppressed_while_stopping_reports_stop(tmp_path: Path) ->
     assert result == "插件正在停止，放弃回复。"
 
 
+async def test_deliver_reply_reports_stopping_when_lifecycle_stopped(tmp_path: Path) -> None:
+    """投递入口的停机关口报停止文案，且不落任何 attempt。
+
+    与 ``send_reply`` 的 ``SuppressCode.STOPPING`` 分支同一成因、必须同一文案：
+    该分支曾回报“插件未启用。”，与持久配置未启用的口径混同，把「停止中」
+    误导向改配置排障。真实停机关口先于代次闸门：停机中的在途投递不能计配额。
+    """
+    _, models, runner, _ = _make_runner(tmp_path)
+    runner._is_stopping = lambda: True
+    ledger = models.AttemptLedger()
+    state = _state(models)
+
+    result = await runner.deliver_reply(
+        "s1",
+        state,
+        "你好",
+        0,
+        ledger=ledger,
+        expected_generation=None,
+        force=False,
+        trigger="patrol",
+    )
+
+    assert result == models.STOPPING_REPLY_TEXT == "插件正在停止，放弃回复。"
+    assert ledger.attempts == ()
+    assert state.daily_count == 0
+    assert state.last_proactive_at == 0.0
+
+
 async def test_deliver_stopping_suppression_is_read_from_code_not_detail(tmp_path: Path) -> None:
     """判定取 ``code``：detail 措辞变化不得改变回显文案。
 

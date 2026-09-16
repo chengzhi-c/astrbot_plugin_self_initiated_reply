@@ -332,3 +332,51 @@ async def test_delayed_check_warns_on_check_error(tmp_path: Path, caplog: object
     assert any("check broken" in msg or "delayed check" in msg for msg in warnings), (
         f"检查失败未记 warning，异常被静默吞掉：{warnings}"
     )
+
+
+async def test_cancel_delay_spares_running_check_and_yields_queued_one(tmp_path: Path) -> None:
+    """``cancel_delay`` 三态：运行中的登记保留、force 真取消、排队中的必须让位。
+
+    运行中的检查不能被新消息取消：它的 await 链还要走到代次闸门（否则在途结论
+    无处推导，而且每条新消息都重排一次只会叠判断）。但同时排在后面的 delayed_check
+    必须让位，否则旧任务留在表里挡住新任务登记。
+    """
+    _, _, scheduler, _, _ = _make_scheduler(tmp_path)
+    umo = "s1"
+    running = asyncio.create_task(asyncio.Event().wait())
+    queued = asyncio.create_task(asyncio.Event().wait())
+    other_running = asyncio.create_task(asyncio.Event().wait())
+    try:
+        # 1. 同一任务既在运行又在排队：非 force 取消不得动它
+        silence = asyncio.Event()
+        scheduler._delay_tasks[umo] = running
+        scheduler._running_check_tasks[umo] = running
+        scheduler._silence_events[umo] = silence
+        scheduler.cancel_delay(umo)
+        assert scheduler._delay_tasks.get(umo) is running, "运行中的检查不得被新消息取消登记"
+        assert scheduler._silence_events.get(umo) is silence, "静默事件不得被丢弃"
+        assert not running.done()
+
+        # 2. force 才真取消
+        scheduler.cancel_delay(umo, force=True)
+        assert umo not in scheduler._delay_tasks
+        assert umo not in scheduler._silence_events
+        await asyncio.sleep(0)
+        assert running.cancelled(), "force 取消失效"
+
+        # 3. 表里是后续排队的任务：必须让位并取消它，运行中的另一个不受影响
+        scheduler._delay_tasks[umo] = queued
+        scheduler._running_check_tasks[umo] = other_running
+        scheduler._silence_events[umo] = asyncio.Event()
+        scheduler.cancel_delay(umo)
+        assert umo not in scheduler._delay_tasks, "排队的 delayed_check 必须让位"
+        await asyncio.sleep(0)
+        assert queued.cancelled()
+        assert not other_running.done(), "运行中的另一个检查被误取消"
+    finally:
+        for task in (running, queued, other_running):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass

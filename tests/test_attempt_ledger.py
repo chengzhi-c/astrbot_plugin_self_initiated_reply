@@ -202,6 +202,71 @@ async def test_pipeline_persist_exhaustion_marks_record_failed_next_run_independ
     assert failed.phase == "record_failed"
 
 
+class _ContractDelivery:
+    """把 ``confirmed`` 原样交给真实 ``SessionState`` 的记账桩。
+
+    其余桩写死 ``confirmed=True``（只为走通持久化循环），于是「未确认投递」在桩里被
+    当作「已确认」——历史里凭空多一条 assistant，而测试照样全绿。
+    """
+
+    def __init__(self) -> None:
+        self.apply_calls = 0
+        self.persist_calls = 0
+        self.apply_kwargs: list[dict[str, object]] = []
+
+    def apply_proactive_state(self, _umo, state, reply, direct_count, **kwargs) -> None:
+        self.apply_calls += 1
+        self.apply_kwargs.append({"reply": reply, "direct_count": direct_count, **kwargs})
+        state.record_proactive_attempt(
+            confirmed=bool(kwargs["confirmed"]),
+            text=reply.strip() or f"[工具主动发送 x{direct_count}]",
+            at=1.0,
+        )
+
+    async def persist_proactive_state(self) -> bool:
+        self.persist_calls += 1
+        return True
+
+
+async def test_pipeline_unknown_delivery_consumes_quota_without_history_entry() -> None:
+    """UNKNOWN 投递（契约 §2）：consumes 配额、不写历史、不记 last_proactive_text。"""
+    delivery = _ContractDelivery()
+    pipeline, models = _pipeline_with_delivery(f"{PACKAGE_NAME}_unknown_quota", delivery)
+    state = models.SessionState()
+    ledger = models.AttemptLedger()
+    attempt = ledger.reserve("final_reply")
+    ledger.mark_in_flight(attempt)
+    ledger.seal()  # in-flight 在 seal 时转 UNKNOWN（可能已提交）
+    assert ledger.has_unknown is True
+    ledger.start_recording(object())
+
+    result = await pipeline._record_ledger(
+        "s1",
+        state,
+        ledger,
+        "这条不该进历史",
+        expected_generation=None,
+        observed_active_at=42.0,
+    )
+
+    assert result is True
+    assert ledger.phase == "recorded"
+    assert delivery.apply_calls == 1
+    assert delivery.apply_kwargs == [
+        {
+            "reply": "",
+            "direct_count": 0,
+            "expected_generation": None,
+            "observed_active_at": 42.0,
+            "confirmed": False,
+        }
+    ]
+    assert state.daily_count == 1
+    assert state.last_proactive_at == 1.0
+    assert list(state.recent) == []
+    assert state.last_proactive_text == ""
+
+
 async def test_pipeline_finalize_cancel_still_converges_record_task() -> None:
     """finalize 被取消时仍 shield 等待 record task，配额只记一次。"""
     install_astrbot_stubs()
@@ -245,6 +310,11 @@ async def test_pipeline_finalize_cancel_still_converges_record_task() -> None:
     )
     await delivery.started.wait()
     finalizer.cancel()
+    await asyncio.sleep(0)  # 让取消投递到 finalizer
+    # 取消必须只结束「外层等待」，不能跳过 shield：此时 record task 仍被 release 卡住，
+    # finalizer 必须还没结束。去掉 shield 的实现在这里立刻 done，断言即红。
+    assert not finalizer.done(), "finalize 被取消时不得提前返回（仍需等待落盘）"
+    assert delivery.persist_calls == 1
     delivery.release.set()
     with pytest.raises(asyncio.CancelledError):
         await finalizer
