@@ -1075,7 +1075,25 @@ def test_cap_context_text_degrades_gracefully_at_tiny_budgets() -> None:
     tiny = utils.cap_context_text(body, len(marker) + 1, marker=marker)
     assert tiny.startswith(marker)
     assert len(tiny) <= len(marker) + 1
-    # 预算连标记都装不下：仍返回标记本身，总长允许略超预算（docstring 已声明该例外）
+    # 预算放不下一整行但为正：按字符保尾，且总长不超预算
+    tail_only = utils.cap_context_text(body, len(marker) + 2, marker=marker)
+    assert tail_only.endswith("条")
+    assert len(tail_only) <= len(marker) + 2
+
+
+def test_cap_context_text_keeps_marker_when_budget_cannot_hold_it() -> None:
+    """预算比 marker 还小时仍返回 marker（总长略超预算），不得返回空串。
+
+    这是 docstring 里声明的第二个预算下限例外：`cap_context_text` 的承诺是"总长不超
+    预算"，但该区间容不下 marker 本身；宁可总长略超也不返回空串——空串会让调用方
+    以为没有历史，提示「内容被省略」比静默丢内容更接近事实。唯一调用点传 6000
+    常量，所以该区间不可达，但函数是 utils 的导出工具。
+    """
+    _load_modules()
+    utils = importlib.import_module(f"{PACKAGE_NAME}.utils")
+    marker = "…省略"
+    body = "第一条\n第二条"
+
     for budget in (1, len(marker) - 1, len(marker)):
         cramped = utils.cap_context_text(body, budget, marker=marker)
         assert cramped == marker, f"预算 {budget}：必须保留省略标记，不得返回空串或丢标记"
