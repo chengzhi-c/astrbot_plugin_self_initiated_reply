@@ -282,9 +282,18 @@ async function loadProviders() {
 	}
 }
 
+// 首屏加载是否仍在途：boot 看门狗据此让位，避免串行两个请求（各 15s 上限，
+// 最坏 30s）超过 12s 定时器时误报「加载超时」。doRefresh 不参与此标志。
+let loadInFlight = false;
+
 async function loadAll({ force = false } = {}) {
-	await loadProviders();
-	await configIo.loadConfig({ force });
+	loadInFlight = true;
+	try {
+		await loadProviders();
+		await configIo.loadConfig({ force });
+	} finally {
+		loadInFlight = false;
+	}
 }
 
 let refreshing = false;
@@ -438,7 +447,17 @@ window.addEventListener("beforeunload", (e) => {
 
 configIo.setSaving(false);
 
-const bootTimeout = window.setTimeout(() => {
+// 看门狗只兜底：加载成功/失败均由 loadAll 收尾反馈；仅当加载已收尾且未成功、
+// 或首屏串行请求总预算（2 × FETCH_TIMEOUT_MS）已被 12s 定时器追平时才报失败。
+// 定时器句柄存在可变量里：再查分支会重写句柄，收尾路径才能取消最新的那个。
+let bootTimeout = window.setTimeout(function checkBoot() {
+	if (state.configLoaded) return;
+	if (loadInFlight) {
+		// 仍在途：每个请求自身有 15s 硬上限、首屏至多两个串行请求，必然收敛；
+		// 再查一次即可覆盖第二个请求的窗口，不会无限顺延。
+		bootTimeout = window.setTimeout(checkBoot, FETCH_TIMEOUT_MS);
+		return;
+	}
 	hideBoot(els);
 	showToast("加载超时，请刷新页面或检查后端状态");
 }, BOOT_TIMEOUT_MS);
