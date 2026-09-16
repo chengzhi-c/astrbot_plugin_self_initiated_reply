@@ -369,12 +369,20 @@ test("styles do not target element ids", async () => {
   // 样式不用 #id 选择器：ID 特异性(100)会压过类(10)，同一按钮的普通类规则
   // 从此改不动它，只能靠再写一条更长的 ID 规则去覆盖（此前 4 个顶栏按钮各自
   // 攒了 4–9 条 #id 规则）。id 仍是 JS 取节点的锚（getElementById 不动），
-  // 只有样式改用类。十六进制颜色与 url(#fragment) 不算选择器。
+  // 只有样式改用类。
+  //
+  // 判据取"选择器区域"（`{` 之前的部分）而不是"全文找 # 再剔除颜色"：
+  // 后者要靠十六进制正则区分「#fff 是颜色」与「#abc 是 ID」，纯十六进制
+  // 字形的 ID 会被当成颜色漏掉；而且 `>`/`~`/`*` 这类无空格组合符写法
+  // （`.a>#id`）在原来的前置字符断言下也抓不到。声明区里的颜色、
+  // `url(#fragment)`、字符串字面量天然落在 `{` 之后，自动排除。
   const css = await readFile(join(pageDir, "style.css"), "utf8");
-  const withoutColorsAndUrls = css
-    .replace(/url\(#[^)]*\)/g, "url()")
-    .replace(/#[0-9a-fA-F]{3,8}\b/g, "COLOR");
-  const idSelectors = withoutColorsAndUrls.match(/(^|[\s,{])(#[\w-]+)/gm) || [];
+  const selectorArea = css
+    .replace(/\/\*[\s\S]*?\*\//g, "") // 注释整体排除
+    .split("}")
+    .map((chunk) => chunk.split("{")[0])
+    .join("\n");
+  const idSelectors = selectorArea.match(/#[A-Za-z_][\w-]*/g) || [];
   assert.deepEqual(idSelectors, [], `style.css 又用 ID 选择器做样式锚：${idSelectors}`);
 });
 

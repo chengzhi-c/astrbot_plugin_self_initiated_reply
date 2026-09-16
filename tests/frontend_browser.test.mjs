@@ -434,6 +434,23 @@ test("compact more-actions menu exposes auxiliary controls", async ({ page }) =>
   await expect(page.locator("#dimBtn")).toBeVisible();
   await expect(page.locator("#boldBtn")).toBeVisible();
   await expect(page.locator("#refreshBtn")).toBeVisible();
+
+  // 菜单项必须是**横向单行项**（占满菜单宽度、文字标签在旁），不是 44px 图标方块。
+  //
+  // 这条断言来自一次真实的层叠事故：这三个按钮的样式锚曾是 #id（特异性 110），
+  // 压过了 `.more-actions-menu .btn`（20），于是窄屏菜单里它们被钉成
+  // `width: var(--tap)` + `padding: 0`，文字被挤成竖排（实测 44px 方块 vs
+  // 本应 118px 单行项）。ID 改类后特异性降到 10，菜单规则才生效。
+  // 断言取"宽 > 高 × 1.5"而非具体像素：尺寸随 --tap 令牌变，而"是不是横向项"
+  // 是设计契约。
+  for (const id of ["#dimBtn", "#boldBtn", "#refreshBtn"]) {
+    const box = await page.locator(id).boundingBox();
+    expect(
+      box.width,
+      `${id} 在窄屏菜单里不是横向菜单项（${box.width}×${box.height}）：` +
+        "样式锚的特异性是否又压过了 .more-actions-menu .btn？",
+    ).toBeGreaterThan(box.height * 1.5);
+  }
   expect(errors).toEqual([]);
 });
 

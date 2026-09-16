@@ -88,7 +88,16 @@ def _make_runner(
     last_events: dict[str, object] = {}
     gate = SimpleNamespace(is_current=lambda umo, generation: gate_current)
     if sender is None and sender_status is not None:
-        outcome = models.SendOutcome(models.SendStatus(sender_status), "")
+        # 替身也必须声明成因 code：真实 SUPPRESSED 一定带 code，留 None 会让
+        # 被测分支走"非 STOPPING"的默认路径，掩盖成因判定本身（此前正是
+        # 空 detail + None code 静默通过了「代次已变」文案断言）。
+        outcome = models.SendOutcome(
+            models.SendStatus(sender_status),
+            "",
+            models.SuppressCode.GENERATION_CHANGED
+            if models.SendStatus(sender_status) is models.SendStatus.SUPPRESSED
+            else None,
+        )
         sender = FakeSender(outcome)
     delivered = delivery_mod.DeliveryRunner(
         settings=settings,
