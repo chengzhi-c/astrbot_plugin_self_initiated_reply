@@ -382,12 +382,10 @@ code {
 	color: var(--accent-text);
 	box-shadow: var(--shadow-drop);
 	transition:
-		transform 0.25s var(--ease),
 		border-color 0.25s var(--ease),
 		color 0.25s var(--ease);
 }
 .brand:hover .brand-mark {
-	transform: scale(1.04) rotate(4deg);
 	border-color: var(--accent);
 	color: var(--accent);
 }
@@ -395,15 +393,6 @@ code {
 	width: 24px;
 	height: 24px;
 	display: block;
-}
-.emblem-outer {
-	animation: emblem-spin 24s linear infinite;
-	transform-origin: 16px 16px;
-}
-@keyframes emblem-spin {
-	to {
-		transform: rotate(360deg);
-	}
 }
 .brand-text {
 	min-width: 0;
@@ -498,13 +487,11 @@ details.panel {
 	transition:
 		background 0.16s var(--ease),
 		color 0.16s var(--ease),
-		border-color 0.16s var(--ease),
-		transform 0.16s var(--ease);
+		border-color 0.16s var(--ease);
 }
 .sidenav-link:hover {
 	background: var(--surface-2);
 	color: var(--text);
-	transform: translateX(2px);
 }
 .sidenav-link:focus-visible {
 	outline: none;
@@ -560,6 +547,28 @@ details.panel {
 .sidenav-savestate {
 	color: var(--muted);
 }
+.sidenav-fade {
+	display: none;
+	position: absolute;
+	top: 6px;
+	bottom: 6px;
+	width: 30px;
+	pointer-events: none;
+	z-index: 2;
+	opacity: 1;
+	transition: opacity 0.2s var(--ease);
+}
+.sidenav-fade.is-hidden {
+	opacity: 0;
+}
+.sidenav-fade-start {
+	left: 0;
+	background: linear-gradient(90deg, var(--surface), transparent);
+}
+.sidenav-fade-end {
+	right: 0;
+	background: linear-gradient(270deg, var(--surface), transparent);
+}
 .theme-toggle {
 	display: inline-flex;
 	align-items: center;
@@ -578,14 +587,12 @@ details.panel {
 	transition:
 		border-color 0.18s var(--ease),
 		color 0.18s var(--ease),
-		background 0.18s var(--ease),
-		transform 0.18s var(--ease);
+		background 0.18s var(--ease);
 }
 .theme-toggle:hover {
 	border-color: var(--accent);
 	color: var(--accent-text);
 	background: var(--surface-hover);
-	transform: translateY(-1px);
 }
 .theme-toggle svg {
 	width: 16px;
@@ -638,7 +645,6 @@ html.bold-text .form {
 /* ==== 主控卡（.master 与读数） ==== */
 .master {
 	position: relative;
-	overflow: hidden;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -651,42 +657,10 @@ html.bold-text .form {
 	border-radius: var(--radius);
 	background: var(--surface);
 	box-shadow: var(--shadow-card);
-	opacity: 0;
-	transform: translateY(10px);
 	transition:
 		border-color 0.25s var(--ease),
 		background 0.25s var(--ease),
-		box-shadow 0.25s var(--ease),
-		opacity 0.4s var(--ease),
-		transform 0.4s var(--ease);
-}
-body.is-ready .master,
-.master.is-entered {
-	opacity: 1;
-	transform: none;
-}
-.master::before {
-	content: "";
-	position: absolute;
-	top: -45%;
-	right: -8%;
-	width: 240px;
-	height: 240px;
-	border-radius: 50%;
-	background: radial-gradient(circle, var(--spirit-soft), transparent 70%);
-	opacity: 0;
-	transition: opacity 0.4s var(--ease);
-	pointer-events: none;
-}
-.master.is-on::before {
-	opacity: 1;
-}
-@media (prefers-reduced-motion: reduce) {
-	.master {
-		opacity: 1 !important;
-		transform: none !important;
-		transition: none;
-	}
+		box-shadow 0.25s var(--ease);
 }
 .master.is-on {
 	border-color: var(--master-border);
@@ -1454,18 +1428,10 @@ textarea {
 	font-weight: 700;
 	box-shadow: var(--shadow-btn);
 	transition:
-		transform 0.14s var(--ease),
 		border-color 0.16s var(--ease),
 		background 0.16s var(--ease),
 		color 0.16s var(--ease),
-		box-shadow 0.16s var(--ease),
-		filter 0.16s var(--ease);
-}
-.btn:not(:disabled):hover {
-	transform: translateY(-1px);
-}
-.btn:active {
-	transform: translateY(1px);
+		box-shadow 0.16s var(--ease);
 }
 .btn:focus-visible {
 	outline: 3px solid var(--focus-color);
@@ -1547,7 +1513,6 @@ textarea {
 .btn:disabled {
 	cursor: not-allowed;
 	opacity: 0.5;
-	transform: none;
 }
 .btn-link {
 	min-height: var(--control-h);
@@ -1594,6 +1559,76 @@ textarea {
 .save-state.is-pending,
 .mobile-save-state.is-pending {
 	color: var(--accent-text);
+}
+.top-actions .action-dim,
+.top-actions .action-bold {
+	box-shadow: var(--shadow-drop);
+	width: var(--control-h);
+	min-width: var(--control-h);
+	height: var(--control-h);
+	min-height: var(--control-h);
+	padding: 0;
+}
+.top-actions .action-dim .inline-icon,
+.top-actions .action-bold .inline-icon,
+.top-actions .action-refresh .inline-icon {
+	width: 20px;
+	height: 20px;
+	margin: 0;
+	color: var(--text);
+}
+.top-actions .action-save,
+.form-actions .btn.primary,
+.mobile-savebar .btn.primary {
+	padding: 0 var(--sp-6);
+	gap: var(--sp-3);
+	font-weight: 600;
+	letter-spacing: 0.04em;
+}
+.top-actions .action-save .inline-icon,
+.form-actions .btn.primary .inline-icon,
+.mobile-savebar .btn.primary .inline-icon {
+	width: 18px;
+	height: 18px;
+	margin: 0;
+	color: currentColor;
+}
+.top-actions .action-refresh {
+	width: var(--control-h);
+	min-width: var(--control-h);
+	height: var(--control-h);
+	min-height: var(--control-h);
+	padding: 0;
+	gap: 0;
+	border-radius: var(--radius-btn);
+	color: var(--text-soft);
+}
+.top-actions .action-refresh:hover {
+	border-color: var(--accent);
+	color: var(--accent-text);
+	background: var(--surface-hover);
+}
+.top-actions .action-refresh:hover .inline-icon {
+	color: var(--accent-text);
+}
+.top-actions .action-refresh.is-loading .inline-icon {
+	animation: spin 0.8s linear infinite;
+}
+.top-actions .action-refresh:disabled {
+	cursor: progress;
+	opacity: 0.6;
+}
+.top-actions .action-refresh.is-armed {
+	border-color: var(--warn);
+	color: var(--warn);
+	background: var(--warn-soft);
+}
+.top-actions .action-refresh.is-armed .inline-icon {
+	color: var(--warn);
+}
+.form.is-saving {
+	opacity: 0.72;
+	pointer-events: none;
 }
 
 /* ==== 浮层（toast/boot/移动端栏） ==== */
@@ -1654,28 +1689,6 @@ textarea {
 	border-top-color: var(--accent);
 	border-radius: 50%;
 	animation: spin 0.8s linear infinite;
-}
-.sidenav-fade {
-	display: none;
-	position: absolute;
-	top: 6px;
-	bottom: 6px;
-	width: 30px;
-	pointer-events: none;
-	z-index: 2;
-	opacity: 1;
-	transition: opacity 0.2s var(--ease);
-}
-.sidenav-fade.is-hidden {
-	opacity: 0;
-}
-.sidenav-fade-start {
-	left: 0;
-	background: linear-gradient(90deg, var(--surface), transparent);
-}
-.sidenav-fade-end {
-	right: 0;
-	background: linear-gradient(270deg, var(--surface), transparent);
 }
 .mobile-savebar {
 	display: none;
@@ -1750,72 +1763,6 @@ textarea {
 	.prompt-editor textarea {
 		min-height: 260px;
 	}
-}
-.top-actions .action-dim,
-.top-actions .action-bold {
-	box-shadow: var(--shadow-drop);
-	width: var(--control-h);
-	min-width: var(--control-h);
-	height: var(--control-h);
-	min-height: var(--control-h);
-	padding: 0;
-}
-.top-actions .action-dim .inline-icon,
-.top-actions .action-bold .inline-icon,
-.top-actions .action-refresh .inline-icon {
-	width: 20px;
-	height: 20px;
-	margin: 0;
-	color: var(--text);
-}
-.top-actions .action-save,
-.form-actions .btn.primary,
-.mobile-savebar .btn.primary {
-	padding: 0 var(--sp-6);
-	gap: var(--sp-3);
-	font-weight: 600;
-	letter-spacing: 0.04em;
-}
-.top-actions .action-save .inline-icon,
-.form-actions .btn.primary .inline-icon,
-.mobile-savebar .btn.primary .inline-icon {
-	width: 18px;
-	height: 18px;
-	margin: 0;
-	color: currentColor;
-}
-.top-actions .action-refresh {
-	width: var(--control-h);
-	min-width: var(--control-h);
-	height: var(--control-h);
-	min-height: var(--control-h);
-	padding: 0;
-	gap: 0;
-	border-radius: var(--radius-btn);
-	color: var(--text-soft);
-}
-.top-actions .action-refresh:hover {
-	border-color: var(--accent);
-	color: var(--accent-text);
-	background: var(--surface-hover);
-}
-.top-actions .action-refresh:hover .inline-icon {
-	color: var(--accent-text);
-}
-.top-actions .action-refresh.is-loading .inline-icon {
-	animation: spin 0.8s linear infinite;
-}
-.top-actions .action-refresh:disabled {
-	cursor: progress;
-	opacity: 0.6;
-}
-.top-actions .action-refresh.is-armed {
-	border-color: var(--warn);
-	color: var(--warn);
-	background: var(--warn-soft);
-}
-.top-actions .action-refresh.is-armed .inline-icon {
-	color: var(--warn);
 }
 @media (max-width: 720px) {
 	:root {
@@ -2081,8 +2028,4 @@ textarea {
 	.toast {
 		background: var(--toast-bg);
 	}
-}
-.form.is-saving {
-	opacity: 0.72;
-	pointer-events: none;
 }

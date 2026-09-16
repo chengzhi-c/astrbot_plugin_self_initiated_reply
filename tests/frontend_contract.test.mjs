@@ -24,6 +24,7 @@ import {
   validateWhitelistLines,
 } from "../pages/主动回复设置/config-form.mjs";
 import { THEME_KEY } from "../pages/主动回复设置/theme.mjs";
+import { configPayload } from "./fixtures/config-payload.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pageDir = join(root, "pages", "主动回复设置");
@@ -325,6 +326,21 @@ test("context-history setting describes its fallback behavior", async () => {
     /本插件记录的文字消息少于此数时，会尝试读取同一会话的旧消息，帮助判断要不要接话。设为\s+0 时，只看插件已记录的消息。/
   );
   assert.doesNotMatch(html, /上下文至少几条消息才判断接话/);
+});
+
+test("browser config fixture covers every form-declared key", async () => {
+  // Playwright 用这份夹具当 GET /config。缺键时 isSuccessfulConfigPayload 失败，
+  // 表单一直 inert，22 条浏览器测试会集体红。node 契约原先不读这份夹具，
+  // 第四轮加 quote/skip 键后本地 CI frontend 仍绿、浏览器才爆。
+  const html = await readFile(join(pageDir, "index.html"), "utf8");
+  const htmlKeys = [...html.matchAll(/data-config-key="([a-z0-9_]+)"/g)].map(
+    (match) => match[1],
+  );
+  const fixture = configPayload();
+  const missing = htmlKeys.filter(
+    (key) => !Object.prototype.hasOwnProperty.call(fixture, key),
+  );
+  assert.deepEqual(missing, [], `config-payload.mjs 缺少表单键：${missing}`);
 });
 
 test("CI runs the dependency-free frontend gate", async () => {

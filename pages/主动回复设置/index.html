@@ -37,13 +37,9 @@
       }, 8000);
     </script>
     <script src="/api/plugin/page/bridge-sdk.js"></script>
-    <!-- P2-11: 脱离 JS 兜底，防止脚本未运行时页面永久隐藏 -->
+    <!-- 无脚本时隐藏 boot 遮罩，否则「正在加载」会一直挡着说明文字 -->
     <noscript>
       <style>
-        .master {
-          opacity: 1 !important;
-          transform: none !important;
-        }
         .boot {
           display: none !important;
         }
@@ -519,9 +515,6 @@
                 >
               </div>
               <span class="field-error" id="whitelistError" role="alert"></span>
-              <p class="field-hint">
-                每行一个 UMO 或 QQ 群号，可填完整 UMO 或纯群号
-              </p>
             </div>
             <label class="toggle-row">
               <input
