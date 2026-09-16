@@ -49,9 +49,6 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 
 生命周期由插件 owner 持有 `RUNNING`、`STOPPING`、`DEGRADED` 三态。停止等待使用硬时间边界；仍吞取消的生成、patrol 或最终状态保存 task 进入 quarantine 并触发 `DEGRADED`，后续 spawn、巡检、force check、工具直发和最终回复全部拒绝。`MAX_QUARANTINED_TASKS` 是代码容量上限，不提供在线恢复命令；任务结束后仅从注册表移除，恢复仍依赖插件重载或宿主重启。
 
-
-每次主动检查由 pipeline 创建一个带 UUID4 hex `ledger_id` 的 `AttemptLedger`。生成、投递和唯一 record task 传递同一 ledger 引用；`ledger_id` 只用于日志、任务关联和一次性记账诊断，不进入持久配置或 `config_revision`，也不依赖进程级计数器。
-
 ## 轻量化冻结
 
 新抽象必须已有第二个实现或第二个调用方。新门禁必须证明现有 ruff/pytest 抓不到。

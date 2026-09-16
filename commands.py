@@ -82,7 +82,7 @@ def help_text() -> str:
             "/selfreply off: 暂停主动回复，重启后保持（管理员）",
             "/selfreply debug: 查看当前会话、发送者、@/唤醒词和接话请求识别信息（管理员）",
             "可用英文别名：help/h、status/stat、list/ls/whitelist、check/test、remove/rm/del/delete、on/enable/start、off/disable/pause/stop、debug/diag/diagnose。",
-            "中文命令入口已移除；也支持 @Bot selfreply add。",
+            "也支持 @Bot selfreply <动作>（无需斜杠）。",
         ]
     )
 
