@@ -218,5 +218,4 @@ export function bindDimBoldButtons(onChange) {
 export function hideBoot(els) {
   if (els.boot) els.boot.classList.add("is-hidden");
   document.body.classList.add("is-ready");
-  if (els.selfStat) els.selfStat.classList.add("is-entered");
 }
