@@ -78,7 +78,7 @@ async function serveStatic(request, response) {
 
 async function installBridge(page, options = {}) {
   await page.addInitScript(
-    ({ config, providersFail, saveMode, theme, dim, bold, refreshConfigPending, themePending }) => {
+    ({ config, providersFail, saveMode, theme, dim, bold, refreshConfigPending, themePending, cleanupRemoved, cleanupFail }) => {
       const state = {
         saveMode,
         saveAttempts: 0,
@@ -86,6 +86,8 @@ async function installBridge(page, options = {}) {
         configCalls: 0,
         refreshConfigPending,
         themePending,
+        cleanupRemoved,
+        cleanupFail,
       };
       window.__bridgeCalls = [];
       window.__bridgeState = state;
@@ -144,6 +146,12 @@ async function installBridge(page, options = {}) {
               adjusted_fields: state.saveMode === "adjusted" ? ["whitelist_sessions"] : [],
             };
           }
+          if (endpoint === "image-cache/cleanup") {
+            // 失败场景走后端 {"ok": false, "error": ...} 形状：前端靠 ok !== true
+            // 抛错，不是靠 HTTP 状态码。
+            if (state.cleanupFail) return { ok: false, error: "磁盘只读" };
+            return { ok: true, removed: state.cleanupRemoved };
+          }
           return { ok: true, theme: body?.theme || "auto", removed: 0 };
         },
       };
@@ -157,6 +165,8 @@ async function installBridge(page, options = {}) {
       bold: Boolean(options.bold),
       refreshConfigPending: Boolean(options.refreshConfigPending),
       themePending: Boolean(options.themePending),
+      cleanupRemoved: options.cleanupRemoved ?? 0,
+      cleanupFail: Boolean(options.cleanupFail),
     }
   );
 }
@@ -553,5 +563,111 @@ test("backend field errors paint the offending number control", async ({ page })
   await expect(page.locator("#cooldownInputError")).toContainText("cooldown_sec 必须是整数");
   await expect(page.locator("#cooldownInput")).toHaveAttribute("aria-invalid", "true");
   await expect(page.locator("#cooldownInput")).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test("reset prompt restores the server default and marks the form dirty", async ({ page }) => {
+  const custom = "自定义判断提示词 {latest_message}";
+  const fallback = "默认判断提示词 {latest_message}";
+  await installBridge(page, {
+    config: { decision_prompt_template: custom, decision_prompt_default: fallback },
+  });
+  const errors = await openPage(page);
+  await expect(page.locator("#decisionPromptInput")).toHaveValue(custom);
+
+  // 先保存一次清掉脏标记，才能把「点恢复后又变脏」当成新增事实断言。
+  await page.locator("#saveTopBtn").click();
+  await expect(page.locator("#navSaveState")).toHaveText("已保存");
+
+  await page.locator("#resetPromptBtn").click();
+  await expect(page.locator("#decisionPromptInput")).toHaveValue(fallback);
+  await expect(page.locator("#promptPreview")).toContainText("默认判断提示词");
+  await expect(page.locator("#toast")).toContainText("已恢复默认提示词");
+  await expect(page.locator("#navSaveState")).toHaveText("有未保存改动");
+
+  await page.locator("#saveTopBtn").click();
+  await expect.poll(() =>
+    page.evaluate(() => {
+      const posts = window.__bridgeCalls.filter(
+        (call) => call.method === "POST" && call.endpoint === "config",
+      );
+      return posts[posts.length - 1]?.body?.decision_prompt_template;
+    }),
+  ).toBe(fallback);
+  expect(errors).toEqual([]);
+});
+
+test("mobile save bar submits the same body as the top save button", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  await expect(page.locator("#mobileSaveBar")).toBeVisible();
+  await expect(page.locator("#mobileSaveBar")).not.toHaveClass(/is-dirty/);
+
+  await page.locator("#decisionPromptInput").scrollIntoViewIfNeeded();
+  await page.locator("#decisionPromptInput").fill("移动端改的提示词");
+  await expect(page.locator("#mobileSaveBar")).toHaveClass(/is-dirty/);
+
+  await page.locator("#saveMobileBtn").click();
+  await expect(page.locator("#mobileSaveState")).toHaveText("已保存");
+  const body = await page.evaluate(() => {
+    const posts = window.__bridgeCalls.filter(
+      (call) => call.method === "POST" && call.endpoint === "config",
+    );
+    return posts[posts.length - 1]?.body || null;
+  });
+  expect(body).not.toBeNull();
+  expect(body.decision_prompt_template).toBe("移动端改的提示词");
+  // 顶部与移动端按钮走同一个表单提交：CAS 基线随行发出，缺它会被后端拒为 STALE_WRITE。
+  expect(body.base_revision).toBe(`sha256:${"b".repeat(64)}`);
+  await expect(page.locator("#mobileSaveBar")).not.toHaveClass(/is-dirty/);
+  expect(errors).toEqual([]);
+});
+
+test("image cache cleanup reports the count and surfaces failures", async ({ page }) => {
+  await installBridge(page, { cleanupRemoved: 3 });
+  const errors = await openPage(page);
+  const button = page.locator("#cleanupImageCacheBtn");
+  // 按钮在折叠的「识图高级设置」里：先展开再点（与 provider 控件同一手法）。
+  await button.evaluate((element) => {
+    const details = element.closest("details");
+    if (details) details.open = true;
+  });
+  await button.click();
+  await expect(page.locator("#cleanupImageCacheState")).toHaveText("已清理 3 个过期图片");
+  await expect(page.locator("#toast")).toContainText("已清理 3 个过期图片");
+  await expect(button).toBeEnabled();
+
+  // 失败分支：后端返回 ok:false，必须报错而不是当成「没有需要清理的图片」。
+  await page.evaluate(() => {
+    window.__bridgeState.cleanupFail = true;
+    window.__bridgeState.cleanupRemoved = 0;
+  });
+  await button.click();
+  await expect(page.locator("#cleanupImageCacheState")).toHaveText("清理失败");
+  await expect(page.locator("#toast")).toContainText("磁盘只读");
+  await expect(button).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test("mobile tab click moves both the tab and the sidenav current state", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  const decisionTab = page.locator('.mtab[data-target="sec-decision"]');
+  const decisionLink = page.locator('.sidenav-link[data-target="sec-decision"]');
+
+  await decisionTab.click();
+  await expect(decisionTab).toHaveClass(/is-current/);
+  await expect(decisionTab).toHaveAttribute("aria-current", "location");
+  await expect(decisionLink).toHaveClass(/is-current/);
+  await expect(decisionLink).toHaveAttribute("aria-current", "location");
+  // 单一当前项：旧 tab 必须让位，否则 aria-current 会同时落在两个 tab 上。
+  const currentTabs = await page.evaluate(() =>
+    Array.from(document.querySelectorAll(".mtab"))
+      .filter((tab) => tab.getAttribute("aria-current") === "location")
+      .map((tab) => tab.dataset.target),
+  );
+  expect(currentTabs).toEqual(["sec-decision"]);
   expect(errors).toEqual([]);
 });
