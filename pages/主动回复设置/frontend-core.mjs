@@ -18,7 +18,6 @@ export function createConfigRequestCoordinator() {
   let editEpoch = 0;
   let loadStartedDirty = false;
   let loadStartedEditEpoch = 0;
-  let writeUnknown = false;
   return {
     beginLoad(isDirty = false) {
       loadEpoch += 1;
@@ -38,15 +37,6 @@ export function createConfigRequestCoordinator() {
         editEpoch === loadStartedEditEpoch &&
         (!isDirty || (force && loadStartedDirty))
       );
-    },
-    markWriteUnknown() {
-      writeUnknown = true;
-    },
-    clearWriteUnknown() {
-      writeUnknown = false;
-    },
-    get writeUnknown() {
-      return writeUnknown;
     },
   };
 }
