@@ -64,6 +64,29 @@ def test_parse_decision_json_rejects_missing_or_invalid_should_reply() -> None:
     assert utils.parse_decision_json('{"should_reply": []}') is None
 
 
+def test_parse_decision_json_quote_is_optional_and_never_fatal() -> None:
+    """``quote`` 是可选字段：无法辨认归 None，绝不像 should_reply 那样废掉整条。
+
+    None 的语义是「模型没说」——投递侧据此走概率兜底；若把它也判成无效，用户
+    只要换个模型就可能整条判断失败。
+    """
+    _, utils, _ = _load_modules()
+
+    def quote_of(raw: str):
+        parsed = utils.parse_decision_json(raw)
+        assert parsed is not None, raw
+        return parsed["quote"]
+
+    assert quote_of('{"should_reply": true, "reason": "x"}') is None
+    assert quote_of('{"should_reply": true, "reason": "x", "quote": true}') is True
+    assert quote_of('{"should_reply": true, "reason": "x", "quote": false}') is False
+    assert quote_of('{"should_reply": true, "reason": "x", "quote": "是"}') is True
+    assert quote_of('{"should_reply": true, "reason": "x", "quote": "0"}') is False
+    assert quote_of('{"should_reply": true, "reason": "x", "quote": 1}') is True
+    assert quote_of('{"should_reply": true, "reason": "x", "quote": "嗯"}') is None
+    assert quote_of('{"should_reply": true, "reason": "x", "quote": null}') is None
+
+
 def test_session_whitelisted_rejects_empty_umo() -> None:
     _, utils, _ = _load_modules()
 

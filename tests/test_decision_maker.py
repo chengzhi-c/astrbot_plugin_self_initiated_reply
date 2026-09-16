@@ -273,7 +273,29 @@ async def test_valid_json_passthrough(tmp_path: Path) -> None:
     )
     state = _state(models)
     result = await maker.ask_decision_model("s1", state, trigger="message_delay")
-    assert result == {"should_reply": True, "reason": "明确请求", "elapsed_sec": 0.0}
+    # quote 恒在（模型没给就是 None）：投递侧要按它区分「模型说别引用」与
+    # 「模型没说」（后者才走概率兜底）。
+    assert result == {
+        "should_reply": True,
+        "reason": "明确请求",
+        "elapsed_sec": 0.0,
+        "quote": None,
+    }
+
+
+async def test_model_quote_decision_is_passed_through(tmp_path: Path) -> None:
+    """判断模型给出的 quote 决定必须原样送到调用方（引用功能的上游）。
+
+    解析器的类型矩阵在 ``test_storage_and_umo`` 里单测；这里只钉"贯通"这一段。
+    """
+    _, models, maker, _, _ = _make_decision(
+        tmp_path,
+        {"decision_model_enabled": True, "quote_mode": "model"},
+        model_text='{"should_reply": true, "reason": "回应具体问题", "quote": true}',
+    )
+    state = _state(models)
+    result = await maker.ask_decision_model("s1", state, trigger="message_delay")
+    assert result["quote"] is True
 
 
 # ============================================================================
@@ -470,3 +492,105 @@ async def test_build_recent_messages_history_error_is_silent(tmp_path: Path) -> 
     text = await maker.build_recent_messages("s1", state, limit=8)
     assert "新消息" in text
     assert calls["history"] == 1
+
+
+# ============================================================================
+# 明确请求是否过判断模型（reply_request_requires_model）
+# ============================================================================
+
+
+async def test_reply_request_bypasses_model_by_default(tmp_path: Path) -> None:
+    """默认行为：明确请求（"在吗"）直接接话，判断模型一次都不调。"""
+    decision_mod, models, maker, _, calls = _make_decision(
+        tmp_path, {"decision_model_enabled": True}
+    )
+    state = _state(models, recent=[("user", "在吗", 950.0)])
+
+    result = await maker.decide(
+        "s1", state, trigger=decision_mod.CheckTrigger.MESSAGE_DELAY, force=False
+    )
+
+    assert isinstance(result, dict)
+    assert result["should_reply"] is True
+    assert calls["model"] == 0, "直通路径不该调判断模型"
+    assert result["quote"] is None, "直通路径没有模型决定，quote 必须是 None"
+
+
+async def test_reply_request_requires_model_lets_judge_veto(tmp_path: Path) -> None:
+    """开启开关后：明确请求也交给判断模型，模型的否决必须生效。"""
+    decision_mod, models, maker, _, calls = _make_decision(
+        tmp_path,
+        {"decision_model_enabled": True, "reply_request_requires_model": True},
+        model_text='{"should_reply": false, "reason": "这轮刚聊完了"}',
+    )
+    state = _state(models, recent=[("user", "在吗", 950.0)])
+
+    result = await maker.decide(
+        "s1", state, trigger=decision_mod.CheckTrigger.MESSAGE_DELAY, force=False
+    )
+
+    assert calls["model"] == 1, "开关开启后必须咨询判断模型"
+    assert isinstance(result, str) and "这轮刚聊完了" in result
+
+
+async def test_reply_request_requires_model_keeps_model_consent(tmp_path: Path) -> None:
+    """开关开启后模型同意接话时仍要接——否则等于把功能关掉。"""
+    decision_mod, models, maker, _, calls = _make_decision(
+        tmp_path,
+        {"decision_model_enabled": True, "reply_request_requires_model": True},
+        model_text='{"should_reply": true, "reason": "确实在找人说话", "quote": true}',
+    )
+    state = _state(models, recent=[("user", "在吗", 950.0)])
+
+    result = await maker.decide(
+        "s1", state, trigger=decision_mod.CheckTrigger.MESSAGE_DELAY, force=False
+    )
+
+    assert calls["model"] == 1
+    assert isinstance(result, dict)
+    assert result["should_reply"] is True
+    assert result["quote"] is True
+
+
+# ============================================================================
+# 判断提示词的上下文预算（保尾）
+# ============================================================================
+
+
+async def test_decision_prompt_keeps_newest_history_when_over_budget(tmp_path: Path) -> None:
+    """上下文超预算时必须保尾。
+
+    曾经的写法是 ``sanitize_prompt_variable(recent, max_length=2000)``——截头，
+    会把最新的几条丢掉，与默认模板里「优先参考最近至少 8 条」的要求相反：模型
+    拿到的恰好是最不相关的老消息。
+    """
+    _, models, maker, _, _ = _make_decision(tmp_path, {"decision_model_enabled": True})
+    state = _state(
+        models,
+        active_at=920.0,
+        # 每条约 400 字 × 12 条 ≫ 2000 预算；limit=max(8, 5)=8 条进提示词
+        recent=[("user", f"第{index}条" + "字" * 400, 900.0 + index) for index in range(12)],
+    )
+
+    prompt = await maker.build_decision_prompt("s1", state, "message_delay")
+
+    assert "第11条" in prompt, "最新一条被裁掉了：保尾失效"
+    assert "第4条" not in prompt, "最老的一条仍在：没有发生裁剪（预算形同虚设）"
+    assert "更早历史因长度预算省略" in prompt
+
+
+async def test_decision_prompt_appends_quote_hint_only_in_model_mode(tmp_path: Path) -> None:
+    """引用约定只在 model 模式追加：不引用引用的用户不该多背一个输出字段。"""
+    _, models, off_maker, _, _ = _make_decision(
+        tmp_path, {"decision_model_enabled": True, "quote_mode": "off"}
+    )
+    off_prompt = await off_maker.build_decision_prompt("s1", _state(models), "message_delay")
+    assert "quote" not in off_prompt
+
+    _, models2, model_maker, _, _ = _make_decision(
+        tmp_path, {"decision_model_enabled": True, "quote_mode": "model"}
+    )
+    model_prompt = await model_maker.build_decision_prompt(
+        "s1", _state(models2), "message_delay"
+    )
+    assert "quote" in model_prompt

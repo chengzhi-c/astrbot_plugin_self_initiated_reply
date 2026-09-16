@@ -191,9 +191,27 @@ def parse_decision_json(text: str) -> dict[str, Any] | None:
     if len(reason) > DECISION_REASON_MAX_CHARS:
         reason = reason[:DECISION_REASON_MAX_CHARS] + "..."
 
+    # 引用决定（可选字段）：只在模型显式给出可辨识的布尔时才采纳，其余一律
+    # None =「模型没说」，交由投递侧按 quote_mode 兜底。刻意不像 should_reply
+    # 那样把无法解析判为整条无效——一个坏字段不该废掉整次判断。
+    raw_quote = parsed.get("quote")
+    quote: bool | None
+    if isinstance(raw_quote, bool):
+        quote = raw_quote
+    elif isinstance(raw_quote, str):
+        normalized = raw_quote.strip().lower()
+        quote = True if normalized in {"true", "yes", "1", "是"} else (
+            False if normalized in {"false", "no", "0", "否"} else None
+        )
+    elif isinstance(raw_quote, (int, float)):
+        quote = bool(raw_quote)
+    else:
+        quote = None
+
     return {
         "should_reply": should_reply,
         "reason": reason,
+        "quote": quote,
     }
 
 
@@ -321,6 +339,30 @@ def event_self_id(event: AstrMessageEvent) -> str:
         return str(event.get_self_id() or "").strip()
     except Exception:
         return ""
+
+
+def event_message_id(event: Any) -> str:
+    """消息 ID 的唯一取值口径（图片缓存去重与主动回复引用共用）。
+
+    三层回退：事件自身字段 → ``message_obj`` 字段 → ``get_message_id()``。宿主
+    各适配器把 ID 放在不同位置（部分平台只挂 message_obj），取不到就返回空串走
+    「无 ID」路径——ID 只用于去重与引用，取不到不该中断调用方。
+    """
+    for owner in (event, getattr(event, "message_obj", None)):
+        if owner is None:
+            continue
+        for name in ("message_id", "msg_id"):
+            value = getattr(owner, name, None)
+            if value:
+                return str(value).strip()
+    getter = getattr(event, "get_message_id", None)
+    if callable(getter):
+        try:
+            return str(getter() or "").strip()
+        except Exception:
+            # 宿主 get_message_id 可能依赖已失效的连接态。
+            return ""
+    return ""
 
 
 def event_sender_name(event: AstrMessageEvent) -> str:

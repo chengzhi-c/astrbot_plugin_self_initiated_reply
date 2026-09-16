@@ -78,6 +78,7 @@ def _make_runner(
     gate_current: bool = True,
     local_gate: str = "",
     config: dict | None = None,
+    random_value: Callable[[], float] | None = None,
 ):
     from . import host_stubs
 
@@ -116,6 +117,7 @@ def _make_runner(
                 OnAfterMessageSentEvent=SimpleNamespace(name="OnAfterMessageSentEvent"),
             ),
         ),
+        **({"random_value": random_value} if random_value is not None else {}),
     )
     if sender is not None:
         delivered.send_reply = sender
@@ -768,3 +770,131 @@ async def test_event_send_escaping_from_gateway_stays_unknown(tmp_path: Path) ->
         f"事件路径异常逃出 gateway 后被判为 {outcome.status!r}；adapter 已调用过，"
         "判成提交前失败会不消耗冷却而重发"
     )
+
+
+# ============================================================================
+# 引用（quote_mode / quote_probability）
+# ============================================================================
+
+
+def _event_with_id(message_id: str = "m1"):
+    """带 message_obj.message_id 的事件（宿主真实形态：ID 常挂在 message_obj 上）。"""
+    event = FakeEvent()
+    event.message_obj = SimpleNamespace(message_id=message_id)
+    return event
+
+
+def _capture_sent_chains(event) -> list[list]:
+    """抓发送瞬间的消息链。
+
+    投递完成后 ``_clear_result`` 会把事件结果回收，事后取不到链，故在 ``send``
+    入口处快照——这也正是宿主适配器实际拿到的对象。
+    """
+    chains: list[list] = []
+    original = event.send
+
+    async def send(message):
+        chains.append(list(getattr(message, "chain", []) or []))
+        return await original(message)
+
+    event.send = send
+    return chains
+
+
+async def test_quote_off_never_inserts_reply_component(tmp_path: Path) -> None:
+    """quote_mode=off：即使概率 100 也不引用（默认值必须是"不改变现有行为"）。"""
+    delivery_mod, models, runner, last_events = _make_runner(
+        tmp_path, config={"quote_mode": "off", "quote_probability": 100}
+    )
+    event = _event_with_id()
+    last_events["s1"] = event
+    chains = _capture_sent_chains(event)
+
+    outcome = await runner.send_reply("s1", "你好", expected_generation=1)
+
+    assert outcome.status is models.SendStatus.DELIVERED
+    assert len(chains) == 1
+    assert len(chains[0]) == 1, chains[0]  # 只有正文
+    assert not isinstance(chains[0][0], delivery_mod.Reply)
+
+
+async def test_quote_random_mode_quotes_at_probability_extremes(tmp_path: Path) -> None:
+    """random 模式：100 必引用、0 必不引用，且引用组件在被引消息 ID 上。"""
+    _, models, runner, last_events = _make_runner(
+        tmp_path, config={"quote_mode": "random", "quote_probability": 100}
+    )
+    event = _event_with_id("msg-42")
+    last_events["s1"] = event
+    chains = _capture_sent_chains(event)
+
+    outcome = await runner.send_reply("s1", "你好", expected_generation=1)
+
+    assert outcome.status is models.SendStatus.DELIVERED
+    assert len(chains[0]) == 2
+    quote, text = chains[0]
+    assert getattr(quote, "id", None) == "msg-42"
+    assert text == "你好"
+
+    _, _, never, never_events = _make_runner(
+        tmp_path, config={"quote_mode": "random", "quote_probability": 0}
+    )
+    never_event = _event_with_id()
+    never_events["s1"] = never_event
+    never_chains = _capture_sent_chains(never_event)
+    await never.send_reply("s1", "你好", expected_generation=1)
+    assert len(never_chains[0]) == 1
+
+
+async def test_quote_model_mode_obeys_the_judge(tmp_path: Path) -> None:
+    """model 模式：模型说引用就引用、说不引用就不引用——概率无权覆盖模型。"""
+    for decision, expected_quote in ((True, True), (False, False)):
+        _, _, runner, last_events = _make_runner(
+            tmp_path, config={"quote_mode": "model", "quote_probability": 100}
+        )
+        event = _event_with_id()
+        last_events["s1"] = event
+        chains = _capture_sent_chains(event)
+
+        await runner.send_reply("s1", "你好", expected_generation=1, quote=decision)
+
+        assert len(chains[0]) == (2 if expected_quote else 1), (decision, chains[0])
+
+
+async def test_quote_model_mode_falls_back_to_probability(tmp_path: Path) -> None:
+    """model 模式下模型未表态（None：明确请求直通/手动检查）→ 按概率兜底。"""
+    _, _, always, always_events = _make_runner(
+        tmp_path,
+        config={"quote_mode": "model", "quote_probability": 100},
+        random_value=lambda: 0.99,
+    )
+    always_event = _event_with_id()
+    always_events["s1"] = always_event
+    always_chains = _capture_sent_chains(always_event)
+    await always.send_reply("s1", "你好", expected_generation=1, quote=None)
+    assert len(always_chains[0]) == 2
+
+    _, _, never, never_events = _make_runner(
+        tmp_path,
+        config={"quote_mode": "model", "quote_probability": 50},
+        random_value=lambda: 0.99,
+    )
+    never_event = _event_with_id()
+    never_events["s1"] = never_event
+    never_chains = _capture_sent_chains(never_event)
+    await never.send_reply("s1", "你好", expected_generation=1, quote=None)
+    assert len(never_chains[0]) == 1
+
+
+async def test_quote_skipped_without_message_id(tmp_path: Path) -> None:
+    """取不到消息 ID 时降级为普通发送，而不是让整次回复失败。"""
+    _, models, runner, last_events = _make_runner(
+        tmp_path, config={"quote_mode": "random", "quote_probability": 100}
+    )
+    event = FakeEvent()  # 无 message_obj、无 message_id
+    last_events["s1"] = event
+    chains = _capture_sent_chains(event)
+
+    outcome = await runner.send_reply("s1", "你好", expected_generation=1)
+
+    assert outcome.status is models.SendStatus.DELIVERED
+    assert len(chains[0]) == 1

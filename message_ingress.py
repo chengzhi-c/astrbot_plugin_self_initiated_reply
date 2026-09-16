@@ -81,6 +81,12 @@ def _accepted_content(
             state = plugin._state_for(umo)
             state.last_active_at = now_ts()
             state.last_active_sender_id = event_sender_id(event)
+            if plugin.settings.skip_after_direct_call:
+                # 这条 @Bot/唤醒消息由 AstrBot 正常回复（不经过本插件），因此把它
+                # 记为「这条消息之后 Bot 已经回应过」：同一批消息不再触发主动回复，
+                # 避免"刚被点名答过、静默时间一到又主动接一句"。下一条新消息到达时
+                # last_active_at 前进，观察窗口自然重新打开。
+                state.last_proactive_observed_at = state.last_active_at
         return None
     if empty:
         return None

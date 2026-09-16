@@ -546,6 +546,17 @@
             <p class="muted">
               默认关闭。开启后，同一会话里任何新消息都会让正在生成、尚未发出的主动回复作废（包括表情包、单独符号）。关闭后旧回复仍会发出，新消息只刷新延迟与下一轮静默计时。白名单移除、手动检查和插件停止仍会作废旧任务。
             </p>
+            <label class="toggle-row">
+              <input
+                type="checkbox"
+                id="skipAfterDirectCallInput"
+                data-config-key="skip_after_direct_call"
+              />
+              <span>被点名后本批消息不再主动接话</span>
+            </label>
+            <p class="muted">
+              默认开启。有人 @Bot 或唤醒 Bot 时，这条消息由 AstrBot 正常回复，本插件只把它记为「已回应」，同一批消息不再触发主动回复；下一条新消息到达后即恢复正常，因此不会长期限制。关闭后，@Bot 之后的静默期仍可能追加一次主动回复。
+            </p>
             <p class="muted">
               日常建议用 <code>/selfreply add</code> 和
               <code>/selfreply remove</code> 管理当前会话，这里适合批量编辑。
@@ -672,6 +683,20 @@
               />
               <span>启用提示词判断模型</span>
             </label>
+
+            <label class="toggle-row">
+              <input
+                type="checkbox"
+                id="replyRequestRequiresModelInput"
+                data-config-key="reply_request_requires_model"
+              />
+              <span>明确接话请求也交给判断模型</span>
+            </label>
+            <p class="muted">
+              默认关闭：「在吗 / 有人吗 / 说句话 / 发表情包」这类明确请求会直接接话，
+              不询问判断模型。开启后它们同样先由判断模型裁决，判断提示词对这些请求才真正生效
+              ——觉得主动回复过于频繁时可开启（需保持「启用提示词判断模型」开启）。
+            </p>
 
             <div class="field-grid model-grid">
               <div
@@ -816,6 +841,40 @@
                 </dl>
               </div>
             </details>
+
+            <div class="field-grid">
+              <label class="field">
+                <span class="field-label">主动回复引用消息</span>
+                <select
+                  id="quoteModeInput"
+                  data-config-key="quote_mode"
+                  aria-describedby="quoteModeHint"
+                >
+                  <option value="off">不引用</option>
+                  <option value="model">由判断模型决定</option>
+                  <option value="random">按概率引用</option>
+                </select>
+                <p class="field-hint" id="quoteModeHint">
+                  引用本次回复所依据的最后一条消息。选「由判断模型决定」时，模型会在判断结果里给出是否引用（判断模型未表态时按引用概率兜底）；钉钉等不支持引用标注的平台请保持「不引用」。
+                </p>
+              </label>
+              <label class="field">
+                <span class="field-label">引用概率<em>%</em></span>
+                <input
+                  type="number"
+                  id="quoteProbabilityInput"
+                  data-integer
+                  data-config-key="quote_probability"
+                  min="0"
+                  max="100"
+                  step="5"
+                  aria-describedby="quoteProbabilityHint"
+                />
+                <p class="field-hint" id="quoteProbabilityHint">
+                  0 表示从不引用，100 表示每次都引用；用于「按概率引用」，以及判断模型未给出决定时。
+                </p>
+              </label>
+            </div>
           </section>
 
           <!-- 第五层：运行边界。主动回复能调用什么能力（高级组，默认折叠） -->

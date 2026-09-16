@@ -243,3 +243,44 @@ def test_image_without_source_degrades_to_placeholder_and_still_schedules(tmp_pa
         assert any("extract_images returned empty" in message for message in debug_logs), debug_logs
 
     with_plugin(tmp_path, scenario, vision_main_enabled=True)
+
+
+def test_direct_call_defers_same_batch_proactive_reply(tmp_path) -> None:
+    """被 @Bot/唤醒后，同一批消息不再触发主动回复（``skip_after_direct_call``）。
+
+    背景（实测口径）：@Bot 的消息由 AstrBot 正常回复、不经过本插件；若只更新
+    活跃时间而不记「已回应」，静默时间一到就会再主动接一句——表现为「刚被点名
+    答过又自己插话」，且判断模型看不到那轮 @Bot 对话，无从自制。
+    """
+    from .host_stubs import with_plugin
+
+    async def scenario(plugin, main):
+        from .test_main_runtime import _make_event
+
+        utils = sys.modules[f"{main.__package__}.utils"]
+        ingress = sys.modules[f"{main.__package__}.message_ingress"]
+
+        event = _make_event(message_str="@Bot 出来聊聊")
+        event.is_at_or_wake_command = True
+        await ingress.handle_incoming_message(plugin, event)
+
+        umo = utils.event_umo(event)
+        state = plugin._state_for(utils.whitelist_storage_key(umo))
+        assert state.last_proactive_observed_at == state.last_active_at, (
+            "直接点名消息必须把观察窗口推进到本条消息"
+        )
+        assert plugin._decision.local_gate(state, force=False) == (
+            "这条消息之后已经主动回复过。"
+        )
+
+        # 关闭开关即回到旧行为：只更新活跃时间，不推进观察窗口
+        plugin.settings.skip_after_direct_call = False
+        before = state.last_proactive_observed_at
+        other = _make_event(message_str="@Bot 在吗")
+        other.is_at_or_wake_command = True
+        await ingress.handle_incoming_message(plugin, other)
+        assert state.last_proactive_observed_at == before, (
+            "开关关闭后不得再推进观察窗口"
+        )
+
+    with_plugin(tmp_path, scenario)

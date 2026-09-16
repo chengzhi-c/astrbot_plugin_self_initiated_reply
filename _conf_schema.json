@@ -11,6 +11,12 @@
     "hint": "开启后，普通消息会先用提示词判断是否适合主动回复；关闭后只响应明确接话/表情包请求和手动检查（后台巡检仍会触发）。回复生成仍走 AstrBot 主 Agent 管线。",
     "default": true
   },
+  "reply_request_requires_model": {
+    "type": "bool",
+    "description": "明确接话请求也交给判断模型",
+    "hint": "默认关闭：检测到「在吗 / 有人吗 / 说句话 / 发表情包」这类明确请求时直接接话，不询问判断模型（那类句子的意图本身已经很明确）。开启后这些请求同样先由判断模型裁决，判断提示词对它们才真正生效——若感觉主动回复过于频繁，可开启此开关，并确认「判断模型」处于开启状态。",
+    "default": false
+  },
   "judge_provider_id": {
     "type": "string",
     "description": "判断模型 Provider ID",
@@ -87,6 +93,28 @@
       "step": 10
     }
   },
+  "quote_mode": {
+    "type": "string",
+    "options": [
+      "off",
+      "model",
+      "random"
+    ],
+    "description": "主动回复引用消息",
+    "hint": "off：不引用（默认）。model：由判断模型在判断结果里给出是否引用（需判断模型返回 {\"should_reply\":…,\"quote\":true/false}；未给出决定时按「引用概率」兜底）。random：每次都按「引用概率」决定。引用的是本次回复所依据的最后一条消息；钉钉等不支持引用的平台请保持 off。",
+    "default": "off"
+  },
+  "quote_probability": {
+    "type": "int",
+    "description": "引用概率（%）",
+    "hint": "0 表示从不引用，100 表示每次都引用。用于 random 模式，以及 model 模式下判断模型未给出引用决定时（例如明确请求直通、手动检查）。",
+    "default": 50,
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 5
+    }
+  },
   "log_reply_content": {
     "type": "bool",
     "description": "日志记录主动回复内容",
@@ -122,6 +150,12 @@
     "description": "新消息到达时放弃未发出的旧回复",
     "hint": "默认关闭。开启后，同一会话里任何新消息都会让正在生成、尚未发出的主动回复作废（包括表情包、单独符号）。关闭后旧回复仍会发出，新消息只刷新延迟与下一轮静默计时。白名单移除、指令检查和插件停止仍会作废旧任务。",
     "default": false
+  },
+  "skip_after_direct_call": {
+    "type": "bool",
+    "description": "被点名后本批消息不再主动接话",
+    "hint": "默认开启。有人 @Bot 或唤醒 Bot（这些消息由 AstrBot 正常回复，本插件只把它们记为「已回应」）之后，同一批消息不再触发主动回复；下一条新消息到达后即恢复正常。关闭后，@Bot 之后的静默期仍可能追加一次主动回复。",
+    "default": true
   },
   "check_interval_sec": {
     "type": "int",

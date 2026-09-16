@@ -347,7 +347,7 @@ def restore_container_inplace(target: Any, source: Any) -> None:
 
 def sanitize_prompt_variable(
     text: str,
-    max_length: int = 500,
+    max_length: int | None = 500,
     *,
     allow_newlines: bool = False,
 ) -> str:
@@ -359,7 +359,8 @@ def sanitize_prompt_variable(
 
     Args:
         text: 原始文本
-        max_length: 最大长度限制
+        max_length: 最大长度限制；``None`` 表示不截断（调用方自带保尾预算时用，
+            例如多行聊天记录——那种场景截头会先丢掉最新的消息）
         allow_newlines: 是否保留换行。多行聊天记录必须保留行结构，
             否则判断模型无法区分发言人和轮次；单字段变量保持单行。
 
@@ -371,7 +372,7 @@ def sanitize_prompt_variable(
         return ""
 
     # 1. 截断长度
-    if len(text) > max_length:
+    if max_length is not None and len(text) > max_length:
         text = text[:max_length] + "..."
 
     # 2. 双引号改写，避免伪造 JSON 输出契约
@@ -871,6 +872,7 @@ _PANEL = frozenset({"host", "panel"})
 CONFIG_SPECS: tuple[ConfigSpec, ...] = (
     ConfigSpec("enabled", "bool", True, audited=True, surfaces=_PANEL),
     ConfigSpec("decision_model_enabled", "bool", True, surfaces=_PANEL),
+    ConfigSpec("reply_request_requires_model", "bool", False, surfaces=_PANEL),
     ConfigSpec(
         "judge_provider_id",
         "str",
@@ -910,6 +912,14 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
     ),
     ConfigSpec("allow_multiline_reply", "bool", True),
     ConfigSpec("max_reply_chars", "int", 220, 0, 2000, step=10),
+    ConfigSpec(
+        "quote_mode",
+        "enum",
+        "off",
+        options=("off", "model", "random"),
+        surfaces=_PANEL,
+    ),
+    ConfigSpec("quote_probability", "int", 50, 0, 100, step=5, surfaces=_PANEL),
     ConfigSpec("log_reply_content", "bool", False),
     ConfigSpec(
         "bot_aliases",
@@ -953,6 +963,7 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         False,
         surfaces=_PANEL,
     ),
+    ConfigSpec("skip_after_direct_call", "bool", True, surfaces=_PANEL),
     ConfigSpec("check_interval_sec", "int", 300, 30, 86400, step=30),
     ConfigSpec("patrol_inactive_after_sec", "int", 1800, 0, 604800, step=3600),
     ConfigSpec(
@@ -1245,14 +1256,18 @@ class Settings:
     decision_temperature: float
     decision_timeout_sec: float
     decision_model_enabled: bool
+    reply_request_requires_model: bool
     reply_length_mode: str
     allow_multiline_reply: bool
     max_reply_chars: int
+    quote_mode: str
+    quote_probability: int
     log_reply_content: bool
     bot_aliases: list[str]
     whitelist: set[str]
     enabled_private_sessions: bool
     abandon_stale_on_new_message: bool
+    skip_after_direct_call: bool
     ignored_sender_ids: set[str]
     recent_message_limit: int
     message_delay_sec: int

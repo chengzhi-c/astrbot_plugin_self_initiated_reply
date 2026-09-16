@@ -18,11 +18,13 @@ UNKNOWN 语义（不自动重试、不触发 after-send 钩子、仍消耗冷却
 from __future__ import annotations
 
 import asyncio
+import random
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
+from astrbot.api.message_components import Reply
 
 from .models import (
     PLUGIN_ID,
@@ -38,6 +40,7 @@ from .models import (
     now_ts,
 )
 from .outbound import OutboundGateway
+from .utils import event_message_id
 
 # 注入回调的类型别名。这五个全按位置调用，故用 Callable；models.py 的三个
 # Protocol 有关键字形参（limit / enabled+provider_id / force），Callable 表达不了。
@@ -69,6 +72,7 @@ class DeliveryRunner:
         save_storage: SaveStorageCallback,
         runtime: RuntimeCallback,
         is_stopping: Callable[[], bool] | None = None,
+        random_value: Callable[[], float] = random.random,
     ) -> None:
         self.settings = settings
         self._gate = gate
@@ -79,6 +83,8 @@ class DeliveryRunner:
         self._save_storage = save_storage
         self._runtime = runtime
         self._is_stopping = is_stopping or (lambda: False)
+        # 引用概率的随机源：可注入以便测试确定性（与 decision 的 clock 同款缝）。
+        self._random_value = random_value
 
     @staticmethod
     def _clear_result(last_event: Any) -> None:
@@ -87,6 +93,58 @@ class DeliveryRunner:
             last_event.clear_result()
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # 引用（可选装饰）
+    # ------------------------------------------------------------------
+
+    def _should_quote(self, model_decision: bool | None) -> bool:
+        """本次是否引用。``model_decision`` 为 None 表示判断模型没给过决定。
+
+        模式语义：``off`` 从不引用；``model`` 由判断模型决定，模型未表态时（明确
+        请求直通、手动检查、判断模型关闭）按 ``quote_probability`` 兜底；``random``
+        全部按概率。100 必引用、0 必不引用（随机值域为 [0, 1)）。
+        """
+        mode = self.settings.quote_mode
+        if mode == "off":
+            return False
+        if mode == "model" and model_decision is not None:
+            return bool(model_decision)
+        return self._random_value() * 100 < self.settings.quote_probability
+
+    def _quote_target_id(self, umo: str) -> str:
+        """引用目标 = 该会话最后一条被插件接住的消息。
+
+        与判断提示词里的 ``{latest_message}`` 同源（两者都来自本次检查依据的那条
+        消息）；事件已被回收时返回空串，降级为不引用。
+        """
+        last_event = self._last_events.get(umo)
+        if last_event is None:
+            return ""
+        return event_message_id(last_event)
+
+    def _resolve_quote_id(self, umo: str, model_decision: bool | None) -> str:
+        """本次发送要引用的消息 ID；不需要引用或取不到 ID 时返回空串。"""
+        if not self._should_quote(model_decision):
+            return ""
+        quote_id = self._quote_target_id(umo)
+        if not quote_id:
+            logger.debug("[%s] quote skipped: no message id for session=%s", PLUGIN_ID, umo)
+        return quote_id
+
+    @staticmethod
+    def _attach_quote(chain_owner: Any, message_id: str) -> bool:
+        """把 ``Reply`` 组件插到消息链首，引用 ``message_id``。
+
+        失败一律静默降级为普通发送（返回 False）：引用是装饰性组件，宿主链不可写
+        或平台不支持都不该让整次回复失败。平台差异见 ``_conf_schema`` 的 hint。
+        """
+        try:
+            chain_owner.chain.insert(0, Reply(id=message_id))
+            return True
+        except Exception as exc:
+            logger.debug("[%s] quote component skipped: %s", PLUGIN_ID, exc)
+            return False
 
     async def deliver_reply(
         self,
@@ -100,6 +158,7 @@ class DeliveryRunner:
         force: bool,
         trigger: str,
         silence_active_at: float | None = None,
+        quote: bool | None = None,
     ) -> str:
         """发送前门卫与发送状态机；返回结果消息。记账由 pipeline 的 ledger 收口。"""
         ledger_id = ledger.ledger_id
@@ -133,6 +192,7 @@ class DeliveryRunner:
                 reply,
                 ledger=ledger,
                 expected_generation=expected_generation,
+                quote=quote,
             )
             if not sent.delivered:
                 if sent.status is SendStatus.UNKNOWN:
@@ -197,6 +257,7 @@ class DeliveryRunner:
         *,
         ledger: AttemptLedger | None = None,
         expected_generation: int | None = None,
+        quote: bool | None = None,
     ) -> SendOutcome:
         """Send one proactive reply without retrying an unknown submission.
 
@@ -232,6 +293,7 @@ class DeliveryRunner:
             )
 
         last_event = self._last_events.get(umo)
+        quote_id = self._resolve_quote_id(umo, quote)
         if last_event:
             return await self._send_via_event(
                 umo,
@@ -239,6 +301,7 @@ class DeliveryRunner:
                 last_event,
                 ledger=ledger,
                 expected_generation=expected_generation,
+                quote_id=quote_id,
             )
         return await self._send_via_context(
             umo,
@@ -255,6 +318,7 @@ class DeliveryRunner:
         *,
         ledger: AttemptLedger,
         expected_generation: int | None,
+        quote_id: str = "",
     ) -> SendOutcome:
         """事件路径投递：装饰钩子 → 代次复核 → 事件 send → 发送后钩子。
 
@@ -326,6 +390,10 @@ class DeliveryRunner:
                     "generation changed before send",
                     SuppressCode.GENERATION_CHANGED,
                 )
+            if quote_id:
+                # 引用组件在装饰钩子之后插入：钩子（如文转图片）改的是链内容，
+                # 引用是本次发送的外层标注，插在链首即宿主约定的引用形态。
+                self._attach_quote(result, quote_id)
             logger.debug(
                 "[%s] event send begin ledger_id=%s session=%s chars=%d chain_items=%d",
                 PLUGIN_ID,
@@ -400,7 +468,8 @@ class DeliveryRunner:
         """context 兜底投递：事件已不在手边时经宿主 ``Context.send_message`` 发送。
 
         仅由 ``send_reply`` 在 ``last_event`` 为假时调用。本路径不 ``set_result``、
-        不触发装饰与发送后钩子，故无 ``_clear_result`` 义务。
+        不触发装饰与发送后钩子，故无 ``_clear_result`` 义务；也不支持引用——引用需要
+        被引消息的 ID，而它只存在于事件上（``_last_events`` 为空正是走本路径的条件）。
         """
         ledger_id = ledger.ledger_id
         # 复核点 4/4（结构防线）：与复核点 1 之间没有真实挂起点——
