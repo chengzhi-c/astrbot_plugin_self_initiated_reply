@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from .host_stubs import load_package
+from .host_stubs import base_runtime_capabilities, load_package
 
 PACKAGE_NAME = "selfreply_runtime_test_package"
 
@@ -19,51 +19,8 @@ def _load_adapter():
     return load_package(PACKAGE_NAME, "runtime_adapter")
 
 
-def _base_caps(runtime, **overrides):
-    """完整契约 capabilities（与 test_runtime_adapter 同形）。"""
-    base = dict(
-        import_error=None,
-        tool_set=object,
-        build_config=object,
-        build_main_agent=lambda **_k: None,
-        get_session_conv=lambda *_a: None,
-        run_agent=lambda *_a, **_k: (),
-        event_result_cls=type(
-            "Result",
-            (),
-            {"message": lambda self, t: self, "set_result_content_type": lambda self, t: self},
-        ),
-        result_content_type=type("CT", (), {"LLM_RESULT": "llm"}),
-        event_type=type(
-            "ET",
-            (),
-            {
-                "OnLLMRequestEvent": "OnLLMRequestEvent",
-                "OnDecoratingResultEvent": "OnDecoratingResultEvent",
-                "OnAfterMessageSentEvent": "OnAfterMessageSentEvent",
-            },
-        ),
-        call_event_hook=lambda *_a, **_k: True,
-        provider_request_cls=type(
-            "Req",
-            (),
-            {
-                "prompt": "",
-                "image_urls": [],
-                "audio_urls": [],
-                "func_tool": None,
-                "session_id": "",
-                "conversation": None,
-                "contexts": [],
-            },
-        ),
-    )
-    base.update(overrides)
-    return runtime.AgentRuntimeCapabilities(**base)
-
-
 def _adapter(runtime, **overrides):
-    return runtime.AstrBotRuntimeAdapter(_base_caps(runtime, **overrides))
+    return runtime.AstrBotRuntimeAdapter(base_runtime_capabilities(runtime, **overrides))
 
 
 # ============================================================================

@@ -2,56 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from .host_stubs import load_package
+from .host_stubs import base_runtime_capabilities, load_package
 
 PACKAGE_NAME = "selfreply_runtime_test_package"
 
 
 def _load_adapter():
     return load_package(PACKAGE_NAME, "runtime_adapter")
-
-
-def _base_caps(runtime, **overrides):
-    """完整契约 capabilities：validate 覆盖全部私有入口。"""
-    base = dict(
-        import_error=None,
-        tool_set=object,
-        build_config=object,
-        build_main_agent=lambda **_k: None,
-        get_session_conv=lambda *_a: None,
-        run_agent=lambda *_a, **_k: (),
-        event_result_cls=type(
-            "Result",
-            (),
-            {"message": lambda self, t: self, "set_result_content_type": lambda self, t: self},
-        ),
-        result_content_type=type("CT", (), {"LLM_RESULT": "llm"}),
-        event_type=type(
-            "ET",
-            (),
-            {
-                "OnLLMRequestEvent": "OnLLMRequestEvent",
-                "OnDecoratingResultEvent": "OnDecoratingResultEvent",
-                "OnAfterMessageSentEvent": "OnAfterMessageSentEvent",
-            },
-        ),
-        call_event_hook=lambda *_a, **_k: True,
-        provider_request_cls=type(
-            "Req",
-            (),
-            {
-                "prompt": "",
-                "image_urls": [],
-                "audio_urls": [],
-                "func_tool": None,
-                "session_id": "",
-                "conversation": None,
-                "contexts": [],
-            },
-        ),
-    )
-    base.update(overrides)
-    return runtime.AgentRuntimeCapabilities(**base)
 
 
 def test_runtime_adapter_validates_private_agent_capabilities() -> None:
@@ -74,7 +31,7 @@ def test_runtime_adapter_validates_private_agent_capabilities() -> None:
         yield agent_runner, max_step, kwargs
 
     adapter = runtime.AstrBotRuntimeAdapter(
-        _base_caps(
+        base_runtime_capabilities(
             runtime,
             tool_set=ToolSet,
             build_config=BuildConfig,
@@ -95,7 +52,9 @@ def test_runtime_adapter_reports_signature_mismatch() -> None:
     async def incompatible(*, event, plugin_context, config, req):
         return None
 
-    adapter = runtime.AstrBotRuntimeAdapter(_base_caps(runtime, build_main_agent=incompatible))
+    adapter = runtime.AstrBotRuntimeAdapter(
+        base_runtime_capabilities(runtime, build_main_agent=incompatible)
+    )
 
     with pytest.raises(RuntimeError, match="apply_reset"):
         adapter.validate()
@@ -108,7 +67,7 @@ def test_runtime_adapter_enforces_run_contract_params() -> None:
     async def run_agent(agent_runner, *, max_step):
         yield agent_runner, max_step
 
-    adapter = runtime.AstrBotRuntimeAdapter(_base_caps(runtime, run_agent=run_agent))
+    adapter = runtime.AstrBotRuntimeAdapter(base_runtime_capabilities(runtime, run_agent=run_agent))
 
     with pytest.raises(RuntimeError, match="show_tool_use"):
         adapter.validate()
@@ -116,7 +75,7 @@ def test_runtime_adapter_enforces_run_contract_params() -> None:
 
 def test_filter_final_tools_modes() -> None:
     runtime = _load_adapter()
-    adapter = runtime.AstrBotRuntimeAdapter(_base_caps(runtime))
+    adapter = runtime.AstrBotRuntimeAdapter(base_runtime_capabilities(runtime))
 
     class Tool:
         def __init__(self, name: str):

@@ -136,25 +136,11 @@ HOST_DANGEROUS_TOOL_IDS: frozenset[str] = frozenset(
         "astr_kb_search",
     }
 )
-# 危险工具名启发式：仅漂移守卫（tests/test_security.py）使用，不替代
-# HOST_DANGEROUS_TOOL_IDS。运行路径以精确 denylist + 空 allowlist 为准，
-# 避免启发式误伤无害工具。
-_HOST_DANGEROUS_TOOL_NAME_RE = re.compile(
-    r"(future_task|shell_session|execute_(shell|ipython|python|browser)|"
-    r"run_browser_skill|upload_file|download_file|file_(read|write|edit)_tool|"
-    r"grep_tool|kb_search)",
-    re.IGNORECASE,
-)
-
-
-def looks_like_host_dangerous_tool(tool_id: str) -> bool:
-    """Return whether a tool id looks host-dangerous (denylist membership or name hint)."""
-    name = str(tool_id or "").strip()
-    if not name:
-        return False
-    if name in HOST_DANGEROUS_TOOL_IDS:
-        return True
-    return _HOST_DANGEROUS_TOOL_NAME_RE.search(name) is not None
+# 新增条目规则：条目必须是宿主 FunctionTool 的**精确 name**，运行期不做名字匹配
+# （精确 denylist + 空 allowlist 是唯一判据，避免启发式误伤无害工具）。宿主新增或
+# 改名危险工具只能由 scripts/compat_check.py 枚举真实宿主模块发现（CI compat 作业，
+# 三个宿主版本）；仓库侧这份清单的逐条完整性由 tests/test_security.py 的精确集合
+# 断言钉住。
 
 
 REPLY_REQUEST_WINDOW_SEC = 180  # 明确请求窗口：3分钟内的接话请求视为有效

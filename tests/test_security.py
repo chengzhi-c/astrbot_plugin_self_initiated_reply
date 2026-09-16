@@ -18,13 +18,13 @@ import logging
 import re
 import sys
 import time
-import types
 from pathlib import Path
 from types import SimpleNamespace
 
 from .host_stubs import (
     MAIN_PACKAGE_NAME,
     install_astrbot_stubs,
+    load_modules,
     load_package,
     production_py_files,
     with_plugin,
@@ -42,18 +42,9 @@ PACKAGE_NAME_R3 = "selfreply_round3_package"
 
 
 def _load_r3_modules():
-    install_astrbot_stubs()
-    package = sys.modules.get(PACKAGE_NAME_R3)
-    if package is None:
-        package = types.ModuleType(PACKAGE_NAME_R3)
-        package.__path__ = [str(ROOT)]
-        sys.modules[PACKAGE_NAME_R3] = package
-    models = importlib.import_module(f"{PACKAGE_NAME_R3}.models")
-    utils = importlib.import_module(f"{PACKAGE_NAME_R3}.utils")
-    commands = importlib.import_module(f"{PACKAGE_NAME_R3}.commands")
-    image = importlib.import_module(f"{PACKAGE_NAME_R3}.image")
-    recorder = importlib.import_module(f"{PACKAGE_NAME_R3}.image.recorder_bridge")
-    return models, utils, commands, image, recorder
+    return load_modules(
+        PACKAGE_NAME_R3, "models", "utils", "commands", "image", "image.recorder_bridge"
+    )
 
 
 # ============================================================================
@@ -293,14 +284,7 @@ PACKAGE_NAME_SEC = "selfreply_redlight_test"
 
 
 def _load_sec_modules():
-    install_astrbot_stubs()
-    package = types.ModuleType(PACKAGE_NAME_SEC)
-    package.__path__ = [str(ROOT)]
-    sys.modules[PACKAGE_NAME_SEC] = package
-    models = importlib.import_module(f"{PACKAGE_NAME_SEC}.models")
-    utils = importlib.import_module(f"{PACKAGE_NAME_SEC}.utils")
-    storage = importlib.import_module(f"{PACKAGE_NAME_SEC}.storage")
-    return models, utils, storage
+    return load_modules(PACKAGE_NAME_SEC, "models", "utils", "storage")
 
 
 # ============================================================================
@@ -1121,25 +1105,33 @@ def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplo
     with_plugin(tmp_path, scenario)
 
 
-def test_host_dangerous_tool_denylist_has_drift_net() -> None:
-    """Exact denylist stays authoritative; name heuristic covers known + sibling IDs."""
-    install_astrbot_stubs()
-    package_name = "selfreply_dangerous_tool_drift_pkg"
-    models = load_package(package_name, "models")
+def test_host_dangerous_tool_denylist_exact_membership() -> None:
+    """denylist 逐条钉住：删除或改名任一条都必须在此变红。
 
-    assert models.HOST_DANGEROUS_TOOL_IDS, "denylist must not be empty"
-    for tool_id in models.HOST_DANGEROUS_TOOL_IDS:
-        assert models.looks_like_host_dangerous_tool(tool_id), tool_id
+    旧守卫是自参照的（拿集合自己的元素去测一个名字启发式），删项只会让循环更短、
+    必然继续通过——15 条里只有 3 条被其它用例顺带覆盖（实测删 ``astrbot_grep_tool``
+    后全量 pytest 仍全绿）。宿主漂移（宿主新增/改名危险工具）由
+    ``scripts/compat_check.py`` 枚举真实宿主模块判定（CI compat 作业，三个宿主
+    版本），本地不镜像宿主清单，只钉住仓库自己的这一份。
+    """
+    (models,) = load_modules("selfreply_dangerous_tool_denylist_pkg", "models")
 
-    # Sibling names a host version bump might introduce should still trip the net.
-    for tool_id in (
-        "astrbot_execute_shell_v2",
-        "astrbot_execute_browser_new",
-        "astrbot_file_read_tool_v3",
-        "future_task_v2",
-    ):
-        assert models.looks_like_host_dangerous_tool(tool_id), tool_id
-
-    # Benign tools must not be flagged by the heuristic alone.
-    for tool_id in ("web_search", "memory_search", "send_message", ""):
-        assert not models.looks_like_host_dangerous_tool(tool_id), tool_id
+    assert models.HOST_DANGEROUS_TOOL_IDS == frozenset(
+        {
+            "future_task",
+            "astrbot_execute_shell",
+            "astrbot_execute_ipython",
+            "astrbot_execute_python",
+            "astrbot_shell_session",
+            "astrbot_execute_browser",
+            "astrbot_execute_browser_batch",
+            "astrbot_run_browser_skill",
+            "astrbot_upload_file",
+            "astrbot_download_file",
+            "astrbot_file_read_tool",
+            "astrbot_file_write_tool",
+            "astrbot_file_edit_tool",
+            "astrbot_grep_tool",
+            "astr_kb_search",
+        }
+    ), "denylist 条目有变更：确认是有意调整后同步本断言（删/改任一条都应在此变红）"

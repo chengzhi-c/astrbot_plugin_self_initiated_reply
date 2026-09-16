@@ -5,17 +5,13 @@ import json
 from collections import deque
 from pathlib import Path
 
-from .host_stubs import install_astrbot_stubs, load_package
+from .host_stubs import load_modules
 
 PACKAGE_NAME = "selfreply_test_package"
 
 
 def _load_modules():
-    install_astrbot_stubs()
-    models = load_package(PACKAGE_NAME, "models")
-    utils = load_package(PACKAGE_NAME, "utils")
-    storage = load_package(PACKAGE_NAME, "storage")
-    return models, utils, storage
+    return load_modules(PACKAGE_NAME, "models", "utils", "storage")
 
 
 def test_tool_call_marker_is_not_sent_as_a_reply() -> None:
@@ -693,8 +689,7 @@ def test_content_to_text_handles_all_host_content_shapes() -> None:
 
 
 def _load_plugin_state():
-    install_astrbot_stubs()
-    return load_package(PACKAGE_NAME, "plugin_state")
+    return load_modules(PACKAGE_NAME, "plugin_state")[0]
 
 
 def test_resolve_paths_data_root_tracks_host_answer(tmp_path: Path) -> None:

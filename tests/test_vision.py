@@ -8,18 +8,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from .host_stubs import ROOT, capture_logs, install_astrbot_stubs, load_package
+from .host_stubs import ROOT, capture_logs, load_modules, load_package
 from .source_contract import calls_in, method_source
 
 PACKAGE_NAME = "selfreply_vision_test_package"
 
 
 def _load_modules():
-    install_astrbot_stubs()
-    adapters = load_package(PACKAGE_NAME, "adapters")
-    image = load_package(PACKAGE_NAME, "image")
-    models = load_package(PACKAGE_NAME, "models")
-    return adapters, image, models
+    return load_modules(PACKAGE_NAME, "adapters", "image", "models")
 
 
 def test_image_extractor_preserves_remote_url_and_local_path() -> None:
