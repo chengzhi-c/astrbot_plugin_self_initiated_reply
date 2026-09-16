@@ -7,6 +7,9 @@
 
 本文件锚定修复后的契约：磁盘遍历只允许经线程执行，事件清理路径不得触碰磁盘。
 断言基于"遍历发生在哪个线程"这一可观测事实，而非实现细节。
+
+同一断言形状后来扩到其它磁盘 IO（data URL 物化、配置写盘、webapi 端点写盘）：
+它们共享同一条契约——fsync/遍历不得跑在事件循环线程上。
 """
 
 from __future__ import annotations
@@ -169,3 +172,60 @@ async def test_settings_config_write_offloads_file_io_to_thread(tmp_path: Path) 
         )
     finally:
         storage.write_json_atomic = original
+
+
+def test_mutating_webapi_endpoints_write_off_the_event_loop(tmp_path: Path) -> None:
+    """会落盘的 webapi POST 端点，写盘必须离开事件循环线程。
+
+    ``POST /config`` 与 ``POST /ui/theme`` 都在 async 上下文写 JSON：写盘含
+    fsync，跑在事件循环线程上会阻塞所有会话（同 ``apersist_settings_config``
+    已钉的同一类问题）。
+
+    两个绑定点都要换：``webapi`` 用 ``from .storage import write_json_atomic``
+    在导入期就持了自己的副本，只换 ``storage`` 会完全观测不到 ui-prefs 的写盘，
+    断言退化成恒绿的假契约。每个端点另断言至少发生一次写盘，否则端点改名或
+    提前 return 会让用例静默失去覆盖对象。
+    """
+    from .host_stubs import with_plugin
+
+    async def scenario(plugin, _main):
+        import sys
+
+        # 宿主桩由 make_plugin 装入，此处才保证存在（模块顶层读会在单独跑本用例时 KeyError）。
+        web = sys.modules["astrbot.api.web"]
+        package = type(plugin).__module__.rsplit(".", 1)[0]
+        webapi = sys.modules[f"{package}.webapi"]
+        storage = sys.modules[f"{package}.storage"]
+        originals = {storage: storage.write_json_atomic, webapi: webapi.write_json_atomic}
+        threads: list[int] = []
+
+        def make_probe(original):
+            def probe(path, data):
+                threads.append(threading.get_ident())
+                return original(path, data)
+
+            return probe
+
+        loop_thread = threading.get_ident()
+        try:
+            for module in (storage, webapi):
+                module.write_json_atomic = make_probe(originals[module])
+            endpoints = (
+                ("POST /config", plugin._api_post_config, {"cooldown_sec": 7}),
+                ("POST /ui/theme", plugin._api_post_ui_theme, {"theme": "dark"}),
+            )
+            for label, drive, payload in endpoints:
+                before = len(threads)
+                web.request.payload = payload
+                result = await drive()
+                assert result["ok"] is True, f"{label} 未成功：{result}"
+                assert len(threads) > before, f"{label} 没有发生写盘——用例已失去覆盖对象"
+                assert all(thread != loop_thread for thread in threads[before:]), (
+                    f"{label} 的写盘在事件循环线程内执行——fsync 会阻塞所有会话"
+                )
+        finally:
+            for module, original in originals.items():
+                module.write_json_atomic = original
+            web.request.payload = {}
+
+    with_plugin(tmp_path, scenario)
