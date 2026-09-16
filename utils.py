@@ -286,11 +286,14 @@ def event_umo(event: AstrMessageEvent) -> str:
 
 
 def is_full_umo(value: str) -> bool:
-    """是否 ``platform:message_type:session_id`` 三段完整 UMO。
+    """是否 ``platform:message_type:session_id`` **恰好三段**的完整 UMO。
 
-    与 :func:`session_group_id` 同锚（都按 ``_UMO_PARTS`` 判段数）：白名单里
-    裸群号与完整 UMO 混存，这个判据此前在 scheduler/whitelist 各写一份
-    ``":" in value``，与 ``_UMO_PARTS`` 的段数语义并不等价。
+    判据是段数（``_UMO_PARTS``），与 :func:`session_group_id` 同源但不等价：
+    后者按 ``split(":", 2)`` 取第三段，所以会话 ID 自身含冒号（``qq:GroupMessage:x:y``）
+    时两者结论相反——本函数判 False，:func:`session_group_id` 仍返回 ``"x:y"``。
+    该分歧是良性的：入口按白名单项**逐字**登记 ``_whitelist_runtime_umos``（完整 UMO
+    一条、群号再补一条），所以走裸号分支照样能查到它（见 tests/test_storage_and_umo.py
+    的分歧守卫用例）。不要"顺手统一"成 ``>=``：那会把两段畸形条当成可直接巡检的 UMO。
     """
     return str(value or "").count(":") == _UMO_PARTS - 1
 
@@ -560,8 +563,13 @@ def format_message_records(records: list[MessageRecord], *, limit: int) -> str:
 def cap_context_text(text: str, max_chars: int, *, marker: str) -> str:
     """总字符预算内的保尾裁剪：历史越新越重要，超限只裁更早部分。
 
-    从行边界起裁（不截半条消息），加一行 ``marker`` 提示省略；总长
-    （含 marker）不超过 ``max_chars``。短文本原样返回。
+    从行边界起裁（不截半条消息），加一行 ``marker`` 提示省略；总长（含 marker）
+    不超过 ``max_chars``。短文本原样返回。
+
+    两个预算下限例外（test_generation_runner 的极小预算用例逐条钉住）：
+    ``max_chars <= 0`` 表示关闭裁剪、逐字返回；预算装不下 marker 本身
+    （``max_chars <= len(marker)``）时返回 marker、总长略超预算——空串会让调用方
+    以为没有历史，提示「内容被省略」比静默丢内容更接近事实。
     """
     if max_chars <= 0 or len(text) <= max_chars:
         return text
