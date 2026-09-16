@@ -556,6 +556,23 @@ _PRE_SUBMIT_OUTCOMES: dict[SendStatus, AttemptState] = {
 }
 
 
+class LedgerPhase(StrEnum):
+    """``AttemptLedger`` 的阶段：五个迁移点各自守一件事。
+
+    ``OPEN`` 允许登记与结算；``SEALED`` 表示证据已冻结（在途一律悲观记
+    ``UNKNOWN``）；``RECORDING`` → ``RECORDED`` / ``RECORD_FAILED`` 是唯一
+    记账任务的三种收尾。与同文件其余状态集同用 ``StrEnum``：拼错在语句处即
+    ``AttributeError``，不再以字符串比较静默失配；成员与字符串相等，故既有的
+    字符串比较语义不变。
+    """
+
+    OPEN = "open"
+    SEALED = "sealed"
+    RECORDING = "recording"
+    RECORDED = "recorded"
+    RECORD_FAILED = "record_failed"
+
+
 @dataclass
 class AttemptLedger:
     """Single source of outbound submission evidence for one pipeline run.
@@ -568,7 +585,7 @@ class AttemptLedger:
     _attempts: list[SendAttempt] = field(default_factory=list)
     _next_attempt_id: int = 1
     _record_task: object | None = field(default=None, init=False, repr=False)
-    phase: str = "open"
+    phase: LedgerPhase = LedgerPhase.OPEN
     record_failure: str = ""
 
     @property
@@ -610,7 +627,7 @@ class AttemptLedger:
         )
 
     def reserve(self, kind: str, text: str = "") -> SendAttempt:
-        if self.phase != "open":
+        if self.phase != LedgerPhase.OPEN:
             raise RuntimeError("cannot reserve an attempt after the ledger is sealed")
         attempt = SendAttempt(self._next_attempt_id, kind, text)
         self._next_attempt_id += 1
@@ -618,7 +635,7 @@ class AttemptLedger:
         return attempt
 
     def mark_in_flight(self, attempt: SendAttempt) -> None:
-        if self.phase != "open" or attempt not in self._attempts:
+        if self.phase != LedgerPhase.OPEN or attempt not in self._attempts:
             raise RuntimeError("cannot start an attempt outside an open ledger")
         if attempt.state is not AttemptState.RESERVED:
             raise RuntimeError("only a reserved attempt can enter the adapter")
@@ -626,7 +643,7 @@ class AttemptLedger:
 
     def resolve(self, attempt: SendAttempt, status: SendStatus) -> bool:
         """Apply an adapter outcome, returning false for a sealed late result."""
-        if self.phase != "open" or attempt not in self._attempts:
+        if self.phase != LedgerPhase.OPEN or attempt not in self._attempts:
             return False
         if attempt.state is not AttemptState.IN_FLIGHT:
             raise RuntimeError("only an in-flight attempt can receive an adapter outcome")
@@ -637,7 +654,7 @@ class AttemptLedger:
         return True
 
     def finish_before_submit(self, attempt: SendAttempt, status: SendStatus) -> None:
-        if self.phase != "open" or attempt not in self._attempts:
+        if self.phase != LedgerPhase.OPEN or attempt not in self._attempts:
             raise RuntimeError("cannot finish an attempt outside an open ledger")
         if attempt.state is not AttemptState.RESERVED:
             raise RuntimeError("only a reserved attempt can finish before adapter entry")
@@ -648,33 +665,33 @@ class AttemptLedger:
 
     def start_recording(self, task: object) -> bool:
         """Register the ledger's sole persistence task after sealing evidence."""
-        if self.phase != "sealed" or self._record_task is not None:
+        if self.phase != LedgerPhase.SEALED or self._record_task is not None:
             return False
         self._record_task = task
-        self.phase = "recording"
+        self.phase = LedgerPhase.RECORDING
         return True
 
     def mark_recorded(self) -> None:
-        if self.phase != "recording":
+        if self.phase != LedgerPhase.RECORDING:
             raise RuntimeError("only a recording ledger can become recorded")
-        self.phase = "recorded"
+        self.phase = LedgerPhase.RECORDED
 
     def mark_record_failed(self, detail: str) -> None:
-        if self.phase != "recording":
+        if self.phase != LedgerPhase.RECORDING:
             raise RuntimeError("only a recording ledger can fail persistence")
         self.record_failure = detail
-        self.phase = "record_failed"
+        self.phase = LedgerPhase.RECORD_FAILED
 
     def seal(self) -> tuple[SendAttempt, ...]:
         """Freeze evidence; any in-flight adapter call is pessimistically UNKNOWN."""
-        if self.phase != "open":
+        if self.phase != LedgerPhase.OPEN:
             return self.attempts
         for attempt in self._attempts:
             if attempt.state is AttemptState.RESERVED:
                 attempt.state = AttemptState.ABANDONED
             elif attempt.state is AttemptState.IN_FLIGHT:
                 attempt.state = AttemptState.UNKNOWN
-        self.phase = "sealed"
+        self.phase = LedgerPhase.SEALED
         return self.attempts
 
 

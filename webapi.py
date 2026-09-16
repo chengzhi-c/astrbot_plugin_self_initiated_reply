@@ -1,4 +1,20 @@
-"""Web API、配置读写与 UI 偏好（自 main.py 拆分）。"""
+"""Web API：配置读写、UI 偏好与运维状态（自 main.py 拆分）。
+
+拥有：HTTP 处理器的注册与绑定、面板配置的读视图（``panel`` 面派生 +
+``config_revision``）、配置写入的严格校验（未知键 fail loud）、CAS 前置条件
+（``base_revision``）、应用配置时的运行态快照与回滚、安全敏感键的审计日志、
+UI 偏好（主题/压暗/粗体）的原子落盘、provider 列表枚举的宿主形态归一。
+
+不拥有：配置键的机器规则（``models.ConfigSpec``）、状态文件与原子写
+（``storage``）、持久配置的真源（``plugin.settings``）、插件运行态容器
+（``main``）。
+
+分区目录：路由注册与处理器绑定 → 配置读取 → 严格校验 → 应用与回滚 → 审计 →
+UI 偏好 → 运维状态（``/status``，面板零消费）。
+
+``SelfInitiatedReplyPlugin`` 只在 ``TYPE_CHECKING`` 下导入：运行时与 ``main``
+成环，处理器经 ``partial`` 注册（宿主不解析这些注解）。见 docs/DECISIONS.md。
+"""
 
 from __future__ import annotations
 

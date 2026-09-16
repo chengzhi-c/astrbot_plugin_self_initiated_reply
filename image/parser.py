@@ -1,4 +1,22 @@
-"""Vision image parser used by proactive replies."""
+"""识图解析：把一条图片来源变成可交给 Vision 的 data URL，并取回一句描述。
+
+拥有：SSRF 安全的远程下载传输（每跳重新解析 + 只绑定已校验的公网地址）、
+冻结图片的内容寻址磁盘缓存与过期/配额清理、单图解析（并发合流、超时、拒答
+过滤、描述 LRU）、本地文件放行的唯一判据（路径必须落在允许根内）。
+
+不拥有：图片来源的提取（``extractor``）、缓存索引与内存预算
+（``session_coordinator``）、provider 选择（``adapters``）、何时解析
+（``vision_runtime``）。
+
+分区目录：常量与 prompt 指纹 → 缓存维护纯函数 → 安全传输（DNS 校验 / TCP
+后端 / 响应流 / transport）→ ``ImageParser``（冻结 → 来源解析 → 下载 →
+解析 → 清理）。
+
+文件刻意不拆：传输层私有名被 ``tests/test_vision_parser_gaps.py`` 直接引用并
+按本模块对象 monkeypatch，而生产侧只有一个调用方；拆出 ``transport.py`` 是纯
+文件搬迁（非新抽象），收益抵不过引用面 churn。理由与 ``models.py`` 同款，
+见 docs/DECISIONS.md。
+"""
 
 from __future__ import annotations
 
