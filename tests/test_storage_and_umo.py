@@ -57,6 +57,34 @@ def test_bare_group_whitelist_keeps_platform_state_isolated(tmp_path: Path) -> N
     assert set(payload["sessions"]) == {qq, telegram}
 
 
+def test_build_sessions_payload_drops_sessions_outside_whitelist() -> None:
+    """落盘快照必须过滤非白名单会话（契约 §6）：磁盘是重启后唯一真相。
+
+    内存里的会话表会在白名单变更后短暂残留（prune 与写盘不同步），不在这里
+    过滤就会写进磁盘；重启加载后那会话带着旧配额与历史“复活”。
+    """
+    _, utils, storage = _load_modules()
+    whitelisted = "qq:GroupMessage:1"
+    bare_key = "12345"
+    removed = "qq:GroupMessage:9"
+    sessions = {
+        whitelisted: storage.SessionState(recent=deque(maxlen=5)),
+        bare_key: storage.SessionState(recent=deque(maxlen=5)),
+        removed: storage.SessionState(recent=deque(maxlen=5)),
+        "   ": storage.SessionState(recent=deque(maxlen=5)),
+    }
+    sessions[removed].daily_count = 7
+
+    payload = storage.build_sessions_payload(sessions, {whitelisted, bare_key}, 5)
+    kept = payload["sessions"]
+
+    assert set(kept) == {
+        utils.whitelist_storage_key(whitelisted),
+        utils.whitelist_storage_key(bare_key),
+    }, "非白名单/空键会话不得进落盘快照"
+    assert all(entry["daily_count"] != 7 for entry in kept.values()), "已移除会话的当日配额不得残留"
+
+
 def test_parse_decision_json_rejects_missing_or_invalid_should_reply() -> None:
     _, utils, _ = _load_modules()
 
@@ -107,6 +135,25 @@ def test_is_full_umo_matches_the_segment_anchor() -> None:
     assert not utils.is_full_umo("qq:12345")
     assert not utils.is_full_umo("a:b:c:d")
     assert not utils.is_full_umo("")
+
+
+def test_is_full_umo_divergence_for_colon_bearing_session_ids_is_benign() -> None:
+    """段数判据与会话 ID 含冒号的 UMO 分歧：已实测良性，不得"顺手统一"。
+
+    ``is_full_umo`` 数冒号（恰好 2 个），``session_group_id`` 按 split(":", 2) 取段：
+    ``qq:GroupMessage:x:y`` 上前者 False、后者 ``"x:y"``。分歧本身无害——入口把
+    完整 UMO 逐字登记进 ``_whitelist_runtime_umos``，所以巡检侧把该白名单项当裸号
+    查表时照样能解析到它自己（event_umo 对该形状原样返回，登记键 === 白名单项）。
+    把这层关系钉住：后人把判据改成 ``>=`` 时会被上面的 not 断言拦住。
+    """
+    _, utils, _ = _load_modules()
+    umo = "qq:GroupMessage:x:y"
+
+    assert utils.session_group_id(umo) == "x:y"
+    assert not utils.is_full_umo(umo)
+    # 良性来源：入口登记的键就是 event_umo 的输出，而它对该形状原样返回
+    assert utils.event_umo(_UmoEvent(umo, "")) == umo
+    assert utils.session_whitelisted(umo, {umo})
 
 
 def test_session_is_private_treats_non_group_as_private() -> None:

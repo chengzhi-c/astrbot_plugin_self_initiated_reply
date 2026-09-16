@@ -30,6 +30,7 @@ from .models import (
     PLUGIN_ID,
     STALE_REPLY_MESSAGE,
     STALE_TASK_MESSAGE,
+    STOPPING_REPLY_TEXT,
     AttemptLedger,
     LocalGateCallback,
     SendOutcome,
@@ -169,7 +170,7 @@ class DeliveryRunner:
                 ledger_id,
                 umo,
             )
-            return "插件未启用。"
+            return STOPPING_REPLY_TEXT
         gate = "" if self._gate.is_current(umo, expected_generation) else STALE_TASK_MESSAGE
         if not gate:
             gate = self._local_gate(state, force=force, silence_active_at=silence_active_at)
@@ -210,7 +211,7 @@ class DeliveryRunner:
                     # 判据取 code 而非 detail 文案：detail 是日志文本，改措辞
                     # 不该改变控制流（此处曾靠 "stopping" 子串判定）。
                     if sent.code is SuppressCode.STOPPING:
-                        return "插件正在停止，放弃回复。"
+                        return STOPPING_REPLY_TEXT
                     return STALE_REPLY_MESSAGE
                 return "主动发送失败。"
         else:

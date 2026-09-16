@@ -245,6 +245,41 @@ def test_image_without_source_degrades_to_placeholder_and_still_schedules(tmp_pa
     with_plugin(tmp_path, scenario, vision_main_enabled=True)
 
 
+def test_bare_selfreply_word_is_ordinary_chat_not_a_command(tmp_path) -> None:
+    """裸词 ``selfreply ...``（无 / 无 @）必须当普通聊天，不得被当指令吞掉。
+
+    ``_is_command_entry`` 是入口安全闸门：它恒真时任何群成员发一句
+    “selfreply add” 就会收到指令回显并且消息被 ``stop_event`` 吞掉——不进观察窗口，
+    其他插件也拿不到。对照组：带前导斜杠的真指令仍必须被消费。
+    """
+    from .host_stubs import with_plugin
+
+    async def scenario(plugin, main):
+        from .test_main_runtime import _make_event
+
+        utils = sys.modules[f"{main.__package__}.utils"]
+        ingress = sys.modules[f"{main.__package__}.message_ingress"]
+        plugin.settings.abandon_stale_on_new_message = False
+
+        bare = _make_event(message_str="selfreply add")
+        bare.is_at_or_wake_command = False
+        await ingress.handle_incoming_message(plugin, bare)
+        assert bare.sent_texts == [], "裸词不得触发指令回显"
+        assert bare.is_stopped() is False, "裸词不得吞掉事件"
+        state = plugin._state_for(utils.whitelist_storage_key(utils.event_umo(bare)))
+        assert [record.text for record in state.recent] == ["selfreply add"], (
+            "裸词必须当作普通聊天进观察窗口"
+        )
+
+        cmd = _make_event(message_str="/selfreply list", is_admin=True)
+        cmd.is_at_or_wake_command = False
+        await ingress.handle_incoming_message(plugin, cmd)
+        assert cmd.is_stopped() is True, "带斜杠的真指令仍必须被消费"
+        assert cmd.sent_texts and "主动回复白名单" in cmd.sent_texts[0]
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_direct_call_defers_same_batch_proactive_reply(tmp_path) -> None:
     """被 @Bot/唤醒后，同一批消息不再触发主动回复（``skip_after_direct_call``）。
 

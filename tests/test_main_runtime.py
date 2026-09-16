@@ -1282,6 +1282,46 @@ def test_on_message_period_abandons_inflight_when_enabled(tmp_path: Path) -> Non
     with_plugin(tmp_path, scenario)
 
 
+def test_command_list_returns_sorted_whitelist_lines(tmp_path: Path) -> None:
+    """/selfreply list 输出白名单全量与空态文案。"""
+
+    async def scenario(plugin, main):
+        event = _make_event(message_str="/selfreply list")
+        plugin.settings.whitelist = set()
+        assert await plugin._command_text(event, "list") == "主动回复白名单为空。"
+
+        plugin.settings.whitelist = {"qq:GroupMessage:2", "qq:GroupMessage:1", "12345"}
+        assert await plugin._command_text(event, "list") == (
+            "主动回复白名单：\n- 12345\n- qq:GroupMessage:1\n- qq:GroupMessage:2"
+        )
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_check_session_rejects_foreign_ledger(tmp_path: Path) -> None:
+    """生成返回异账本必须中止：否则投递事实记到别的账本上，本次配额不落账。"""
+
+    async def scenario(plugin, main):
+        models = importlib.import_module(main.__package__ + ".models")
+        token = _arrange_reply_flow(plugin, main, models)
+        foreign = models.AttemptLedger()
+
+        async def fake_generate(_umo, _state, **_kwargs):
+            return models.PipelineReply(text="在呢", ledger=foreign)
+
+        plugin._generation.generate = fake_generate
+        with pytest.raises(RuntimeError, match="different attempt ledger"):
+            await plugin._pipeline.check_session_locked(
+                UMO, trigger="message_delay", force=True, expected_generation=token
+            )
+
+        assert foreign.phase == "open", "异账本不得被密封或记账"
+        assert plugin._state_for(UMO).daily_count == 0, "无提交的真账本不得计配额"
+        assert not plugin._gate.is_running(UMO), "中止后仍必须 unmark_running"
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_command_check_still_runs_private_when_disabled(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin.settings.whitelist.add(PRIVATE_UMO)
