@@ -261,32 +261,45 @@ async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]
         data = {}
     if not isinstance(data, dict):
         return {"ok": False, "error": "请求体必须是 JSON 对象"}
-    theme = plugin._ui_theme
-    dim = plugin._ui_dim
-    bold = plugin._ui_bold
-    if "theme" not in data and "dim" not in data and "bold" not in data:
-        return {"ok": False, "error": "未提供任何字段：theme / dim / bold 至少一个"}
+    # 字段校验只用请求体、不读当前状态，故可留在锁外：无效输入不应当去抢锁。
+    submitted: dict[str, Any] = {}
     if "theme" in data:
         theme = str(data.get("theme", "")).strip()
         if theme not in {"auto", "light", "dark"}:
             # 不回显 theme 原值：那是客户端可控输入，回显等于把请求体
             # 原文反射回响应。合法取值是固定枚举，直接告知即可，无需回放输入。
             return {"ok": False, "error": "无效主题，可选值：auto / light / dark"}
+        submitted["theme"] = theme
     if "dim" in data:
         if not isinstance(data["dim"], bool):
             return {"ok": False, "error": "无效压暗开关"}
-        dim = data["dim"]
+        submitted["dim"] = data["dim"]
     if "bold" in data:
         if not isinstance(data["bold"], bool):
             return {"ok": False, "error": "无效粗体开关"}
-        bold = data["bold"]
-    if (theme, dim, bold) != (plugin._ui_theme, plugin._ui_dim, plugin._ui_bold):
-        if not _save_ui_prefs(plugin, theme, dim, bold):
-            return {"ok": False, "error": "主题写入失败"}
-        plugin._ui_theme = theme
-        plugin._ui_dim = dim
-        plugin._ui_bold = bold
-    return _ui_prefs_payload(plugin)
+        submitted["bold"] = data["bold"]
+    if not submitted:
+        return {"ok": False, "error": "未提供任何字段：theme / dim / bold 至少一个"}
+    # 读-改-写整块进 _config_lock（与 POST /config 同一把，锁序仍恒为
+    # _config_lock → _save_lock）：写盘含 fsync 必须进线程，同步 fsync 会阻塞
+    # 所有会话（同 storage.apersist_settings_config 口径）；而未提交字段的
+    # 基准值又快不得在锁外读——两个并发 POST 各改一个字段时，锁外取基准值再
+    # 进锁落盘会拿旧值覆盖对方的字段。锁内复查 _stopping：无锁时写入紧接在
+    # 检查后发生，等锁后不再成立——teardown 可能已跑完，此时落盘正是上面那条
+    # 检查要挡的写入。
+    async with plugin._config_lock:
+        if plugin._stopping:
+            return {"ok": False, "error": "插件正在关闭"}
+        theme = submitted.get("theme", plugin._ui_theme)
+        dim = submitted.get("dim", plugin._ui_dim)
+        bold = submitted.get("bold", plugin._ui_bold)
+        if (theme, dim, bold) != (plugin._ui_theme, plugin._ui_dim, plugin._ui_bold):
+            if not await asyncio.to_thread(_save_ui_prefs, plugin, theme, dim, bold):
+                return {"ok": False, "error": "主题写入失败"}
+            plugin._ui_theme = theme
+            plugin._ui_dim = dim
+            plugin._ui_bold = bold
+        return _ui_prefs_payload(plugin)
 
 
 def _strict_int(value: Any, field: str) -> int:
