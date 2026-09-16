@@ -200,8 +200,10 @@ def parse_decision_json(text: str) -> dict[str, Any] | None:
         quote = raw_quote
     elif isinstance(raw_quote, str):
         normalized = raw_quote.strip().lower()
-        quote = True if normalized in {"true", "yes", "1", "是"} else (
-            False if normalized in {"false", "no", "0", "否"} else None
+        quote = (
+            True
+            if normalized in {"true", "yes", "1", "是"}
+            else (False if normalized in {"false", "no", "0", "否"} else None)
         )
     elif isinstance(raw_quote, (int, float)):
         quote = bool(raw_quote)

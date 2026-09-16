@@ -269,9 +269,7 @@ def test_direct_call_defers_same_batch_proactive_reply(tmp_path) -> None:
         assert state.last_proactive_observed_at == state.last_active_at, (
             "直接点名消息必须把观察窗口推进到本条消息"
         )
-        assert plugin._decision.local_gate(state, force=False) == (
-            "这条消息之后已经主动回复过。"
-        )
+        assert plugin._decision.local_gate(state, force=False) == ("这条消息之后已经主动回复过。")
 
         # 关闭开关即回到旧行为：只更新活跃时间，不推进观察窗口
         plugin.settings.skip_after_direct_call = False
@@ -279,8 +277,6 @@ def test_direct_call_defers_same_batch_proactive_reply(tmp_path) -> None:
         other = _make_event(message_str="@Bot 在吗")
         other.is_at_or_wake_command = True
         await ingress.handle_incoming_message(plugin, other)
-        assert state.last_proactive_observed_at == before, (
-            "开关关闭后不得再推进观察窗口"
-        )
+        assert state.last_proactive_observed_at == before, "开关关闭后不得再推进观察窗口"
 
     with_plugin(tmp_path, scenario)
