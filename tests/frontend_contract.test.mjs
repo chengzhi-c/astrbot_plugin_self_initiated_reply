@@ -1409,3 +1409,25 @@ test("a STALE_WRITE response adopts the server revision and requires a refresh",
   await io.saveConfig({ preventDefault() {} });
   assert.equal(posts, 1, "STALE_WRITE 后不得在刷新前再次提交");
 });
+
+test("boot watchdog yields to in-flight first load instead of failing early", async () => {
+  // 首屏串行两个请求（各 FETCH_TIMEOUT_MS 上限，最坏 30s）会超过 12s 的 boot
+  // 定时器：看门狗在加载在途时必须重新武装而不是误报「加载超时」，否则慢网
+  // 用户会先看到失败提示、随后配置又正常渲染。源码级契约，防止回退。
+  const app = await readFile(join(pageDir, "app.js"), "utf8");
+  assert.match(app, /let loadInFlight = false;/);
+  assert.match(
+    app,
+    /loadInFlight = true;[\s\S]*?finally\s*\{[\s\S]*?loadInFlight = false;/,
+    "loadAll 必须在收尾处置位 loadInFlight，成功与失败路径都要覆盖"
+  );
+  assert.match(
+    app,
+    /function checkBoot\(\) \{[\s\S]*?state\.configLoaded\) return;[\s\S]*?if \(loadInFlight\) \{[\s\S]*?window\.setTimeout\(checkBoot, FETCH_TIMEOUT_MS\);/,
+    "看门狗必须先查加载状态：已加载静默退出，在途则重新武装"
+  );
+  // 再查分支重写句柄（let），否则收尾路径 clearTimeout 取消不到最新的定时器，
+  // 失败后仍会弹出第二条误导性的「加载超时」。
+  assert.match(app, /let bootTimeout = window\.setTimeout\(function checkBoot/);
+  assert.match(app, /bootTimeout = window\.setTimeout\(checkBoot, FETCH_TIMEOUT_MS\);/);
+});
