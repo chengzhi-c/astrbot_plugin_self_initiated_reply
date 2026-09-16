@@ -17,6 +17,7 @@ from .models import (
     STALE_TASK_MESSAGE,
     AttemptLedger,
     AttemptState,
+    LedgerPhase,
     SessionState,
     Settings,
     now_ts,
@@ -345,11 +346,11 @@ class SessionPipeline:
             ledger.mark_record_failed("state persistence retries exhausted")
             return False
         except asyncio.CancelledError:
-            if ledger.phase == "recording":
+            if ledger.phase == LedgerPhase.RECORDING:
                 ledger.mark_record_failed("state persistence task cancelled")
             raise
         except Exception as exc:
-            if ledger.phase == "recording":
+            if ledger.phase == LedgerPhase.RECORDING:
                 ledger.mark_record_failed(str(exc))
             logger.error(
                 "[%s] proactive ledger finalizer failed ledger_id=%s session=%s error=%s",
@@ -382,9 +383,9 @@ class SessionPipeline:
         # seal() 只把 open→sealed，recorded / record_failed 只能从 recording 经
         # mark_* 到达。这两支是重入终态（由 test_attempt_ledger 锚定）：二次进入
         # 直接返回既有结论，不再挂第二条 record task。
-        if ledger.phase == "recorded":
+        if ledger.phase == LedgerPhase.RECORDED:
             return True
-        if ledger.phase == "record_failed":
+        if ledger.phase == LedgerPhase.RECORD_FAILED:
             return False
         task = cast(asyncio.Task[Any] | None, ledger.record_task)
         if task is None:
@@ -400,10 +401,10 @@ class SessionPipeline:
             )
             if not ledger.start_recording(task):
                 task.cancel()
-                return ledger.phase == "recorded"
+                return ledger.phase == LedgerPhase.RECORDED
         try:
             await asyncio.shield(cast(asyncio.Future[Any], task))
-            return ledger.phase == "recorded"
+            return ledger.phase == LedgerPhase.RECORDED
         except asyncio.CancelledError:
             await asyncio.shield(cast(asyncio.Future[Any], task))
             raise

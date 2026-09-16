@@ -111,3 +111,19 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 `test_config_schema` 断言，前端可写键由 `test_config_source_of_truth` 与 panel
 面比对，镜像实现由 `test_stage3_single_source` 反推。新增职责时按同一方式加断言，
 不靠拆文件降低阅读成本。
+
+## image/parser.py 不拆分
+
+`image/parser.py` 是第二大生产文件，同样并置三类关注点：SSRF 安全的固定地址
+传输、内容寻址缓存与清理、识图解析与描述缓存。曾评估拆出 `image/transport.py`。
+
+不拆的理由与 `models.py` 同款，且多一条测试耦合：传输层私有名
+（`_FixedAddressTransport` / `_FixedAddressBackend` / `_resolve_global_address` /
+`_global_addresses`）被 `tests/test_vision_parser_gaps.py` 直接引用，并按**本模块
+对象** monkeypatch；拆出后这些 patch 目标要逐处改指新模块，等于把"传输层守卫"
+与"解析层守卫"人为分开。而生产侧只有 `ImageParser._download_image_data_url`
+一个调用方——扇入低意味着拆分收益也低。属"高 churn、零行为收益"的纯文件搬迁。
+
+替代做法是文件顶部补齐与其余模块同款的结构说明（拥有 / 不拥有 + 分区目录）：
+让读者拿到定位索引，不复用文件边界。`webapi.py` 同理（此前只有一句 docstring），
+一并补齐。将来若测试改为只依赖公开接口，可重新评估拆分。
