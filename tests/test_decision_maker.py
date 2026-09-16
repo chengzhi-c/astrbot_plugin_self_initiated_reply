@@ -590,7 +590,5 @@ async def test_decision_prompt_appends_quote_hint_only_in_model_mode(tmp_path: P
     _, models2, model_maker, _, _ = _make_decision(
         tmp_path, {"decision_model_enabled": True, "quote_mode": "model"}
     )
-    model_prompt = await model_maker.build_decision_prompt(
-        "s1", _state(models2), "message_delay"
-    )
+    model_prompt = await model_maker.build_decision_prompt("s1", _state(models2), "message_delay")
     assert "quote" in model_prompt
