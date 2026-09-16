@@ -184,6 +184,64 @@ def load_package(package_name: str, module: str) -> types.ModuleType:
     return importlib.import_module(f"{package_name}.{module}")
 
 
+def load_modules(package_name: str, *names: str) -> tuple[types.ModuleType, ...]:
+    """按动态包名批量加载插件模块（各测试文件引导的单源实现）。
+
+    "先装宿主 stub、再按包名建包加载"是所有引导的公共前奏，调用方只给模块名。
+    包名仍由调用方持有：同一份源码在不同测试里用不同包名隔离 sys.modules，
+    各文件的模块集合也各有不同（不按名字分派，避免伪抽象）。
+    """
+    install_astrbot_stubs()
+    return tuple(load_package(package_name, name) for name in names)
+
+
+def base_runtime_capabilities(runtime: Any, **overrides: Any) -> Any:
+    """完整契约的 ``AgentRuntimeCapabilities``（validate 覆盖全部私有入口）。
+
+    归一 ``test_runtime_adapter`` 与 ``test_runtime_adapter_blindspots`` 的逐字
+    同形副本：契约字段增删时只改这里，两处用例不会各持一半。
+    """
+    base = dict(
+        import_error=None,
+        tool_set=object,
+        build_config=object,
+        build_main_agent=lambda **_k: None,
+        get_session_conv=lambda *_a: None,
+        run_agent=lambda *_a, **_k: (),
+        event_result_cls=type(
+            "Result",
+            (),
+            {"message": lambda self, t: self, "set_result_content_type": lambda self, t: self},
+        ),
+        result_content_type=type("CT", (), {"LLM_RESULT": "llm"}),
+        event_type=type(
+            "ET",
+            (),
+            {
+                "OnLLMRequestEvent": "OnLLMRequestEvent",
+                "OnDecoratingResultEvent": "OnDecoratingResultEvent",
+                "OnAfterMessageSentEvent": "OnAfterMessageSentEvent",
+            },
+        ),
+        call_event_hook=lambda *_a, **_k: True,
+        provider_request_cls=type(
+            "Req",
+            (),
+            {
+                "prompt": "",
+                "image_urls": [],
+                "audio_urls": [],
+                "func_tool": None,
+                "session_id": "",
+                "conversation": None,
+                "contexts": [],
+            },
+        ),
+    )
+    base.update(overrides)
+    return runtime.AgentRuntimeCapabilities(**base)
+
+
 def load_main() -> types.ModuleType:
     install_astrbot_stubs()
     return load_package(MAIN_PACKAGE_NAME, "main")

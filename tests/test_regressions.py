@@ -20,7 +20,7 @@ from typing import Any
 
 from .host_stubs import (
     PipelineTestAdapter,
-    install_astrbot_stubs,
+    load_modules,
     with_plugin,
 )
 from .source_contract import calls_in, logger_levels_for, method_source
@@ -37,18 +37,9 @@ PACKAGE_NAME_R3 = "selfreply_regressions_package"
 
 
 def _load_r3_modules():
-    install_astrbot_stubs()
-    package = sys.modules.get(PACKAGE_NAME_R3)
-    if package is None:
-        package = types.ModuleType(PACKAGE_NAME_R3)
-        package.__path__ = [str(ROOT)]
-        sys.modules[PACKAGE_NAME_R3] = package
-    models = importlib.import_module(f"{PACKAGE_NAME_R3}.models")
-    utils = importlib.import_module(f"{PACKAGE_NAME_R3}.utils")
-    commands = importlib.import_module(f"{PACKAGE_NAME_R3}.commands")
-    image = importlib.import_module(f"{PACKAGE_NAME_R3}.image")
-    recorder = importlib.import_module(f"{PACKAGE_NAME_R3}.image.recorder_bridge")
-    return models, utils, commands, image, recorder
+    return load_modules(
+        PACKAGE_NAME_R3, "models", "utils", "commands", "image", "image.recorder_bridge"
+    )
 
 
 # ============================================================================

@@ -14,7 +14,7 @@ import importlib
 import logging
 from pathlib import Path
 
-from .host_stubs import ROOT, install_astrbot_stubs, load_package
+from .host_stubs import ROOT, load_modules
 
 PACKAGE_NAME = "selfreply_observability_test_package"
 
@@ -114,10 +114,7 @@ def test_info_whitelist_has_no_zombie_entries() -> None:
 
 
 def _load_modules():
-    install_astrbot_stubs()
-    scheduler = load_package(PACKAGE_NAME, "scheduler")
-    models = load_package(PACKAGE_NAME, "models")
-    return scheduler, models
+    return load_modules(PACKAGE_NAME, "scheduler", "models")
 
 
 def _new_scheduler(tmp_path: Path):
