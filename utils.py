@@ -26,7 +26,6 @@ from .models import (
     WHITESPACE_PATTERN,
     MessageRecord,
     ReadHistoryCallback,
-    first_bindable_args,
     history_display_name,
 )
 
@@ -378,22 +377,26 @@ def event_sender_name(event: AstrMessageEvent) -> str:
 
 
 def event_extra(event: AstrMessageEvent, key: str, default: Any = None) -> Any:
-    """读取宿主事件的 extra 字段，跨宿主签名差异做三层回退。
+    """读取宿主事件的 extra 字段，跨宿主签名差异做两级调用回退。
 
     与本模块其余 ``event_*`` 同属宿主字段兼容探测（0.9.3 自 main.py 外迁）。
-    回退阶梯：无 ``get_extra`` → 默认值；可检查签名时先预绑定双参，若仅单参
-    可绑定则调用 ``get_extra(key)``；无法检查签名时仅尝试双参一次；仍失败或取到
-    None → 默认值。
+    本函数在消息热路径（每条进入 on_message 的事件都调一次），故不用
+    ``first_bindable_args`` 的 ``inspect.signature`` 预检——那要把签名解析
+    开销花在每条消息上。``get_extra`` 是纯读：先按双参调用，签名不兼容
+    （旧宿主单参形态）抛 TypeError 时退一次单参调用，重复读取无害。有
+    副作用风险的宿主调用（LLM、落盘）仍走 ``first_bindable_args``，那边
+    “预检绝不调用”的契约不变。
     """
     get_extra = getattr(event, "get_extra", None)
     if not callable(get_extra):
         return default
-    picked = first_bindable_args(get_extra, [((key, default), {}), ((key,), {})])
-    if picked is None:
-        return default
-    args, _kwargs = picked
     try:
-        value = get_extra(*args, **_kwargs)
+        value = get_extra(key, default)
+    except TypeError:
+        try:
+            value = get_extra(key)
+        except Exception:
+            return default
     except Exception:
         return default
     return default if value is None else value

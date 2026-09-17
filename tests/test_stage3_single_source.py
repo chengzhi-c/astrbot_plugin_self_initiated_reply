@@ -140,12 +140,12 @@ def test_accepted_content_invalidates_once() -> None:
 
 
 def test_state_payload_is_built_in_one_place() -> None:
-    """同步/异步两条落盘路径共用 ``_build_payload``。"""
+    """同步/异步两条落盘路径共共用 ``_build_payload``。"""
     owners = callers_of("plugin_state.py", "build_sessions_payload")
     assert owners == ["_build_payload"], (
         f"build_sessions_payload 的调用者应只有 _build_payload，实为 {owners}"
     )
-    for name in ("save_storage_snapshot", "save_storage"):
+    for name in ("save_storage_sync", "save_storage"):
         assert "_build_payload(plugin)" in method_source("plugin_state.py", name)
 
 

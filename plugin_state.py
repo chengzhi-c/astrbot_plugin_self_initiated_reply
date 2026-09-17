@@ -21,6 +21,7 @@ from .models import (
 from .storage import (
     apersist_settings_config,
     build_sessions_payload,
+    sessions_payload_matches,
     write_sessions_payload,
 )
 from .utils import (
@@ -174,17 +175,20 @@ def _build_payload(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     )
 
 
-def save_storage_snapshot(plugin: SelfInitiatedReplyPlugin) -> bool:
-    # 直接使用本模块全局名：测试 patch ``plugin_state.write_sessions_payload`` 即可生效。
+def save_storage_sync(plugin: SelfInitiatedReplyPlugin) -> None:
+    """启动期状态落盘：磁盘已与待写快照一致时跳过（无谓 fsync 与 mtime 扰动）。
+
+    仅 ``__init__`` 调用：刚从同一文件加载出的内容零变化时重写是纯浪费；
+    首启（文件不存在）与真实变更（白名单过滤、跨天）则照常写。
+    """
     try:
-        return write_sessions_payload(plugin._storage_path, _build_payload(plugin))
+        payload = _build_payload(plugin)
     except Exception as exc:
         logger.error("[%s] failed to prepare state snapshot: %s", PLUGIN_ID, exc, exc_info=True)
-        return False
-
-
-def save_storage_sync(plugin: SelfInitiatedReplyPlugin) -> None:
-    if not save_storage_snapshot(plugin):
+        return
+    if sessions_payload_matches(plugin._storage_path, payload):
+        return
+    if not write_sessions_payload(plugin._storage_path, payload):
         logger.warning("[%s] initial state save failed path=%s", PLUGIN_ID, plugin._storage_path)
 
 

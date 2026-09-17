@@ -110,6 +110,7 @@ const REFRESH_ARM_MS = 3000;
 const TOAST_MS = 2200;
 const PREVIEW_DEBOUNCE_MS = 80;
 const BOOT_TIMEOUT_MS = 12000;
+let toastTimer = null;
 
 function setStatState(element, stateName) {
 	if (!element) return;
@@ -122,8 +123,8 @@ function showToast(message, isError = false) {
 	els.toast.textContent = message;
 	els.toast.setAttribute("role", isError ? "alert" : "status");
 	els.toast.classList.add("show");
-	window.clearTimeout(showToast.timer);
-	showToast.timer = window.setTimeout(
+	window.clearTimeout(toastTimer);
+	toastTimer = window.setTimeout(
 		() => els.toast.classList.remove("show"),
 		TOAST_MS,
 	);

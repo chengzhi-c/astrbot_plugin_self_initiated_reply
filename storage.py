@@ -87,6 +87,33 @@ def _persist_config_obj(config_obj: Any, data: dict[str, Any]) -> bool:
     return False
 
 
+def config_file_matches(path: Path, settings: Settings) -> bool:
+    """启动跳写判据：磁盘配置已解析内容与 ``Settings`` 序列化结果是否逐字等价。
+
+    只有等价才可跳过启动期的规范化落盘：文件缺失/损坏/非对象一律返回 False，
+    确保首启创建与旧形状迁移照常写。比较用 ``to_config_dict()`` 的正式键形态，
+    集合已按排序输出，与落盘字节同源。
+    """
+    try:
+        if not path.exists():
+            return False
+        disk = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    return isinstance(disk, dict) and disk == settings.to_config_dict()
+
+
+def sessions_payload_matches(path: Path, payload: dict[str, Any]) -> bool:
+    """状态文件跳写判据（与 config_file_matches 同构）：等价才跳。"""
+    try:
+        if not path.exists():
+            return False
+        disk = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    return isinstance(disk, dict) and disk == payload
+
+
 def write_json_atomic(path: Path, data: dict[str, Any]) -> bool:
     tmp_path: Path | None = None
     try:

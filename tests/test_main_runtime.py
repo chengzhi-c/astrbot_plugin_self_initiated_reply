@@ -1567,6 +1567,101 @@ def test_startup_persist_failure_is_logged(tmp_path: Path, monkeypatch: Any, cap
     )
 
 
+def test_startup_writes_skipped_when_disk_already_current(tmp_path: Path) -> None:
+    """磁盘内容已与序列化结果一致时，二次加载不再重写配置与状态。
+
+    首启落盘后，绝大多数 reload 中两份文件零变化：无条件重写只产生相同字节、
+    两次 fsync 与宿主 save_config 副作用，还扰动 mtime。契约：内容一致 → 跳过。
+    断言在 scenario 内（构造后、terminate 前）——terminate 的兑底落盘是
+    独立路径，不属于“启动写盘”。跳过不碰失败可见性（那由
+    test_startup_persist_failure_is_logged 钉在“真的写了”的路径上）。
+    """
+    import sys
+
+    from .host_stubs import MAIN_PACKAGE_NAME, load_main, with_plugin
+
+    async def first_load(plugin, _main):
+        return None
+
+    # 首启：文件不存在 → 必写
+    with_plugin(tmp_path, first_load)
+    config_path = tmp_path / "config" / "astrbot_plugin_self_initiated_reply_config.json"
+    state_path = tmp_path / "data" / "astrbot_plugin_self_initiated_reply" / "state.json"
+    assert config_path.exists(), "首启没有创建配置文件——本用例前提失效"
+    assert state_path.exists(), "首启没有创建状态文件——本用例前提失效"
+
+    main = load_main()
+    plugin_state = sys.modules[f"{MAIN_PACKAGE_NAME}.plugin_state"]
+    config_writes: list[int] = []
+    state_writes: list[int] = []
+    original_persist = main.persist_settings_config
+    original_write_sessions = plugin_state.write_sessions_payload
+
+    def counting_persist(*args: Any, **kwargs: Any) -> bool:
+        config_writes.append(1)
+        return True
+
+    def counting_write_sessions(*args: Any, **kwargs: Any) -> bool:
+        state_writes.append(1)
+        return True
+
+    async def second_load(plugin, _main):
+        # 打桩必须发生在构造之前（启动写盘在 __init__ 里），断言发生在
+        # scenario 内（terminate 兑底落盘之前）。
+        assert config_writes == [], (
+            "磁盘未变化时仍重写了配置（无谓 fsync + 宿主 save_config 副作用）"
+        )
+        assert state_writes == [], "磁盘未变化时仍重写了状态文件（无谓 fsync）"
+
+    main.persist_settings_config = counting_persist
+    plugin_state.write_sessions_payload = counting_write_sessions
+    try:
+        with_plugin(tmp_path, second_load)
+    finally:
+        main.persist_settings_config = original_persist
+        plugin_state.write_sessions_payload = original_write_sessions
+
+
+def test_startup_still_writes_when_disk_shape_differs(tmp_path: Path) -> None:
+    """磁盘与序列化结果不一致（旧形状/缺键）时，启动写盘不得被跳过。
+
+    跳写判据只有“逐字等价”一种可以跳：旧键形状、迁移遗留、部分写入都
+    必须照常重写，否则旧形状永远留在盘上，规范化落盘退化为只对首启生效。
+    """
+    import json
+
+    from .host_stubs import load_main, with_plugin
+
+    async def first_load(plugin, _main):
+        return None
+
+    with_plugin(tmp_path, first_load)
+    config_path = tmp_path / "config" / "astrbot_plugin_self_initiated_reply_config.json"
+    on_disk = json.loads(config_path.read_text(encoding="utf-8"))
+    on_disk.pop("cooldown_sec")  # 制造旧形状：缺一个正式键
+    config_path.write_text(json.dumps(on_disk, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    main = load_main()
+    config_writes: list[int] = []
+    original_persist = main.persist_settings_config
+
+    def counting_passthrough(*args: Any, **kwargs: Any) -> bool:
+        config_writes.append(1)
+        return original_persist(*args, **kwargs)
+
+    async def second_load(plugin, _main):
+        # 迁移发生在 __init__，进入 scenario 时磁盘应已回到正式形状
+        assert config_writes, "磁盘为旧形状时启动没有重写配置——迁移落盘被误跳"
+        migrated = json.loads(config_path.read_text(encoding="utf-8"))
+        assert "cooldown_sec" in migrated, "重写后磁盘仍是旧形状"
+
+    main.persist_settings_config = counting_passthrough
+    try:
+        with_plugin(tmp_path, second_load)
+    finally:
+        main.persist_settings_config = original_persist
+
+
 def test_messages_during_running_check_coalesce_to_one_follow_up(tmp_path: Path) -> None:
     """检查进行中连来多条消息，只允许再跟一次判断，不得叠出多条并行模型调用。"""
 
