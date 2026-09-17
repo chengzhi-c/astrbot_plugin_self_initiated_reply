@@ -3,7 +3,7 @@
 全部函数无状态（仅依赖入参），供 main/scheduler/decision 与测试共用。
 职责四簇：
 - 事件字段提取：event_text/event_umo/event_sender_* 等，统一宿主事件访问口径；
-- 文本清洗与判定：clean_chat_text/is_at_*/looks_like_reply_request 等；
+- 文本清洗与判定：clean_chat_text/is_at_* 等；
 - 白名单与历史记录：session_whitelisted/whitelist_storage_key/build_history_text 等；
 - 凭证脱敏：redact_url/redact_exc_text，供日志与对外 reason 共用同一口径。
 """
@@ -47,28 +47,6 @@ _JSON_BODY_PATTERN = re.compile(r"\{[\s\S]*\}")
 _REPLY_FENCE_PATTERN = re.compile(r"^```(?:text)?\s*|\s*```$", re.IGNORECASE)
 _REPLY_PREFIX_PATTERN = re.compile(r"^(?:回复|答复)\s*[:：]\s*")
 _SENTENCE_TAIL_PATTERN = re.compile(r"^([\s\S]*[。！？.!?])[^。！？.!?]*$")
-
-ALIAS_REPLY_REQUEST_PATTERN = re.compile(
-    r"(?:"
-    r"(?:回|回复|回应|理|搭理)(?:我|一下|下|句|句话|啊|嘛|呢)?|"
-    r"(?:说|讲)(?:话|句|句话|一下|下|啊|嘛|呢)?|"
-    r"(?:吱声|吱个声|冒泡|出来)(?:一下|下|啊|嘛|呢)?|"
-    r"(?:出来)?(?:冒泡)(?:一下|下|啊|嘛|呢)?|"
-    r"(?:在吗|还在吗|你在吗|听得到|看得到)|"
-    r"(?:快点|赶紧|速速)(?:回|回复|说|讲|理|出来)(?:一下|下|句话|句|话|啊|嘛|呢)?|"
-    r"(?:发|发个|发张|来|来个|来张|整|整个|丢|甩|给|找|搜|搜索)(?:个|张|一个|一张)?(?:表情包|表情|图|gif|动图)"
-    r")"
-)
-GENERAL_REPLY_REQUEST_PATTERNS = tuple(
-    re.compile(pattern)
-    for pattern in (
-        r"^(?:有人吗|在吗|还在吗|听得到吗?|看得到吗?)$",
-        r"^(?:发|发个|发张|来|来个|来张|整|整个|丢|甩)(?:一个|一张|个|张)?(?:表情包|表情|图|gif|动图)$",
-        r"^(?:表情包|表情|图|gif|动图)(?:来|发|整|给)(?:一个|一下|下)?$",
-        r"^(?:找|搜|搜索)(?:个|张)?(?:表情包|表情|图|gif|动图)$",
-    )
-)
-
 
 # 日志/对外文本中 URL 的最大呈现长度（含脱敏标记）：与脱敏前的裸截断口径一致，
 # 避免"为了安全"反而把日志行拉宽。
@@ -493,47 +471,6 @@ def clean_chat_text(text: str) -> str:
     raw = _INLINE_AT_PATTERN.sub("", raw)
     raw = _INLINE_MENTION_PATTERN.sub("", raw)
     return collapse_whitespace(raw)
-
-
-def is_alias_call(text: str, aliases: list[str]) -> bool:
-    normalized = strip_leading_mentions(text).strip()
-    for alias in aliases:
-        if alias and normalized == alias:
-            return True
-    return False
-
-
-def _compact_reply_request_text(text: str) -> str:
-    # 去空白后硬截断：超长畸形输入（如粘贴长文本）只需检测头部语义，
-    # 同时避免超长输入喂给后续正则造成线性放大。
-    return WHITESPACE_PATTERN.sub("", str(text or "").lower())[:200]
-
-
-def _alias_request_tail(text: str, aliases: list[str]) -> str:
-    normalized = _compact_reply_request_text(strip_leading_mentions(text))
-    for alias in aliases:
-        compact_alias = _compact_reply_request_text(alias)
-        if not compact_alias:
-            continue
-        if normalized == compact_alias:
-            return ""
-        if normalized.startswith(compact_alias):
-            return normalized[len(compact_alias) :].lstrip("，,。.!！?？:：-—")
-    return ""
-
-
-def looks_like_reply_request(text: str, aliases: list[str]) -> bool:
-    normalized = _compact_reply_request_text(text)
-    if not normalized:
-        return False
-    if is_alias_call(text, aliases):
-        return True
-
-    alias_tail = _alias_request_tail(text, aliases)
-    if alias_tail and ALIAS_REPLY_REQUEST_PATTERN.fullmatch(alias_tail):
-        return True
-
-    return any(pattern.search(normalized) for pattern in GENERAL_REPLY_REQUEST_PATTERNS)
 
 
 def dedupe_message_records(records: list[MessageRecord]) -> list[MessageRecord]:

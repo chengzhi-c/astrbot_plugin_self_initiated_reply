@@ -147,7 +147,6 @@ HOST_DANGEROUS_TOOL_IDS: frozenset[str] = frozenset(
 # 断言钉住。
 
 
-REPLY_REQUEST_WINDOW_SEC = 180  # 明确请求窗口：3分钟内的接话请求视为有效
 EVENT_CLEANUP_INTERVAL_SEC = 3600  # 事件清理间隔：1小时清理一次陈旧事件
 MAX_CACHED_EVENTS = 100  # 最大缓存事件数：防止内存无限增长
 PATROL_BACKOFF_DELAY_SEC = 60  # 巡检失败退避延迟：避免错误循环
@@ -464,7 +463,6 @@ class CheckTrigger(StrEnum):
     """会话检查触发名。拼错在加载期变成 AttributeError，不再静默漏判。"""
 
     MESSAGE_DELAY = "message_delay"
-    REPLY_REQUEST = "reply_request"
     PATROL = "patrol"
     MANUAL = "manual"
 
@@ -880,7 +878,6 @@ _PANEL = frozenset({"host", "panel"})
 CONFIG_SPECS: tuple[ConfigSpec, ...] = (
     ConfigSpec("enabled", "bool", True, audited=True, surfaces=_PANEL),
     ConfigSpec("decision_model_enabled", "bool", True, surfaces=_PANEL),
-    ConfigSpec("reply_request_requires_model", "bool", False, surfaces=_PANEL),
     ConfigSpec(
         "judge_provider_id",
         "str",
@@ -1264,7 +1261,6 @@ class Settings:
     decision_temperature: float
     decision_timeout_sec: float
     decision_model_enabled: bool
-    reply_request_requires_model: bool
     reply_length_mode: str
     allow_multiline_reply: bool
     max_reply_chars: int

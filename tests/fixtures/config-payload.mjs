@@ -15,7 +15,6 @@ export function configPayload(overrides = {}) {
     enabled_private_sessions: true,
     abandon_stale_on_new_message: false,
     skip_after_direct_call: true,
-    reply_request_requires_model: false,
     quote_mode: "off",
     quote_probability: 50,
     judge_provider_id: "",

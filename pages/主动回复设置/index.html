@@ -676,19 +676,6 @@
               <span>启用提示词判断模型</span>
             </label>
 
-            <label class="toggle-row">
-              <input
-                type="checkbox"
-                id="replyRequestRequiresModelInput"
-                data-config-key="reply_request_requires_model"
-              />
-              <span>明确接话请求也交给判断模型</span>
-            </label>
-            <p class="muted">
-              默认关闭：「在吗 / 有人吗 / 说句话 / 发表情包」这类明确请求会直接接话，
-              不询问判断模型。开启后它们同样先由判断模型裁决，判断提示词对这些请求才真正生效
-              ——觉得主动回复过于频繁时可开启（需保持「启用提示词判断模型」开启）。
-            </p>
 
             <div class="field-grid model-grid">
               <div

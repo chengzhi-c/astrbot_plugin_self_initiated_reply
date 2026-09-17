@@ -111,9 +111,9 @@ class SessionScheduler:
     # ------------------------------------------------------------------
 
     def message_trigger_delay(self, trigger: str) -> int:
+        # 触发源只剩消息静默一种：延迟不得低于静默门槛（短于静默期的检查
+        # 只会反复撞「静默不足」闸门空转）。
         min_silence = max(0, int(self.settings.min_silence_sec))
-        if trigger == CheckTrigger.REPLY_REQUEST:
-            return min_silence
         return max(int(self.settings.message_delay_sec), min_silence)
 
     def remaining_silence_sec(self, state: SessionState) -> float:

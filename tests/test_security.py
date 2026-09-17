@@ -209,27 +209,6 @@ def test_clean_reply_still_collapses_when_multiline_disabled() -> None:
     assert reply == "第一行内容 第二行内容"
 
 
-def test_reply_request_detection_truncates_overlong_input() -> None:
-    """超长畸形输入只检测头部语义，不会造成正则放大或误报。"""
-    _, utils, _, _, _ = _load_r3_modules()
-
-    # 标准别名接话请求不受影响
-    assert utils.looks_like_reply_request("阿c回一下", ["阿c"]) is True
-    assert utils.looks_like_reply_request("阿c在吗", ["阿c"]) is True
-    # 别名 + 超长尾巴：全匹配语义下本就不是接话请求，截断后行为一致
-    assert utils.looks_like_reply_request("阿c" + "很长的尾巴" * 200, ["阿c"]) is False
-    # 超长普通闲聊不得误判为接话请求
-    assert utils.looks_like_reply_request("今天天气不错" + "啊" * 500, []) is False
-    # 全匹配语义："在吗"+超长尾巴截断后仍不得误匹配锚定模式（glm52 红灯复核场景）
-    assert utils.looks_like_reply_request("在吗" + "普通聊天内容" * 50, []) is False
-    assert utils.looks_like_reply_request("发个表情包" + "了" * 300, []) is False
-
-
-# ============================================================================
-# RL-3 判断提示词的多行结构被清洗破坏（中危）
-# ============================================================================
-
-
 def test_recent_messages_block_keeps_line_structure() -> None:
     """recent_messages 是多行聊天记录，清洗不应把它压成一行。
 
@@ -845,61 +824,6 @@ def test_admin_ids_hot_reload_on_file_change(tmp_path: Path) -> None:
         assert plugin._refresh_admin_ids() == {"222"}
 
     with_plugin(tmp_path, scenario)
-
-
-def test_bare_alias_is_itself_a_reply_request() -> None:
-    """只喊别名（``is_alias_call`` 命中）本身就是接话请求。
-
-    此前所有用例都走「别名 + 尾巴」或「无别名的通用模式」两条路，
-    ``is_alias_call`` 的 ``return True`` 与 ``looks_like_reply_request`` 里对它的
-    短路从未执行——真正生效的只有后面的 alias_tail 与通用模式。若哪天短路被改坏，
-    裸别名会退到通用模式判定，"阿c" 不含任何锚定词，于是静默变成「不是接话请求」。
-    """
-    _, utils, _ = _load_sec_modules()
-
-    # is_alias_call 自身：全等命中，且不受前导 @ 影响
-    assert utils.is_alias_call("阿c", ["阿c"]) is True
-    assert utils.is_alias_call("阿c", ["别的名字", "阿c"]) is True
-    # 反向锚：别名只做全等，不做前缀
-    assert utils.is_alias_call("阿c回一下", ["阿c"]) is False
-    assert utils.is_alias_call("阿c", []) is False
-
-    # looks_like_reply_request 的短路：裸别名不经通用模式即成立
-    assert utils.looks_like_reply_request("阿c", ["阿c"]) is True
-    # 同一串在没有该别名时不成立 —— 证明 True 只来自别名短路那一级
-    assert utils.looks_like_reply_request("阿c", []) is False
-
-
-def test_empty_after_compaction_is_not_a_reply_request() -> None:
-    """去空白后为空的输入必须直接判否，不得进入别名与通用模式匹配。
-
-    纯空白/纯换行是宿主可能送进来的真实形状（如只发了个空格）。早退这一行未被执行
-    时，空串会一路走到 ``GENERAL_REPLY_REQUEST_PATTERNS``，任何写成可匹配空串的模式
-    都会让「发个空格」触发主动回复。
-    """
-    _, utils, _ = _load_sec_modules()
-
-    for blank in ("", "   ", "\n\n", "\t \r\n"):
-        assert utils.looks_like_reply_request(blank, ["阿c"]) is False
-
-    # 空白别名不得让任何输入命中别名链
-    assert utils.looks_like_reply_request("   ", ["  "]) is False
-
-
-def test_whitespace_only_alias_is_skipped_in_tail_matching() -> None:
-    """空白别名在 ``_alias_request_tail`` 里必须跳过，不能当成"空前缀"命中。
-
-    ``_compact_reply_request_text`` 会把 ``"  "`` 压成空串，而任何字符串都
-    ``startswith("")``。若不跳过，配置里一个手滑的空白别名会让**所有**消息都被
-    当作「别名 + 尾巴」，尾巴取整句去匹配锚定模式，主动回复触发面被悄悄放大。
-    """
-    _, utils, _ = _load_sec_modules()
-
-    # 只有空白别名：整句不得被当作别名尾巴
-    assert utils.looks_like_reply_request("今天天气不错", ["  "]) is False
-    # 空白别名与真别名共存：真别名照常工作，空白项只被跳过
-    assert utils.looks_like_reply_request("阿c回一下", ["  ", "阿c"]) is True
-    assert utils.looks_like_reply_request("阿c", ["  ", "阿c"]) is True
 
 
 def test_clean_reply_returns_empty_when_filtering_consumes_everything() -> None:

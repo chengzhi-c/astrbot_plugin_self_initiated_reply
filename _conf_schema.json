@@ -8,14 +8,8 @@
   "decision_model_enabled": {
     "type": "bool",
     "description": "启用判断模型",
-    "hint": "开启后，普通消息会先用提示词判断是否适合主动回复；关闭后只响应明确接话/表情包请求和手动检查（后台巡检仍会触发）。回复生成仍走 AstrBot 主 Agent 管线。",
+    "hint": "开启后，普通消息会先用提示词判断是否适合主动回复；关闭后仅后台巡检与手动检查会触发主动回复。回复生成仍走 AstrBot 主 Agent 管线。",
     "default": true
-  },
-  "reply_request_requires_model": {
-    "type": "bool",
-    "description": "明确接话请求也交给判断模型",
-    "hint": "默认关闭：检测到「在吗 / 有人吗 / 说句话 / 发表情包」这类明确请求时直接接话，不询问判断模型（那类句子的意图本身已经很明确）。开启后这些请求同样先由判断模型裁决，判断提示词对它们才真正生效——若感觉主动回复过于频繁，可开启此开关，并确认「判断模型」处于开启状态。",
-    "default": false
   },
   "judge_provider_id": {
     "type": "string",
@@ -107,7 +101,7 @@
   "quote_probability": {
     "type": "int",
     "description": "引用概率（%）",
-    "hint": "0 表示从不引用，100 表示每次都引用。用于 random 模式，以及 model 模式下判断模型未给出引用决定时（例如明确请求直通、手动检查）。",
+    "hint": "0 表示从不引用，100 表示每次都引用。用于 random 模式，以及 model 模式下判断模型未给出引用决定时（例如手动检查）。",
     "default": 50,
     "slider": {
       "min": 0,
@@ -124,7 +118,7 @@
   "bot_aliases": {
     "type": "list",
     "description": "Bot 昵称",
-    "hint": "用于识别“阿c回一下”这类非 @ 的接话请求。",
+    "hint": "用于判断提示词的 {bot_aliases} 变量，让模型知道 Bot 的昵称。",
     "default": []
   },
   "ignored_sender_ids": {
