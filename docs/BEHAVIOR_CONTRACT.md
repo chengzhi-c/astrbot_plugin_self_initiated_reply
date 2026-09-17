@@ -208,7 +208,7 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
 
 ## 12. 发布产物验证
 
-（1.3.4 修订：发布链改为 `git archive`，本章原有 wheel/sdist 检查条目随发布栈裁撤。
+（Unreleased 修订：发布链改为 `git archive`，本章原有 wheel/sdist 检查条目随发布栈裁撤。
 理由与裁撤清单见 `docs/DECISIONS.md` 的「发布产物」一节：分发主路径是插件市场
 （git 仓库），不产生 wheel，而原有三层互锁（pyproject exclude ↔ 检查脚本禁运名单
 ↔ pathspec 交叉核验）的全部维护成本只服务于手工部署 zip 这一次要路径。）

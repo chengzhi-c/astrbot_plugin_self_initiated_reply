@@ -216,6 +216,24 @@ def test_enforce_final_tool_policy_fail_closed_aborts_run(tmp_path: Path) -> Non
     with_plugin(tmp_path, scenario)
 
 
+def test_enforce_final_tool_policy_inherit_mode_fails_closed(tmp_path: Path) -> None:
+    """继承模式（inherit_tools=True）下 denylist 无法执行时同样必须中止运行。
+
+    继承模式放行宿主工具链，但宿主级危险工具（cron、浏览器、电脑使用等）
+    仍永远拒绝——enforce_final_tool_policy 是拦截 hook 在 build 后注入危险
+    工具的最终防线（fail-closed）。此前只有非继承模式的失败路径有断言，
+    继承分支的失败路径零覆盖：把 drop 分支的 return False 改成 return True
+    不会红。
+    """
+
+    async def scenario(plugin, main):
+        bad_req = type("Req", (), {"func_tool": type("Bad", (), {"tools": None})()})()
+        # tools=None 使 filter_final_tools 无法枚举 → False → 必须中止
+        assert plugin._generation.enforce_final_tool_policy(bad_req, True) is False
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> None:
     """核心管线集成：build 注入工具 → 两次 enforce 清空（含 hook 注入）→ run 期间
     tool_direct 直发被计数/抑制 → finally 恢复 event.send 与 plugins_name。"""

@@ -453,18 +453,6 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
     return str(raw or "").strip()
 
 
-# 安全敏感配置键：变更记 INFO 审计日志。webapi 无独立鉴权，
-# 访问控制依赖宿主 Dashboard；留痕便于事后追溯。
-#
-# 由规格表的 audited 标记派生：此前是手工名单，与
-# `_parse_config_updates` 分处两地，漏一处审计就静默失效——注释里那两条
-# 「新增键的前提」正是在手工维护这个约束。现在两者同源于 CONFIG_SPECS，
-# 前提由 tests/test_config_schema.py 的守卫强制。
-#
-# 入表理由（语义仍需人判断，故记录在此）：Provider 类键
-# （judge/vision/vision_judge）决定群聊上下文与图片发往哪个上游端点，被改指向
-# 攻击者 provider 即为持续数据外泄；vision_*_enabled 是图片外发总开关；
-# ignored_sender_ids 能静默屏蔽特定用户（含管理员），是可滥用的隐蔽开关。
 def _config_update_was_adjusted(
     spec: ConfigSpec, submitted: Any, normalized: dict[str, Any]
 ) -> bool:
@@ -482,6 +470,18 @@ def _config_update_was_adjusted(
     return submitted != actual
 
 
+# 安全敏感配置键：变更记 INFO 审计日志。webapi 无独立鉴权，
+# 访问控制依赖宿主 Dashboard；留痕便于事后追溯。
+#
+# 由规格表的 audited 标记派生：此前是手工名单，与
+# `_parse_config_updates` 分处两地，漏一处审计就静默失效——注释里那两条
+# 「新增键的前提」正是在手工维护这个约束。现在两者同源于 CONFIG_SPECS，
+# 前提由 tests/test_config_schema.py 的守卫强制。
+#
+# 入表理由（语义仍需人判断，故记录在此）：Provider 类键
+# （judge/vision/vision_judge）决定群聊上下文与图片发往哪个上游端点，被改指向
+# 攻击者 provider 即为持续数据外泄；vision_*_enabled 是图片外发总开关；
+# ignored_sender_ids 能静默屏蔽特定用户（含管理员），是可滥用的隐蔽开关。
 _AUDITED_CONFIG_KEYS = tuple(spec.key for spec in CONFIG_SPECS if spec.audited)
 
 

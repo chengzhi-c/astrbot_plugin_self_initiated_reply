@@ -250,7 +250,12 @@ def duration(seconds: float) -> str:
         return f"{seconds}s"
     if seconds < _HOUR_SECONDS:
         return f"{seconds // _MINUTE_SECONDS}m{seconds % _MINUTE_SECONDS}s"
-    return f"{seconds // _HOUR_SECONDS}h{seconds % _HOUR_SECONDS // _MINUTE_SECONDS}m"
+    # 小时档同样保留秒：三档口径一致，否则 72h0m50s 会丢成 72h0m。
+    return (
+        f"{seconds // _HOUR_SECONDS}h"
+        f"{seconds % _HOUR_SECONDS // _MINUTE_SECONDS}m"
+        f"{seconds % _MINUTE_SECONDS}s"
+    )
 
 
 def as_bool(value: Any, default: bool = False) -> bool:
