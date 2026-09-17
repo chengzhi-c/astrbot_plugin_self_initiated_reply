@@ -25,6 +25,9 @@ def test_multi_session_cancel_converges_all_tables(tmp_path: Path) -> None:
     """
 
     async def scenario(plugin, main):
+        # 启动图片清理是短命后台任务（rglob 不跑事件循环），等它退出后再取基线；
+        # 常驻的只有 image cleanup 循环，基线恒为 1。
+        await until(lambda: len(plugin._background_tasks) <= 1)
         baseline_tasks = len(plugin._background_tasks)
         assert baseline_tasks == 1  # 常驻 image cleanup 任务
         umos = [f"leak{i}:group:g" for i in range(5)]

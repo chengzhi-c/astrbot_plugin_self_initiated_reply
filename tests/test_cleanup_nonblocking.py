@@ -174,6 +174,49 @@ async def test_settings_config_write_offloads_file_io_to_thread(tmp_path: Path) 
         storage.write_json_atomic = original
 
 
+def test_startup_image_cleanup_offloads_disk_walk_when_loop_runs(tmp_path: Path) -> None:
+    """插件构造期的启动清理：事件循环在跑时不得同步遍历磁盘。
+
+    历史实现无条件同步调 ``cleanup_image_sources``（rglob + 全量 stat，配额
+    256MB），插件每次 reload 都会在宿主事件循环上阻塞数百毫秒。契约：有
+    运行中的事件循环 → 经后台任务走 ``run_image_cleanup``（磁盘部分由其
+    内部 to_thread 承担）；无循环（同步加载的宿主）→ 保持同步路径。
+    """
+    from .host_stubs import load_main, until, with_plugin
+
+    main = load_main()
+    cls = main.SessionScheduler
+    calls: list[str] = []
+    original_sync = cls.cleanup_image_sources
+    original_async = cls.run_image_cleanup
+
+    async def async_probe(self) -> int:
+        calls.append("async")
+        return 0
+
+    def sync_probe(self, *, now: float | None = None) -> int:
+        calls.append("sync")
+        return 0
+
+    cls.cleanup_image_sources = sync_probe  # type: ignore[method-assign]
+    cls.run_image_cleanup = async_probe  # type: ignore[method-assign]
+    try:
+
+        async def scenario(plugin, _main):
+            # 后台清理任务在构造后由事件循环调度；等它真正跑到调用点
+            await until(lambda: "async" in calls)
+            return None
+
+        with_plugin(tmp_path, scenario)
+        assert "sync" not in calls, (
+            "构造期在事件循环内同步执行了磁盘遍历（rglob+stat 阻塞插件加载）"
+        )
+        assert "async" in calls, "构造期没有调度后台清理（run_image_cleanup 未被调用）"
+    finally:
+        cls.cleanup_image_sources = original_sync
+        cls.run_image_cleanup = original_async
+
+
 def test_mutating_webapi_endpoints_write_off_the_event_loop(tmp_path: Path) -> None:
     """会落盘的 webapi POST 端点，写盘必须离开事件循环线程。
 

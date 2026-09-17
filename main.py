@@ -103,6 +103,7 @@ from .scheduler import SessionScheduler
 from .session_coordinator import SessionCoordinator
 from .session_pipeline import SessionPipeline
 from .storage import (
+    config_file_matches,
     load_config_data,
     load_sessions,
     persist_settings_config,
@@ -164,15 +165,17 @@ class SelfInitiatedReplyPlugin(Star):
         self.bridge = AstrBotBridge(context)
 
         # 首次规范化落盘：把历史配置文件里的旧键写法（别名、超限值）写成正式
-        # 形状。失败只让 write_json_atomic 记一条 warning 的话，用户看到的是
-        # "配置正常加载、插件正常工作"，而磁盘上一直是旧形状——这里补一条
-        # ERROR，把"下次启动还会再迁一遍"的实情说清楚。
-        if not persist_settings_config(self._config_path, self.config, self.settings):
-            logger.error(
-                "[%s] 配置规范化落盘失败，本次运行仍用已加载配置：%s",
-                PLUGIN_ID,
-                self._config_path,
-            )
+        # 形状。磁盘已与序列化结果一致时跳过——重写只产生相同字节、两次 fsync
+        # 与宿主 save_config 副作用，还扰动 mtime。失败只让 write_json_atomic
+        # 记一条 warning 的话，用户看到的是 "配置正常加载、插件正常工作"，而磁盘上
+        # 一直是旧形状——这里补一条 ERROR，把"下次启动还会再迁一遍"的实情说清楚。
+        if not config_file_matches(self._config_path, self.settings):
+            if not persist_settings_config(self._config_path, self.config, self.settings):
+                logger.error(
+                    "[%s] 配置规范化落盘失败，本次运行仍用已加载配置：%s",
+                    PLUGIN_ID,
+                    self._config_path,
+                )
 
         self.sessions = load_sessions(
             self._storage_path,
@@ -227,12 +230,18 @@ class SelfInitiatedReplyPlugin(Star):
         self._assemble_components()
 
         self._save_storage_sync()
+        # 启动清理：rglob+全量 stat（配额 256MB）不得跑在宿主事件循环上。
+        # 有运行中的循环 → 后台任务走 run_image_cleanup（磁盘部分内部 to_thread）；
+        # 无循环（同步加载的宿主）→ 保持原地同步清理，行为与旧版一致。
         try:
-            # Reload/startup is also a maintenance boundary: remove old orphaned
-            # cache files immediately instead of waiting for the first interval.
-            self._scheduler.cleanup_image_sources(now=now_ts())
-        except Exception as exc:
-            logger.warning("[%s] startup image cache cleanup failed: %s", PLUGIN_ID, exc)
+            asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                self._scheduler.cleanup_image_sources(now=now_ts())
+            except Exception as exc:
+                logger.warning("[%s] startup image cache cleanup failed: %s", PLUGIN_ID, exc)
+        else:
+            self._track_background_task(self._startup_image_cleanup())
         self._scheduler.ensure_patrol()
         self._scheduler.ensure_image_cleanup()
         logger.info(
@@ -255,6 +264,17 @@ class SelfInitiatedReplyPlugin(Star):
         )
         bind_api_handlers(self)
         register_web_apis(self)
+
+    def _startup_image_cleanup(self) -> Coroutine[Any, Any, None]:
+        """后台执行一次启动期图片缓存清理（含异常兑底，任务不因清理失败而报未接异常）。"""
+
+        async def run() -> None:
+            try:
+                await self._scheduler.run_image_cleanup()
+            except Exception as exc:
+                logger.warning("[%s] startup image cache cleanup failed: %s", PLUGIN_ID, exc)
+
+        return run()
 
     def _assemble_components(self) -> None:
         """接线协作对象。须在 gate/状态容器就绪之后、ensure_task 之前调用。"""

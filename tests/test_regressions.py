@@ -21,6 +21,7 @@ from typing import Any
 from .host_stubs import (
     PipelineTestAdapter,
     load_modules,
+    until,
     with_plugin,
 )
 from .source_contract import calls_in, logger_levels_for, method_source
@@ -71,7 +72,13 @@ def test_bare_command_word_is_parsed_as_command() -> None:
 
 
 def test_image_cache_cleanup_has_manual_api_and_startup_sweep(tmp_path: Path) -> None:
-    """插件启动即回收过期缓存，并向宿主注册手动 POST 清理入口。"""
+    """插件启动即回收过期缓存（不等到首个周期），并注册手动 POST 清理入口。
+
+    启动清理现为后台任务（rglob+stat 不跑在宿主事件循环上，见
+    test_cleanup_nonblocking 的启动契约），故“即回收”断言为有界等待而非
+    构造同步完成；防回归的锚点是“不等首个周期”（周期下限 60s，等待
+    上限 2s，量级上不可能混淌）。
+    """
     models, _, _, _, _ = _load_r3_modules()
     cache_dir = tmp_path / "data" / models.PLUGIN_ID / "image_cache"
     cache_dir.mkdir(parents=True)
@@ -80,7 +87,7 @@ def test_image_cache_cleanup_has_manual_api_and_startup_sweep(tmp_path: Path) ->
     os.utime(expired, (1, 1))
 
     async def scenario(plugin, main):
-        assert not expired.exists()
+        await until(lambda: not expired.exists())
         assert any(
             route.endswith("/image-cache/cleanup") and "POST" in methods
             for route, _handler, methods, _description in plugin.context.register_web_api_calls

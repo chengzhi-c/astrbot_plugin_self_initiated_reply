@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import json
 from collections import deque
 from pathlib import Path
@@ -224,29 +223,26 @@ def test_event_extra_supports_single_argument_host_getter() -> None:
 
 
 def test_event_extra_returns_default_for_incompatible_host_getter() -> None:
+    """不兼容的宿主 getter（双参与单参都无法接受）返回默认值。
+
+    语义变更说明：旧实现用 ``first_bindable_args`` 预检（不兼容则零调用），
+    新实现改为直接调用 + TypeError 两级回退——``get_extra`` 是纯读，重复
+    调用无害，而签名预检的 ``inspect.signature`` 要花在每条消息的热路径上。
+    “预检绝不调用”的契约仍由 adapters/storage 里有副作用风险的调用点维持。
+    """
     _, utils, _ = _load_modules()
 
     class IncompatibleExtra:
-        called = False
-
-        @property
-        def __signature__(self):
-            return inspect.Signature([inspect.Parameter("key", inspect.Parameter.KEYWORD_ONLY)])
-
-        def __call__(self, *_args: object) -> str:
-            self.called = True
-            return "unexpected"
+        def __call__(self, *_args: object, **_kwargs: object) -> str:
+            raise TypeError("incompatible host getter")
 
     class Event:
         pass
 
     event = Event()
-    getter = IncompatibleExtra()
-    event.get_extra = getter
+    event.get_extra = IncompatibleExtra()
 
-    result = utils.event_extra(event, "key", default="fallback")
-    assert not getter.called
-    assert result == "fallback"
+    assert utils.event_extra(event, "key", default="fallback") == "fallback"
 
 
 def test_malformed_session_record_does_not_abort_load(tmp_path: Path) -> None:
@@ -832,3 +828,43 @@ def test_resolve_paths_legacy_branch_data_root(tmp_path: Path) -> None:
     _, storage_path, data_root = ps.resolve_paths({}, get_config_path=lambda: str(data / "config"))
     assert data_root == data
     assert storage_path.parent == data / "plugin_data" / ps.PLUGIN_ID
+
+
+def test_config_file_matches_disk_semantics(tmp_path: Path) -> None:
+    """启动跳写盘的判据：磁盘已解析内容 == Settings 序列化结果才返回 True。
+
+    文件缺失/损坏/非对象一律 False（必须写），确保首启创建与旧形状迁移不受跳写
+    影响；唯一 True 的形态是逐字等价——此时重写只产生相同字节与一次无谓 fsync。
+    """
+    models, _, storage = _load_modules()
+    settings = models.Settings.from_config({"cooldown_sec": 123})
+    path = tmp_path / "plugin_config.json"
+
+    # 缺失 → 写
+    assert storage.config_file_matches(path, settings) is False
+    # 内容一致 → 跳
+    storage.write_json_atomic(path, settings.to_config_dict())
+    assert storage.config_file_matches(path, settings) is True
+    # 旧形状（缺键）→ 写（迁移）
+    disk = settings.to_config_dict()
+    disk.pop("cooldown_sec")
+    storage.write_json_atomic(path, disk)
+    assert storage.config_file_matches(path, settings) is False
+    # 损坏 JSON → 写（不因解析失败而误跳）
+    path.write_text("{not json", encoding="utf-8")
+    assert storage.config_file_matches(path, settings) is False
+
+
+def test_sessions_payload_matches_disk_semantics(tmp_path: Path) -> None:
+    """状态文件跳写判据与配置侧同构：缺失/不一致写，逐字等价跳。"""
+    _, _, storage = _load_modules()
+    payload = {"version": 4, "sessions": {}}
+    path = tmp_path / "state.json"
+
+    assert storage.sessions_payload_matches(path, payload) is False
+    storage.write_json_atomic(path, payload)
+    assert storage.sessions_payload_matches(path, payload) is True
+    changed = {"version": 4, "sessions": {"qq:GroupMessage:1": {"daily_count": 1}}}
+    assert storage.sessions_payload_matches(path, changed) is False
+    path.write_text("[]", encoding="utf-8")
+    assert storage.sessions_payload_matches(path, payload) is False
