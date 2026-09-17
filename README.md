@@ -155,4 +155,4 @@ Commands: `/selfreply` · `status` · `add` · `remove` · `list` · `check [tex
 
 ## 📄 开源许可
 
-本项目采用 [MIT License](LICENSE) 开源。
+本项目采用 [GPL-3.0](LICENSE) 开源。
