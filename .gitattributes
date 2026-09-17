@@ -1,0 +1,18 @@
+# 手工部署包（VPS 直投 zip）的导出忽略清单。
+# git archive 只导出 tracked 文件，未跟踪/被 .gitignore 排除的开发物天然不进包；
+# 此处再排除对部署无意义的仓库内容。发布命令（见 docs/DECISIONS.md「发布产物」）：
+#   git archive --format=zip -o 业镜-主动回复-<version>.zip HEAD
+tests/ export-ignore
+docs/ export-ignore
+scripts/ export-ignore
+.github/ export-ignore
+assets/ export-ignore
+data/ export-ignore
+node_modules/ export-ignore
+package.json export-ignore
+package-lock.json export-ignore
+playwright.config.mjs export-ignore
+uv.lock export-ignore
+.pre-commit-config.yaml export-ignore
+.gitignore export-ignore
+.gitattributes export-ignore

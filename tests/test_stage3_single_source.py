@@ -380,28 +380,6 @@ def test_storage_key_is_derived_in_plugin_state_only() -> None:
 
 
 # ============================================================================
-# 3.16 发布脚本：成员路径规范化与禁运名单单点
-# ============================================================================
-
-
-def test_archive_member_normalization_has_one_home() -> None:
-    """三个发布脚本不得再手抄分隔符归一的表达式。"""
-    for name in ("check_sdist.py", "check_wheel.py", "make_release_zip.py"):
-        text = source_of(f"scripts/{name}")
-        assert 'replace("\\\\", "/")' not in text, f"{name} 又手抄了分隔符归一"
-        assert "normalize_member" in text, f"{name} 未使用共享的 normalize_member"
-
-
-def test_deploy_zip_forbidden_prefixes_derive_from_wheel_check() -> None:
-    """deploy zip 的开发物前缀必须派生自 check_wheel 的权威名单。"""
-    text = source_of("scripts/make_release_zip.py")
-    assert "import FORBIDDEN_PREFIXES as DEV_PREFIXES" in text, (
-        "make_release_zip 又维护了一份独立的开发物前缀窄名单"
-    )
-    assert "DEV_PREFIXES = (" not in text
-
-
-# ============================================================================
 # 3.17 常量与正则单点
 # ============================================================================
 

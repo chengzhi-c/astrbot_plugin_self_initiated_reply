@@ -66,14 +66,20 @@ def test_schema_keys_align_with_config_schema_keys() -> None:
 
 
 def test_runtime_dependency_allowlist_is_explicit() -> None:
-    """发布包只允许固定地址图片传输所需的两个直接依赖。"""
-    import tomllib
+    """运行时依赖只允许固定地址图片传输所需的两个直接依赖（防膨胀护栏）。
 
-    from scripts.runtime_dependency_gates import EXPECTED_RUNTIME_DEPENDENCIES
+    原先由 scripts/runtime_dependency_gates.py 提供名单，该脚本随发布栈裁撤；
+    依赖声明与 pyproject 的一致性由 test 作业 import httpx 天然覆盖，
+    这里只钉“运行时依赖保持最小”这一不变量。
+    """
+    import tomllib
 
     with (ROOT / "pyproject.toml").open("rb") as handle:
         project = tomllib.load(handle)["project"]
-    assert frozenset(project.get("dependencies", [])) == EXPECTED_RUNTIME_DEPENDENCIES
+    assert frozenset(project.get("dependencies", [])) == {
+        "httpx>=0.27,<0.29",
+        "httpcore>=1,<1.1",
+    }
 
 
 def test_phase_d_list_specs_declare_one_machine_normalization_contract() -> None:
@@ -99,68 +105,6 @@ def test_phase_d_config_revision_is_canonical_and_restart_stable() -> None:
     )
     assert models.config_revision(first) == models.config_revision(second)
     assert models.config_revision(first).startswith("sha256:")
-
-
-def test_sdist_forbidden_patterns_are_excluded_by_pyproject() -> None:
-    """check_sdist 禁止的每类开发物，pyproject sdist exclude 都必须真的排掉。
-
-    与 ``test_wheel_forbidden_patterns_are_excluded_by_pyproject`` 同款互锁，
-    原先 sdist 侧只有 4 条字面子集断言、与 check_sdist 名单无关联——漂移
-    （check_sdist 禁了、exclude 没排）会静默通过，直到发布作业才红。
-
-    比对方式同样不比字符串：两侧语法不同（check_sdist 用 fnmatch 的
-    ``__pycache__/**``，hatchling 用 gitwildmatch），给每个禁止模式造代表性
-    路径用 hatchling 同款 GitIgnoreSpec 真跑 exclude。
-    """
-    import runpy
-    import tomllib
-
-    import pathspec
-
-    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    excludes = [
-        str(entry).strip()
-        for entry in pyproject["tool"]["hatch"]["build"]["targets"]["sdist"].get("exclude", [])
-    ]
-    spec = pathspec.GitIgnoreSpec.from_lines(excludes)
-    check_sdist = runpy.run_path(str(ROOT / "scripts" / "check_sdist.py"))
-
-    # 每个禁止模式的代表性路径。根层 + 嵌套探针都要：fnmatch 的 `__pycache__/**`
-    # 带根锚只排根层，`**/__pycache__/**` 才排嵌套层；探针覆盖两条才防单条漏排。
-    samples = {
-        ".coverage": [".coverage"],
-        ".coverage.*": [".coverage.host.pid1234.PROBE"],
-        "coverage.*": ["coverage.json", "coverage.xml", "coverage.PROBE"],
-        "output/**": ["output/playwright/probe.png"],
-        "dist/**": ["dist/probe.tar.gz"],
-        ".pytest_cache/**": [".pytest_cache/CACHEDIR.TAG"],
-        ".ruff_cache/**": [".ruff_cache/probe"],
-        ".mypy_cache/**": [".mypy_cache/3.13/probe.json"],
-        "**/__pycache__/**": ["image/__pycache__/PROBE"],
-        "__pycache__/**": ["__pycache__/PROBE"],
-        "*.pyc": ["probe.pyc", "image/probe.pyc"],
-        "*.egg-info/**": ["astrbot_plugin_self_initiated_reply.egg-info/PKG-INFO"],
-        ".venv/**": [".venv/Scripts/python.exe"],
-        "venv/**": ["venv/Scripts/python.exe"],
-        ".tox/**": [".tox/probe"],
-        ".git/**": [".git/config"],
-    }
-    guarded = set(check_sdist["FORBIDDEN_GLOBS"])
-    # 新增禁止模式却没给探针 → 这里先红，逼着补样本而不是静默漏测
-    assert guarded == set(samples), (
-        f"check_sdist 的禁运名单与本用例的探针表不同步："
-        f"缺探针 {sorted(guarded - set(samples))}，多余探针 {sorted(set(samples) - guarded)}"
-    )
-
-    unmatched = {
-        pattern: [path for path in paths if not spec.match_file(path)]
-        for pattern, paths in samples.items()
-    }
-    unmatched = {pattern: paths for pattern, paths in unmatched.items() if paths}
-    assert not unmatched, (
-        f"check_sdist 禁止但 pyproject sdist exclude 匹配不到：{unmatched}。"
-        f"这类文件一旦出现在工作树就会进 sdist，失败只在发布作业才暴露。"
-    )
 
 
 def test_phase_d_set_normalization_deduplicates_before_capacity() -> None:
@@ -466,205 +410,6 @@ def test_audited_keys_come_from_spec_table() -> None:
         f"审计名单与规格表漂移：表={sorted(from_table)} "
         f"webapi={sorted(webapi._AUDITED_CONFIG_KEYS)}"
     )
-
-
-def test_wheel_required_files_covered_by_pyproject() -> None:
-    """check_wheel 的 REQUIRED_FILES 每一项都必须能被 pyproject 打包覆盖。
-
-    漂移后果：check_wheel 在 CI 红但本地构建永远绿（要求了打包层根本
-    不会包含的文件），守卫失效。断言 artifacts 前缀 ∪ packages 目录。
-    """
-    import tomllib
-
-    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    tool = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]
-    artifacts = [str(a).strip() for a in tool.get("artifacts", [])]
-    packages = [str(p).strip() for p in tool.get("packages", [])]
-
-    import runpy
-
-    check_wheel = runpy.run_path(str(ROOT / "scripts" / "check_wheel.py"))
-    for required in check_wheel["REQUIRED_FILES"]:
-        covered = any(
-            pkg == "." or required.startswith(pkg.rstrip("/") + "/") for pkg in packages
-        ) or any(required.startswith(a.rstrip("*/")) for a in artifacts)
-        assert covered, f"REQUIRED_FILES 的 {required} 未被 pyproject 打包覆盖"
-
-
-def test_wheel_forbidden_patterns_are_excluded_by_pyproject() -> None:
-    """check_wheel 禁止的每类开发物，pyproject 都必须真的排掉。
-
-    这是 ``test_wheel_required_files_covered_by_pyproject`` 的反方向。两份名单
-    分居两个文件、各自手工维护，漂移方向决定后果：
-
-    - pyproject 排了、check_wheel 没禁：wheel 干净但守卫形同虚设，下次 exclude
-      漏一条无人发现；
-    - check_wheel 禁了、pyproject 没排：**每次构建都红**，且只在 CI build 作业
-      才暴露。
-
-    真实复发史：``.coverage.*`` 与 ``coverage.json``（实测 220KB 被打进
-    wheel 而守卫仍报"无泄漏"）都是"两侧不同步"的产物。
-    本断言把两侧钉在一起，让漏一侧在 test 作业就红。
-
-    比对方式刻意**不比字符串**：两侧语法不同（hatchling 用 ``tests/**``，
-    check_wheel 用前缀 ``tests/``），词干比对要么假红、要么因 ``endswith`` 太松而
-    假绿——本用例首版就是后者：``coverage.*`` 被 ``.coverage`` 的词干"吸收"，恰好
-    放过本阶段刚修的那类漏排。改为给每个禁止模式造代表性路径，用 hatchling 自己的
-    匹配库（pathspec / gitwildmatch）真跑一遍 exclude。
-    """
-    import runpy
-    import tomllib
-
-    import pathspec
-
-    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    excludes = [
-        str(entry).strip()
-        for entry in pyproject["tool"]["hatch"]["build"]["targets"]["wheel"].get("exclude", [])
-    ]
-    # 与 hatchling 同一入口：hatchling/builders/config.py 的 exclude_spec 也是
-    # GitIgnoreSpec.from_lines（不是已弃用的 PathSpec.from_lines("gitwildmatch")）。
-    # 走同一 API 才能保证这里判"排掉了"与构建时一致。
-    spec = pathspec.GitIgnoreSpec.from_lines(excludes)
-    check_wheel = runpy.run_path(str(ROOT / "scripts" / "check_wheel.py"))
-
-    # 每个禁止模式的代表性路径。嵌套探针（image/... ）是必要的：hatchling 的无斜杠
-    # 模式匹配任意深度，带斜杠模式带根锚，只测根层会放过"只排根目录"这类漏排。
-    samples = {
-        "tests/": ["tests/test_probe.py"],
-        ".scratch/": [".scratch/probe.py"],
-        "scripts/": ["scripts/probe.py"],
-        "docs/": ["docs/PROBE.md"],
-        ".github/": [".github/workflows/probe.yml"],
-        "node_modules/": ["node_modules/@playwright/test/index.js"],
-        "output/": ["output/playwright/probe.png"],
-        "package.json": ["package.json"],
-        "package-lock.json": ["package-lock.json"],
-        "playwright.config.mjs": ["playwright.config.mjs"],
-        "uv.lock": ["uv.lock"],
-        ".gitignore": [".gitignore"],
-        "assets/": ["assets/probe.jpg"],
-        ".coverage": [".coverage"],
-        ".coverage.*": [".coverage.host.pid1234.PROBE"],
-        "coverage.*": ["coverage.json", "coverage.xml", "coverage.PROBE"],
-        # 探针刻意不带 .pyc 后缀：check_wheel 这两条禁的是"__pycache__ 目录下的
-        # 任何文件"，而 exclude 里另有一条 *.pyc。用 .pyc 名字做探针会被 *.pyc
-        # 顺手匹配掉，于是测的是后缀规则、不是目录规则——实测删掉
-        # `**/__pycache__/**` 后用例仍全绿（本用例的变异 4 一次假绿）。
-        "*/__pycache__/*": ["image/__pycache__/PROBE"],
-        "__pycache__/*": ["__pycache__/PROBE"],
-        ".pytest_cache/*": [".pytest_cache/CACHEDIR.TAG"],
-        ".ruff_cache/*": [".ruff_cache/probe"],
-        ".mypy_cache/*": [".mypy_cache/3.13/probe.json"],
-        "*.egg-info/*": ["astrbot_plugin_self_initiated_reply.egg-info/PKG-INFO"],
-        ".pre-commit-config.yaml": [".pre-commit-config.yaml"],
-        ".pyc": ["probe.pyc", "image/probe.pyc"],
-    }
-    guarded = {
-        *check_wheel["FORBIDDEN_PREFIXES"],
-        *check_wheel["FORBIDDEN_GLOBS"],
-        *check_wheel["FORBIDDEN_SUFFIXES"],
-    }
-    # 新增禁止模式却没给探针 → 这里先红，逼着补样本而不是静默漏测
-    assert guarded == set(samples), (
-        f"check_wheel 的禁止名单与本用例的探针表不同步："
-        f"缺探针 {sorted(guarded - set(samples))}，多余探针 {sorted(set(samples) - guarded)}"
-    )
-
-    unmatched = {
-        pattern: [path for path in paths if not spec.match_file(path)]
-        for pattern, paths in samples.items()
-    }
-    unmatched = {pattern: paths for pattern, paths in unmatched.items() if paths}
-    assert not unmatched, (
-        f"check_wheel 禁止但 pyproject 的 exclude 匹配不到：{unmatched}。"
-        f"这类文件一旦出现在工作树，hatch build 就会把它打进 wheel，"
-        f"而失败只在 CI build 作业才暴露。"
-    )
-
-
-def test_wheel_artifacts_do_not_override_excludes() -> None:
-    """artifacts 不得把 exclude 排掉的目录里的同名文件重新拉回 wheel（0.9.5）。
-
-    上一个用例只验 exclude 一侧，而 hatchling 里 **artifacts 优先于 exclude**，
-    所以「exclude 匹配得到」并不等于「文件不进包」。这正是 0.9.5 撞上的缺口：
-    artifacts 原本写的是不带斜杠的 ``LICENSE`` / ``README.md`` / ``metadata.yaml``，
-    gitignore 语义下它们命中**任意深度**，于是 ``.scratch/`` 下建了个 venv 之后，
-    site-packages 里几百个第三方同名文件全部被拉回 wheel（213KB → 547KB，
-    check_wheel 报 100+ 条泄漏），而上一个用例始终全绿。
-
-    修法是给每条 artifacts 加前导 ``/`` 锚到仓库根。本用例双向钉住：
-    深层同名文件必须不命中，根层六个文件必须仍命中——只断言前者的话，
-    把 artifacts 全删掉也能全绿，而那会静默丢掉 pages/ 与 metadata.yaml。
-
-    变异验证：去掉任一条的前导 ``/`` → 该模式的深层探针命中，本用例红。
-    """
-    import tomllib
-
-    import pathspec
-
-    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    wheel_cfg = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]
-    artifacts = [str(entry).strip() for entry in wheel_cfg.get("artifacts", [])]
-    excludes = [str(entry).strip() for entry in wheel_cfg.get("exclude", [])]
-    spec = pathspec.GitIgnoreSpec.from_lines(artifacts)
-
-    # 被 exclude 排掉的目录里，放一个与每条 artifacts 同名的文件当探针。
-    # 真实来源：.scratch/venv4272/.../numpy/ma/LICENSE、docs/README.md。
-    excluded_dirs = sorted(
-        entry.removesuffix("/**")
-        for entry in excludes
-        if entry.endswith("/**") and "*" not in entry.removesuffix("/**")
-    )
-    assert excluded_dirs, "未能从 exclude 中取到目录型条目，探针构造失效"
-
-    leaked: list[str] = []
-    for directory in excluded_dirs:
-        for artifact in artifacts:
-            basename = artifact.rsplit("/", 1)[-1]
-            if "*" in basename:
-                continue
-            probe = f"{directory}/nested/deeper/{basename}"
-            if spec.match_file(probe):
-                leaked.append(probe)
-    assert not leaked, (
-        f"artifacts 命中了被 exclude 排掉的深层路径：{leaked}。"
-        f"artifacts 优先于 exclude，这些文件会真的进 wheel。给对应条目加前导 `/`。"
-    )
-
-    # 反向：根层的运行时必需文件必须仍被 artifacts 命中，否则锚过头会静默少文件
-    # （artifacts 漏一条不会让 hatch build 失败，只会少打，见 check_wheel 的注释）。
-    for required in ("metadata.yaml", "_conf_schema.json", "logo.png", "README.md", "CHANGELOG.md"):
-        assert spec.match_file(required), f"artifacts 不再命中根层必需文件 {required}"
-    assert spec.match_file("pages/index.html"), "artifacts 不再命中 pages/ 下的 Web 页面"
-
-
-def test_tool_versions_agree_across_config_sources() -> None:
-    """ruff 版本在 ci.yml / .pre-commit-config.yaml / pyproject 三处必须一致。
-
-    这条不变量此前只写在 ci.yml 的注释里（"钉版本与 .pre-commit-config.yaml 的
-    ruff-pre-commit rev 对齐"），没有任何断言。改一处忘另一处的后果是本地 pre-commit
-    与 CI lint **结论相反**：本地用旧版通过、CI 用新版变红（0.15→0.16 新增 Markdown
-    围栏检查就是这样红过一次），或反之被旧版拦下一个 CI 会放行的写法。
-
-    同一断言挂在三处：CI lint 作业、pre-commit 钩子、以及本用例。前两处覆盖日常路径，
-    本用例保证即使有人跳过钩子、或 lint 作业被改坏，test 作业仍会红。
-    """
-    import runpy
-
-    gate = runpy.run_path(str(ROOT / "scripts" / "version_gates.py"))
-    problems = gate["check_cross_source"]()
-    assert not problems, "工具版本跨源不一致：" + "；".join(problems)
-
-
-# ============================================================================
-# 反向断言——前端页面 ↔ webapi 配置契约
-#
-# 已有守卫覆盖 CONFIG_SPECS ↔ _conf_schema.json（双向、逐字段）。但链条到
-# webapi 就断了：自定义面板 pages/ 是**手写** JS，它读 GET 响应、构造 POST
-# 请求体，两侧都是字面量。实测确认这一段无人守（全仓只有一处 pages/ 断言，
-# 查的是某个按钮 id），而它有两个反方向的失效模式，故需两条断言。
-# ============================================================================
 
 
 def _frontend_sources() -> str:

@@ -4,31 +4,21 @@
 
     python scripts/gates.py
 
-顺序：ruff check → ruff format --check → mypy → version →
-前端 syntax + contract → pytest → 变异门禁。存在完整 wheel/sdist 时追加发布产物检查；
-`--release` 要求发布产物齐全。无产物的普通本地模式只报告 `NOT RELEASE-VERIFIED`，
-不会输出发布级全绿。
+顺序：ruff check → ruff format --check → mypy →
+前端 syntax + contract → pytest → 变异门禁。
+
+发布产物（手工部署 zip）不经此处：由 ``git archive`` 单命令导出，
+排除规则见仓库根 ``.gitattributes``，决策记录见 docs/DECISIONS.md。
 """
 
 from __future__ import annotations
 
-import argparse
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = ROOT / "pages" / "主动回复设置"
-
-# 发布产物缺失时的构建指引。命令与 CI 的 build 作业逐字一致（`pip install
-# hatch packaging` + `hatch build`）：两边写法不同时，本地照提示构建会得到
-# 与 CI 不同的产物，而 check_wheel/check_sdist 只校验内容、不校验构建方式。
-_BUILD_HINT = (
-    "构建发布产物（与 CI build 作业同命令）：\n"
-    "  pip install hatch packaging\n"
-    "  hatch build\n"
-    "然后重跑本脚本以追加 wheel / sdist / deploy zip 三项检查。"
-)
 
 
 def _run(label: str, argv: list[str]) -> None:
@@ -39,20 +29,12 @@ def _run(label: str, argv: list[str]) -> None:
         raise SystemExit(completed.returncode)
 
 
-def _release_artifacts() -> tuple[list[Path], list[Path]]:
-    dist = ROOT / "dist"
-    if not dist.is_dir():
-        return [], []
-    return sorted(dist.glob("*.whl")), sorted(dist.glob("*.tar.gz"))
-
-
-def main(*, require_release: bool = False) -> int:
+def main() -> int:
     # ruff 在 git 仓库内默认尊重 .gitignore（.venv/ 等本地目录已被忽略），
     # 与 CI lint 作业的 `ruff check .` 同一口径，无需手工维护文件列表。
     _run("ruff check", [sys.executable, "-m", "ruff", "check", "."])
     _run("ruff format --check", [sys.executable, "-m", "ruff", "format", "--check", "."])
     _run("mypy", [sys.executable, "-m", "mypy"])
-    _run("version_gates", [sys.executable, "scripts/version_gates.py"])
 
     fe_sources = sorted(PAGE.glob("*.js")) + sorted(PAGE.glob("*.mjs"))
     if not fe_sources:
@@ -74,31 +56,9 @@ def main(*, require_release: bool = False) -> int:
     # 放在 pytest 之后：变异门禁会临时改写源码并逐字节恢复，此时全量用例已跑完，
     # 两者不共享同一轮工作树状态。
     _run("mutation gate", [sys.executable, "scripts/mutation_gate.py"])
-
-    wheels, sdists = _release_artifacts()
-    if len(wheels) != 1 or len(sdists) != 1:
-        print(
-            "NOT RELEASE-VERIFIED: expected exactly one wheel and one sdist "
-            f"(found wheel={len(wheels)}, sdist={len(sdists)})"
-        )
-        print(_BUILD_HINT)
-        if require_release:
-            return 1
-        print("OK: code gates passed; release artifacts were not verified")
-        return 0
-
-    _run("check_wheel", [sys.executable, "scripts/check_wheel.py"])
-    _run("check_sdist", [sys.executable, "scripts/check_sdist.py"])
-    _run("deploy zip", [sys.executable, "scripts/make_release_zip.py"])
     print("OK: all gates passed")
     return 0
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--release",
-        action="store_true",
-        help="require exactly one validated wheel, sdist, and deploy zip",
-    )
-    raise SystemExit(main(require_release=parser.parse_args().release))
+    raise SystemExit(main())
