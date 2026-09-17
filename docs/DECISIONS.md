@@ -139,6 +139,25 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
 （传输层 `_FixedAddressTransport` 会二次拦截）、静默等待余量 `+0.1s` 改 `0.001s`
 （只把一次等待拆成多次轮询）。
 
+## 新增门禁的准入证据
+
+两处新守卫，各自的「现有门禁抓不到」证据（准入判据同「变异门禁」一节）。
+
+**设置页字面量 id 契约**（`tests/frontend_contract.test.mjs`）：`app.js` 的 `$("id")` 与
+`chrome.mjs` 的 `getElementById("id")` 拼错、或页面删掉对应元素，都不抛异常——调用点
+普遍有 `if (el)` 守卫，用户只是静默少一块功能。实测把 `whitelistSummary` 拼成
+`whitelistSummaryTYPO` 后，另 48 条契约 + 27 条浏览器用例 + 847 条 pytest 全绿
+（红的只有新加的这条守卫）。
+只做单向 JS ⊆ HTML：反向的孤儿 id 是无害死标记，且会在 `<svg><use href="#…">` 与
+`aria-*` 锚点上误报，豁免名单本身会腐烂。
+
+**`RUF100`**（`pyproject.toml`）：全仓 3 条 `noqa`，实测 1 条是为未启用规则写的
+（`tests/test_adapters.py` 的 `N802`，且 `__signature__` 是 dunder，`--select N802`
+对该文件也是 All checks passed，即该指令从来就没有作用）。
+注意别用 `ruff check --select RUF100` 去复核存量：`--select` 会整体**替换**配置里的
+选择集，`F401` 随之不在启用之列，两条 `# noqa: F401` 会被连带报成「未启用」——那是
+命令副作用，不是存量问题。只用配置本身跑。
+
 ## 核实后刻意不改的项
 
 以下都是「看起来能删/能收，实测后判定不该动」的项，重开评审时直接引用本节，
@@ -163,3 +182,31 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
   都有另一层兜住，行为等价，故不入变异表；这是刻意的纵深，不是重复实现。
 - **发布门禁脚本体量**（`scripts/`）：按发布缺陷逐条长出，每条都对应一次真实事故；
   与 `gates.py` / CI 的引用关系是它的存在理由，不做合并。
+- **扩充 ruff 规则集**：逐条实测后只加了 `RUF100`。`S110`+`SIM105`（吞异常）里
+  `S110` 默认只报裸 `except: pass` 与 `except Exception: pass`（16 条），开
+  `check-typed-exception` 后涨到 39 条，而 `SIM105` 只有 18 条——差集全是**多 except
+  子句**（既有取消/超时处理又有日志，`contextlib.suppress` 表达不了），要为一条零事故
+  记录的门禁动 18–39 处并加一批 `noqa`，破坏运行时模块零 `noqa` 这个更有价值的现状。
+  `ASYNC` 全仓 9 条全是误报（4 条是 httpcore `connect_tcp(timeout=)` 的必需签名、5 条
+  是测试轮询），且它只认固定列表的阻塞调用——本仓两次真实的阻塞缺陷（`rglob` 遍历、
+  `write_json_atomic`）它都抓不到。`BLE`(88) / `TRY`(73) / `PL`(65) / `EM`(54) /
+  `SLF`(114) / `RUF`全量(2563) 是刻意写法与中文标点的 ambiguous-unicode 误报；
+  `PTH` 会改行为（`image/extractor` 刻意用 `os.path.isabs or ntpath.isabs` 兼容异风格
+  路径，`Path.is_absolute()` 不等价）；`TID` / `N` / `A` 分别撞上包名带连字符（宿主约定）
+  与宿主 API 名 `filter`。
+- **前端不引 ESLint / `tsc --checkJs` / CSS lint**：为 4.8k 行零构建前端新增
+  devDependency 与配置的维护成本高于它能抓到的缺陷类；其中真会静默失效的一类
+  （字面量 id 注册表）已由上面的 id 契约以约 20 行断言覆盖。
+- **不追覆盖率**：未覆盖行是防御分支与生产不可达的注册面。`main.py` 剩下的 20 行含
+  指令组函数 `selfreply`（类属性被宿主装饰器换成 `RegisteringCommandable`，真实宿主与
+  `host_stubs` 都取不回原函数，其行为不可被任何测试驱动）、幂等 return、宿主异常兜底；
+  `plugin_state.py` 的 18 行是宿主能力分支与"二次回滚也失败"分支。补它们只能靠构造
+  宿主异常注入，属"为覆盖率补行"。
+- **不合并或删减测试**：819 个测试函数体做 AST 归一化后**零重复**，前 6 条语句相同者
+  仅 3 组且语义不同（如两条 `test_release_scripts` 断言方向相反）。
+- **不重构 `style.css`**：长度 > 20 字符的重复规则体共 8 组，全是单声明出现在不同
+  选择器上下文，加上两份刻意保持一致的深色令牌块（已有用例钉住）；文件内零 id 选择器、
+  仅 5 处 `!important`。收益为零而视觉回归风险不可控。
+- **不改双指令路径架构**：删内联路径会丢掉 `_is_command_entry` 的裸词保护与
+  `COMMAND_HANDLED_KEY` 去重；删装饰器路径会让宿主失去指令组注册与权限声明。两条路径
+  的等价由别名契约 + 装饰器委托契约共同钉住，成本远低于重构。
