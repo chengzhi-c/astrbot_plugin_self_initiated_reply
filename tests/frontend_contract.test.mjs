@@ -424,6 +424,37 @@ test("mobile tab groups stay in sync with the page section anchors", async () =>
   assert.deepEqual([...new Set(groups.values())].sort(), [...tabbar].sort());
 });
 
+test("settings page scripts only look up ids that index.html declares", async () => {
+  // 页面脚本按字面量取元素（app.js 的 $()、chrome.mjs 的 getElementById）。
+  // 拼错 id（或页面删掉对应元素）不抛异常：调用点普遍有 `if (el)` 守卫，用户
+  // 只是静默少一块功能。实测把 whitelistSummary 拼成 whitelistSummaryTYPO 后，
+  // 48 条本文件契约 + 27 条浏览器用例 + 844 条 pytest 全部保持绿色。
+  // 文件清单由目录派生（同下面的行宽守卫），新增脚本自动纳入。
+  // 只做单向 JS ⊆ HTML：反向的"孤儿 id"是无害死标记，而且会在
+  // <svg><use href="#…"> 与 aria-* 锚点上误报，豁免名单本身会腐烂。
+  const names = (await readdir(pageDir)).filter((name) => /\.(js|mjs)$/.test(name)).sort();
+  assert.ok(names.includes("app.js"), "设置页脚本清单为空或目录读错");
+  const html = await readFile(join(pageDir, "index.html"), "utf8");
+  const declared = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]));
+  assert.ok(declared.size > 0, "index.html 未声明任何 id");
+
+  const missing = [];
+  let lookups = 0;
+  for (const name of names) {
+    const source = await readFile(join(pageDir, name), "utf8");
+    const ids = [
+      ...source.matchAll(/\$\(\s*"([^"]+)"\s*\)/g),
+      ...source.matchAll(/getElementById\(\s*"([^"]+)"\s*\)/g),
+    ];
+    lookups += ids.length;
+    for (const match of ids) {
+      if (!declared.has(match[1])) missing.push(`${name} -> ${match[1]}`);
+    }
+  }
+  assert.ok(lookups > 0, "页面脚本未按字面量取任何元素：守卫已失去对象");
+  assert.deepEqual(missing.sort(), [], `index.html 缺少脚本引用的 id：${missing.join(", ")}`);
+});
+
 test("responsive breakpoints stay in sync between chrome.mjs and the stylesheet", async () => {
   // 这两处 JS 行为与 CSS 断点强耦合：更多操作菜单在 460px 上下切换折叠形态，
   // 侧栏在 1024px 以下点击后自动收起。改 CSS 漏改 JS（或反之）只在断点附近的
