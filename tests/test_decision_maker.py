@@ -113,22 +113,6 @@ async def test_decide_force_always_replies(tmp_path: Path) -> None:
     assert result["reason"] == "手动强制检查"
 
 
-async def test_decide_uses_recent_reply_request_without_model(tmp_path: Path) -> None:
-    decision_mod, models, maker, clock_value, calls = _make_decision(
-        tmp_path, {"bot_aliases": ["阿c"]}
-    )
-    clock_value[0] = 1000.0
-    state = _state(
-        models,
-        active_at=910.0,
-        recent=[("user", "阿c在吗", 990.0)],
-    )
-    result = await maker.decide("s1", state, trigger="message_delay", force=False)
-    assert result["should_reply"] is True
-    assert "明确让 Bot 接话" in result["reason"]
-    assert calls["model"] == 0
-
-
 async def test_decide_patrol_skips_intent_reason_and_asks_model(tmp_path: Path) -> None:
     decision_mod, models, maker, _, calls = _make_decision(
         tmp_path,
@@ -182,7 +166,7 @@ async def test_disabled_model_patrol_replies_and_other_skips(tmp_path: Path) -> 
     other = await maker.ask_decision_model("s1", state, trigger="message_delay")
     assert other == {
         "should_reply": False,
-        "reason": "判断模型关闭且未检测到明确请求",
+        "reason": "判断模型关闭，非巡检触发拒绝",
         "elapsed_sec": 0.0,
     }
 
@@ -269,7 +253,7 @@ async def test_valid_json_passthrough(tmp_path: Path) -> None:
     _, models, maker, _, _ = _make_decision(
         tmp_path,
         {"decision_model_enabled": True},
-        model_text='{"should_reply": true, "reason": "明确请求"}',
+        model_text='{"should_reply": true, "reason": "测试理由"}',
     )
     state = _state(models)
     result = await maker.ask_decision_model("s1", state, trigger="message_delay")
@@ -277,7 +261,7 @@ async def test_valid_json_passthrough(tmp_path: Path) -> None:
     # 「模型没说」（后者才走概率兜底）。
     assert result == {
         "should_reply": True,
-        "reason": "明确请求",
+        "reason": "测试理由",
         "elapsed_sec": 0.0,
         "quote": None,
     }
@@ -550,68 +534,9 @@ async def test_build_recent_messages_history_error_is_silent(tmp_path: Path) -> 
 
 
 # ============================================================================
-# 明确请求是否过判断模型（reply_request_requires_model）
-# ============================================================================
-
-
-async def test_reply_request_bypasses_model_by_default(tmp_path: Path) -> None:
-    """默认行为：明确请求（"在吗"）直接接话，判断模型一次都不调。"""
-    decision_mod, models, maker, _, calls = _make_decision(
-        tmp_path, {"decision_model_enabled": True}
-    )
-    state = _state(models, recent=[("user", "在吗", 950.0)])
-
-    result = await maker.decide(
-        "s1", state, trigger=decision_mod.CheckTrigger.MESSAGE_DELAY, force=False
-    )
-
-    assert isinstance(result, dict)
-    assert result["should_reply"] is True
-    assert calls["model"] == 0, "直通路径不该调判断模型"
-    assert result["quote"] is None, "直通路径没有模型决定，quote 必须是 None"
-
-
-async def test_reply_request_requires_model_lets_judge_veto(tmp_path: Path) -> None:
-    """开启开关后：明确请求也交给判断模型，模型的否决必须生效。"""
-    decision_mod, models, maker, _, calls = _make_decision(
-        tmp_path,
-        {"decision_model_enabled": True, "reply_request_requires_model": True},
-        model_text='{"should_reply": false, "reason": "这轮刚聊完了"}',
-    )
-    state = _state(models, recent=[("user", "在吗", 950.0)])
-
-    result = await maker.decide(
-        "s1", state, trigger=decision_mod.CheckTrigger.MESSAGE_DELAY, force=False
-    )
-
-    assert calls["model"] == 1, "开关开启后必须咨询判断模型"
-    assert isinstance(result, str) and "这轮刚聊完了" in result
-
-
-async def test_reply_request_requires_model_keeps_model_consent(tmp_path: Path) -> None:
-    """开关开启后模型同意接话时仍要接——否则等于把功能关掉。"""
-    decision_mod, models, maker, _, calls = _make_decision(
-        tmp_path,
-        {"decision_model_enabled": True, "reply_request_requires_model": True},
-        model_text='{"should_reply": true, "reason": "确实在找人说话", "quote": true}',
-    )
-    state = _state(models, recent=[("user", "在吗", 950.0)])
-
-    result = await maker.decide(
-        "s1", state, trigger=decision_mod.CheckTrigger.MESSAGE_DELAY, force=False
-    )
-
-    assert calls["model"] == 1
-    assert isinstance(result, dict)
-    assert result["should_reply"] is True
-    assert result["quote"] is True
 
 
 # ============================================================================
-# 判断提示词的上下文预算（保尾）
-# ============================================================================
-
-
 async def test_decision_prompt_keeps_newest_history_when_over_budget(tmp_path: Path) -> None:
     """上下文超预算时必须保尾。
 

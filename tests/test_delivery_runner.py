@@ -916,7 +916,7 @@ async def test_quote_model_mode_obeys_the_judge(tmp_path: Path) -> None:
 
 
 async def test_quote_model_mode_falls_back_to_probability(tmp_path: Path) -> None:
-    """model 模式下模型未表态（None：明确请求直通/手动检查）→ 按概率兜底。"""
+    """model 模式下模型未表态（None：手动检查）→ 按概率兜底。"""
     _, _, always, always_events = _make_runner(
         tmp_path,
         config={"quote_mode": "model", "quote_probability": 100},

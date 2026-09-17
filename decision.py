@@ -1,7 +1,7 @@
 """会话级"是否接话"裁决。
 
 只负责裁决时序与闸门：判断模型调用（超时/失败分类）、判断提示词构建与
-注入清理、明确请求窗口检测、局部闸门判定（免打扰/日配额/静默/冷却/观察窗口）。
+注入清理、局部闸门判定（免打扰/日配额/静默/冷却/观察窗口）。
 对外只暴露一个裁决入口 ``decide``，入参为会话状态与触发类型，出参为
 "回复/跳过+原因"。模型解析/生成、历史读取、Vision 描述经注入回调执行，
 因此可脱离插件实例独立单测（注入假判断模型与假时钟）。
@@ -21,7 +21,6 @@ from .models import (
     CONFIG_SPEC_BY_KEY,
     DECISION_JSON_CONTRACT,
     PLUGIN_ID,
-    REPLY_REQUEST_WINDOW_SEC,
     CheckTrigger,
     ImageContextCallback,
     ReadHistoryCallback,
@@ -35,7 +34,6 @@ from .utils import (
     build_history_text,
     cap_context_text,
     latest_user_text,
-    looks_like_reply_request,
     parse_decision_json,
     redact_exc_text,
     response_text,
@@ -67,7 +65,7 @@ def _localtime_minutes() -> int:
 
 
 class DecisionMaker:
-    """ "是否接话"裁决：闸门判定、明确请求窗口、提示词构建与模型调用。"""
+    """ "是否接话"裁决：闸门判定、提示词构建与模型调用。"""
 
     def __init__(
         self,
@@ -172,25 +170,6 @@ class DecisionMaker:
         logger.warning("[%s] invalid quiet_hours item ignored: %s", PLUGIN_ID, key)
 
     # ------------------------------------------------------------------
-    # 明确请求窗口检测
-    # ------------------------------------------------------------------
-
-    def recent_reply_request_reason(
-        self, state: SessionState, *, window_sec: int = REPLY_REQUEST_WINDOW_SEC
-    ) -> str:
-        now = self._clock()
-        for item in reversed(list(state.recent)):
-            if item.role != "user":
-                continue
-            if item.at <= state.last_proactive_observed_at or now - item.at > window_sec:
-                break
-            if looks_like_reply_request(item.text, self.settings.bot_aliases):
-                # reason 面向运营者（INFO 日志与 GET /status），允许引用 40 字用户原文。
-                # 与 log_reply_content（回复正文）不是同一开关：state.json 本就持久化 recent 全文。
-                return f"最近 {int(now - item.at)}s 内有人明确让 Bot 接话：{item.text[:40]}"
-        return ""
-
-    # ------------------------------------------------------------------
     # 裁决入口
     # ------------------------------------------------------------------
 
@@ -207,23 +186,10 @@ class DecisionMaker:
         if force:
             decision = {"should_reply": True, "reason": "手动强制检查", "elapsed_sec": 0.0}
         else:
-            intent_reason = (
-                "" if trigger == CheckTrigger.PATROL else self.recent_reply_request_reason(state)
-            )
-            # 明确请求默认直通（"在吗 / 有人吗 / 说句话 / 发表情包"这类句子的意图
-            # 本身已足够明确）；开启 reply_request_requires_model 后改为交给判断
-            # 模型裁决——提示词对这些请求才真正参与决策。
-            if intent_reason and not self.settings.reply_request_requires_model:
-                decision = {
-                    "should_reply": True,
-                    "reason": intent_reason,
-                    "elapsed_sec": 0.0,
-                }
-            else:
-                decision = await self.ask_decision_model(umo, state, trigger=trigger)
+            decision = await self.ask_decision_model(umo, state, trigger=trigger)
         if not decision.get("should_reply"):
             return f"判断不回复：{decision.get('reason') or '未说明'}"
-        # quote 是可选字段：只有真被模型裁决过的路径才带值，直通/强制路径缺省
+        # quote 是可选字段：只有真被模型裁决过的路径才带值，强制路径缺省
         # None =「模型没说」，由投递侧按 quote_mode 兜底。
         decision.setdefault("quote", None)
         return decision
@@ -238,7 +204,7 @@ class DecisionMaker:
         """问判断模型「这轮该不该主动接话」，返回 should_reply / reason / elapsed_sec。
 
         判断模型关闭时按触发源分流：``patrol`` 放行（巡检本身即意图），其余拒绝
-        （无明确请求不打扰）。
+        （不打扰普通消息）。
 
         失败时一律 fail-closed 返回 ``should_reply=False``，并用 reason 区分五种
         原因，便于 /status 面板归因：provider 解析失败（业务故障，与"未找到"分开
@@ -255,7 +221,7 @@ class DecisionMaker:
                 }
             return {
                 "should_reply": False,
-                "reason": "判断模型关闭且未检测到明确请求",
+                "reason": "判断模型关闭，非巡检触发拒绝",
                 "elapsed_sec": 0.0,
             }
         provider_id = ""

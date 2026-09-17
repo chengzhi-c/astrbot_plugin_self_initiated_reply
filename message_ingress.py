@@ -21,7 +21,6 @@ from .utils import (
     event_umo,
     is_explicit_direct_call,
     is_self_message,
-    looks_like_reply_request,
     session_group_id,
     session_is_private,
     session_whitelisted,
@@ -144,11 +143,7 @@ def _schedule_message_check(
 ) -> None:
     if not plugin.settings.enabled_message_trigger:
         return
-    trigger = (
-        CheckTrigger.REPLY_REQUEST
-        if looks_like_reply_request(clean_text, plugin.settings.bot_aliases)
-        else CheckTrigger.MESSAGE_DELAY
-    )
+    trigger = CheckTrigger.MESSAGE_DELAY
     plugin._scheduler.schedule_delayed_check(
         umo,
         delay_sec=plugin._scheduler.message_trigger_delay(trigger),
