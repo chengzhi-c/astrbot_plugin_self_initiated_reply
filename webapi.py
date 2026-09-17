@@ -394,9 +394,8 @@ async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str,
 def _parse_config_updates(data: Any) -> dict[str, Any]:
     """从请求体提取合法配置变更并做严格类型校验；非法字段抛 ValueError。
 
-    表驱动：此前每个键各写一段 ``if key in data``，圈复杂度全仓最差。
-    真正的问题不是长度而是「新增键要记得同时改这里」，
-    漏一处该键就被静默丢弃——面板上能改、保存返回成功、值不生效。
+    表驱动：真正的风险不是长度，而是「新增键要记得同时改这里」——漏一处该键
+    就被静默丢弃：面板上能改、保存返回成功、值不生效。
 
     与 ``Settings.from_config`` 的关键差异（不可统一，故意分开）：这里对非法
     输入 **抛异常**，而 from_config 静默夹取。webapi 面对的是交互式提交，用户
@@ -473,10 +472,9 @@ def _config_update_was_adjusted(
 # 安全敏感配置键：变更记 INFO 审计日志。webapi 无独立鉴权，
 # 访问控制依赖宿主 Dashboard；留痕便于事后追溯。
 #
-# 由规格表的 audited 标记派生：此前是手工名单，与
-# `_parse_config_updates` 分处两地，漏一处审计就静默失效——注释里那两条
-# 「新增键的前提」正是在手工维护这个约束。现在两者同源于 CONFIG_SPECS，
-# 前提由 tests/test_config_schema.py 的守卫强制。
+# 由规格表的 audited 标记派生：手工名单会与
+# `_parse_config_updates` 分处两地，漏一处审计就静默失效。两者同源于
+# CONFIG_SPECS，前提由 tests/test_config_schema.py 的守卫强制。
 #
 # 入表理由（语义仍需人判断，故记录在此）：Provider 类键
 # （judge/vision/vision_judge）决定群聊上下文与图片发往哪个上游端点，被改指向
@@ -638,7 +636,7 @@ async def _apply_config_updates(
             "config": config,
             "config_revision": config_revision(config),
             # 面板保存后据此刷新运行态徽标：enabled 是持久配置，runtime_enabled
-            # 是本轮生效后的运行态，二者在 POST 边界上可能不同（见 _api_get_config 注释）。
+            # 是本次生效后的运行态，二者在 POST 边界上可能不同（见 _api_get_config 注释）。
             "runtime_enabled": plugin.runtime_enabled,
             "adjusted_fields": adjusted_fields,
         }

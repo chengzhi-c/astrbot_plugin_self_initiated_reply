@@ -111,7 +111,7 @@ def test_rollback_restore_component_visible_settings(tmp_path) -> None:
 
 
 def test_recent_message_limit_hot_reload_rebuilds_existing_deques(tmp_path) -> None:
-    """recent_message_limit 热更新必须对存量会话生效（0.9.3 A6）。
+    """recent_message_limit 热更新必须对存量会话生效。
 
     缺陷：deque 的 maxlen 是构造期常量，`apply()` 只改 Settings 字段，
     存量会话的 deque 仍持旧上限——调大后新上限永不兑现，且设置页保存
@@ -214,7 +214,7 @@ def test_settings_apply_preserves_identity() -> None:
 
 
 def test_from_config_migrates_legacy_alias_keys() -> None:
-    """0.9.2 B2 迁移护栏：旧配置文件只有别名键时不丢值；正式键优先。"""
+    """迁移护栏：旧配置文件只有别名键时不丢值；正式键优先。"""
     from .host_stubs import load_package
 
     models = load_package(PACKAGE, "models")

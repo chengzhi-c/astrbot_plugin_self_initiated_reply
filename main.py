@@ -34,7 +34,7 @@ from .session_gate import SessionGate
 # 逐条 yield event.plain_result(...)。宿主侧契约是
 # AsyncGenerator[MessageEventResult | str | None]，本插件只 yield 前者。
 #
-# **必须是运行时可解析的名字，不能放回 TYPE_CHECKING 块**（0.9.5 线上修复）。
+# **必须是运行时可解析的名字，不能放回 TYPE_CHECKING 块**。
 # 精确机制已在真机 4.27.2 上读源码确证（不是推断）：宿主
 # `core/star/filter/command.py::CommandFilter.init_handler_md` 注册每个指令处理器时调
 #   4.23.3: inspect.signature(handler)
@@ -145,7 +145,6 @@ class SelfInitiatedReplyPlugin(Star):
     def __init__(
         self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None
     ) -> None:
-        """校验宿主 → 路径/配置/状态 → ``_assemble_components`` → 启动副作用。"""
         _AGENT_RUNTIME.validate()
         super().__init__(context)
         self.context = context
@@ -232,7 +231,7 @@ class SelfInitiatedReplyPlugin(Star):
         self._save_storage_sync()
         # 启动清理：rglob+全量 stat（配额 256MB）不得跑在宿主事件循环上。
         # 有运行中的循环 → 后台任务走 run_image_cleanup（磁盘部分内部 to_thread）；
-        # 无循环（同步加载的宿主）→ 保持原地同步清理，行为与旧版一致。
+        # 无循环（同步加载的宿主）→ 保持原地同步清理。
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -266,8 +265,6 @@ class SelfInitiatedReplyPlugin(Star):
         register_web_apis(self)
 
     def _startup_image_cleanup(self) -> Coroutine[Any, Any, None]:
-        """后台执行一次启动期图片缓存清理（含异常兑底，任务不因清理失败而报未接异常）。"""
-
         async def run() -> None:
             try:
                 await self._scheduler.run_image_cleanup()
@@ -495,7 +492,6 @@ class SelfInitiatedReplyPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     @filter.platform_adapter_type(filter.PlatformAdapterType.ALL)
     async def on_message(self, event: AstrMessageEvent) -> None:
-        """指令分流 → 白名单 → 记上下文 → 延迟检查。顺序是安全边界，不可重排。"""
         await handle_incoming_message(self, event)
 
     @staticmethod
@@ -533,7 +529,7 @@ class SelfInitiatedReplyPlugin(Star):
 
         白名单移除（WhitelistManager.replace）与非白名单 force-check 的
         finally 共用本入口；磁盘由 build_sessions_payload 写盘时过滤非白名单
-        条目，重启后不会复活（0.8.8 单点化，此前 sessions 回收散在两处）。
+        条目，重启后不会复活。
         """
         self._gate.prune(umo)
         self._last_decisions.pop(umo, None)
@@ -569,7 +565,6 @@ class SelfInitiatedReplyPlugin(Star):
         await self._send_command_text(event, await self._command_text(event, action, arg))
 
     async def _command_text(self, event: AstrMessageEvent, action: str, arg: str = "") -> str:
-        """指令动作 → 回显文本。check 在 finally 回收缓存；未知 action 回落 help。"""
         return await dispatch_command_action(self, event, action, arg)
 
     async def _send_command_text(self, event: AstrMessageEvent, text: str) -> None:
@@ -593,7 +588,7 @@ class SelfInitiatedReplyPlugin(Star):
     # 注意：permission_type 必须在 command_group 内层。真实宿主（4.26.8/4.27.0
     # 已验证）的 register_permission_type 会对被装饰对象调用 get_handler_full_name（访问
     # __name__），而 command_group 返回的 RegisteringCommandable 没有 __name__；
-    # 顺序反了插件加载即报 AttributeError（0.7.15 曾因此线上安装失败）。
+    # 顺序反了插件加载即报 AttributeError。
     @filter.command_group("selfreply")
     @permission_type(PermissionType.ADMIN)
     async def selfreply(self, event: AstrMessageEvent) -> CommandReply:
@@ -716,8 +711,6 @@ class SelfInitiatedReplyPlugin(Star):
         self._background_tasks.difference_update(task for task in tasks if task.done())
 
     async def _save_final_state_with_deadline(self) -> None:
-        """Persist final state without letting a stuck writer block termination."""
-
         async def persist() -> None:
             await self._save_storage()
 

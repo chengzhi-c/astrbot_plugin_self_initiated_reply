@@ -253,9 +253,7 @@ test("pending save restores the form and a second save succeeds", async ({ page 
 });
 
 test("every checkbox renders the backend bool value", async ({ page }) => {
-  // 取代已删除的 data-config-default 机制：那个属性只在"配置缺键"时才与
-  // Boolean() 不同，而缺键会被 requiredKeys 校验提前拦死，故它永不生效。
-  // 真正要守的是渲染本身——后端 false 却显示勾选，用户会以为功能已开。
+  // 要守的是渲染本身：后端 false 却显示勾选，用户会以为功能已开。
   const overrides = {
     enabled: true,
     enabled_private_sessions: false,
@@ -558,7 +556,7 @@ test("backend field errors paint the offending number control", async ({ page })
 
   await page.locator("#cooldownInput").fill("90");
   await page.locator("#saveTopBtn").click();
-  // 此前该定位只对白名单生效，其它字段用户只能靠 toast 猜是哪个框。
+  // 焦点必须落到出错的输入框，否则用户只能靠 toast 猜是哪个框。
   await expect(page.locator("#cooldownInputError")).toBeVisible();
   await expect(page.locator("#cooldownInputError")).toContainText("cooldown_sec 必须是整数");
   await expect(page.locator("#cooldownInput")).toHaveAttribute("aria-invalid", "true");

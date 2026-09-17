@@ -1,8 +1,8 @@
-"""图片清理的事件循环友好性契约（P0-2）。
+"""图片清理的事件循环友好性契约。
 
 背景：``ImageParser.cleanup_source_cache`` 含 3 遍 ``rglob("*")`` + 全量
-``stat()``，配额上限 256MB。历史实现有两处会在协程内同步执行该遍历：
-① ``run_image_cleanup``（async 但无 await，磁盘遍历直接跑在循环里）；
+``stat()``，配额上限 256MB。两处不得在协程内同步执行该遍历：
+① ``run_image_cleanup``（async，磁盘遍历必须进线程）；
 ② ``cleanup_events_if_needed``（由 ``on_message`` 协程同步调用）。
 
 本文件锚定修复后的契约：磁盘遍历只允许经线程执行，事件清理路径不得触碰磁盘。

@@ -84,12 +84,12 @@
 - 越权拒绝先行：非管理员写指令不得取消在途回复；只读指令永不打断进行中的
   检查；写指令（add/remove/check/on/off）通过权限校验后才取消。
 
-## 6.1 `/on` `/off` 的持久语义（0.9.4 决策 5）
+## 6.1 `/on` `/off` 的持久语义
 
 - `/off` 与 `/on` **跨宿主重启保持**：双写 `settings.enabled` 与配置文件，
   失败按 §6 同一套纪律回滚（内存回滚 → 重写 → 仍失败告警并上抛）。
-  0.9.4 前它们只改内存 `runtime_enabled`，重启即回落到持久 `enabled`——用户
-  打完 `/off` 以为已经关停，重启后插件继续发言且无从得知要再打一次。
+  若只改内存 `runtime_enabled`，重启即回落到持久 `enabled`——用户打完
+  `/off` 以为已经关停，重启后插件继续发言且无从得知要再打一次。
 - `runtime_enabled` 仍是独立字段：webapi 的 GET config 要能把它与持久
   `enabled` 分开暴露，前端全量保存才不会把临时态固化成持久配置。
 - 回显文案含「重启后保持」，用户可见变更。
@@ -208,15 +208,11 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
 
 ## 12. 发布产物验证
 
-（1.4.0 修订：发布链改为 `git archive`，本章原有 wheel/sdist 检查条目随发布栈裁撤。
-理由与裁撤清单见 `docs/DECISIONS.md` 的「发布产物」一节：分发主路径是插件市场
-（git 仓库），不产生 wheel，而原有三层互锁（pyproject exclude ↔ 检查脚本禁运名单
-↔ pathspec 交叉核验）的全部维护成本只服务于手工部署 zip 这一次要路径。）
-
-当前契约：手工部署包由 `git archive --format=zip` 导出，排除规则单点声明在仓库根
+手工部署包由 `git archive --format=zip` 导出，排除规则单点声明在仓库根
 `.gitattributes` 的 `export-ignore`；未跟踪与被 `.gitignore` 排除的开发物（覆盖率、
 缓存、虚拟环境、`output/`、`dist/`、`data/`）在结构上不可能进包——
-`git archive` 只导出 tracked 文件，不存在“漏排除”这一失败模式。
+`git archive` 只导出 tracked 文件，不存在“漏排除”这一失败模式。理由见
+`docs/DECISIONS.md` 的「发布产物」一节。
 
 ## 13. 运维端点定位
 

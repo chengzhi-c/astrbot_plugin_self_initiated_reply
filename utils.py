@@ -41,7 +41,7 @@ _INLINE_MENTION_PATTERN = re.compile(r"\[At:[^\]]+\]")
 _TOOL_CALL_LEAK_PATTERN = re.compile(r"^\s*\[(?:historical )?tool call\]", re.IGNORECASE)
 # 工具标记及其同行残留（不跨行，避免吃掉后续正常内容）
 _TOOL_CALL_INLINE_PATTERN = re.compile(r"\[(?:historical\s+)?tool\s+call\][^\n]*", re.IGNORECASE)
-# 提示词/回复文本的剥离正则：都是静态模式，提前编译（原先在函数体内联 re.sub）
+# 提示词/回复文本的剥离正则：静态模式，提前编译。
 _TRUNCATED_JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 _JSON_BODY_PATTERN = re.compile(r"\{[\s\S]*\}")
 _REPLY_FENCE_PATTERN = re.compile(r"^```(?:text)?\s*|\s*```$", re.IGNORECASE)
@@ -58,7 +58,7 @@ DECISION_REASON_MAX_CHARS = 200
 _UMO_PARTS = 3
 
 # 异常文本里的 URL 形态：scheme:// 开头，吃到引号/空白/括号为止。
-# 只认这一种形态（实证泄漏全部来自它），不做全文 secret 扫描（见方案 N7）。
+# 只认这一种形态（实证泄漏全部来自它），不做全文 secret 扫描。
 _EXCEPTION_URL_PATTERN = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>)\]]+")
 
 
@@ -90,8 +90,7 @@ def redact_exc_text(exc: BaseException) -> str:
 
 async def maybe_await(value: Any) -> Any:
     # 用 inspect.isawaitable 而非 hasattr(value, "__await__")：后者会漏
-    # CO_ITERABLE_COROUTINE 生成器（@types.coroutine），0.8.8 已统一语义
-    # 并删除 recorder_bridge 的 hasattr 私有副本，勿退化。
+    # CO_ITERABLE_COROUTINE 生成器（@types.coroutine）。
     if inspect.isawaitable(value):
         return await value
     return value
@@ -357,7 +356,7 @@ def event_sender_name(event: AstrMessageEvent) -> str:
 def event_extra(event: AstrMessageEvent, key: str, default: Any = None) -> Any:
     """读取宿主事件的 extra 字段，跨宿主签名差异做两级调用回退。
 
-    与本模块其余 ``event_*`` 同属宿主字段兼容探测（0.9.3 自 main.py 外迁）。
+    与本模块其余 ``event_*`` 同属宿主字段兼容探测。
     本函数在消息热路径（每条进入 on_message 的事件都调一次），故不用
     ``first_bindable_args`` 的 ``inspect.signature`` 预检——那要把签名解析
     开销花在每条消息上。``get_extra`` 是纯读：先按双参调用，签名不兼容
@@ -383,7 +382,7 @@ def event_extra(event: AstrMessageEvent, key: str, default: Any = None) -> Any:
 def response_text(response: Any) -> str:
     """从宿主响应对象提取纯文本：completion_text 优先，result_chain.get_plain_text 兜底。
 
-    0.8.8 三处镜像（decision/generation/parser）统一至此；get_plain_text 异常
+    三处镜像（decision/generation/parser）统一至此；get_plain_text 异常
     兜底为空串（原 decision 版异常会传播，统一后更稳，原因文案由调用方判定）。
     """
     text = str(getattr(response, "completion_text", "") or "").strip()

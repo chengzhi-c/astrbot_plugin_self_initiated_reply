@@ -124,7 +124,7 @@ def test_parse_config_updates_whitelist_rules() -> None:
 
 
 def test_parse_config_updates_rejects_legacy_aliases() -> None:
-    """0.9.2 兼容别名层移除：别名键 fail loud 拒绝（旧前端得显式错误而非静默吞掉）。"""
+    """别名键 fail loud 拒绝（旧前端得显式错误而非静默吞掉）。"""
     webapi = _webapi()
     for alias in (
         "cooldown_seconds",
@@ -816,7 +816,7 @@ def test_config_schema_keys_cover_schema_json(tmp_path) -> None:
     """webapi 配置白名单必须与 _conf_schema.json 全键一致。
 
     schema 新增键时该守卫立即变红，迫使同步更新 webapi 解析分支，
-    防止新字段被静默吞掉（MP1-4 的同类问题不再复发）。
+    防止新字段被静默吞掉。
     """
 
     import json
@@ -826,7 +826,7 @@ def test_config_schema_keys_cover_schema_json(tmp_path) -> None:
     async def scenario(plugin, main):
         schema_path = ROOT / "_conf_schema.json"
         schema_keys = set(json.loads(schema_path.read_text(encoding="utf-8")))
-        # 0.9.2 起别名层已移除：白名单 == schema 键，无额外兼容键
+        # 无别名兼容键：白名单 == schema 键
         assert _webapi().CONFIG_SCHEMA_KEYS == schema_keys
 
     with_plugin(tmp_path, scenario)

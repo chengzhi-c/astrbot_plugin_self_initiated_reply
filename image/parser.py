@@ -707,7 +707,7 @@ class ImageParser:
                 # get_local_image_path 取的是记录里的 local_path，最终交给第三方
                 # recorder 插件的 get_media_absolute_path 解析（recorder_bridge.py:74,86），
                 # 而 local_path 源头是对端可控的 OneBot 字段。若 resolver 是朴素
-                # 拼接，`../../..` 可逃出媒体目录 —— 与本阶段要关的攻击面同型。
+                # 拼接，`../../..` 可逃出媒体目录——与本地文件读取同一攻击面。
                 # recorder 媒体目录在 <data>/plugin_data/ 下，已被 data_root 覆盖，
                 # 合法文件不受影响。
                 data_url = await asyncio.to_thread(
@@ -850,7 +850,7 @@ class ImageParser:
             transport = _FixedAddressTransport(address=address)
             async with httpx.AsyncClient(
                 # 单操作超时与整体预算同源（外层 wait_for 用同一 ``_timeout_sec``）：
-                # 此前硬编码 15s，配大 vision_timeout_sec 也永远吃不满，配小又形同虚设。
+                # 硬编码值在配大时永远吃不满，配小时又形同虚设。
                 timeout=self._timeout_sec,
                 follow_redirects=True,  # 跟随重定向（QQ 图片 URL 通常会 302）
                 max_redirects=3,

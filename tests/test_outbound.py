@@ -74,7 +74,7 @@ def test_tool_direct_failures_are_bounded_after_refund() -> None:
     """退还预算不得换来无界重试：失败次数自身也要有上限。
 
     退还后 ``_direct_send_count`` 不再随失败增长，若不另计失败次数，不可达目标
-    会被反复调用，界就外借给了宿主迭代上限（0.9.4 §5 明确禁止这种依赖）。
+    会被反复调用，界就外借给了宿主迭代上限（契约 §5 明确禁止这种依赖）。
 
     变异锚定：删掉 ``_direct_fail_count >= self._max_direct_sends`` 那个早退，
     ``len(calls)`` 会从 2 变成 4，本用例红。

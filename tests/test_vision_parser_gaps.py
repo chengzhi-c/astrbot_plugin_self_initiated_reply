@@ -36,7 +36,7 @@ def _max_image_bytes() -> int:
 
 
 # ============================================================================
-# VISION_PROMPT_VERSION 变更门禁（0.8.8）
+# VISION_PROMPT_VERSION 变更门禁
 # ============================================================================
 
 
@@ -1047,10 +1047,10 @@ def test_resolve_relative_path_via_recorder(tmp_path: Path) -> None:
 def test_recorder_resolved_path_outside_roots_is_rejected(tmp_path: Path) -> None:
     """录制桥交回的路径也必须过 allowlist。
 
-    这条曾被我判为"不由消息内容决定"而放行，是错的：``resolve_relative_path``
-    的入参就是对端可控的 OneBot ``file`` / ``local_path``，而 resolver 是第三方
-    插件函数（``recorder_bridge.py:86``）。若它做朴素的 ``root / value`` 拼接，
-    ``../`` 就能逃出媒体目录并拿到无条件放行——与本轮要关的攻击面同型。
+    ``resolve_relative_path`` 的入参是对端可控的 OneBot ``file`` /
+    ``local_path``，而 resolver 是第三方插件函数（``recorder_bridge.py:86``）。
+    若它做朴素的 ``root / value`` 拼接，``../`` 就能逃出媒体目录并拿到无条件
+    放行——与本地文件读取同一攻击面。
     """
     _, image, _ = _load_modules()
     data_root = tmp_path / "data"

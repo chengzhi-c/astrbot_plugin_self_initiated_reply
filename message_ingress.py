@@ -1,7 +1,4 @@
-"""消息入口：指令分流 → 白名单 → 记上下文 → 延迟检查。
-
-顺序是安全边界，不可重排。从 ``main.on_message`` 抽出以缩短入口文件。
-"""
+"""消息入口：指令分流、白名单过滤、上下文记录与延迟检查调度。"""
 
 from __future__ import annotations
 
@@ -71,7 +68,7 @@ def _accepted_content(
     empty = not clean_text and not has_images
     if ignored or empty:
         # 语义单点：任何被入口接住的消息（含被忽略与空内容）都推进代次，作废
-        # 未发出的旧回复（契约 §6.3）。两个分支此前各写一份调用。
+        # 未发出的旧回复（契约 §6.3）。
         if plugin.settings.abandon_stale_on_new_message:
             plugin._coordinator.invalidate(umo)
     if ignored:

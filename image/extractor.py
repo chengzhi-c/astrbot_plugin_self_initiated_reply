@@ -198,8 +198,7 @@ def _eligible_image_entries(event: Any, *, skip_stickers: bool) -> Iterator[tupl
 
     ``has_images``（是否存在图片）与 ``extract_images``（能否抽出可用来源）是
     两个判据，不能互相替代：组件存在但 url/file 全空时前者为真、后者为空，
-    ``message_ingress._accepted_content`` 的 "[图片]" 回落正依赖这一点。两者
-    此前各写一份"遍历 ``_image_entries`` + 判贴纸"，此处单点化。
+    ``message_ingress._accepted_content`` 的 "[图片]" 回落正依赖这一点。
 
     贴纸判据**只在 ``skip_stickers`` 为真时计算**：该判据要读组件字段，
     而 ``has_images`` 把任何异常都当"没有图片"（``except Exception: False``），

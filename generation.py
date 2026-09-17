@@ -95,7 +95,7 @@ def neutralize_envelope_tags(text: str) -> str:
 def build_proactive_prompt(
     reply_length_mode: str, context_text: str, *, inherit_tools: bool
 ) -> str:
-    """拼装主动回复的提示词（0.9.3 自 ``generate`` 抽出的纯函数）。
+    """拼装主动回复的提示词（自 ``generate`` 抽出的纯函数）。
 
     抽离理由：这段拼装无共享可变状态，与 ``generate`` 的资源获取阶梯
     （send tracker / 工具边界 / provider_request）无耦合，独立后可直接单测文案契约。
@@ -772,8 +772,7 @@ class GenerationRunner:
             min_text_records=min(MIN_RECENT_TEXT_RECORDS, self.settings.recent_message_limit),
         )
         if len(context_text) > MAX_GENERATION_CONTEXT_CHARS:
-            # 历史是唯一无界项（识图描述有单图 MAX_DESCRIPTION_CHARS×条数上限）；
-            # 判断路径另有 2000 cap，生成路径此前零预算。
+            # 历史是唯一无界项（识图描述有单图 MAX_DESCRIPTION_CHARS×条数上限）。
             logger.info(
                 "[%s] proactive context over budget, oldest history dropped "
                 "session=%s chars=%d budget=%d",

@@ -493,7 +493,7 @@ def test_gate_restore_recovers_running_set(tmp_path: Path) -> None:
     """restore 必须恢复运行集快照，否则回滚后运行标记漂移。
 
     变异锚定：session_gate.restore 删除 ``self._running_sessions = snap["running"]``
-    后本测试必须变红（该变异曾在 0.8.2 三方审查中实测存活）。
+    后本测试必须变红。
     """
 
     async def scenario(plugin, main):

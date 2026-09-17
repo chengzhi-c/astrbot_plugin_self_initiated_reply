@@ -287,10 +287,9 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
 def _migrate_legacy_group_keys(sessions: dict[str, SessionState], whitelist: set[str]) -> None:
     """把历史裸群号键的状态并入唯一匹配的完整 UMO。
 
-    历史上状态键曾是裸群号（早先 ``state_for`` 在每次访问时 pop 迁移）。迁移
-    必须在此一次性完成：热路径迁移在多平台同群号时由**首个访问者**继承整份
-    历史，其余平台永远拿不到；而且那是在只读函数里做写操作，与
-    ``read_session_state`` 自陈的「不创建、不迁移」相矛盾。
+    裸群号键是最早的状态键形态。迁移必须在此一次性完成：热路径迁移在多平台
+    同群号时由**首个访问者**继承整份历史，其余平台永远拿不到；而且那是在只读
+    函数里做写操作，与 ``read_session_state`` 自陈的「不创建、不迁移」相矛盾。
 
     能在本函数看到的裸群号键，必然同时还在白名单里（``session_whitelisted``
     按群号通配放行）——白名单若已改写成完整 UMO，裸键在载入过滤时就已被丢弃，

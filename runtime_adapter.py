@@ -28,8 +28,7 @@ def _require[T](value: T | None, name: str) -> T:
     """探测值兜底解包：缺失即 raise，兼作 mypy 的 Optional 收窄。
 
     不用 assert：`python -O` 下 assert 语句被整体剥除，None 会漏进宿主
-    调用并在更深处以难诊断的形态崩溃。这条理由与是否真用 -O 部署无关，
-    它说明的是本函数为何写成 if/raise 而不是一行 assert，删掉会招来回改。
+    调用并在更深处以难诊断的形态崩溃。
 
     ``validate()`` 只在加载期跑一次（``SelfInitiatedReplyPlugin.__init__``），各入口
     不再逐次自校验，因此本函数是运行期唯一的 None 兜底，也防「探测表新增
@@ -223,8 +222,8 @@ class AstrBotRuntimeAdapter:
         逐次校验只是重复 ``inspect.signature`` 与两次宿主类实例化。运行期的 None
         兜底由 ``_require`` 承担。
 
-        所以这里不缓存探测结论：本方法的调用点已从「每次属性访问」降到「加载期
-        一次 + compat_check + 测试显式调用」，缓存换不到收益，只多一个字段。
+        不缓存探测结论：调用点只有加载期一次 + compat_check + 测试显式调用，
+        缓存换不到收益，只多一个字段。
         """
         problems = self._probe_problems()
         if problems and not soft:
@@ -489,8 +488,7 @@ class AstrBotRuntimeAdapter:
             return False
         if not tool_ids:
             # func_tool 显式 None（宿主声明本次无工具）或工具集本身为空：
-            # 无工具可调，两种模式的核验都平凡通过（与旧实现 None→直接放行、
-            # 空集→循环空转后核验通过等价）。
+            # 无工具可调，两种模式的核验都平凡通过。
             return True
         tool_set = req.func_tool  # _tool_list 已排除 _MISSING/None tools
         tools = tool_set.tools

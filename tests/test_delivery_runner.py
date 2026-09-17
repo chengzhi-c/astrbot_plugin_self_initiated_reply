@@ -329,7 +329,7 @@ async def test_apply_then_persist_retry_does_not_duplicate_state(tmp_path: Path)
 async def test_apply_then_persist_persists_every_record(tmp_path: Path) -> None:
     """落盘契约：每次 apply+persist 返回时状态已持久化，无延迟窗口。
 
-    0.9.3 删除 DebouncedStateSaver 后，注入的回调即 ``_save_storage``
+    注入的回调即 ``_save_storage``
     本体（串行锁 + to_thread 原子写）。本测试锁定"记录即落盘"：
     崩溃窗口为零，不存在"已发送但状态未落盘"的中间态。
     """
