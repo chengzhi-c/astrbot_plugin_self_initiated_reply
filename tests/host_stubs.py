@@ -23,9 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 MAIN_PACKAGE_NAME = "selfreply_main_test_package"
 
-# 单源守卫的扫描面：此前多处用 ROOT.glob("*.py")（非递归），
-# image/ 子包完全在视野外——而 0.8.8 恰好是从 image/parser.py 收敛掉一处
-# response_text 镜像的。用 rglob 并在此单点声明排除目录，避免各守卫各写一套。
+# 单源守卫的扫描面：用 rglob 并在此单点声明排除目录，避免各守卫各写一套。
+# 非递归的 ROOT.glob("*.py") 会把 image/ 子包漏在视野外。
 _NON_PRODUCTION_DIRS = frozenset(
     {"tests", "scripts", ".scratch", "data", "dist", "build", "__pycache__", ".venv", ".git"}
 )
@@ -212,8 +211,7 @@ def load_modules(package_name: str, *names: str) -> tuple[types.ModuleType, ...]
 def base_runtime_capabilities(runtime: Any, **overrides: Any) -> Any:
     """完整契约的 ``AgentRuntimeCapabilities``（validate 覆盖全部私有入口）。
 
-    归一 ``test_runtime_adapter`` 与 ``test_runtime_adapter_blindspots`` 的逐字
-    同形副本：契约字段增删时只改这里，两处用例不会各持一半。
+    契约字段增删时只改这里，两处用例不会各持一半。
     """
     base = dict(
         import_error=None,
@@ -381,7 +379,7 @@ def _permission_type(*_args: Any, **_kwargs: Any) -> Any:
     真实宿主（4.26.8/4.27.0）在装饰时会对被装饰对象调用 get_handler_full_name
     （访问 ``__name__``）。RegisteringCommandable 没有 ``__name__``，因此把
     @permission_type 叠在 @command_group 外层会在插件加载时抛 AttributeError。
-    桩复刻该行为，让这种顺序错误在测试期就炸出来（0.7.15 曾因此线上安装失败）。
+    桩复刻该行为，让这种顺序错误在测试期就炸出来，而不是留到真机安装时。
     """
 
     def decorate(obj: Any) -> Any:
@@ -511,7 +509,6 @@ class FakeBuildResult:
 class DirectSendingRunner:
     """管线脚手架共用 runner：固定返回 completion_text，其余全 no-op。
 
-    归一此前 5 处内联重复（test_main_runtime / test_regressions r1/r6/R7/R7b）。
     需要不同行为（挂起、request_stop 计数）的用例自建 runner，勿加参数膨胀本类。
     """
 
@@ -540,7 +537,7 @@ def make_counting_enforce(
 ):
     """包装 enforce_final_tool_policy：快照每次清理结果，第一次后注入工具。
 
-    归一 4 处同构（hook 在两次 enforce 之间注入正是被测语义，不可省）。
+    hook 在两次 enforce 之间注入正是被测语义，不可省。
     """
 
     def counting_enforce(req: Any, inherit_tools: Any) -> bool:
@@ -793,10 +790,9 @@ def install_tool_injecting_pipeline(
 ) -> dict[str, Any]:
     """装配「build 注入工具 → 两次 enforce（第一次后注入）→ run」测试管线。
 
-    归一 test_main_runtime 与 test_regressions 的 4 处同构脚手架。run_effect
-    签名 ``(runner, **kwargs)``；不传则 run 空转。快照开关控制 reset 时工具集
-    快照与 build prompt 快照（不用快照的用例不背这份观测开销）。返回控制器
-    （快照列表 + restore），调用方须在 finally 里调 restore()。
+    run_effect 签名 ``(runner, **kwargs)``；不传则 run 空转。快照开关控制 reset
+    时工具集快照与 build prompt 快照（不用快照的用例不背这份观测开销）。返回
+    控制器（快照列表 + restore），调用方须在 finally 里调 restore()。
     """
     req_holder: dict[str, Any] = {}
     enforce_snapshots: list[list[str]] = []

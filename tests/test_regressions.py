@@ -2,7 +2,7 @@
 
 按主题组织的历史回归守卫：
 - 命令入口与生命周期
-- r1-r20 编号回归：工具策略、配置回滚、并发互斥、ABA 等
+- 回归清单：工具策略、配置回滚、并发互斥、ABA 等
 - 日志级别契约：高频成功路径必须保持 DEBUG
 """
 
@@ -175,7 +175,7 @@ def _load_vision_image():
 
 
 def _install_tool_injecting_pipeline(plugin, main, *, event):
-    """r2/r3 的固定形态：3 标准工具 + hook 注入 + reset/prompts 双快照。
+    """固定形态：3 标准工具 + hook 注入 + reset/prompts 双快照。
 
     泛化实现见 host_stubs.install_tool_injecting_pipeline。
     """
@@ -192,7 +192,7 @@ async def _run_pipeline(plugin):
     return await plugin._generation.generate(UMO, state, expected_generation=token, force=True)
 
 
-def test_r1_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> None:
+def test_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> None:
     """入口快照：运行中把开关改为 True 不得让本次运行 fail-open。"""
 
     async def scenario(plugin, main):
@@ -225,7 +225,7 @@ def test_r1_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> N
     with_plugin(tmp_path, scenario)
 
 
-def test_r2_second_enforce_happens_before_reset(tmp_path: Path) -> None:
+def test_second_enforce_happens_before_reset(tmp_path: Path) -> None:
     """reset 执行时工具集必须已经清理：hook 注入的工具不能进 runner。"""
 
     async def scenario(plugin, main):
@@ -247,7 +247,7 @@ def test_r2_second_enforce_happens_before_reset(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
-def test_r3_system_hint_matches_tool_policy(tmp_path: Path) -> None:
+def test_system_hint_matches_tool_policy(tmp_path: Path) -> None:
     """继承模式提示词描述真实边界；默认模式仍写死禁用工具。"""
 
     async def scenario(plugin, main):
@@ -284,7 +284,7 @@ def test_r3_system_hint_matches_tool_policy(tmp_path: Path) -> None:
     with_plugin(tmp_path / "inherit", inherit_scenario, proactive_inherit_tools=True)
 
 
-def test_r4_cache_hit_does_not_rewrite_file(tmp_path: Path) -> None:
+def test_cache_hit_does_not_rewrite_file(tmp_path: Path) -> None:
     """内容寻址命中且未篡改时不得重写文件（digest 比较修复）。"""
 
     image = _load_vision_image()
@@ -312,7 +312,7 @@ def test_r4_cache_hit_does_not_rewrite_file(tmp_path: Path) -> None:
         Path.write_bytes = original_write
 
 
-def test_r5_config_rollback_restores_sessions_and_locks(tmp_path: Path) -> None:
+def test_config_rollback_restores_sessions_and_locks(tmp_path: Path) -> None:
     """回滚必须恢复 sessions 与 _session_locks（与 settings 同级）。"""
 
     async def scenario(plugin, main):
@@ -354,11 +354,11 @@ def _load_vision_main():
 
 
 # ============================================================================
-# R6：继承模式危险工具 denylist
+# 继承模式危险工具 denylist
 # ============================================================================
 
 
-def test_r6_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
+def test_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
     """继承模式放行普通工具，但宿主级危险工具（含 hook 注入）一律拒绝。"""
 
     async def scenario(plugin, main):
@@ -393,11 +393,11 @@ def test_r6_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# R7：UNKNOWN 发送 + 工具直发时仍记录状态
+# UNKNOWN 发送 + 工具直发时仍记录状态
 # ============================================================================
 
 
-def test_r7_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) -> None:
+def test_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) -> None:
     """工具已直发后最终文本提交 UNKNOWN：状态必须记录，观察窗口必须推进。"""
 
     from types import SimpleNamespace
@@ -458,11 +458,11 @@ def test_r7_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) ->
 
 
 # ============================================================================
-# R7b：发送已提交后 after-send 取消仍须保留一次性状态记录
+# 发送已提交后 after-send 取消仍须保留一次性状态记录
 # ============================================================================
 
 
-def test_r7_after_send_cancellation_records_delivered_attempt(tmp_path: Path) -> None:
+def test_after_send_cancellation_records_delivered_attempt(tmp_path: Path) -> None:
     """Cancellation after a delivered send cannot erase the external side effect."""
 
     async def scenario(plugin, main):
@@ -547,11 +547,11 @@ def test_r7_after_send_cancellation_records_delivered_attempt(tmp_path: Path) ->
 
 
 # ============================================================================
-# R8：配置回滚后延迟检查重新调度
+# 配置回滚后延迟检查重新调度
 # ============================================================================
 
 
-def test_r8_rollback_reschedules_delayed_check(tmp_path: Path) -> None:
+def test_rollback_reschedules_delayed_check(tmp_path: Path) -> None:
     """回滚恢复会话后，被白名单变更取消的延迟检查必须重新调度。"""
 
     import sys
@@ -585,11 +585,11 @@ def test_r8_rollback_reschedules_delayed_check(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# R9：生成超时先优雅停止
+# 生成超时先优雅停止
 # ============================================================================
 
 
-def test_r9_timeout_requests_graceful_stop(tmp_path: Path) -> None:
+def test_timeout_requests_graceful_stop(tmp_path: Path) -> None:
     """超时时先调 request_stop 让 run_agent 走正常清理，而不是硬取消。"""
 
     from types import SimpleNamespace
@@ -652,11 +652,11 @@ def test_r9_timeout_requests_graceful_stop(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# Phase D：配置 revision/CAS 与规范化反馈
+# 配置 revision/CAS 与规范化反馈
 # ============================================================================
 
 
-def test_phase_d_config_revision_rejects_stale_versioned_write(tmp_path: Path) -> None:
+def test_config_revision_rejects_stale_versioned_write(tmp_path: Path) -> None:
     """版本化 POST 只接受读取时的 revision，冲突不得部分应用。"""
 
     async def scenario(plugin, main):
@@ -690,7 +690,7 @@ def test_phase_d_config_revision_rejects_stale_versioned_write(tmp_path: Path) -
     with_plugin(tmp_path, scenario)
 
 
-def test_phase_d_concurrent_versioned_writers_have_one_winner(tmp_path: Path) -> None:
+def test_concurrent_versioned_writers_have_one_winner(tmp_path: Path) -> None:
     """同一 revision 的并发全量写入只能有一个赢家。"""
 
     async def scenario(plugin, main):
@@ -724,7 +724,7 @@ def test_phase_d_concurrent_versioned_writers_have_one_winner(tmp_path: Path) ->
     with_plugin(tmp_path, scenario)
 
 
-def test_phase_d_unversioned_config_write_reports_adjustment(
+def test_unversioned_config_write_reports_adjustment(
     tmp_path: Path,
 ) -> None:
     """旧调用（不带 base_revision）仍可写；规范化字段必须返回给前端。"""
@@ -742,10 +742,10 @@ def test_phase_d_unversioned_config_write_reports_adjustment(
     with_plugin(tmp_path, scenario)
 
 
-def test_r10_get_config_enabled_is_persisted_value(tmp_path: Path) -> None:
+def test_get_config_enabled_is_persisted_value(tmp_path: Path) -> None:
     """GET config 的 enabled 必须是持久值，runtime_enabled 单独暴露。
 
-    0.9.4 决策 5 后 ``/off`` 会同时落盘 ``enabled``，故此处不再用 ``/off`` 举例，
+    ``/off`` 会同时落盘 ``enabled``，故此处不用 ``/off`` 举例，
     改为直接构造「两者分叉」这个状态：webapi 仍须分开暴露，否则前端全量保存会把
     运行态固化成持久配置。分叉现在由 POST config 提交相同 enabled 值时产生。
     """
@@ -762,11 +762,11 @@ def test_r10_get_config_enabled_is_persisted_value(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# R11：同会话并发互斥
+# 同会话并发互斥
 # ============================================================================
 
 
-def test_r11_concurrent_checks_are_mutexed(tmp_path: Path) -> None:
+def test_concurrent_checks_are_mutexed(tmp_path: Path) -> None:
     """同一会话并发两个 _check_session：第二个必须被拒，配额只计一次。"""
 
     from types import SimpleNamespace
@@ -830,11 +830,11 @@ def test_r11_concurrent_checks_are_mutexed(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# R12：非 force 检查的白名单闸门
+# 非 force 检查的白名单闸门
 # ============================================================================
 
 
-def test_r12_non_force_check_rejected_for_non_whitelisted_session(tmp_path: Path) -> None:
+def test_non_force_check_rejected_for_non_whitelisted_session(tmp_path: Path) -> None:
     """非白名单会话的非 force 检查必须被闸门拒绝，不进入决策管线。"""
 
     async def scenario(plugin, main):
@@ -848,7 +848,7 @@ def test_r12_non_force_check_rejected_for_non_whitelisted_session(tmp_path: Path
 
 
 # ============================================================================
-# round6：高频成功路径日志级别契约
+# 高频成功路径日志级别契约
 # ============================================================================
 
 
@@ -858,7 +858,7 @@ def test_r12_non_force_check_rejected_for_non_whitelisted_session(tmp_path: Path
 _DEBUG_LOG_CONTRACTS = [
     ("scheduler.py", "[%s] wait for minimum silence session=", 1),
     ("session_pipeline.py", "[%s] skip session=%s trigger=", 1),
-    # `[%s] decision session=` 自 0.9.5 起移出本契约、升为 INFO（用户要求）。
+    # `[%s] decision session=` 移出本契约、升为 INFO（用户要求）。
     # 它不违反本契约的初衷：初衷是拦「逐条消息级」的刷屏，而这一行与
     # scheduler.py 那条已是 INFO 的 `check result session=` 在常见路径上 1:1
     # 同频（都在一次 check_session 收敛点各打一次），不引入新的刷屏量级。
@@ -891,11 +891,11 @@ def test_high_frequency_success_logs_stay_debug() -> None:
 
 
 # ============================================================================
-# round7 r13-r17：权限与配置键（v0.8.4 前站）
+# 权限与配置键
 # ============================================================================
 
 
-def test_r13_non_admin_write_command_does_not_cancel(tmp_path: Path) -> None:
+def test_non_admin_write_command_does_not_cancel(tmp_path: Path) -> None:
     """非管理员发写指令：权限拒绝先行，在途延迟检查不得被取消。
 
     修复前 on_message 命令分支无条件 _cancel_event_session（白名单会话）
@@ -922,11 +922,11 @@ def test_r13_non_admin_write_command_does_not_cancel(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# R14：管理员写指令取消、只读指令不取消（MP1-3 语义）
+# 管理员写指令取消、只读指令不取消
 # ============================================================================
 
 
-def test_r14_admin_write_cancels_but_read_does_not(tmp_path: Path) -> None:
+def test_admin_write_cancels_but_read_does_not(tmp_path: Path) -> None:
     """管理员视角：只读（status）不打断进行中的检查，写（add）才取消。
 
     修复前只读指令同样被无条件取消 → status 后任务被取消（红灯）。
@@ -962,11 +962,11 @@ def test_r14_admin_write_cancels_but_read_does_not(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# R15：webapi 新键真实解析（MP1-4 吞字段）
+# webapi 新键真实解析（防静默吞字段）
 # ============================================================================
 
 
-def test_r15_new_config_keys_take_effect(tmp_path: Path) -> None:
+def test_new_config_keys_take_effect(tmp_path: Path) -> None:
     """POST 13 个规范键 + decision_history_min_messages 必须真实写入 settings。
 
     修复前这些键无处理分支 → ok:true 但 settings 不变（虚假绿灯，红灯）。
@@ -1012,11 +1012,11 @@ def test_r15_new_config_keys_take_effect(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# R16：webapi 未知键 fail loud（MP1-4）
+# webapi 未知键 fail loud
 # ============================================================================
 
 
-def test_r16_unknown_config_key_is_rejected(tmp_path: Path) -> None:
+def test_unknown_config_key_is_rejected(tmp_path: Path) -> None:
     """schema 之外的键必须被拒并列出未知键，而不是静默返回 ok:true。
 
     修复前未知键被忽略 → ok:true（虚假成功，红灯）。
@@ -1037,7 +1037,7 @@ def test_r16_unknown_config_key_is_rejected(tmp_path: Path) -> None:
 # ============================================================================
 
 
-def test_r18_aba_old_task_does_not_revive_after_re_add(tmp_path: Path) -> None:
+def test_aba_old_task_does_not_revive_after_re_add(tmp_path: Path) -> None:
     """会话移除后立即重加：运行中的旧任务必须被代次门拦截，不发送不记录。"""
 
     from types import SimpleNamespace
@@ -1107,12 +1107,12 @@ def test_r18_aba_old_task_does_not_revive_after_re_add(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# R19：main 不得散落事件表清理（失效级联单点）
+# main 不得散落事件表清理（失效级联单点）
 # ============================================================================
 
 
-def test_r19_invalidate_cascades_generation_delay_and_tables() -> None:
-    """invalidate 必须推进代次、取消延迟并清三表。事件表身份由 r20 行为钉住。"""
+def test_invalidate_cascades_generation_delay_and_tables() -> None:
+    """invalidate 必须推进代次、取消延迟并清三表。事件表身份由会话失效清空观察素材的用例钉住。"""
     invalidate_calls = calls_in("session_coordinator.py", "SessionCoordinator.invalidate")
     for callee in ("self._gate.advance", "self._cancel_delay", "self.clear_session"):
         assert callee in invalidate_calls, f"invalidate 未级联 {callee}"
@@ -1123,11 +1123,11 @@ def test_r19_invalidate_cascades_generation_delay_and_tables() -> None:
 
 
 # ============================================================================
-# R20：会话失效清空观察素材
+# 会话失效清空观察素材
 # ============================================================================
 
 
-def test_r20_invalidate_clears_observation_material(tmp_path: Path) -> None:
+def test_invalidate_clears_observation_material(tmp_path: Path) -> None:
     """记录事件后会话持有观察素材；invalidate 必须清空事件表并推进代次。
 
     「持有观察素材」以事件表为准（_last_events/_last_event_at），不经任何

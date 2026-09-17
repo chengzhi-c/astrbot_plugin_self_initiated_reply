@@ -72,8 +72,7 @@ function loadConfigControls(form, config, providerControls) {
 		} else if (control.type === "checkbox") {
 			// 后端 bool 键经 as_bool 归一恒为真 bool，且每个 data-config-key 都是
 			// GET /config 的 requiredKey（缺键在 isSuccessfulConfigPayload 处即抛错，
-			// 走不到这里），故不再有"缺键时按默认值取反"的分支——那套
-			// data-config-default 机制在可达路径上恒等于 Boolean()，已移除。
+			// 走不到这里），故不需要"缺键时按默认值取反"的分支。
 			control.checked = Boolean(config[configKey]);
 		} else if (control.type === "number") {
 			control.value = config[configKey] ?? "";
@@ -444,8 +443,7 @@ export function createConfigIo(deps) {
 				);
 				// 字段级定位：后端校验文案以「键名 + 空格」前缀自带定位（见 webapi
 				// 错误分级注释）。命中 number 控件时复用 validateField 的红字与
-				// aria-invalid；白名单保留专属错误框。此前只对白名单生效，其余
-				// 字段用户只能靠 toast 猜。
+				// aria-invalid；白名单保留专属错误框。
 				const numberField = errorKey
 					? numberFields.find((f) => f.input.dataset.configKey === errorKey)
 					: null;

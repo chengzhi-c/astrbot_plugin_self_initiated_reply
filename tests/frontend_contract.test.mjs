@@ -360,8 +360,7 @@ test("context-history setting describes its fallback behavior", async () => {
 
 test("browser config fixture covers every form-declared key", async () => {
   // Playwright 用这份夹具当 GET /config。缺键时 isSuccessfulConfigPayload 失败，
-  // 表单一直 inert，浏览器用例会集体红。node 契约原先不读这份夹具，
-  // 第四轮加 quote/skip 键后本地 CI frontend 仍绿、浏览器才爆。
+  // 表单一直 inert，浏览器用例会集体红。
   const html = await readFile(join(pageDir, "index.html"), "utf8");
   const htmlKeys = [...html.matchAll(/data-config-key="([a-z0-9_]+)"/g)].map(
     (match) => match[1],
@@ -373,7 +372,7 @@ test("browser config fixture covers every form-declared key", async () => {
   assert.deepEqual(missing, [], `config-payload.mjs 缺少表单键：${missing}`);
 
   // 反向：夹具里的每个键都必须被页面消费（表单控件或 JS 读取），否则是
-  // 后端早已删除、夹具却残留的孤儿键——浏览器测试用这份夹具当桩，
+  // 夹具里的孤儿键（后端已无此键）——浏览器测试用这份夹具当桩，
   // 残留键永远绿，漂移只有这一侧能抓。同 Python 侧
   // test_every_exposed_config_key_is_consumed_by_the_panel 的口径。
   const names = (await readdir(pageDir)).filter((name) => /\.(js|mjs)$/.test(name));
@@ -392,9 +391,9 @@ test("browser config fixture covers every form-declared key", async () => {
 test("CI runs the dependency-free frontend gate", async () => {
   const workflow = await readFile(join(root, ".github", "workflows", "ci.yml"), "utf8");
   // 只钉两条对"零依赖门禁还在跑"有决定意义的锚：frontend job 存在、且它执行
-  // node --test 跑契约文件。此前另有 3 条（setup-node 版本、通配符字面量、
-  // node --check 子串）——那些是**实现细节**：升级 action 版本或调整 glob 写法
-  // 都会变红，而红的原因与被守卫的契约（前端门禁不被误删）无关。
+  // node --test 跑契约文件。setup-node 版本、通配符字面量、node --check 子串
+  // 都是**实现细节**：升级 action 版本或调整 glob 写法都会变红，而红的原因与
+  // 被守卫的契约（前端门禁不被误删）无关，故不钉。
   assert.match(workflow, /^ {2}frontend:\r?\n/m);
   assert.match(workflow, /node --test tests\/frontend_contract\.test\.mjs/);
 });
@@ -516,12 +515,12 @@ test("dark accent tokens are declared once and reused", async () => {
 
 test("styles do not target element ids", async () => {
   // 样式不用 #id 选择器：ID 特异性(100)会压过类(10)，同一按钮的普通类规则
-  // 从此改不动它，只能靠再写一条更长的 ID 规则去覆盖（此前 4 个顶栏按钮各自
-  // 攒了 4–9 条 #id 规则）。id 仍是 JS 取节点的锚（getElementById 不动），
+  // 从此改不动它，只能靠再写一条更长的 ID 规则去覆盖。id 仍是 JS 取节点的锚
+  // （getElementById 不动），
   // 只有样式改用类。
   //
   // 判据取"选择器区域"（`{` 之前的部分）而不是"全文找 # 再剔除颜色"。
-  // 旧判据 `(^|[\s,{])(#[\w-]+)` 有三类漏检，均已实测：
+  // 简单正则 `(^|[\s,{])(#[\w-]+)` 有三类漏检，均已实测：
   //   - 无空格组合符：`.a>#id`、`.a~#id`、`*#id`（`#` 前既非空白也非 `,{`）；
   //   - 属性选择器相连：`[attr]#id`；
   //   - 3–8 位纯十六进制字形 ID（如 `#abc123`）：被 `#[0-9a-fA-F]{3,8}\b`
@@ -574,8 +573,8 @@ test("the two dark token blocks stay token-identical", async () => {
 });
 
 test("page wires the manual image cache cleanup control to the API", async () => {
-  // 清理按钮必须接入页面与 API，而不是只能重载插件。此前这条断言住在
-  // tests/test_vision.py 里读前端源码——前端改名即红，与识图无关，搬回契约测试。
+  // 清理按钮必须接入页面与 API，而不是只能重载插件。这条断言读前端源码，
+  // 必须与前端改动同处——放在识图测试里会因前端改名变红，与识图无关。
   const [html, configIo] = await Promise.all([
     readFile(join(pageDir, "index.html"), "utf8"),
     readFile(join(pageDir, "config-io.mjs"), "utf8"),
@@ -585,7 +584,7 @@ test("page wires the manual image cache cleanup control to the API", async () =>
 });
 
 test("number inputs keep their hint in aria-describedby", async () => {
-  // 校验错误此前独占 aria-describedby，读屏用户聚焦输入框时听不到"建议 30–120
+  // 校验错误若独占 aria-describedby，读屏用户聚焦输入框时听不到"建议 30–120
   // 秒"这类操作必需提示。这条守两件事：HTML 里 hint 有 id 且被 input 引用；
   // config-io 合并而非覆盖 aria-describedby。
   const [html, configIo] = await Promise.all([

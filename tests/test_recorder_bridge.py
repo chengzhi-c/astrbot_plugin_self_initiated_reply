@@ -370,7 +370,7 @@ def test_image_to_data_url_os_error(bridge_mod, tmp_path, monkeypatch) -> None:
 
 
 # ============================================================================
-# maybe_await（0.8.8 起统一到 utils.maybe_await，删除 recorder_bridge 私有副本）
+# maybe_await（统一到 utils.maybe_await，不留 recorder_bridge 私有副本）
 # ============================================================================
 
 
@@ -391,10 +391,9 @@ async def test_maybe_await_both_forms(bridge_mod) -> None:
 async def test_maybe_await_handles_generator_based_coroutines(bridge_mod) -> None:
     """generator-based coroutine（@types.coroutine）必须被 await。
 
-    0.8.8 前 recorder_bridge 的私有 _maybe_await 用 hasattr(value, "__await__")
-    判定，对 CO_ITERABLE_COROUTINE 生成器（inspect.isawaitable=True 但无
-    __await__ 属性）会漏 await，直接返回生成器对象。统一到 utils.maybe_await
-    后此场景必须正确。
+    用 hasattr(value, "__await__") 判定会漏掉 CO_ITERABLE_COROUTINE 生成器
+    （inspect.isawaitable=True 但无 __await__ 属性），直接返回生成器对象。
+    utils.maybe_await 对此场景必须正确。
     """
     utils_mod = importlib.import_module(f"{PACKAGE_NAME}.utils")
 

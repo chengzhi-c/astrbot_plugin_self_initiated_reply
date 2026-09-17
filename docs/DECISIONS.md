@@ -8,20 +8,15 @@
 `git archive --format=zip -o <name>.zip HEAD` 导出：排除规则单点声明在仓库根
 `.gitattributes` 的 `export-ignore`，未跟踪/被 .gitignore 排除的文件天然不进包。
 
-此前的方式是 hatch 构建 wheel → `check_wheel`/`check_sdist` 内容断言 → 从
-wheel 派生部署 zip，需要维护 pyproject exclude 列表 ↔ 检查脚本禁运名单 ↔
-pathspec 交叉核验三层互锁（历史确实漂移过两次，那套守卫有真实战果）。裁撤
-理由：分发主路径不产生 wheel，三层互锁的全部维护成本只服务于次要路径，而
-`git archive` + `export-ignore` 把同一保证变成约 15 行单点声明——“缓存泄漏
-进包”这类问题在结构上不再存在。pyproject 的 wheel/sdist 配置保留（本地
-构建仍干净），但不再有发布链依赖它。
+不采用「hatch 构建 wheel → `check_wheel`/`check_sdist` 内容断言 → 从 wheel
+派生部署 zip」的理由：那套三层互锁（pyproject exclude 列表 ↔ 检查脚本禁运名单 ↔
+pathspec 交叉核验）曾漂移过两次，而分发主路径不产生 wheel，其全部维护成本只服务
+于次要路径；而 `git archive` + `export-ignore` 把同一保证变成单点声明
+——“缓存泄漏进包”这类问题在结构上不再存在。pyproject 的 wheel/sdist 配置保留
+（本地构建仍干净），但不再有发布链依赖它。
 
-随本决策裁撤：`scripts/check_wheel.py`、`check_sdist.py`、`make_release_zip.py`、
-`release_artifacts.py`、`runtime_dependency_gates.py`（其中固定地址传输的
-httpx/httpcore API 形态检查移入 `compat_check.py`），及其配套测试
-（`tests/test_release_scripts.py` 与 test_config_schema 的四个打包守卫）。
-CI 的 `build` 作业删除；`mutation` 作业降为 nightly/手动触发（其锚定的
-“既有测试还能抓既有缺陷”只在有人改那些测试或锚点时才可能变红）。
+`mutation` 作业只在 nightly/手动触发：它锚定的是“既有测试还能抓既有缺陷”，只在
+有人改那些测试或锚点时才可能变红，逐 push 跑是纯浪费。
 
 ## 双面板
 
@@ -113,25 +108,25 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 
 ## models.py 不拆分
 
-`models.py` 现约 1,370 行，承载五类职责：常量与工具函数、数据类与枚举、
+`models.py` 是最大的生产文件，承载五类职责：常量与工具函数、数据类与枚举、
 `AttemptLedger` 账本状态机、`ConfigSpec`/`Settings` 与 coerce/normalize、
-提示词模板。曾计划把配置子系统拆到独立 `config_spec.py`，实测成本后放弃。
+提示词模板。
 
-不拆的理由是扇入成本远大于文件长度的收益：`models` 被 **23 个生产文件**以 import
+不拆的理由是扇入成本远大于文件长度的收益：`models` 被绝大多数生产模块以 import
 语句直接引用，`Settings`、`SessionState` 与 `config_revision` 是全仓共享的叶子类型。
-把配置子系统搬到新模块要同时改这 23 处 import、`tests/source_contract.py` 的路径锚
+把配置子系统搬到新模块要同时改这些 import、`tests/source_contract.py` 的路径锚
 与 `pyproject.toml` 的 mypy 显式文件清单，属高 churn、零行为收益的重排；
 而"读一个文件要切换几次心智模型"的代价，靠下面的结构契约即可抵消。
 
 取而代之的守卫是结构契约而非文件边界：配置键的单源由 `ConfigSpec` 表 +
 `test_config_schema` 断言，前端可写键由 `test_config_source_of_truth` 与 panel
-面比对，镜像实现由 `test_stage3_single_source` 反推。新增职责时按同一方式加断言，
+面比对，镜像实现由 `test_single_source_anchors` 反推。新增职责时按同一方式加断言，
 不靠拆文件降低阅读成本。
 
 ## image/parser.py 不拆分
 
 `image/parser.py` 是第二大生产文件，同样并置三类关注点：SSRF 安全的固定地址
-传输、内容寻址缓存与清理、识图解析与描述缓存。曾评估拆出 `image/transport.py`。
+传输、内容寻址缓存与清理、识图解析与描述缓存。
 
 不拆的理由与 `models.py` 同款，且多一条测试耦合：传输层私有名
 （`_FixedAddressTransport` / `_FixedAddressBackend` / `_resolve_global_address` /
@@ -141,16 +136,16 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 一个调用方——扇入低意味着拆分收益也低。属"高 churn、零行为收益"的纯文件搬迁。
 
 替代做法是文件顶部补齐与其余模块同款的结构说明（拥有 / 不拥有 + 分区目录）：
-让读者拿到定位索引，不复用文件边界。`webapi.py` 同理（此前只有一句 docstring），
-一并补齐。将来若测试改为只依赖公开接口，可重新评估拆分。
+让读者拿到定位索引，不复用文件边界。`webapi.py` 同理，一并补齐。将来若测试改为
+只依赖公开接口，可重新评估拆分。
 
 ## 变异门禁（`scripts/mutation_gate.py`）
 
 门槛的准入判据写在文件 docstring 里，此处只记它为何存在：本仓库的承重不变量靠测试守住，
-而「测试是否真能捕获目标缺陷」原本只有一条人工纪律（写测试时先把实现改坏看它变红）。
-实测这条纪律会漏：17 条承重变异里 6 条被当时的门禁放行，其中 4 条是真实缺口
-（闸门判定顺序、UNKNOWN 的代次门、重定向上限、面板 `config_revision` 格式校验）。
-现在这四条已各有用例并被门禁登记。
+而「测试是否真能捕获目标缺陷」只靠人工纪律（写测试时先把实现改坏看它变红）会漏：
+实测 17 条承重变异里 6 条被当时的门禁放行，其中 4 条是真实缺口（闸门判定顺序、
+UNKNOWN 的代次门、重定向上限、面板 `config_revision` 格式校验）。现在这四条已各有用例
+并被门禁登记。
 
 一条变异只当满足下列之一才准入：破坏 `BEHAVIOR_CONTRACT.md` 的具名不变量、
 P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得入表**：纯性能调参、
@@ -160,27 +155,25 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
 
 ## 新增门禁的准入证据
 
-两处新守卫，各自的「现有门禁抓不到」证据（准入判据同「变异门禁」一节）。
+两处守卫，各自的「现有门禁抓不到」证据（准入判据同「变异门禁」一节）。
 
 **设置页字面量 id 契约**（`tests/frontend_contract.test.mjs`）：`app.js` 的 `$("id")` 与
 `chrome.mjs` 的 `getElementById("id")` 拼错、或页面删掉对应元素，都不抛异常——调用点
-普遍有 `if (el)` 守卫，用户只是静默少一块功能。实测把 `whitelistSummary` 拼成
-`whitelistSummaryTYPO` 后，另 48 条契约 + 27 条浏览器用例 + 847 条 pytest 全绿
-（红的只有新加的这条守卫）。
+普遍有 `if (el)` 守卫，用户只是静默少一块功能。把 `whitelistSummary` 拼成
+`whitelistSummaryTYPO` 时，其余全部用例（含浏览器用例）仍然全绿。
 只做单向 JS ⊆ HTML：反向的孤儿 id 是无害死标记，且会在 `<svg><use href="#…">` 与
 `aria-*` 锚点上误报，豁免名单本身会腐烂。
 
-**`RUF100`**（`pyproject.toml`）：全仓 3 条 `noqa`，实测 1 条是为未启用规则写的
-（`tests/test_adapters.py` 的 `N802`，且 `__signature__` 是 dunder，`--select N802`
-对该文件也是 All checks passed，即该指令从来就没有作用）。
+**`RUF100`**（`pyproject.toml`）：为未启用规则写的 `noqa` 让人以为某处已被忽略，实际
+没有。实测存量里确有此类指令（`tests/test_adapters.py` 的 `N802`：`__signature__`
+是 dunder，`--select N802` 对该文件也是 All checks passed）。
 注意别用 `ruff check --select RUF100` 去复核存量：`--select` 会整体**替换**配置里的
 选择集，`F401` 随之不在启用之列，两条 `# noqa: F401` 会被连带报成「未启用」——那是
 命令副作用，不是存量问题。只用配置本身跑。
 
 ## 核实后刻意不改的项
 
-以下都是「看起来能删/能收，实测后判定不该动」的项，重开评审时直接引用本节，
-不必重新测一遍：
+以下都是「看起来能删/能收，实测后判定不该动」的项，不必重新测一遍：
 
 - **`PipelineReply.direct_send_count` / `direct_texts`（`models.py`）**：是对
   `AttemptLedger` 的视图式读取，**有 18 处测试读者**（`test_generation_runner` /
@@ -194,9 +187,9 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
   写入），删它要改契约，超出「只做收益为正的收敛」边界。
 - **`AttemptState` / `SuppressCode` 的只写成员**：它们是分类域（枚举成员即语义标签），
   删成员要另造一套等价表达，负收益。
-- **叙述性注释的体量**：`docs` 另计，生产代码非空行里约 23% 是注释与文档串，
-  但历史叙述（“此前/曾经/早期”）只 21 行，其余主体是**理由型**注释（为何不那样写、
-  哪条边界是刻意的）；它们是该仓库可评审性的来源，收敛它只会让下一个读者重新推导一遍。
+- **理由型注释的体量**：`docs` 另计，生产代码里的注释主体是**理由型**注释（为何不
+  那样写、哪条边界是刻意的）；它们是该仓库可评审性的来源，收敛它只会让下一个读者
+  重新推导一遍。变更史、评审轮次与外部条目号不属此类，不该保留。
 - **双层防护中的冗余层**：例如图片端口白名单与传输层地址校验重叠——去掉任一层
   都有另一层兜住，行为等价，故不入变异表；这是刻意的纵深，不是重复实现。
 - **发布门禁脚本体量**（`scripts/`）：按发布缺陷逐条长出，每条都对应一次真实事故；
@@ -216,23 +209,23 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
 - **前端不引 ESLint / `tsc --checkJs` / CSS lint**：为 4.8k 行零构建前端新增
   devDependency 与配置的维护成本高于它能抓到的缺陷类；其中真会静默失效的一类
   （字面量 id 注册表）已由上面的 id 契约以约 20 行断言覆盖。
-- **不追覆盖率**：未覆盖行是防御分支与生产不可达的注册面。`main.py` 剩下的 20 行含
-  指令组函数 `selfreply`（类属性被宿主装饰器换成 `RegisteringCommandable`，真实宿主与
-  `host_stubs` 都取不回原函数，其行为不可被任何测试驱动）、幂等 return、宿主异常兜底；
-  `plugin_state.py` 的 18 行是宿主能力分支与"二次回滚也失败"分支。补它们只能靠构造
-  宿主异常注入，属"为覆盖率补行"。
+- **不追覆盖率**：未覆盖行是防御分支与生产不可达的注册面。`main.py` 剩余未覆盖行
+  含指令组函数 `selfreply`（类属性被宿主装饰器换成 `RegisteringCommandable`，真实
+  宿主与 `host_stubs` 都取不回原函数，其行为不可被任何测试驱动）、幂等 return、宿主
+  异常兜底；`plugin_state.py` 的未覆盖行是宿主能力分支与“二次回滚也失败”分支。
+  补它们只能靠构造宿主异常注入，属“为覆盖率补行”。
 - **不合并或删减测试**：全部测试函数体做 AST 归一化后**零重复**，前几条语句相同者
   仅个别几组且语义各自不同。
-- **不重构 `style.css`**：长度 > 20 字符的重复规则体共 8 组，全是单声明出现在不同
-  选择器上下文，加上两份刻意保持一致的深色令牌块（已有用例钉住）；文件内零 id 选择器、
-  仅 5 处 `!important`。收益为零而视觉回归风险不可控。
+- **不重构 `style.css`**：长度 > 20 字符的重复规则体全是单声明出现在不同选择器
+  上下文，加上两份刻意保持一致的深色令牌块（已有用例钉住）；文件内零 id 选择器。
+  收益为零而视觉回归风险不可控。
 - **不改双指令路径架构**：删内联路径会丢掉 `_is_command_entry` 的裸词保护与
   `COMMAND_HANDLED_KEY` 去重；删装饰器路径会让宿主失去指令组注册与权限声明。两条路径
   的等价由别名契约 + 装饰器委托契约共同钉住，成本远低于重构。
 
 ---
 
-# 每会话内存基准（原 MEMORY_BUDGET.md，并入于此）
+# 每会话内存基准
 
 本页把"拍脑袋常数"（缓存容量、消息上限）改写为可推导的公式，并给出
 实测数据（CPython 3.14 / x64）。数值为上限估算：deque 容器随

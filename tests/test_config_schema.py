@@ -1,11 +1,11 @@
-"""配置 schema（_conf_schema.json）与 CONFIG_SCHEMA_KEYS 一致性守卫（0.8.8）。
+"""配置 schema（_conf_schema.json）与 CONFIG_SCHEMA_KEYS 一致性守卫。
 
 schema 驱动 AstrBot 设置面板渲染；CONFIG_SCHEMA_KEYS 决定 webapi 接受哪些
 配置键（名单之外一律 fail loud）。二者漂移的两种后果：
 - schema 有而 KEYS 无：面板字段提交被拒（400 未知键）；
 - KEYS 有而 schema 无：字段不在面板上，形同死配置。
-0.8.8 起硬性断言：schema 键 == CONFIG_SCHEMA_KEYS；0.9.2 起兼容别名层已
-移除，二者一一对应，改任何一侧都必须同步另一侧，否则变红。
+硬性断言 schema 键 == CONFIG_SCHEMA_KEYS：二者一一对应（无兼容别名层），
+改任何一侧都必须同步另一侧，否则变红。
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ _INTENTIONAL_EMPTY_DEFAULT = {"decision_prompt_template"}
 
 
 def test_schema_keys_align_with_config_schema_keys() -> None:
-    """schema 键集合 == CONFIG_SCHEMA_KEYS（0.9.2 起无别名，一一对应）。"""
+    """schema 键集合 == CONFIG_SCHEMA_KEYS（无别名，一一对应）。"""
     schema_keys = _schema_keys()
     webapi = _webapi()
     canonical = set(webapi.CONFIG_SCHEMA_KEYS)
@@ -68,7 +68,6 @@ def test_schema_keys_align_with_config_schema_keys() -> None:
 def test_runtime_dependency_allowlist_is_explicit() -> None:
     """运行时依赖只允许固定地址图片传输所需的两个直接依赖（防膨胀护栏）。
 
-    原先由 scripts/runtime_dependency_gates.py 提供名单，该脚本随发布栈裁撤；
     依赖声明与 pyproject 的一致性由 test 作业 import httpx 天然覆盖，
     这里只钉“运行时依赖保持最小”这一不变量。
     """
@@ -82,7 +81,7 @@ def test_runtime_dependency_allowlist_is_explicit() -> None:
     }
 
 
-def test_phase_d_list_specs_declare_one_machine_normalization_contract() -> None:
+def test_list_specs_declare_one_machine_normalization_contract() -> None:
     """每个字符串 list/set 都必须声明容量、条目规则和空值策略。"""
     models = _models()
     list_specs = [spec for spec in models.CONFIG_SPECS if spec.kind == "list"]
@@ -94,7 +93,7 @@ def test_phase_d_list_specs_declare_one_machine_normalization_contract() -> None
         assert spec.empty_policy in {"drop", "keep"}, spec.key
 
 
-def test_phase_d_config_revision_is_canonical_and_restart_stable() -> None:
+def test_config_revision_is_canonical_and_restart_stable() -> None:
     """集合顺序不影响摘要，运行态不进入持久配置 revision。"""
     models = _models()
     first = models.Settings.from_config(
@@ -107,7 +106,7 @@ def test_phase_d_config_revision_is_canonical_and_restart_stable() -> None:
     assert models.config_revision(first).startswith("sha256:")
 
 
-def test_phase_d_set_normalization_deduplicates_before_capacity() -> None:
+def test_set_normalization_deduplicates_before_capacity() -> None:
     """set 容器的重复项不能消耗容量，排列变化不得改变保留集合。"""
     models = _models()
     spec = models.CONFIG_SPEC_BY_KEY["whitelist_sessions"]
@@ -120,7 +119,7 @@ def test_phase_d_set_normalization_deduplicates_before_capacity() -> None:
     assert first == set(sorted(unique)[:limit])
 
 
-def test_phase_d_malformed_formal_list_uses_legacy_fallback() -> None:
+def test_malformed_formal_list_uses_legacy_fallback() -> None:
     """正式 list 键损坏时仍沿用既有 legacy migration 语义。"""
     models = _models()
     settings = models.Settings.from_config(
@@ -130,7 +129,7 @@ def test_phase_d_malformed_formal_list_uses_legacy_fallback() -> None:
 
 
 def test_legacy_alias_keys_stay_out_of_schema() -> None:
-    """历史兼容别名已于 0.9.2 移除，不得重新进入 _conf_schema.json。"""
+    """别名键不得重新进入 _conf_schema.json。"""
     legacy_aliases = {
         "cooldown_seconds",
         "idle_trigger_seconds",
@@ -146,7 +145,7 @@ def test_legacy_alias_keys_stay_out_of_schema() -> None:
 def test_schema_defaults_match_python_defaults() -> None:
     """schema 的 default 必须等于 Python 侧空配置解析结果。
 
-    0.9.3 补强：此前只断言键集合相等，默认值漂移无人守。漂移后果是面板
+    只断言键集合相等时，默认值漂移无人守。漂移后果是面板
     显示值与实际生效值不一致——用户看到 A、跑的是 B，且不报错。
     """
     schema = _schema()
@@ -220,8 +219,8 @@ def test_schema_options_match_python_choices() -> None:
 #
 # 这是替换四个消费者（Settings 字段/from_config/to_config_dict/
 # CONFIG_SCHEMA_KEYS/_parse_config_updates）的前提证明：若表表达不了现有
-# schema，重构就会退化成「表 + 一堆例外」，那不如不做（0.9.2 Phase E 的
-# 教训）。故此处逐字段双向比对，不留「大致一致」的余地。
+# schema，重构就会退化成「表 + 一堆例外」，那不如不做。故此处逐字段双向比对，
+# 不留「大致一致」的余地。
 # ============================================================================
 
 

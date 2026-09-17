@@ -1,4 +1,4 @@
-"""路径、会话状态、持久化与后台任务：从 main 抽出的状态面。"""
+"""路径解析、会话状态、持久化与后台任务注册。"""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def resolve_paths(
 
     第三个返回值是宿主 ``<data>`` 根，识图本地读取 allowlist 与 ``cmd_config.json``
     热读都以它为基准，算错等于放宽或锁死安全边界。它由 ``plugin_data_path`` 的
-    构造式**正向**推出（``<data>/plugin_data/<pid>`` 的上两级），不再让调用方从
+    构造式**正向**推出（``<data>/plugin_data/<pid>`` 的上两级）。调用方不得从
     ``state.json`` 反向数 parents 层数——那种写法把"state.json 恰好嵌两层"变成
     隐式前提，嵌套一改就静默算错且无任何报错。
     """

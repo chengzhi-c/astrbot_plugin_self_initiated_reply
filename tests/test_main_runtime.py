@@ -396,7 +396,7 @@ async def _post_config(plugin, payload: dict) -> None:
 
 
 def test_off_persists_enabled_across_restart(tmp_path: Path) -> None:
-    """决策 5 红线：``/off`` 必须落盘，重启后仍是关闭。
+    """``/off`` 必须落盘，重启后仍是关闭。
 
     改持久前 ``/off`` 只改内存 ``runtime_enabled``，宿主一重启就回落到持久
     ``enabled=True``——用户打完 ``/off`` 以为「别再主动说话了」，重启后插件又
@@ -904,7 +904,7 @@ def test_whitelist_remove_recycles_gate_state(tmp_path: Path) -> None:
 
 
 def test_gate_views_are_read_only_and_live(tmp_path: Path) -> None:
-    """P2-24：SessionGate 只读视图——写抛错、读实时、语义不被绕过。"""
+    """SessionGate 只读视图——写抛错、读实时、语义不被绕过。"""
 
     async def scenario(plugin, main):
         # 写操作必须抛错（MappingProxyType / frozenset）
@@ -1059,7 +1059,7 @@ def test_whitelist_remove_recycles_legacy_group_key(tmp_path: Path) -> None:
 
 
 def test_force_check_prunes_session_state(tmp_path: Path) -> None:
-    """非白名单会话手动 check 后 sessions 条目必须回收（0.8.8 单点化）。
+    """非白名单会话手动 check 后 sessions 条目必须回收。
 
     此前 _prune_session 只清代次/锁/运行标记与 _last_decisions，sessions 里
     的 SessionState（含 recent 历史）会随手动 check 的会话数累积。
@@ -1117,12 +1117,10 @@ def test_version_consistency_across_metadata() -> None:
     """版本号的每一处对外载体都必须与 ``PLUGIN_VERSION`` 一致。
 
     载体：metadata.yaml、pyproject（经 hatchling 从 models.py 取值）、
-    README 徽章、CHANGELOG 最新发布行。README 自 0.9.3 起单语单徽章
-    （原 README.en.md 已并入英文摘要节），不再是"双语五源"。
+    README 徽章、CHANGELOG 最新发布行。README 单语单徽章。
 
-    0.8.8 起 pyproject.toml 纳入守卫：0.8.7 发布时 pyproject 漏在守卫之外，
-    导致 wheel 文件名与 dist-info 版本停留在 0.8.3（实测实锤），面板显示
-    0.8.7 而 pip 记录 0.8.3。
+    pyproject.toml 也纳入守卫：hatchling 从该处取版本，漏守会让 wheel 文件名
+    与 dist-info 版本停在旧值，面板显示值与 pip 记录不一致（实测实锤）。
     """
     root = Path(__file__).resolve().parents[1]
     models = (root / "models.py").read_text(encoding="utf-8")
@@ -1161,8 +1159,8 @@ def test_version_consistency_across_metadata() -> None:
         f"hatchling 会取到 {extracted.group('version')!r}，而 PLUGIN_VERSION={version!r}——"
         f"pattern 命中了错误的位置"
     )
-    # README 版本号由 shields 徽章承载（0.7.22 起，原「当前版本」行随 README 重写移除）。
-    # 0.9.3 起 README.en.md（234 行精确镜像）并入 README.md 的英文摘要节，
+    # README 版本号由 shields 徽章承载。
+    # README.en.md 并入 README.md 的英文摘要节，
     # 单一 README 单一徽章，不再有双语同步义务。
     readme = (root / "README.md").read_text(encoding="utf-8")
     assert f"-{version}-" in readme, "README.md badge 版本与 PLUGIN_VERSION 不一致"

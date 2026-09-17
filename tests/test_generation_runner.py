@@ -313,7 +313,7 @@ class ThirdPartyHijackRuntime(FakeRuntime):
 
 
 async def test_generate_leaves_third_party_send_wrapper_intact(tmp_path: Path) -> None:
-    """第三方在运行期接管 send 时，本插件的回滚不得删掉/覆盖它的包装（0.9.5）。
+    """第三方在运行期接管 send 时，本插件的回滚不得删掉/覆盖它的包装。
 
     缺陷形态：``finally`` 原先无条件 ``delattr(event, "send")``（实例上无 send 时）
     或 ``event.send = original_instance_send``（有时）。两者都**成功执行、不抛异常**，
@@ -1104,7 +1104,7 @@ def test_cap_context_text_keeps_marker_when_budget_cannot_hold_it() -> None:
 
 
 # ============================================================================
-# 提示词契约（0.9.3 B3：build_proactive_prompt 抽为纯函数后锁定文案安全边界）
+# 提示词契约（build_proactive_prompt 抽为纯函数后锁定文案安全边界）
 # ============================================================================
 
 

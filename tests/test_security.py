@@ -4,7 +4,7 @@
 - 图片安全：本地文件读取防护（扩展名白名单 + 魔数嗅探 + 路径约束）
 - 提示词净化：多行结构保留、反斜杠/控制字符清理、注入防御
 - 健壮性边界：超时/限额/畸形输入/状态损坏/UMO 碰撞/白名单绕过
-- 单源守卫：response_text / 命令别名表必须单源定义（0.8.8 收敛成果锁定）
+- 单源守卫：response_text / 命令别名表必须单源定义
 - webapi 配置边界 / 白名单回收 / 管理员热读
 """
 
@@ -605,15 +605,15 @@ if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 
 # ============================================================================
-# 单源守卫（0.8.8 收敛成果锁定，2026-08-07 重建）
+# 单源守卫（收敛成果锁定）
 # ============================================================================
 
 
 def test_response_text_single_source_behavior() -> None:
-    """response_text 必须只在 utils.py 定义一次（0.8.8 收敛 decision/generation/parser
+    """response_text 必须只在 utils.py 定义一次（收敛 decision/generation/parser
     三处镜像）；行为契约：completion_text 优先、result_chain 兜底、异常兜底为空串。"""
-    # rglob 扫描面：0.8.8 收敛掉的三处镜像之一就在 image/parser.py，
-    # 而原先的 ROOT.glob("*.py") 看不见子包——守卫对它要防的位置恰好失明。
+    # rglob 扫描面：非递归的 ROOT.glob("*.py") 看不见子包，
+    # 而 image/parser.py 正是要防的位置之一——守卫对它恰好失明。
     hits = [
         path.relative_to(ROOT).as_posix()
         for path in production_py_files()
@@ -673,7 +673,7 @@ def _main_decorator_alias_table() -> dict[str, set[str]]:
 def test_command_aliases_single_source() -> None:
     """``main.py`` 装饰器注册的别名集合必须与 ``commands.py`` 调度表逐组相等。
 
-    改自原字面量搜索版（0.9.5）。原版搜 ``'"debug", "diag", "diagnose"'`` 这一个
+    字面量搜索版为何不行：原版搜 ``'"debug", "diag", "diagnose"'`` 这一个
     字符串，断言它只出现在 commands.py，并声称「main/webapi 不得镜像复制」。
     实测那句声称从未被验证：``main.py`` 本来就有第二份别名数据，只是写成
     ``alias={"diag", "diagnose"}``（集合字面量、无 canonical 名、顺序不定），
@@ -884,7 +884,7 @@ def test_is_admin_event_trusts_host_api_success_path() -> None:
 
 
 # ============================================================================
-# webapi 配置审计键守卫（0.9.3：Provider/屏蔽名单入表，防条目丢失与静默失效）
+# webapi 配置审计键守卫（Provider/屏蔽名单入表，防条目丢失与静默失效）
 # ============================================================================
 
 # 必须被审计的安全敏感键。webapi 无独立鉴权，访问控制依赖宿主 Dashboard，

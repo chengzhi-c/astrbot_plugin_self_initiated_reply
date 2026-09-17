@@ -1,7 +1,4 @@
-"""识图解析器缓存与会话图片上下文。
-
-从 main 抽出：parser 缓存、后台 freeze、prompt 图片上下文。
-"""
+"""识图解析器缓存与会话图片上下文：parser 缓存、后台 freeze、prompt 图片上下文。"""
 
 from __future__ import annotations
 

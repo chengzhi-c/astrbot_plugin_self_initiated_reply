@@ -182,8 +182,8 @@ def test_redaction_degrades_on_non_url_shapes() -> None:
 def test_redacted_length_never_exceeds_budget() -> None:
     """输出长度恒 <= LOG_URL_MAX_CHARS——标记必须计入截断预算。
 
-    早期缺陷：早期实现写成 clean[:80] + "?<redacted>"，超长 path 时
-    产出 91 字符，比它要替换的原实现（url[:80]）更宽，日志行反而变长。
+    缺陷形态：写成 clean[:80] + "?<redacted>" 时超长 path 会产出 91 字符，
+    比被替换的 url[:80] 更宽，日志行反而变长。
     """
     utils_mod = _load_utils()
     redact = utils_mod.redact_url

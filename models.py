@@ -4,8 +4,7 @@
 规约、上限常量、时间与类型转换纯函数、跨模块回调的 ``Protocol`` 形状。
 
 不拥有任何 I/O 与业务判断：落盘属 ``storage``，宿主字段读取属 ``utils``，
-是否接话属 ``decision``。本模块是依赖图的叶子（只依赖标准库与宿主 logger），
-19 个生产模块从这里取形状，反向依赖会立刻成环。
+是否接话属 ``decision``。本模块是依赖图的叶子（只依赖标准库与宿主 logger），反向依赖会立刻成环。
 
 分区目录：安全上限常量 → 危险工具清单 → 提示词模板 → 通用纯函数 →
 ``AttemptLedger`` 状态机 → 配置规格表 / ``Settings``。分区只做定位，
@@ -55,7 +54,7 @@ RECENT_MESSAGE_LIMIT_DEFAULT = 20
 MAX_RECENT_MESSAGE_LIMIT = 100  # 历史消息最大缓存数
 # 生成路径上下文（历史文本）总字符预算：宿主单条消息长度不受本插件约束，
 # 100 条缓存上限挡不住成本失控。判断路径已有 2000 cap（decision 提示词
-# 变量净化），生成路径此前零预算——长文群会把整段刷屏历史灌进主 Agent。
+# 变量净化），生成路径不给预算时长文群会把整段刷屏历史灌进主 Agent。
 # 6000 ≈ 默认 20 条 × 常见消息长度，正常会话永不触发，只裁病态长史。
 MAX_GENERATION_CONTEXT_CHARS = 6000
 MAX_DAILY_REPLIES_LIMIT = 1000  # 每日回复次数上限
@@ -122,7 +121,7 @@ HOST_DANGEROUS_TOOL_IDS: frozenset[str] = frozenset(
         "astrbot_execute_shell",
         "astrbot_execute_ipython",
         "astrbot_execute_python",
-        # shell 会话（astrbot 4.27.1 新增，本机无此版本，采信审查方 wheel 证据）
+        # shell 会话（astrbot 4.27.1 新增）
         "astrbot_shell_session",
         # browser / computer use（astrbot/core/computer/tools/browser.py）
         "astrbot_execute_browser",
@@ -236,8 +235,7 @@ _HOUR_SECONDS = 3600
 _PRINTABLE_CHAR_MIN = 32
 
 # 文本空白归一的正则常量住在 models：utils 依赖 models（依赖图叶子），反向会成环。
-# 此前 models 内联一份 ``re.sub(r"[^\S\n]+", ...)``、utils 各自编译一份，两边
-# 同时漂移就会让「同一段文本在不同路径被压缩成不同形状」。
+# 两处各自内联编译一份、同时漂移时，「同一段文本在不同路径被压缩成不同形状」。
 WHITESPACE_PATTERN = re.compile(r"\s+")
 # 行内空白：不含换行，用于保留多行结构时压缩空格
 INLINE_SPACE_PATTERN = re.compile(r"[^\S\n]+")
@@ -487,11 +485,9 @@ class SuppressCode(StrEnum):
     这类判定会在措辞调整时静默失效（改文案不该改变控制流）。调用方要区分的
     成因放这里，``detail`` 只进日志。
 
-    四个成员是**完整的成因分类**，不按"当前有几个读取点"裁剪：每个成员都有
-    真实构造点（守卫强制声明，漏填即红），新增分支时按语义取用现成成员，
-    而不是把分类重新拆一遍。目前只有 ``STOPPING`` 有读取点（决定回显文案），
-    其余三个是分类域的一部分——这与"不留零消费者字段"不矛盾：那个口径针对
-    的是无任何写入者的投机字段，而这些成员有 9 个构造点在使用。
+    四个成员都是分类域的一部分，各有真实构造点（守卫强制声明，漏填即红）；
+    目前只有 ``STOPPING`` 有读取点（决定回显文案）。新增分支时按语义取用现成
+    成员，不重新拆分类。
     """
 
     STOPPING = "stopping"
@@ -789,11 +785,11 @@ class SessionState:
 class ConfigSpec:
     """单个配置键的完整规格。
 
-    此前同一个键要在六处重复声明：``_conf_schema.json``、``Settings`` 字段表、
-    ``from_config``、``to_config_dict``、``CONFIG_SCHEMA_KEYS``、
-    ``_parse_config_updates``。新增一个键要改三到四处，漏一处审计就静默失效。
-    本表驱动后四者 + ``_AUDITED_CONFIG_KEYS``；``_conf_schema.json`` 保留独立文件
-    （它承载 UI 文案），由 ``tests/test_config_schema.py`` 断言与本表一致。
+    同一个键散在多处声明时，新增一个键要改三到四处，漏一处就静默失效
+    （面板上能改、保存返回成功、值不生效）。本表驱动 ``Settings`` 字段表、
+    ``from_config``、``to_config_dict``、``_parse_config_updates`` 与
+    ``_AUDITED_CONFIG_KEYS``；``_conf_schema.json`` 保留独立文件（它承载 UI
+    文案），由 ``tests/test_config_schema.py`` 断言与本表一致。
 
     为什么描述/提示文案不进表：那是纯 UI 拷贝（每条 1-3 行中文），放进表只会
     让表变成 schema 的第二份副本。表只收机器可校验的语义：类型、边界、步长、
@@ -1160,7 +1156,7 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
 
     ``fallback`` 与 ``raw`` 分开传：旧键回退时 ``raw`` 取自旧键，而强制失败
     （None / 不可解析）时要落回同一个旧键的值，而非静态默认——这正是
-    ``vision_enabled`` 迁移到两个新开关的语义（0.9.2 迁移护栏）。
+    ``vision_enabled`` 迁移到两个新开关的语义。
 
     截断（提示词长度 / 白名单条目数）是防 OOM 与 token 滥用的硬边界，静默
     生效但必须留 warning，否则用户困惑于"配置没生效"。
@@ -1227,14 +1223,14 @@ def normalize_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
 def read_config_value(spec: ConfigSpec, config: Any) -> Any:
     """从宿主配置对象读一个键：正式键优先，缺失时按旧键顺序回退。
 
-    只强制转换一次。曾经写成「先把旧键值 coerce 成 fallback，再把 fallback 当
-    raw 二次 coerce」，对 list 类键会静默清空——``container="set"`` 的第一次
-    coerce 产出 ``set``，而列表条目归一化只认 list/str，第二次遇到 set 得
-    空列表。存量配置里只有 ``whitelist``（无 ``whitelist_sessions``）的用户
-    会整表丢白名单。规格表落地时由 ``test_spec_table_legacy_fallback_matches_from_config`` 抓到。
+    只强制转换一次：把旧键值 coerce 成 fallback、再把 fallback 当 raw 二次
+    coerce，对 list 类键会静默清空——``container="set"`` 的第一次 coerce 产出
+    ``set``，而列表条目归一化只认 list/str，第二次遇到 set 得空列表。存量
+    配置里只有 ``whitelist``（无 ``whitelist_sessions``）的用户会整表丢白名单。
+    守卫：``test_spec_table_legacy_fallback_matches_from_config``。
 
     ``fallback`` 的语义是「``raw`` 强制失败时落回哪个值」：正式键存在时落回旧键
-    的值而非静态默认，这是 ``vision_enabled`` → 两个新开关的迁移语义（0.9.2）。
+    的值而非静态默认，这是 ``vision_enabled`` → 两个新开关的迁移语义。
     """
     raw: Any = spec.default
     fallback: Any = spec.default
@@ -1340,8 +1336,8 @@ class Settings:
     def from_config(cls, config: Any) -> Settings:
         """把宿主配置对象归一化为 ``Settings``：缺键取默认，超限截断，别名回退。
 
-        表驱动：逐字段手写的归一化已由 ``CONFIG_SPECS`` 取代。每个键的
-        类型/边界/旧键/上限都只在规格表里声明一次，此处只做遍历。
+        表驱动：每个键的类型/边界/旧键/上限都只在 ``CONFIG_SPECS`` 声明一次，
+        此处只做遍历。
 
         输入不可信（用户手改 JSON、旧版本遗留键），因此每个字段都走类型强制 +
         边界裁剪，而不是直接取值。别名回退（如 ``whitelist`` → ``whitelist_sessions``）
@@ -1357,7 +1353,7 @@ class Settings:
     def to_config_dict(self) -> dict[str, Any]:
         """Return only currently active configuration keys.
 
-        表驱动：键名与顺序都取自 ``CONFIG_SPECS``，不再手抄。
+        表驱动：键名与顺序都取自 ``CONFIG_SPECS``。
 
         Deprecated direct-model/direct-plugin settings are ignored and no longer
         written back because proactive replies now use AstrBot's main Agent

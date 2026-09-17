@@ -45,7 +45,7 @@ _INFO_WHITELIST = {
     "[%s] whitelist %s session=%s existed=%s total=%d",
     # 运维状态：判断结果（用户要求可见，每会话检查收敛点，非逐条消息高频）
     "[%s] check result session=%s trigger=%s result=%s",
-    # 运维状态：判断模型的最终裁决（0.9.5 用户要求可见）。与上一条同频——都在一次
+    # 运维状态：判断模型的最终裁决（用户要求可见）。与上一条同频——都在一次
     # check_session 的收敛点各打一次——但携带 should_reply / elapsed / reason 三个
     # 上一条没有的字段：上一条在「决定回复」时只报投递结果，看不到模型的理由。
     # 这是排查「插件为什么没说话／为什么说话了」唯一需要的一行。

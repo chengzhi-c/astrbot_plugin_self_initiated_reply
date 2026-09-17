@@ -22,7 +22,7 @@ from .utils import is_full_umo, session_group_id, session_whitelisted
 class WhitelistManager:
     """白名单集合的替换与增删，双写失败走单一回滚路径。
 
-    会话内存回收契约（0.8.8 起）：被移出会话的完整回收由注入的 ``prune``
+    会话内存回收契约：被移出会话的完整回收由注入的 ``prune``
     回调承担——必须从与 ``sessions`` 同一 dict 弹掉 umo 与其群组键（生产
     注入 main._prune_session，含代次/裁决/sessions 单点回收）。本类只做
     白名单集合本身与双写回滚，不再自行 pop。

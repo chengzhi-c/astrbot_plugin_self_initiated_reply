@@ -273,7 +273,7 @@ def test_narrow_symbol_accessors() -> None:
 async def test_call_event_hook_awaits_async_callback() -> None:
     """call_event_hook 两分支（req 缺省/显式）对异步回调都走 maybe_await 正常 await。
 
-    0.8.8 单源化后 utils.maybe_await 是唯一实现，本测试锁住适配层调用点
+    utils.maybe_await 是唯一实现，本测试锁住适配层调用点
     （此前该分支零覆盖：若导入/传参错误，测试不红）。
     """
     adapter = _runtime_adapter()
@@ -316,7 +316,7 @@ def test_main_no_direct_private_import() -> None:
 
 
 def test_command_handler_annotations_resolve_at_runtime() -> None:
-    """所有宿主注册的处理器注解必须在运行时可解析（0.9.5 线上修复）。
+    """所有宿主注册的处理器注解必须在运行时可解析。
 
     宿主那一步的精确位置（真机读源码确证，不是推断）：
     ``core/star/filter/command.py::CommandFilter.init_handler_md`` 在 4.23.3 是

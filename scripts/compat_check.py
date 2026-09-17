@@ -5,8 +5,8 @@
 语义由 workflow 的 ``continue-on-error`` 实现，脚本本身只有一种退出行为。
 
 三类检查的性质不同：前两类只问「宿主有没有这个符号」，第三类
-（``_handler_signature_gaps``）**真的走一遍宿主加载期的动作**。0.9.5 之前只有前两类，
-结果插件在 4.27.2 上装不上而本脚本仍报 OK——见该函数的 docstring。
+（``_handler_signature_gaps``）**真的走一遍宿主加载期的动作**：符号存在性检查走不到加载路径，
+插件装不上时它仍报 OK——见该函数的 docstring。
 
 存在性清单与契约断言单源：符号清单来自 runtime_adapter.host_contract()，
 参数契约来自 AstrBotRuntimeAdapter.validate()——增删符号只需改适配层一处。
@@ -79,9 +79,9 @@ EXPECTED_HANDLER_COUNT = 10
 
 
 def _handler_signature_gaps() -> list[str]:
-    """走一遍宿主注册处理器时真正做的那一步注解解析（0.9.5 补）。
+    """走一遍宿主注册处理器时真正做的那一步注解解析。
 
-    符号存在性检查**走不到加载路径**，这正是它当初没能拦住 0.9.5 那个 P0 的原因：
+    符号存在性检查**走不到加载路径**，因此拦不住这类安装期失败：
     插件在 4.27.2 上装不上（``name 'CommandReply' is not defined``），而当时
     ``host compat OK``。根因已在真机确证：宿主
     ``core/star/filter/command.py::CommandFilter.init_handler_md`` 在 4.23.3 是
@@ -213,7 +213,7 @@ def run_contract_checks() -> int:
     import importlib
 
     # 包化导入（与 CI 的 pip install -e 后运行一致）：插件内部模块使用相对导入，
-    # 顶层 import 会断（0.8.8 B1 起 runtime_adapter 引入 .utils 相对导入后实测发现）。
+    # 顶层 import 会断（runtime_adapter 引入 .utils 相对导入后实测发现）。
     from astrbot_plugin_self_initiated_reply import runtime_adapter
 
     failures: list[str] = []
