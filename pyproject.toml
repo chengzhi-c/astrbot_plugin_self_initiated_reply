@@ -173,7 +173,10 @@ exclude = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-lint.select = ["E", "F", "I", "UP", "B"]
+# RUF100 只报一仲事：为「本仓库未启用的规则」写的 noqa——那种指令让人
+# 以为某处已被忽略，实际没有。全仓共 3 条 noqa，实测仅此一条陈旧
+# （tests/test_adapters.py 的 N802），零误报。
+lint.select = ["E", "F", "I", "UP", "B", "RUF100"]
 lint.ignore = []  # 按存量修复后的实际结果收敛
 
 [tool.ruff.lint.per-file-ignores]

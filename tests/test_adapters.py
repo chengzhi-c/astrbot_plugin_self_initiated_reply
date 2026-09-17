@@ -55,7 +55,7 @@ def test_supported_kwargs_returns_all_for_varkw(bridge) -> None:
 def test_supported_kwargs_returns_all_when_signature_unavailable(bridge) -> None:
     class NoSignature:
         @property
-        def __signature__(self):  # noqa: N802 - 模拟 inspect 失败
+        def __signature__(self):  # 模拟 inspect 拿不到签名
             raise TypeError("no signature")
 
     assert bridge._supported_kwargs(NoSignature(), {"a": 1}) == {"a": 1}
