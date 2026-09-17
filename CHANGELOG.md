@@ -2,7 +2,7 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式。
 
-## [Unreleased]
+## [1.4.0] - 2026-09-17
 
 - 新增主动回复「引用消息」开关（`quote_mode` / `quote_probability`）：可固定不引用、
   由判断模型决定或按概率引用。
