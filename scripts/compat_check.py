@@ -154,6 +154,60 @@ def _denylist_gaps() -> dict[str, list[str]]:
     }
 
 
+def _runtime_api_gaps() -> list[str]:
+    """固定地址图片传输依赖的公开 API 形态检查（自 runtime_dependency_gates 内联）。
+
+    传输层直接使用 httpx/httpcore 的这些类与签名：上游改名/改签名时插件
+    图片下载会运行期才暴露。依赖声明与安装由 pyproject + pip 负责，不在此查。
+    """
+    import inspect
+
+    try:
+        import httpcore
+        import httpx
+    except ImportError as exc:
+        return [f"运行时图片依赖导入失败: {exc}"]
+
+    gaps: list[str] = []
+    for module, names in (
+        (httpx, ("AsyncBaseTransport", "AsyncByteStream", "AsyncClient")),
+        (httpcore, ("AsyncConnectionPool", "AsyncNetworkBackend", "AnyIOBackend")),
+    ):
+        for name in names:
+            if not hasattr(module, name):
+                gaps.append(f"{module.__name__}.{name} 缺失")
+    params = inspect.signature(httpcore.AsyncNetworkBackend.connect_tcp).parameters
+    if not {"host", "port"}.issubset(params):
+        gaps.append("httpcore.AsyncNetworkBackend.connect_tcp 不再使用 host/port 参数")
+    required_signatures = (
+        (
+            "httpcore.AsyncConnectionPool",
+            inspect.signature(httpcore.AsyncConnectionPool),
+            {"network_backend"},
+        ),
+        (
+            "httpcore.Request",
+            inspect.signature(httpcore.Request),
+            {"method", "url", "headers", "content", "extensions"},
+        ),
+        (
+            "httpcore.URL",
+            inspect.signature(httpcore.URL),
+            {"scheme", "host", "port", "target"},
+        ),
+        (
+            "httpx.AsyncClient",
+            inspect.signature(httpx.AsyncClient),
+            {"timeout", "follow_redirects", "max_redirects", "trust_env", "transport"},
+        ),
+    )
+    for label, signature, required in required_signatures:
+        if not required.issubset(signature.parameters):
+            missing = sorted(required - set(signature.parameters))
+            gaps.append(f"{label} 缺少固定图片传输所需参数: {missing}")
+    return gaps
+
+
 def run_contract_checks() -> int:
     """符号存在性 + 契约断言 + denylist 覆盖；返回进程退出码。"""
     import importlib
@@ -181,18 +235,7 @@ def run_contract_checks() -> int:
     for module_name, missing in gaps.items():
         failures.append(f"denylist 未覆盖 {module_name}: {', '.join(missing)}")
     failures.extend(_handler_signature_gaps())
-
-    from scripts.runtime_dependency_gates import (
-        EXPECTED_RUNTIME_DEPENDENCIES,
-        declared_runtime_dependencies,
-        installed_runtime_dependency_gaps,
-        runtime_api_gaps,
-    )
-
-    if declared_runtime_dependencies() != EXPECTED_RUNTIME_DEPENDENCIES:
-        failures.append("runtime dependency allowlist 与 pyproject.toml 不一致")
-    failures.extend(installed_runtime_dependency_gaps())
-    failures.extend(runtime_api_gaps())
+    failures.extend(_runtime_api_gaps())
     all_problems = failures + problems
     if not all_problems:
         print("host compat OK")

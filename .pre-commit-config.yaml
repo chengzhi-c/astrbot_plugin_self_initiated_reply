@@ -1,28 +1,8 @@
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.1
-    hooks:
-      - id: ruff
-        args: [--fix]
-      - id: ruff-format
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.19.0
-    hooks:
-      - id: mypy
+  # lint/type 检查不在 pre-commit 里重复：本地走 `uvx ruff` / `python scripts/gates.py`，
+  # CI（唯一权威）钉版见 ci.yml lint 作业与 pyproject [dev]。
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
       - id: end-of-file-fixer
       - id: trailing-whitespace
-  - repo: local
-    hooks:
-      # 工具版本跨源一致性：ruff 同时钉在本文件的 rev、ci.yml 的
-      # lint 作业与 pyproject 的 [dev]，三处漂移会让本地 pre-commit 与 CI 结论相反。
-      # 只在这三个文件之一变更时触发；脚本是纯 stdlib 的跨源比对，不探测本机版本，
-      # 故不会因本地环境装了别的版本而误红。
-      - id: version-cross-source
-        name: version gates (cross-source pins)
-        entry: python scripts/version_gates.py
-        language: system
-        pass_filenames: false
-        files: ^(pyproject\.toml|\.pre-commit-config\.yaml|\.github/workflows/ci\.yml)$

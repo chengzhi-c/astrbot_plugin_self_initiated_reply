@@ -19,13 +19,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        # 钉版本与 .pre-commit-config.yaml 的 ruff-pre-commit rev、pyproject 的
-        # [dev] 三处对齐。该对齐由下面的 Version cross-source gate 断言，不再只靠本注释
-        # （此前三处一致仅由注释声明，改一处忘另一处无人发现）。
+        # ruff 精确钉版的唯一权威：本地开发用 uvx ruff / gates.py（版本区间见
+        # pyproject [dev]），两边不构成“同值声明”，无需跨源互锁。
         run: pip install ruff==0.16.1
-      - name: Version cross-source gate
-        # 只比对配置之间、纯 stdlib、不探测本机，故能挂在这个只装了 ruff 的作业里。
-        run: python scripts/version_gates.py
       - name: Ruff check
         run: ruff check .
       - name: Ruff format check
@@ -56,6 +52,12 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+      - name: Cache Playwright browsers
+        # Chromium 下载约 1-2 分钟且版本只随 package-lock 变：按锁文件哈希缓存。
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install browser test dependencies
         run: npm ci
       - name: Install Chromium
@@ -78,8 +80,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # 纯 Python 无 C 扩展：两端夹住（最低支持版 + 最新版），中间版增量差异面小。
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
+        python-version: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -102,8 +105,12 @@ jobs:
 
   mutation:
     # 变异门禁（scripts/mutation_gate.py）：把「新测试必须实测能捕获目标缺陷」从人工
-    # 纪律变成断言。独立作业而不并进 test——注入期间会临时改写源码，与并行跑的
-    # 用例共享工作树会互相污染；需要 Node 是因为变异表里含前端契约条目。
+    # 纪律变成断言。只在 nightly / 手动触发：16 条变异锚定的是“既有测试还能抓既有
+    # 缺陷”，只在有人改那些测试或锚点时才可能变红，逐 push 跑是纯浪费。脚本本身
+    # 保留（gates.py 本地路径与手动触发都在）。独立作业而不并进 test——注入期间
+    # 会临时改写源码，与并行跑的用例共享工作树会互相污染；需要 Node 是因为变异表里
+    # 含前端契约条目。
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -117,30 +124,6 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Mutation gate
         run: python scripts/mutation_gate.py
-
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install
-        run: pip install hatch packaging
-      - name: Build
-        run: |
-          rm -rf dist
-          hatch build
-      - name: Runtime dependency assertion
-        run: python scripts/runtime_dependency_gates.py
-      - name: Wheel assertion
-        # 内容（开发物不泄漏 + 必需文件齐全）与版本一致性（wheel 文件名与
-        # dist-info 必须等于 metadata.yaml 的 version，0.8.3 发布缺陷回归守卫）
-        run: python scripts/check_wheel.py
-      - name: Sdist assertion
-        run: python scripts/check_sdist.py
-      - name: Deploy zip assertion
-        run: python scripts/make_release_zip.py
 
   compat:
     runs-on: ubuntu-latest

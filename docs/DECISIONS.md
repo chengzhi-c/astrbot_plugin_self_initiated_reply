@@ -2,6 +2,27 @@
 
 行为不变量见 `BEHAVIOR_CONTRACT.md`。本页只记结构取舍。
 
+## 发布产物
+
+发布主路径是 AstrBot 插件市场（git 仓库）。手工部署包（VPS 直投 zip）用
+`git archive --format=zip -o <name>.zip HEAD` 导出：排除规则单点声明在仓库根
+`.gitattributes` 的 `export-ignore`，未跟踪/被 .gitignore 排除的文件天然不进包。
+
+此前的方式是 hatch 构建 wheel → `check_wheel`/`check_sdist` 内容断言 → 从
+wheel 派生部署 zip，需要维护 pyproject exclude 列表 ↔ 检查脚本禁运名单 ↔
+pathspec 交叉核验三层互锁（历史确实漂移过两次，那套守卫有真实战果）。裁撤
+理由：分发主路径不产生 wheel，三层互锁的全部维护成本只服务于次要路径，而
+`git archive` + `export-ignore` 把同一保证变成约 15 行单点声明——“缓存泄漏
+进包”这类问题在结构上不再存在。pyproject 的 wheel/sdist 配置保留（本地
+构建仍干净），但不再有发布链依赖它。
+
+随本决策裁撤：`scripts/check_wheel.py`、`check_sdist.py`、`make_release_zip.py`、
+`release_artifacts.py`、`runtime_dependency_gates.py`（其中固定地址传输的
+httpx/httpcore API 形态检查移入 `compat_check.py`），及其配套测试
+（`tests/test_release_scripts.py` 与 test_config_schema 的四个打包守卫）。
+CI 的 `build` 作业删除；`mutation` 作业降为 nightly/手动触发（其锚定的
+“既有测试还能抓既有缺陷”只在有人改那些测试或锚点时才可能变红）。
+
 ## 双面板
 
 `CONFIG_SPECS.surfaces` 区分官方 Dashboard（`host`）与自定义设置页（`panel`）。常用键上自定义页；巡检、勿扰、回复长度、日上限、`log_reply_content` 等只在 Dashboard。两套面板读写同一份配置。前端可写键必须等于 panel 面，由 `test_fe_writable_keys_match_panel_surfaces` 锁定。
@@ -73,8 +94,6 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 清理周期、冻结预算、裁决 token）在各模块本地常量并附一行取值理由。不把后者搬进
 `models.py`，避免依赖图叶子继续膨胀。
 
-
-发布脚本不再按文件名字典序猜测目标 wheel。`release_artifacts.py` 使用 `packaging` 解析 wheel/sdist 文件名中的 PEP 440 版本；默认发现多个候选或坏文件名直接失败，只有显式路径能消除歧义。`check_wheel.py`、`check_sdist.py` 与部署 zip 共享同一解析器。`gates.py` 的普通本地模式在缺 wheel/sdist 时只报告 `NOT RELEASE-VERIFIED`，`--release` 则非零退出；CI build 独立检查 wheel、sdist 和 deploy zip。本地门禁的 ruff 检查与 CI lint 同口径（`ruff check .`，git 仓库内默认尊重 `.gitignore`，`.venv/` 已列入忽略）。
 
 `recorder_bridge` 按平台消息 ID 查本地图片时，多图记录里 URL 未命中必须拒绝
 盲取首图（首图属于另一张图，错配会让 Vision 描述错图）；单图消息宽容取用
@@ -210,3 +229,84 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
 - **不改双指令路径架构**：删内联路径会丢掉 `_is_command_entry` 的裸词保护与
   `COMMAND_HANDLED_KEY` 去重；删装饰器路径会让宿主失去指令组注册与权限声明。两条路径
   的等价由别名契约 + 装饰器委托契约共同钉住，成本远低于重构。
+
+---
+
+# 每会话内存基准（原 MEMORY_BUDGET.md，并入于此）
+
+本页把"拍脑袋常数"（缓存容量、消息上限）改写为可推导的公式，并给出
+实测数据（CPython 3.14 / x64）。数值为上限估算：deque 容器随
+`maxlen` 预分配，深度计算含嵌套对象，实测见下文表。
+
+KB 数字是历史 `sys.getsizeof` 深度求和，没有公式测试钉住。
+图片字节预算的行为由会话协调器与图片缓存测试锁定。
+
+## 每会话内存组成
+
+| 组件 | 容量公式 | 上限说明 |
+| --- | --- | --- |
+| 会话状态固定字段 | `F`（实测 ≈0.95 KB） | SessionState 8 字段 + deque 容器 |
+| 历史消息 | `R × M` | `R = recent_message_limit`（配置 3..100），`M` = 单条 MessageRecord |
+| 事件缓存 | `E`（≈0.1 KB） | `_last_events` 每会话 1 个宿主事件引用 + 时间戳 |
+| 图片索引 | `I × V × G` | `I = MAX_CACHED_IMAGE_EVENTS(20)` 含图事件数，`V = vision_max_images`（配置 1..5），`G` = 单张 ImageInfo |
+
+**单会话内存上限（不含图片本体）**
+
+```
+B(session) = F + R×M + E + I×V×G
+默认配置（R=20, V=2）: ≈ 0.95 + 20×0.33 + 0.1 + 20×2×0.21 ≈ 13.6 KB
+最坏配置（R=100, V=5）: ≈ 0.95 + 100×0.33 + 0.1 + 20×5×0.21 ≈ 55.1 KB
+```
+
+**全量内存**
+
+```
+B(total) = N × B(session) + 全局表（O(N)：delay/running/白名单运行时映射）
+N = 活跃会话数（白名单上限 MAX_WHITELIST_SIZE = 1000）
+最坏 N=1000、R=100、V=5：≈ 55 MB（不含图片本体）
+```
+
+## 图片本体（数据 URL 冻结）
+
+正常路径把冻结图片写入内容寻址的磁盘缓存，`ImageInfo.prepared_source` 只保留
+路径；磁盘不可用时才保留 data URL。内存回退按**原始载荷字节数**计数；热路径增量维护已入账字节，不再每次全量 `b64decode`。预算同时受：
+
+- `MAX_SESSION_IMAGE_MEMORY_BYTES = 16 * 1024 * 1024`：单会话图片索引预算；
+- `MAX_IMAGE_MEMORY_BYTES = 64 * 1024 * 1024`：所有会话图片索引共享预算；
+- `MAX_IMAGE_BYTES = 10 * 1024 * 1024`：单张图片输入上限。
+
+超出预算的图片不会进入会话索引，并记录 WARNING；淘汰按最旧图片事件进行，
+不会静默无限增长。Vision 描述缓存另受 `MAX_IMAGE_DESCRIPTION_CACHE_BYTES = 512 * 1024`
+和 50 条条目上限约束。磁盘冻结缓存仍受 `MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024`
+容量清理约束。
+
+## 实测数据（CPython 3.14 / x64，sys.getsizeof 深度求和）
+
+| 对象 | 深度大小 |
+| --- | --- |
+| 空 SessionState（maxlen=100） | 0.95 KB |
+| MessageRecord（20 字中文消息） | 0.33 KB |
+| SessionState 满 100 条 | 14.8 KB |
+| ImageInfo（含 prepared_source） | 0.21 KB |
+| 图片索引满（20 事件 × 2 张） | 5.7 KB |
+
+## 常数与行为测试
+
+各常数的单位按**代码同型表达式**书写（可 grep 比对，避免 MiB/KiB 换算歧义）：
+
+- `MAX_CACHED_IMAGE_EVENTS × vision_max_images` = 每会话图片索引张数上限
+- `MAX_SESSION_IMAGE_MEMORY_BYTES = 16 * 1024 * 1024` = 单会话 data URL 原始载荷字节上限
+- `MAX_IMAGE_MEMORY_BYTES = 64 * 1024 * 1024` = 全局 data URL 原始载荷字节上限
+- `MAX_IMAGE_DESCRIPTION_CACHE_BYTES = 512 * 1024` = Vision 描述内存缓存上限
+- `MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024` = 磁盘冻结缓存总容量上限
+- `MAX_RECENT_MESSAGE_LIMIT = 100` = 每会话历史消息条数上限（recent deque maxlen）
+- `MAX_IMAGE_BYTES = 10 * 1024 * 1024` = 单张图片输入上限
+
+字节预算行为：
+
+- 会话 / 全局 data URL：`tests/test_session_coordinator.py`
+- Vision 描述 LRU：`tests/test_image_cache.py`
+- 单张输入上限：`tests/test_vision_parser_gaps.py`
+
+改常数时同步本节；不要为 KB 估算补公式测试。
+

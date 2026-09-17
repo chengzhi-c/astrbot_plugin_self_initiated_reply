@@ -208,9 +208,15 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
 
 ## 12. 发布产物验证
 
-- wheel、sdist 和 deploy zip 必须从同一次 clean build 产生；发布脚本默认要求每类产物恰好一个，多个或坏 PEP 440 文件名直接失败，不按字典序猜测。
-- sdist 可以包含源码文档，但不得包含覆盖率文件、缓存、虚拟环境、`output/`、`dist/` 或机器特有绝对路径。
-- 普通本地代码门禁缺少发布产物时必须输出 `NOT RELEASE-VERIFIED`，不得输出发布级全绿；CI 发布 job 对 wheel、sdist、deploy zip 分别执行硬检查。
+（1.3.4 修订：发布链改为 `git archive`，本章原有 wheel/sdist 检查条目随发布栈裁撤。
+理由与裁撤清单见 `docs/DECISIONS.md` 的「发布产物」一节：分发主路径是插件市场
+（git 仓库），不产生 wheel，而原有三层互锁（pyproject exclude ↔ 检查脚本禁运名单
+↔ pathspec 交叉核验）的全部维护成本只服务于手工部署 zip 这一次要路径。）
+
+当前契约：手工部署包由 `git archive --format=zip` 导出，排除规则单点声明在仓库根
+`.gitattributes` 的 `export-ignore`；未跟踪与被 `.gitignore` 排除的开发物（覆盖率、
+缓存、虚拟环境、`output/`、`dist/`、`data/`）在结构上不可能进包——
+`git archive` 只导出 tracked 文件，不存在“漏排除”这一失败模式。
 
 ## 13. 运维端点定位
 

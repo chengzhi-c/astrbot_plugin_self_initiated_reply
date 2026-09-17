@@ -18,32 +18,21 @@ dependencies = [
 # 开发依赖钉版。实测动机：CI 的 mypy / test / compat 三个作业都跑
 # `pip install -e ".[dev]"`，而本节此前**一条上界都没有**，等于每次 CI 都装当日最新版。
 # 门禁因上游发版而变红时，改动本身是无辜的，排查成本却全落在改动者身上（ruff
-# 0.15→0.16 新增 Markdown 围栏检查就这样红过一次，见 scripts/version_gates.py 开头）。
+# 0.15→0.16 新增 Markdown 围栏检查就这样红过一次）。
 #
 # 取值口径：
-# - ruff 用**精确**钉版。它同时出现在 ci.yml 的 lint 作业与 .pre-commit-config.yaml
-#   的 rev，三处必须同版，否则本地 pre-commit 通过、CI 变红。三处一致性由
-#   scripts/version_gates.py 的跨源比对断言（此前只有注释声明，无人核验）。
-# - 其余工具用**主版本上界**而非精确钉版：test 作业覆盖 3.12–3.14，
+# - 全部用**主版本上界**而非精确钉版：test 作业覆盖 3.12–3.14，
 #   精确钉版会在新 Python 上撞到"该版本没有对应 wheel"。上界只挡破坏性大版本。
-# - mypy 下界 1.19：与 .pre-commit-config.yaml 的 mirrors-mypy rev 对齐。实测
-#   1.19.0 与 2.3.0 对本仓库均为 Success，故两版共存是无害的，不必强求字面同版。
+# - ruff 的**精确**钉版唯一权威在 ci.yml 的 lint 作业（那里独立安装、不装 .[dev]）；
+#   本处用区间，与 CI 不构成"同值声明"，无需跨源互锁。
+# - mypy 下界 1.19：实测 1.19.0 与 2.3.0 对本仓库均为 Success，区间内共存无害。
 # - pytest-asyncio 上界 <2：asyncio_mode = "auto" 的语义历史上随大版本变过。
-# - pathspec：仅 tests/test_config_schema.py 的打包守卫用它复现
-#   hatchling 的 exclude 匹配语义。它本是 hatchling 与 mypy 的传递依赖，装 .[dev]
-#   时恰好在，但依赖别人的依赖会在上游删依赖时静默变红，故显式声明。
-#   下限对齐 hatchling 的 pathspec>=0.10.1（GitIgnoreSpec 自 0.10.0 起提供）。
-# - packaging：scripts/runtime_dependency_gates.py 用它解析 pyproject 的运行时依赖
-#   区间（compat_check.py 经该模块调用）。同上，它本是 pytest 的传递依赖，
-#   显式声明是同一个理由。
 dev = [
   "pytest>=8,<10",
   "pytest-asyncio>=1,<2",
   "pytest-cov>=5,<8",
-  "ruff==0.16.1",
+  "ruff>=0.16,<0.17",
   "mypy>=1.19,<3",
-  "pathspec>=0.10.1,<2",
-  "packaging>=22",
 ]
 
 [tool.hatch.version]
@@ -90,12 +79,13 @@ artifacts = [
 # 开发物不进生产 wheel（实测：整目录打包会把 tests/.scratch/scripts/docs/.github
 # 与开发配置全部打进发布包）；exclude 与 artifacts 并存时 artifacts 优先，
 # 上方显式声明的 LICENSE/metadata.yaml/logo.png 不受影响。
-# 内容断言见 scripts/check_wheel.py（CI build 作业强制）。
+# wheel 构建已不再属于发布链（发布走 git archive，见 .gitattributes 与
+# docs/DECISIONS.md），本节为将来任何本地构建保持同样干净的包形。
 exclude = [
   # assets/ 是 README 的图源（4 张 JPG / 463KB），代码、pages/、metadata.yaml、
   # _conf_schema.json 引用数为 0，README 全部走 raw.githubusercontent 绝对链接，
   # 运行时永不读取。实测占 0.9.2 wheel 的 69%（687,531 → 213,049 B），故不进分发包，
-  # 仍保留在 git 仓库。断言见 scripts/check_wheel.py 的 FORBIDDEN_PREFIXES。
+  # 仍保留在 git 仓库。
   "assets/**",
   "tests/**",
   "docs/**",
@@ -118,25 +108,18 @@ exclude = [
   ".coverage.*",
   # 不带点前缀的覆盖率产物：`coverage json` / `--cov-report=xml`
   # 分别写 coverage.json / coverage.xml 到仓库根，上面的 .coverage* 认不出它们。
-  # 实测此前遗留的 coverage.json（220KB）被打进 wheel。用通配而非具名两条，
-  # 与 check_wheel.py 的 FORBIDDEN_GLOBS 同宽——两侧的一致性由
-  # tests/test_config_schema.py::test_wheel_forbidden_patterns_are_excluded_by_pyproject
-  # 逐条核验（该用例用 pathspec 真跑匹配，不比字符串）。
+  # 实测此前遗留的 coverage.json（220KB）被打进 wheel。用通配而非具名两条。
   "coverage.*",
   "*.pyc",
   # setuptools 遗留物：本仓库用 hatchling 不生成 egg-info，
   # 但本地环境上一次 `pip install -e .` 留下的 *.egg-info/ 会被整目录打包收进 wheel。
-  # check_wheel 早已禁它，这里此前漏排——正是上述反向断言首次抓到的缺口。
   "*.egg-info/**",
   # 任意深度的 __pycache__：原文只写 `__pycache__/**`，它带根锚，
   # 只排仓库根那一个目录，image/__pycache__/ 排不掉。改成 `**/__pycache__/**` 一并
-  # 覆盖根层与嵌套层（实测两者都匹配），对应 check_wheel 的
-  # `__pycache__/*` 与 `*/__pycache__/*` 两条。
+  # 覆盖根层与嵌套层（实测两者都匹配）。
   #
   # 注意本条不是冗余的：上方 `*.pyc` 只管后缀，__pycache__ 目录下的非 .pyc 文件
-  # （如 Python 未来版本的新产物）仍要靠本条排掉。守卫用例的探针刻意不带 .pyc
-  # 后缀，就是为了让本条真正被测到——带后缀的探针会被 `*.pyc` 顺手匹配，
-  # 删掉本条也全绿（该假绿实测发生过一次）。
+  # （如 Python 未来版本的新产物）仍要靠本条排掉。
   "**/__pycache__/**",
   ".pytest_cache/**",
   ".ruff_cache/**",
@@ -148,9 +131,6 @@ exclude = [
 [tool.hatch.build.targets.sdist]
 # sdist 也必须是可复现的源码发布物；工作树中的浏览器截图、测试、缓存和构建产物
 # 不属于安装输入，尤其不能因本地未跟踪 output/ 被意外带入归档。
-# 与 scripts/check_sdist.py FORBIDDEN_GLOBS 的逐条一致性由
-# tests/test_config_schema.py::test_sdist_forbidden_patterns_are_excluded_by_pyproject
-# 以 pathspec 真匹配钉住（与上方 wheel exclude 的守卫同款）。
 exclude = [
   "output/**",
   "tests/**",
