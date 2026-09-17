@@ -14,5 +14,6 @@ package-lock.json export-ignore
 playwright.config.mjs export-ignore
 uv.lock export-ignore
 .pre-commit-config.yaml export-ignore
+.editorconfig export-ignore
 .gitignore export-ignore
 .gitattributes export-ignore

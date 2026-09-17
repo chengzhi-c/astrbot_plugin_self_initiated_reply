@@ -1,7 +1,7 @@
 // Shared /config payload shape for the settings page. Single source of truth
-// for the field set: browser tests and the README screenshot generator both
-// build on this so a config key rename can't silently drift the two apart.
-// Callers pass `overrides` for scenario-specific values.
+// for the field set: browser tests build on this so a config key rename can't
+// silently drift the two apart. Callers pass `overrides` for scenario-specific
+// values.
 export function configPayload(overrides = {}) {
   return {
     ok: true,

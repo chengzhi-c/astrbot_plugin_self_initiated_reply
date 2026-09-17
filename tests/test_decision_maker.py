@@ -387,6 +387,19 @@ async def test_local_gate_cooldown(tmp_path: Path) -> None:
     assert maker.local_gate(state, force=False) == "冷却中：还剩 4m0s。"
 
 
+async def test_local_gate_cooldown_over_an_hour_keeps_seconds(tmp_path: Path) -> None:
+    """冷却跨过 1 小时边界时文案不得丢秒：剩余 3650s 应显示 1h0m50s。
+
+    分钟以下两档（秒档、"4m0s"）都有断言钉住，唯独小时档的格式串只到分钟，
+    秒数被静默吞掉——三档口径不一致。cooldown_sec 上限 86400（24h），故用
+    86400 冷却 + 已过 82750s 构造跨小时边界。
+    """
+    _, models, maker, clock_value, _ = _make_decision(tmp_path, {"cooldown_sec": 86400})
+    clock_value[0] = 100000.0
+    state = _state(models, active_at=800.0, proactive_at=100000.0 - 82750.0)
+    assert maker.local_gate(state, force=False) == "冷却中：还剩 1h0m50s。"
+
+
 async def test_local_gate_observed_window(tmp_path: Path) -> None:
     _, models, maker, _, _ = _make_decision(tmp_path)
     state = _state(models, active_at=900.0, observed_at=901.0)

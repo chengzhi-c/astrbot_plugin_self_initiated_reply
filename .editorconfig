@@ -1,0 +1,25 @@
+# Editor guidance only — 不做 CI 强制（与仓库不引入 Prettier/ESLint 的决策一致，
+# 见 docs/DECISIONS.md）。缩进冲突是历史现状：app.js 与 config-io.mjs 全文 Tab，
+# 其余前端文件 2 空格，Python 4 空格。此处按存量声明，避免编辑器在 Tab 文件里
+# 插入空格造成同文件混排；新文件跟随通配段用空格。
+
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.{js,mjs,css,html}]
+indent_style = space
+indent_size = 2
+
+# 存量 Tab 文件：后声明的段覆盖上面的通配段
+[pages/主动回复设置/app.js]
+indent_style = tab
+
+[pages/主动回复设置/config-io.mjs]
+indent_style = tab

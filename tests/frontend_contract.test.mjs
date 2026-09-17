@@ -360,7 +360,7 @@ test("context-history setting describes its fallback behavior", async () => {
 
 test("browser config fixture covers every form-declared key", async () => {
   // Playwright 用这份夹具当 GET /config。缺键时 isSuccessfulConfigPayload 失败，
-  // 表单一直 inert，22 条浏览器测试会集体红。node 契约原先不读这份夹具，
+  // 表单一直 inert，浏览器用例会集体红。node 契约原先不读这份夹具，
   // 第四轮加 quote/skip 键后本地 CI frontend 仍绿、浏览器才爆。
   const html = await readFile(join(pageDir, "index.html"), "utf8");
   const htmlKeys = [...html.matchAll(/data-config-key="([a-z0-9_]+)"/g)].map(
@@ -371,6 +371,22 @@ test("browser config fixture covers every form-declared key", async () => {
     (key) => !Object.prototype.hasOwnProperty.call(fixture, key),
   );
   assert.deepEqual(missing, [], `config-payload.mjs 缺少表单键：${missing}`);
+
+  // 反向：夹具里的每个键都必须被页面消费（表单控件或 JS 读取），否则是
+  // 后端早已删除、夹具却残留的孤儿键——浏览器测试用这份夹具当桩，
+  // 残留键永远绿，漂移只有这一侧能抓。同 Python 侧
+  // test_every_exposed_config_key_is_consumed_by_the_panel 的口径。
+  const names = (await readdir(pageDir)).filter((name) => /\.(js|mjs)$/.test(name));
+  let front = html;
+  for (const name of names) {
+    front += await readFile(join(pageDir, name), "utf8");
+  }
+  const stale = Object.keys(fixture).filter((key) => !front.includes(key));
+  assert.deepEqual(
+    stale,
+    [],
+    `config-payload.mjs 含前端零消费的孤儿键（后端可能已删）：${stale}`,
+  );
 });
 
 test("CI runs the dependency-free frontend gate", async () => {
@@ -428,7 +444,8 @@ test("settings page scripts only look up ids that index.html declares", async ()
   // 页面脚本按字面量取元素（app.js 的 $()、chrome.mjs 的 getElementById）。
   // 拼错 id（或页面删掉对应元素）不抛异常：调用点普遍有 `if (el)` 守卫，用户
   // 只是静默少一块功能。实测把 whitelistSummary 拼成 whitelistSummaryTYPO 后，
-  // 48 条本文件契约 + 27 条浏览器用例 + 844 条 pytest 全部保持绿色。
+  // 本文件其余契约、浏览器用例与全量 pytest 全部保持绿色（计数不写数字，
+  // 写了必然随开发过时）。
   // 文件清单由目录派生（同下面的行宽守卫），新增脚本自动纳入。
   // 只做单向 JS ⊆ HTML：反向的"孤儿 id"是无害死标记，而且会在
   // <svg><use href="#…"> 与 aria-* 锚点上误报，豁免名单本身会腐烂。
