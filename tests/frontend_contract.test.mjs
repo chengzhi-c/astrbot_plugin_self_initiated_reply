@@ -1039,8 +1039,13 @@ test("saved whitelist count reflects the server-normalized payload", async () =>
 
 test("save validation guards on whitelist before the numeric scan", async () => {
   // 焦点唯一归属：白名单非法时校验必须短路返回，不再跑数值校验。
-  // 断言落在行为上（保存不得发请求、不得聚焦数值字段），不比对源码书写顺序：
+  // 断言落在行为上（保存不得发请求、焦点只归白名单），不比对源码书写顺序：
   // 换一种等价写法（例如 validateWhitelist({ focus: true })）不该让本用例变红。
+  //
+  // 定位说明：本用例守的是「保存路径仍然聚焦白名单、且不跑数值校验」——
+  // 即 R2 修复后没有被削弱的那一半。R2 缺陷本身（input/blur 抢焦点把用户
+  // 困在字段里）由浏览器用例 invalid whitelist never steals focus on input
+  // or blur 捕获，那里才有真实的键盘/鼠标路径。
   const classList = {
     add() {},
     remove() {},
