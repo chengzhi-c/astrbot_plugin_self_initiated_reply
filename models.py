@@ -1162,6 +1162,20 @@ def normalize_string_list(
     return result
 
 
+def _truncate_text(spec: ConfigSpec, text: str) -> str:
+    """按规格截断文本。无上限或未超限时原样返回。"""
+    if spec.max_len is None or len(text) <= spec.max_len:
+        return text
+    logger.warning(
+        "[%s] %s 过长 (%d 字符)，已截断到 %d 字符",
+        PLUGIN_ID,
+        spec.key,
+        len(text),
+        spec.max_len,
+    )
+    return text[: spec.max_len]
+
+
 def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
     """按规格把一个原始配置值强制成目标类型并夹取边界。
 
@@ -1188,15 +1202,7 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
         # 空值回落默认模板（面板留空即复位）：这条语义的唯一实现点在读侧——
         # 写侧 webapi._strict_value 只规范化空白，复位值单源于规格表 reset_default。
         text = str(raw or "").strip() or spec.reset_value
-        if spec.max_len is not None and len(text) > spec.max_len:
-            logger.warning(
-                "[%s] 判断提示词过长 (%d 字符)，已截断到 %d 字符",
-                PLUGIN_ID,
-                len(text),
-                spec.max_len,
-            )
-            text = text[: spec.max_len]
-        return text
+        return _truncate_text(spec, text)
     if spec.kind == "list":
         try:
             return normalize_string_list(spec, raw, mode="disk")
@@ -1207,17 +1213,7 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
             except ValueError:
                 return normalize_string_list(spec, spec.default, mode="disk")
     if spec.kind == "str":
-        text = str(raw or "").strip()
-        if spec.max_len is not None and len(text) > spec.max_len:
-            logger.warning(
-                "[%s] %s 过长 (%d 字符)，已截断到 %d 字符",
-                PLUGIN_ID,
-                spec.key,
-                len(text),
-                spec.max_len,
-            )
-            text = text[: spec.max_len]
-        return text
+        return _truncate_text(spec, str(raw or "").strip())
     return str(raw or "").strip()
 
 
