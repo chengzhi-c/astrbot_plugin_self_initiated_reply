@@ -571,8 +571,21 @@ test("desktop more-actions trigger stays collapsed-attribute free", async ({ pag
   await page.setViewportSize({ width: 1440, height: 1000 });
   await installBridge(page);
   const errors = await openPage(page);
+  await expect(page.locator("#moreActionsBtn")).toBeHidden();
   await expect(page.locator("#moreActionsBtn")).not.toHaveAttribute("aria-expanded");
   await expect(page.locator("#moreActionsMenu")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("current sidenav link keeps its focus ring below the desktop breakpoint", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 1000 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  const link = page.locator(".sidenav-link.is-current");
+  await link.focus();
+  await expect(link).toHaveCSS("box-shadow", /rgb\(54,\s*65,\s*109\)/);
+  await page.locator("body").click({ position: { x: 8, y: 8 } });
+  await expect(link).toHaveCSS("box-shadow", "none");
   expect(errors).toEqual([]);
 });
 

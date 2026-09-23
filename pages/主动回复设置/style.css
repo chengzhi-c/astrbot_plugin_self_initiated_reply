@@ -416,7 +416,6 @@ code {
 	align-items: center;
 	gap: 10px;
 }
-.more-actions-trigger,
 .more-actions-label {
 	display: none;
 }
@@ -1434,6 +1433,9 @@ textarea {
 		color 0.16s var(--ease),
 		box-shadow 0.16s var(--ease);
 }
+.more-actions-trigger {
+	display: none;
+}
 .btn:focus-visible {
 	outline: 3px solid var(--focus-color);
 	outline-offset: 2px;
@@ -1744,7 +1746,7 @@ textarea {
 		white-space: nowrap;
 		border: var(--border-w) solid transparent;
 	}
-	.sidenav-link.is-current {
+	.sidenav-link.is-current:not(:focus-visible) {
 		box-shadow: none;
 		border-color: var(--border-strong);
 	}
