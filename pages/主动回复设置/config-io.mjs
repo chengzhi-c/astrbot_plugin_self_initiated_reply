@@ -270,7 +270,7 @@ export function createConfigIo(deps) {
 		}
 		return true;
 	}
-	function validateWhitelist() {
+	function validateWhitelist({ focus = false } = {}) {
 		const e = els();
 		if (!e.whitelistInput || !e.whitelistError) return true;
 		const errors = validateWhitelistLines(e.whitelistInput.value);
@@ -279,7 +279,9 @@ export function createConfigIo(deps) {
 			e.whitelistInput.setAttribute("aria-invalid", "true");
 			e.whitelistError.textContent = `第 ${first.line} 项${first.reason}：${first.item.slice(0, 24)}`;
 			e.whitelistError.classList.add("show");
-			e.whitelistInput.focus();
+			// 只在保存路径抢焦点：input/blur 上抢会把用户困在该字段
+			// （点其他字段被拽回、Tab 逃不出），可达性缺陷。
+			if (focus) e.whitelistInput.focus();
 			return false;
 		}
 		e.whitelistInput.removeAttribute("aria-invalid");
@@ -290,8 +292,12 @@ export function createConfigIo(deps) {
 	function applyConfigPayload(config) {
 		const e = els();
 		loadConfigControls(e.configForm, config, providerControls());
-		e.decisionPromptInput.dataset.defaultPrompt =
-			config.decision_prompt_default || config.decision_prompt_template || "";
+		// 只有 GET /config 携带 decision_prompt_default（面板视图键）；POST 返回的
+		// config 是持久配置，不含它。此处若用 decision_prompt_template 兜底，会把用户
+		// 刚提交的值写成"默认"，「恢复默认提示词」随之变成空操作。
+		if (config.decision_prompt_default) {
+			e.decisionPromptInput.dataset.defaultPrompt = config.decision_prompt_default;
+		}
 		const whitelist = parseWhitelist(e.whitelistInput.value);
 		e.whitelistInput.value = whitelist.join("\n");
 		updateWhitelistFeedback();
@@ -387,7 +393,7 @@ export function createConfigIo(deps) {
 		}
 		// 白名单校验先行短路：两个校验器都会 focus 各自首个非法字段，
 		// 若数值校验后跑，白名单的焦点会被抢走、错误提示跳变。
-		if (!validateWhitelist()) {
+		if (!validateWhitelist({ focus: true })) {
 			showToast("白名单有非法条目，请检查标红区域");
 			return;
 		}

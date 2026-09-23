@@ -133,16 +133,26 @@ async function installBridge(page, options = {}) {
               // 前缀自带定位，驱动 saveConfig 的 numberField 标红路径。
               return { ok: false, error: "cooldown_sec 必须是整数" };
             }
+            // 响应形状必须与真实后端一致：POST /config 返回
+            // { ok, config, config_revision, runtime_enabled, adjusted_fields }。
+            // config 是 Settings.to_config_dict() 的输出，**不含**面板视图键
+            // decision_prompt_default（只存在于 GET，见 webapi._api_get_config）。
+            // 桩比真实后端"更完整"会让「恢复默认提示词」这类缺陷在所有用例中
+            // 不可见——所以这里显式剔除，让 POST 后的 config 与磁盘内容同形。
+            const { base_revision: _ignoredRevision, ...persisted } = body;
             state.config = {
               ...state.config,
-              ...body,
+              ...persisted,
               runtime_enabled: true,
               ok: true,
               config_revision: `sha256:${"c".repeat(64)}`,
             };
+            delete state.config.decision_prompt_default;
             return {
               ok: true,
-              ...state.config,
+              config: state.config,
+              config_revision: state.config.config_revision,
+              runtime_enabled: true,
               adjusted_fields: state.saveMode === "adjusted" ? ["whitelist_sessions"] : [],
             };
           }
@@ -431,6 +441,61 @@ test("late theme prefs do not overwrite a theme click already made", async ({ pa
   expect(errors).toEqual([]);
 });
 
+test("dim and bold clicks never submit the theme field", async ({ page }) => {
+  // 回归守卫：bindDimBoldButtons 曾把 currentTheme() 一并提交，而 data-theme
+  // 尚未渲染出服务端主题（GET 在途 / localStorage 不可用）时它恒为 "auto"，
+  // 一次压暗就把服务端已存的 dark 静默改成跟随系统。压暗/粗体只改自己那两个字段。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { themePending: true, theme: "dark", dim: false, bold: false });
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.goto(`${baseUrl}${PAGE_PATH}`);
+  await expect.poll(() => page.evaluate(() => typeof window.__resolveTheme)).toBe("function");
+  await page.locator("#dimBtn").click();
+  await expect(page.locator("html")).toHaveClass(/dimmed/);
+  // GET ui/theme 仍在途：此刻 currentTheme() 为 auto，正是缺陷触发窗口。
+  expect(
+    await page.evaluate(() => document.documentElement.hasAttribute("data-theme")),
+  ).toBe(false);
+  await page.evaluate(() => window.__resolveTheme());
+  await page.waitForTimeout(80);
+
+  const themePosts = await page.evaluate(() =>
+    window.__bridgeCalls
+      .filter((call) => call.method === "POST" && call.endpoint === "ui/theme")
+      .map((call) => call.body),
+  );
+  expect(themePosts.length).toBeGreaterThan(0);
+  for (const body of themePosts) {
+    expect(body.dim).toBe(true);
+    expect("theme" in body).toBe(false);
+  }
+  // 服务端迟到的 dark 仍应生效（用户没点过主题，不得被当成 auto 覆盖）。
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  expect(errors).toEqual([]);
+});
+
+test("the theme toggle still submits the theme field", async ({ page }) => {
+  // 与上一条互为对照：主题按钮是唯一该提交 theme 的入口，删掉字段即回归。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { theme: "dark", dim: false, bold: false });
+  const errors = await openPage(page);
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.locator("#themeToggle").click();
+  // THEME_CYCLE = auto/light/dark：dark 的下一档是 auto（属性被移除）。
+  await expect(page.locator("html")).not.toHaveAttribute("data-theme", /.*/);
+  const themePosts = await page.evaluate(() =>
+    window.__bridgeCalls
+      .filter((call) => call.method === "POST" && call.endpoint === "ui/theme")
+      .map((call) => call.body),
+  );
+  expect(themePosts.at(-1).theme).toBe("auto");
+  expect(errors).toEqual([]);
+});
+
 test("compact more-actions menu exposes auxiliary controls", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await installBridge(page);
@@ -520,6 +585,32 @@ test("skip link and invalid whitelist stay keyboard-accessible", async ({ page }
   await expect(page.locator("#whitelistInput")).toHaveAttribute("aria-invalid", "true");
   await expect(page.locator("#whitelistInput")).toHaveAttribute("aria-describedby", "whitelistError");
   await expect(page.locator("#whitelistInput")).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test("invalid whitelist never steals focus on input or blur", async ({ page }) => {
+  // 回归守卫：validateWhitelist 曾同时挂在 input/blur 上并无条件 focus()，
+  // 白名单残留一个非法条目后，鼠标点其他字段会被立刻抢回、键盘 Tab 也逃不出。
+  // 交互路径不得抢焦点；保存路径的聚焦由上面那条用例单独钉住。
+  await installBridge(page);
+  const errors = await openPage(page);
+
+  await page.locator("#whitelistInput").fill('bad"quote');
+  await expect(page.locator("#whitelistError")).toBeVisible();
+  await expect(page.locator("#whitelistInput")).toHaveAttribute("aria-invalid", "true");
+
+  // Tab 必须能离开该字段（此前 activeElement 会被拽回 whitelistInput）。
+  // 连按两次：一次让 whitelistInput 失焦并触发 blur 校验，一次继续前移；
+  // 若 blur 仍抢焦点，第二次 Tab 后焦点会回到该字段。
+  await page.keyboard.press("Tab");
+  await expect(page.locator("#whitelistInput")).not.toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.locator("#whitelistInput")).not.toBeFocused();
+
+  // 点页面其他可命中区域同样不得被抢回：用顶部刷新按钮（无 label 包裹、
+  // 不依赖滚动命中），点击会把焦点移走并让 whitelistInput 失焦。
+  await page.locator("#refreshBtn").click();
+  await expect(page.locator("#whitelistInput")).not.toBeFocused();
   expect(errors).toEqual([]);
 });
 

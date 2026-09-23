@@ -1025,17 +1025,98 @@ test("saved whitelist count reflects the server-normalized payload", async () =>
 });
 
 test("save validation guards on whitelist before the numeric scan", async () => {
-  // 焦点唯一归属：白名单非法时校验必须短路返回，不再跑数值校验——
-  // 两个校验器都会 focus 各自首个非法字段，后跑者抢焦点、错误提示跳变。
-  const source = await readFile(join(pageDir, "config-io.mjs"), "utf8");
-  const whitelistGuard = source.indexOf("if (!validateWhitelist()) {");
-  const numericGuard = source.indexOf("if (!validateAll()) {");
-  assert.ok(whitelistGuard !== -1, "saveConfig must guard on validateWhitelist()");
-  assert.ok(numericGuard !== -1, "saveConfig must guard on validateAll()");
-  assert.ok(
-    whitelistGuard < numericGuard,
-    "validateWhitelist() must run before validateAll() so the whitelist focus is not stolen back",
-  );
+  // 焦点唯一归属：白名单非法时校验必须短路返回，不再跑数值校验。
+  // 断言落在行为上（保存不得发请求、不得聚焦数值字段），不比对源码书写顺序：
+  // 换一种等价写法（例如 validateWhitelist({ focus: true })）不该让本用例变红。
+  const classList = {
+    add() {},
+    remove() {},
+    toggle() {},
+  };
+  const focused = [];
+  const numberField = {
+    dataset: { configKey: "cooldown_sec" },
+    type: "number",
+    value: "not-a-number",
+    min: "30",
+    max: "86400",
+    hasAttribute: (name) => name === "min" || name === "max",
+    getAttribute: (name) => (name === "min" ? "30" : "86400"),
+    setAttribute() {},
+    removeAttribute() {},
+    addEventListener() {},
+    insertAdjacentElement() {},
+    focus() {
+      focused.push("cooldown_sec");
+    },
+  };
+  const fields = [
+    {
+      dataset: { configKey: "whitelist_sessions", configTransform: "whitelist" },
+      value: 'bad"quote',
+    },
+    { dataset: { configKey: "judge_provider_id", configControl: "judge" } },
+    numberField,
+  ];
+  const form = {
+    classList,
+    inert: false,
+    querySelector: () => null,
+    querySelectorAll: (selector) =>
+      selector === 'input[type="number"]' ? [numberField] : fields,
+  };
+  const whitelistInput = {
+    ...fields[0],
+    removeAttribute() {},
+    setAttribute() {},
+    focus() {
+      focused.push("whitelist_sessions");
+    },
+  };
+  const elements = {
+    configForm: form,
+    whitelistInput,
+    whitelistError: { textContent: "", classList },
+    configSaveState: { textContent: "", classList },
+    whitelistCount: { textContent: "" },
+  };
+  const state = {
+    configLoaded: true,
+    savingConfig: false,
+    configRevision: TEST_REVISION,
+    isDirty: false,
+    requiresConfigRefresh: false,
+  };
+  const posts = [];
+  const toasts = [];
+  const io = createConfigIo({
+    getEls: () => elements,
+    getState: () => state,
+    setState: (updates) => Object.assign(state, updates),
+    apiGet: async () => {
+      throw new Error("skip refresh");
+    },
+    apiPost: async (endpoint) => {
+      posts.push(endpoint);
+      return { ok: true, config: {}, config_revision: TEST_REVISION };
+    },
+    showToast: (msg) => toasts.push(msg),
+    setStatState() {},
+    renderPromptPreview() {},
+    judgeProviderControl: { value: () => "", sync() {} },
+    visionProviderControl: { value: () => "", sync() {} },
+    visionJudgeProviderControl: { value: () => "", sync() {} },
+    fmtBool: String,
+  });
+  // 不调 setupValidation()：那会 document.createElement（本用例无 DOM）。
+  // numberFields 为空时 validateAll() 必定返回 true，于是唯一能让保存短路的
+  // 就是白名单那一关——这正是要断言的归属。
+
+  await io.saveConfig({ preventDefault() {} });
+
+  assert.deepEqual(posts, [], "白名单非法时必须短路，不得提交保存");
+  assert.deepEqual(focused, ["whitelist_sessions"], "焦点只能归属白名单字段");
+  assert.ok(toasts.some((msg) => msg.includes("白名单")), toasts.join(" | "));
 });
 
 test("non-whitelist illegal-char save errors do not paint the whitelist field", async () => {

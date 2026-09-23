@@ -412,7 +412,7 @@ if (els.themeToggle) {
 	});
 }
 
-bindDimBoldButtons(() => persistTheme(currentTheme(), apiPost));
+bindDimBoldButtons(() => persistTheme(null, apiPost));
 restoreDimBold();
 try {
 	const saved = localStorage.getItem(THEME_KEY);

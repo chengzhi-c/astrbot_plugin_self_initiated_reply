@@ -28,10 +28,13 @@ export function applyTheme(theme, themeToggle) {
   }
 }
 export async function persistTheme(theme, apiPost) {
-  cacheThemeLocally(theme);
+  // theme 省略 = 只改压暗/粗体：渲染态尚未反映服务端主题（GET 在途或
+  // localStorage 不可用）时 currentTheme() 恒为 "auto"，把它一并提交会把
+  // 服务端已存的 light/dark 静默改成跟随系统。后端对未提交的键保持原值。
+  if (theme) cacheThemeLocally(theme);
   try {
     await apiPost("ui/theme", {
-      theme,
+      ...(theme ? { theme } : {}),
       dim: document.documentElement.classList.contains("dimmed"),
       bold: document.documentElement.classList.contains("bold-text"),
     });
