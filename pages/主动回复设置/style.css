@@ -356,13 +356,15 @@ code {
 	border-bottom: var(--border-w) solid transparent;
 	transition:
 		border-color 0.2s var(--ease),
-		background 0.2s var(--ease),
-		padding 0.2s var(--ease);
+		background 0.2s var(--ease);
 }
+/* 只用 border/background 表达粘附态。padding 不能在粘附时收缩：topbar 是首位
+   sticky 元素，占位高度一变，浏览器滚动锚定就会补偿 scrollY，而 scrollY 又决定
+   is-stuck 是否保留（chrome.mjs 的 y > 8）。实测 padding 20px→12px 使高度变化约
+   16px，远超该阈值，于是页面在接近最上方时自激抖动。 */
 .topbar.is-stuck {
 	border-bottom-color: var(--border);
 	background: color-mix(in srgb, var(--bg) 92%, transparent);
-	padding: var(--sp-5) var(--shell-pad);
 }
 .brand {
 	display: flex;

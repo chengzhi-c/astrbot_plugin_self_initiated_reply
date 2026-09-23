@@ -842,3 +842,43 @@ test("mobile tab click moves both the tab and the sidenav current state", async 
   expect(currentTabs).toEqual(["sec-decision"]);
   expect(errors).toEqual([]);
 });
+
+test("topbar must not change its height when the stuck class toggles", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 520 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  const topbar = page.locator(".topbar");
+  await expect(topbar).toBeVisible();
+
+  // is-stuck 曾在粘附时把 padding 从 --sp-7 收到 --sp-5，令占位高度变化约 16px。
+  // topbar 是首位 sticky 元素，占位高度变化会触发浏览器滚动锚定补偿、反过来改写
+  // scrollY；scrollY 又决定 is-stuck 是否保留——只要高度差超过 sticky 阈值
+  // （y > 8）就会自激，表现为页面在接近最上方时疯狂抖动。
+  const flipReport = await page.evaluate(async () => {
+    const bar = document.querySelector(".topbar");
+    // 反复穿过阈值，再停在阈值带内不干预，统计 class 自发放映的次数。
+    for (const y of [0, 8, 9, 8, 7, 9, 0, 10, 6, 12, 5, 8, 7, 9]) {
+      window.scrollTo(0, y);
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    let flips = 0;
+    let previous = bar.classList.contains("is-stuck");
+    const started = performance.now();
+    while (performance.now() - started < 1200) {
+      if (bar.classList.contains("is-stuck") !== previous) {
+        previous = bar.classList.contains("is-stuck");
+        flips += 1;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    return { flips, scrollY: window.scrollY };
+  });
+
+  expect(flipReport.flips, `topbar 在阈值附近自激翻转 ${flipReport.flips} 次`).toBe(0);
+
+  // 状态反馈本身必须保留，否则这条守卫会让 is-stuck 退化成死类。
+  await expect(topbar).toHaveClass(/is-stuck/);
+  await expect(topbar).toHaveCSS("border-bottom-color", "rgba(45, 52, 75, 0.14)");
+  expect(errors).toEqual([]);
+});
+

@@ -248,6 +248,22 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
   契约——改写法即红，与真实行为无关。要守行为请补浏览器/契约行为用例（参照
   `save validation guards on whitelist before the numeric scan` 由源码顺序改为行为断言）。
 
+## 吸顶态不得改变 topbar 的占位高度
+
+`.topbar` 是页面首个 `position: sticky` 元素，粘附态只能用 `border-color` /
+`background` 表达。**不得**在 `.is-stuck` 里改 `padding`、`margin`、`height` 等任何
+影响占位高度的属性。
+
+原因：粘附阈值在 `chrome.mjs` 是 `window.scrollY > 8`。曾用 `padding: 20px → 12px`
+表达"变矮"，实测占位高度随之变化约 16px；浏览器滚动锚定为保持视觉锚点会补偿
+`scrollY`，而 `scrollY` 又决定 `is-stuck` 是否保留——高度差一旦超过阈值就自激，
+表现为页面接近最顶部时疯狂抖动（实测 1.2s 内 class 翻转 129 次）。
+
+- 守卫：`tests/frontend_browser.test.mjs`
+  `topbar must not change its height when the stuck class toggles`
+  （还原 padding 收缩即红，已用自变异确认）
+- 视觉收缩需求请改用不占布局高度的手段，并先确认不会缩放文字。
+
 ---
 
 # 每会话内存基准
