@@ -98,12 +98,9 @@ export const WHITELIST_ILLEGAL_RE = /[\x00-\x1f"'\\]/;
 const WHITELIST_MAX_COUNT = 1000;
 
 export function validateWhitelistLines(text) {
-  // 与 parseWhitelist 同一切分：保存按条目发包，校验必须按条目报，否则
-  // `a,b` 写在一行时校验算 1 行、保存算 2 条，序号错位。
-  const items = String(text || "")
-    .split(/[\n,，]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+  // 必须走 parseWhitelist：保存按条目发包，校验按同一份切分报序号。
+  // 各写一遍时，`a,b` 写在一行会让校验算 1 行、保存算 2 条。
+  const items = parseWhitelist(text);
   const errors = [];
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i];

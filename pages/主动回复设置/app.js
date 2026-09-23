@@ -59,15 +59,6 @@ function getEls() {
 		enabledInput: $("enabledInput"),
 		decisionModelInput: $("decisionModelInput"),
 		providerField: $("judgeProviderField"),
-		judgeProviderSelect: $("judgeProviderSelect"),
-		judgeProviderInput: $("judgeProviderInput"),
-		providerManualBtn: $("providerManualBtn"),
-		visionProviderSelect: $("visionProviderSelect"),
-		visionProviderInput: $("visionProviderInput"),
-		visionProviderManualBtn: $("visionProviderManualBtn"),
-		visionJudgeProviderSelect: $("visionJudgeProviderSelect"),
-		visionJudgeProviderInput: $("visionJudgeProviderInput"),
-		visionJudgeProviderManualBtn: $("visionJudgeProviderManualBtn"),
 		providerHint: $("providerHint"),
 		providerListState: $("providerListState"),
 		decisionPromptInput: $("decisionPromptInput"),
@@ -193,28 +184,28 @@ const providerDeps = {
 	onDirty: () => configIo.setDirty(true),
 };
 
-/* 三个 Provider 控件同构，差异只在元素前缀、占位文案，以及 judge 额外要切换
-   容器 class 与 hint 文案。数组驱动：新增控件只加一行，渲染/失败回退也不会漏。 */
+/* 三个 Provider 控件同构。差异只在占位文案，以及 judge 要切换容器 class 与 hint。
+   元素在此直接取：它们不参与其余逻辑，不必再进 getEls。 */
 const PROVIDER_CONTROLS = [
 	{
 		name: "vision",
-		select: () => els.visionProviderSelect,
-		input: () => els.visionProviderInput,
-		button: () => els.visionProviderManualBtn,
+		select: $("visionProviderSelect"),
+		input: $("visionProviderInput"),
+		button: $("visionProviderManualBtn"),
 		placeholder: "使用当前会话模型",
 	},
 	{
 		name: "visionJudge",
-		select: () => els.visionJudgeProviderSelect,
-		input: () => els.visionJudgeProviderInput,
-		button: () => els.visionJudgeProviderManualBtn,
+		select: $("visionJudgeProviderSelect"),
+		input: $("visionJudgeProviderInput"),
+		button: $("visionJudgeProviderManualBtn"),
 		placeholder: "与识图模型一致",
 	},
 	{
 		name: "judge",
-		select: () => els.judgeProviderSelect,
-		input: () => els.judgeProviderInput,
-		button: () => els.providerManualBtn,
+		select: $("judgeProviderSelect"),
+		input: $("judgeProviderInput"),
+		button: $("providerManualBtn"),
 		placeholder: "使用当前会话默认模型",
 		onModeChange: (manual) => {
 			if (els.providerField)
@@ -232,9 +223,9 @@ const providerControlsByName = {};
 const providerControlList = PROVIDER_CONTROLS.map((spec) => {
 	const control = createProviderControl(
 		{
-			select: spec.select(),
-			input: spec.input(),
-			button: spec.button(),
+			select: spec.select,
+			input: spec.input,
+			button: spec.button,
 			placeholder: spec.placeholder,
 		},
 		spec.onModeChange
