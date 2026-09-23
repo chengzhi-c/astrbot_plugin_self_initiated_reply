@@ -228,11 +228,6 @@ def _image_entries(event: Any) -> list[tuple[Any, Any]]:
     return entries
 
 
-def _event_message_id(event: Any) -> str:
-    """消息 ID（图片缓存去重与引用共用同一口径，实现在 ``utils.event_message_id``）。"""
-    return event_message_id(event)
-
-
 class ImageExtractor:
     """Extract image URLs or local file references from a message event."""
 
@@ -261,7 +256,7 @@ class ImageExtractor:
         """
         images: list[ImageInfo] = []
         try:
-            message_id = _event_message_id(event)
+            message_id = event_message_id(event)
             for component, raw_component in _eligible_image_entries(
                 event, skip_stickers=skip_stickers
             ):

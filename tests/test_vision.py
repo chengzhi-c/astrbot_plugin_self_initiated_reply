@@ -1076,6 +1076,26 @@ def test_image_info_cache_key_prefers_url_then_file() -> None:
     assert not empty_info.has_any_source
 
 
+def test_image_info_cache_key_digests_oversized_data_url() -> None:
+    """data URL 回退时缓存键必须摘要化，不得把 base64 载荷原样当键。
+
+    磁盘缓存不可用时 ``prepared_source`` 是完整 data URL，而 ``ImageCache`` 的
+    字节预算只按值记账——MB 级键会整体逃出预算。摘要化后同内容仍同键（去重与
+    LRU 命中的前提），不同内容仍不同键。
+    """
+    _, image, _ = _load_modules()
+    payload = "A" * 400_000
+    data_url = f"data:image/png;base64,{payload}"
+    first = image.ImageInfo(prepared_source=data_url)
+    second = image.ImageInfo(prepared_source=data_url)
+    other = image.ImageInfo(prepared_source=f"data:image/png;base64,{'B' * 400_000}")
+    key = first.cache_key()
+    assert key == second.cache_key()
+    assert key != other.cache_key()
+    assert key.startswith("prepared:sha256:")
+    assert len(key) < 100, f"缓存键仍可无界增长：len={len(key)}"
+
+
 def test_judge_vision_provider_falls_back_to_main_vision_provider() -> None:
     """判断阶段识图 Provider 留空时必须回落到主识图 Provider。
 

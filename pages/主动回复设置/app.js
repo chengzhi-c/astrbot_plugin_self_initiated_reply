@@ -111,15 +111,17 @@ function setStatState(element, stateName) {
 }
 
 function showToast(message, isError = false) {
-	if (!els.toast) return;
-	els.toast.textContent = message;
-	els.toast.setAttribute("role", isError ? "alert" : "status");
-	els.toast.classList.add("show");
+	const toast = els.toast;
+	if (!toast) return;
+	toast.textContent = message;
+	// role 恒为 status + aria-live="polite"（静态声明在 index.html）：紧急通道由
+	// 带 role="alert" 的字段级错误承担，toast 不切 role——role="alert" 与显式
+	// aria-live="polite" 是互相矛盾的组合（显式值优先，alert 的紧急语义被中和）。
+	// 错误态只用 is-error 表达视觉差异，不改变朗读优先级。
+	toast.classList.toggle("is-error", Boolean(isError));
+	toast.classList.add("show");
 	window.clearTimeout(toastTimer);
-	toastTimer = window.setTimeout(
-		() => els.toast.classList.remove("show"),
-		TOAST_MS,
-	);
+	toastTimer = window.setTimeout(() => toast.classList.remove("show"), TOAST_MS);
 }
 
 function debounce(fn, delay) {

@@ -342,5 +342,9 @@ N = 活跃会话数（白名单上限 MAX_WHITELIST_SIZE = 1000）
 - Vision 描述 LRU：`tests/test_image_cache.py`
 - 单张输入上限：`tests/test_vision_parser_gaps.py`
 
+描述 LRU 的字节预算只按**值**大小记账，不含 key：`ImageInfo.cache_key()` 对
+超长值（磁盘缓存不可用时的 data URL 回退）做 sha256 摘要化，故 key 长度有上界、
+不会逃出 `MAX_IMAGE_DESCRIPTION_CACHE_BYTES`。两条共同保证「键的开销不在预算外」。
+
 改常数时同步本节；不要为 KB 估算补公式测试。
 

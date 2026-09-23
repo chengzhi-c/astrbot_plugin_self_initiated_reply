@@ -162,8 +162,10 @@
   会话历史 JSON 损坏 → `req.contexts` 留默认值 → 机器人带空上下文接话，
   表现为「失忆」而非报错，必须 WARNING。
   相对地，会话本身取不到属可接受降级，保持 DEBUG，避免噪音淹没告警通道。
-- `last_decisions` 的 reason 可含至多 40 字用户原文（运营可见）：`state.json`
-  本就持久化 recent 全文，此处不是新增暴露面，取值见 `decision.py` 注释。
+- `last_decisions` 的 reason 可含至多 200 字用户原文（运营可见）：`state.json`
+  本就持久化 recent 全文，此处不是新增暴露面，取值见 `utils.DECISION_REASON_MAX_CHARS`；
+  经 `/selfreply status` 与 `GET /status` 呈现时再截断至 60 字
+  （`commands._RECENT_DECISION_REASON_MAX`，见 §13）。
 
 ## 10. 宿主兼容面
 

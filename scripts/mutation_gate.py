@@ -249,6 +249,16 @@ MUTATIONS: tuple[Mutation, ...] = (
         targets=("tests/frontend_contract.test.mjs",),
         runner="node",
     ),
+    Mutation(
+        key="runtime_require_stops_raising",
+        rel="runtime_adapter.py",
+        anchor="    if value is None:\n"
+        '        raise RuntimeError(f"当前 AstrBot 缺少主动回复所需的 {name}")\n',
+        replacement="    if value is None:\n        return None\n",
+        contract="§10",
+        note="宿主符号缺失不再 fail closed：None 漏进宿主调用，在更深处以难诊断的形态崩溃",
+        targets=("tests/test_runtime_adapter_blindspots.py",),
+    ),
 )
 
 

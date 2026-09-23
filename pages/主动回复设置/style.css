@@ -1660,6 +1660,9 @@ textarea {
 	opacity: 1;
 	transform: translateY(0) scale(1);
 }
+.toast.is-error {
+	border-left-color: var(--danger);
+}
 .boot {
 	position: fixed;
 	inset: 0;

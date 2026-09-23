@@ -283,18 +283,6 @@ def reset_hook_calls() -> None:
         pipeline_ctx._hook_calls = []
 
 
-def hook_calls() -> list[tuple[Any, Any]]:
-    pipeline_ctx = sys.modules.get("astrbot.core.pipeline.context")
-    if pipeline_ctx is None:
-        return []
-    return list(pipeline_ctx._hook_calls)
-
-
-def run(coro: Any) -> Any:
-    """Run an async helper without requiring pytest-asyncio."""
-    return asyncio.run(coro)
-
-
 async def until(predicate: Any, timeout: float = 2.0) -> None:
     """Wait until ``predicate()`` is truthy, yielding to the loop meanwhile.
 

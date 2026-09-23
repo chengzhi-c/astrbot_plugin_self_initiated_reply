@@ -7,8 +7,8 @@
 是否接话属 ``decision``。本模块是依赖图的叶子（只依赖标准库与宿主 logger），反向依赖会立刻成环。
 
 分区目录：安全上限常量 → 危险工具清单 → 提示词模板 → 通用纯函数 →
-``AttemptLedger`` 状态机 → 配置规格表 / ``Settings``。分区只做定位，
-不拆文件（拆分收益抵不过契约测试的摩擦成本）。
+分类域枚举与投递数据结构 → ``AttemptLedger`` 状态机 → 配置规格表 /
+``Settings``。分区只做定位，不拆文件（拆分收益抵不过契约测试的摩擦成本）。
 """
 
 from __future__ import annotations
@@ -85,6 +85,9 @@ LEAK_WARN_TASK_THRESHOLD = 100
 LEAK_WARN_SESSION_THRESHOLD = 1500
 # 生成上下文文本记录预算下限（与 decision_history_min_messages 默认值一致）：
 # 本地文本记录不足此数时才回宿主补历史。
+# 判断路径另有一个下限 decision.DECISION_HISTORY_FLOOR = 8，那是提示词契约
+# （"优先参考最近至少 8 条"），与本常量刻意不同源；改任一侧都不得顺手统一到另一侧
+# （理由见 decision.py 该常量的注释）。
 MIN_RECENT_TEXT_RECORDS = 5
 
 # 插件运行常量

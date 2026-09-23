@@ -356,9 +356,12 @@ class DeliveryRunner:
 
         last_event = self._last_events.get(umo)
         quote_id = self._resolve_quote_id(umo, quote)
-        # @ 与引用同源取目标，但 @ 只走事件路径：context 兜底的前提就是事件已不在
-        # 手边，没有 sender_id 可用（见 _send_via_context 与契约 §14）。
-        mention_id = self._resolve_mention_id(umo) if last_event else ""
+        # @ 与引用同源取目标，且同样无条件解析：``_resolve_mention_id`` 在
+        # ``last_event`` 为 None 时返回空串并记一条 "mention skipped" DEBUG
+        # （契约 §14：context 兜底路径不 @，没有 sender_id 可用）。短路掉它会
+        # 让「mention_mode=always 但事件已被回收」静默失效且无迹可查——与 quote
+        # 侧已有的 DEBUG 不对称。行为完全不变，只是补上可定位性。
+        mention_id = self._resolve_mention_id(umo)
         if last_event:
             return await self._send_via_event(
                 umo,

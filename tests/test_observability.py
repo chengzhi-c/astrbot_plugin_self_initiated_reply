@@ -14,7 +14,7 @@ import importlib
 import logging
 from pathlib import Path
 
-from .host_stubs import ROOT, load_modules
+from .host_stubs import ROOT, load_modules, production_py_files
 
 PACKAGE_NAME = "selfreply_observability_test_package"
 
@@ -54,6 +54,17 @@ _INFO_WHITELIST = {
     "[%s] v%s enabled=%s whitelist=%d message_trigger=%s patrol_trigger=%s",
     "[%s] vision judge=%s main=%s skip_stickers=%s provider=%s judge_provider=%s",
     "[%s] terminated",
+    # 运维状态：安全敏感配置变更的审计留痕（webapi 的 POST /config 落盘路径）
+    "[%s] webapi config audit: %s",
+    # 识图降级：全部是「这张图本次不可用」的可接受降级（契约 §9 的 DEBUG 语义
+    # 之上，这几条是运维定位识图失效的唯一线索，故走 INFO 而非 DEBUG）
+    "[%s] image source unavailable during event capture",
+    "[%s] no Vision provider available; skip image parsing",
+    "[%s] no usable image source for parsing",
+    "[%s] no usable description from provider",
+    "[%s] image parsing timed out",
+    "[%s] image URL download failed: %s",
+    "[%s] image download timed out",
 }
 
 _CHECKED_MODULES = [
@@ -62,6 +73,7 @@ _CHECKED_MODULES = [
     "decision.py",
     "delivery.py",
     "generation.py",
+    "image/parser.py",
     "image/vision_runtime.py",
     "main.py",
     "message_ingress.py",
@@ -72,8 +84,26 @@ _CHECKED_MODULES = [
     "session_gate.py",
     "session_pipeline.py",
     "storage.py",
+    "webapi.py",
     "whitelist.py",
 ]
+
+# 生产模块里不适用本纪律的部分：它们是纯数据/叶子模块，没有任何日志调用，
+# 纳入清单只会让上面两条用例空转（_info_templates 恒空）。
+# 该清单由 test_checked_modules_cover_every_production_module 与生产模块清单
+# 双向钉住：新增带 logger 的生产模块漏登记即红。
+_UNLOGGED_MODULES = frozenset(
+    {
+        "__init__.py",
+        "image/__init__.py",
+        "image/_support.py",
+        "image/extractor.py",
+        "image/recorder_bridge.py",
+        "models.py",
+        "runtime_adapter.py",
+        "utils.py",
+    }
+)
 
 
 def _info_templates(rel: str) -> set[str]:
@@ -101,6 +131,26 @@ def test_info_logs_are_whitelisted_only() -> None:
                 offenders.append((rel, template))
     assert not offenders, "新增 INFO 未登记白名单：\n" + "\n".join(
         f"  {rel}: {t}" for rel, t in offenders
+    )
+
+
+def test_checked_modules_cover_every_production_module() -> None:
+    """`_CHECKED_MODULES` 必须覆盖全部生产模块（除 `_UNLOGGED_MODULES`）。
+
+    手写清单的失效模式：新增一个带 `logger.info` 的生产模块时漏登记，该模块的
+     INFO 就逃出上面两条用例的纪律，且**没有任何现有门禁会红**（ruff 不管日志
+    级别，覆盖率只看行被执行）。故这里用 `host_stubs.production_py_files()`
+    反推清单做双向断言，把「漏登记」变成红灯。
+    """
+    production = {path.relative_to(ROOT).as_posix() for path in production_py_files()}
+    expected = production - _UNLOGGED_MODULES
+    registered = set(_CHECKED_MODULES)
+    assert registered == expected, (
+        "生产模块与 _CHECKED_MODULES 不同步：\n"
+        f"  漏登记（生产有、清单无）: {sorted(expected - registered)}\n"
+        f"  多登记（清单有、生产无）: {sorted(registered - expected)}\n"
+        f"  未在 _UNLOGGED_MODULES 豁免的带日志模块: "
+        f"{sorted(f for f in registered & _UNLOGGED_MODULES if _info_templates(f))}"
     )
 
 
