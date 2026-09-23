@@ -492,6 +492,10 @@ export function createConfigIo(deps) {
 			const adjusted = Array.isArray(result.adjusted_fields)
 				? result.adjusted_fields
 				: [];
+			// 保存即一次写入：在途 refresh 的快照可能早于本次保存，而
+			// setDirty(false) 不推进 editEpoch。先推进 epoch 让那些迟到响应作废，
+			// 否则它们会用旧快照覆盖已保存的值并回退 configRevision。
+			coordinator.markEdited();
 			applyConfigPayload(savedConfig);
 			setSaveState("已保存", "ok");
 			const labels = adjustedFieldLabels(adjusted);

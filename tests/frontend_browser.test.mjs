@@ -102,8 +102,11 @@ async function installBridge(page, options = {}) {
           if (endpoint === "config") {
             state.configCalls += 1;
             if (state.refreshConfigPending && state.configCalls > 1) {
+              // 冻结请求发出那一刻的快照：后端与前端是两个进程，迟到 GET 读出
+              // 的可能是保存之前的旧值——正是迟到响应覆盖已保存编辑的场景。
+              const snapshot = { ...state.config };
               return new Promise((resolve) => {
-                window.__resolveRefreshConfig = () => resolve(state.config);
+                window.__resolveRefreshConfig = () => resolve(snapshot);
               });
             }
             return state.config;
@@ -319,6 +322,41 @@ test("forced refresh also preserves edits made after the request starts", async 
   await page.evaluate(() => window.__resolveRefreshConfig());
   await page.waitForTimeout(80);
   await expect(page.locator("#messageDelayInput")).toHaveValue("80");
+  expect(errors).toEqual([]);
+});
+
+test("a late refresh does not overwrite an edit that was saved meanwhile", async ({ page }) => {
+  // 回归守卫：保存成功后 setDirty(false) 不推进 editEpoch。若刷新开始前表单
+  // 已脏（loadStartedDirty=true），迟到响应到达时 isDirty 已回落，守卫会放行，
+  // 把已保存的值覆盖回刷新请求发出时的旧快照，configRevision 也一并回退，
+  // 下一次保存必撞 STALE_WRITE。
+  await installBridge(page, { refreshConfigPending: true });
+  const errors = await openPage(page);
+
+  // 先编辑再刷新：刷新开始时表单已脏（loadStartedDirty=true）。
+  await page.locator("#messageDelayInput").fill("75");
+  await page.locator("#refreshBtn").click();
+  // 脏表单需二次点击确认；确认后请求才真正发出并挂起。
+  await page.locator("#refreshBtn").click();
+  await expect
+    .poll(() => page.evaluate(() => typeof window.__resolveRefreshConfig))
+    .toBe("function");
+
+  await page.locator("#saveTopBtn").click();
+  await expect(page.locator("#navSaveState")).toHaveText("已保存");
+  const savedRevision = await page.evaluate(
+    () => window.__bridgeState.config.config_revision,
+  );
+
+  // 迟到刷新此刻才到达：它携带的快照早于上面的保存（服务端冻结在请求发出时）。
+  await page.evaluate(() => window.__resolveRefreshConfig());
+  await page.waitForTimeout(120);
+
+  await expect(page.locator("#messageDelayInput")).toHaveValue("75");
+  const revisionAfter = await page.evaluate(
+    () => window.__bridgeState.config.config_revision,
+  );
+  expect(revisionAfter).toBe(savedRevision);
   expect(errors).toEqual([]);
 });
 
