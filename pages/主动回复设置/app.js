@@ -48,6 +48,7 @@ function getEls() {
 		navSaveState: $("navSaveState"),
 		refreshBtn: $("refreshBtn"),
 		saveTopBtn: $("saveTopBtn"),
+		saveBottomBtn: $("saveBottomBtn"),
 		themeToggle: $("themeToggle"),
 		selfStat: $("selfStat"),
 		selfStatus: $("selfStatus"),

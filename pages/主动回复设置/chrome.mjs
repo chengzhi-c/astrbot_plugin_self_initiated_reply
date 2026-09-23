@@ -217,5 +217,7 @@ export function bindDimBoldButtons(onChange) {
 }
 export function hideBoot(els) {
   if (els.boot) els.boot.classList.add("is-hidden");
+  // 纯"模块已启动"的测试锚：样式表不消费 is-ready。改渲染时序请动 .boot 的
+  // is-hidden，不要以为这个类控制任何视觉状态。
   document.body.classList.add("is-ready");
 }

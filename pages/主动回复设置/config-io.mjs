@@ -137,9 +137,7 @@ export function createConfigIo(deps) {
 		setState({ isDirty: dirty });
 		const e = els();
 		if (e.saveTopBtn) e.saveTopBtn.classList.toggle("is-dirty", dirty);
-		const bottomSave = e.configForm
-			? e.configForm.querySelector('.form-actions button[type="submit"]')
-			: null;
+		const bottomSave = e.saveBottomBtn;
 		if (bottomSave) bottomSave.classList.toggle("is-dirty", dirty);
 		if (e.navSaveDot) e.navSaveDot.classList.toggle("is-dirty", dirty);
 		if (e.mobileSaveBar) e.mobileSaveBar.classList.toggle("is-dirty", dirty);
@@ -165,7 +163,7 @@ export function createConfigIo(deps) {
 		const buttons = [
 			e.saveTopBtn,
 			e.saveMobileBtn,
-			e.configForm ? e.configForm.querySelector('button[type="submit"]') : null,
+			e.saveBottomBtn,
 		];
 		buttons.forEach((btn) => {
 			if (!btn) return;

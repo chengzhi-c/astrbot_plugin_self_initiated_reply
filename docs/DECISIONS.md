@@ -219,9 +219,34 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
 - **不重构 `style.css`**：长度 > 20 字符的重复规则体全是单声明出现在不同选择器
   上下文，加上两份刻意保持一致的深色令牌块（已有用例钉住）；文件内零 id 选择器。
   收益为零而视觉回归风险不可控。
-- **不改双指令路径架构**：删内联路径会丢掉 `_is_command_entry` 的裸词保护与
+- **不改双指令路径架构**：删内联路径会丢 `_is_command_entry` 的裸词保护与
   `COMMAND_HANDLED_KEY` 去重；删装饰器路径会让宿主失去指令组注册与权限声明。两条路径
   的等价由别名契约 + 装饰器委托契约共同钉住，成本远低于重构。
+
+## `webapi.py` 不拆
+
+与 `models.py` / `image/parser.py` 同款理由：它并置五类关注点（路由注册与处理器绑定、
+配置读视图、严格校验、应用与回滚、审计 + UI 偏好 + 运维 status），扇入面只有
+`main.py` 的 `bind_api_handlers` / `register_web_apis` 与 `tests/test_webapi_fixes.py`；
+拆文件要同步改这两处引用面，属高 churn、零行为收益的纯搬迁。文件顶部已补齐与其余模块
+同款的「拥有 / 不拥有 + 分区目录」结构说明，阅读定位靠它而不是文件边界。
+
+## 前端契约的已知无守卫面
+
+前端 4.8k 行、9 个文件、27 个配置键，契约只守 49+31 条。以下几类**刻意**不守，
+改动前请自行评估后果，不要误以为有网兜住：
+
+- **类选择器**（`.topbar` / `.sidenav-list` / `.sidenav-fade-*` / `.mtab` /
+  `.sidenav-link[data-target]`）：`styles do not target element ids` 只断言 CSS 不用 id，
+  不守 JS 用类锚定 DOM。类名重命名会让吸顶、导航偏移、渐隐提示静默失效。
+- **`body.is-ready`**：样式表零消费，唯一读者是浏览器用例的 `toHaveClass(/is-ready/)`，
+  是「模块已启动」的测试锚而非视觉状态。
+- **三档超时**（8s 内联 boot fail / 12s `BOOT_TIMEOUT_MS` / 15s `FETCH_TIMEOUT_MS`）：
+  分散三处且语义不同（前者是脚本加载失败，后两者是配置加载 deadline 与单次 API 上限），
+  不收敛。
+- **源码文本断言**（`assert.match(源码)` / `.includes`）：那批是**防删除锚**，不是行为
+  契约——改写法即红，与真实行为无关。要守行为请补浏览器/契约行为用例（参照
+  `save validation guards on whitelist before the numeric scan` 由源码顺序改为行为断言）。
 
 ---
 

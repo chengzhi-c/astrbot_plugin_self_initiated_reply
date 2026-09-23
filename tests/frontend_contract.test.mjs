@@ -323,9 +323,10 @@ test("every data-config-control in the page is registered in config-io", async (
   // configControlValue 直接 providerControls[configControl].value()，未注册即裸
   // TypeError。当前 HTML 声明与注册表一致故运行时不可达；这条守的是"新增控件
   // 忘了注册"的漂移，而不是给生产路径加死检查。
-  const [html, configIo] = await Promise.all([
+  const [html, configIo, appJs] = await Promise.all([
     readFile(join(pageDir, "index.html"), "utf8"),
     readFile(join(pageDir, "config-io.mjs"), "utf8"),
+    readFile(join(pageDir, "app.js"), "utf8"),
   ]);
   const declared = new Set(
     [...html.matchAll(/data-config-control="([^"]+)"/g)].map((m) => m[1]),
@@ -341,6 +342,18 @@ test("every data-config-control in the page is registered in config-io", async (
     missing,
     [],
     `data-config-control 未在 providerControls 注册：${missing}`,
+  );
+  // app.js 的 PROVIDER_CONTROLS 必须覆盖同一组名字：漏登记则该控件不 render、
+  // 不 sync（静默空白），而 config-io 只按 data-config-control 取值。
+  const controlsBlock = appJs.match(/const PROVIDER_CONTROLS = \[([\s\S]*?)\n\];/);
+  assert.ok(controlsBlock, "app.js PROVIDER_CONTROLS not found");
+  const appNames = new Set(
+    [...controlsBlock[1].matchAll(/^\s*name: "([^"]+)"/gm)].map((m) => m[1]),
+  );
+  assert.deepEqual(
+    [...declared].filter((name) => !appNames.has(name)),
+    [],
+    `data-config-control 未在 PROVIDER_CONTROLS 登记：${appNames}`,
   );
   assert.match(configIo, /function providerConfigKeys\(form\)/);
   assert.doesNotMatch(configIo, /PROVIDER_CONFIG_KEYS/);
