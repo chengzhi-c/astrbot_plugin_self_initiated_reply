@@ -106,7 +106,25 @@ def install_astrbot_stubs() -> None:
         star.register = _passthrough_decorator
 
     if not hasattr(components, "At"):
-        components.At = type("At", (), {})
+
+        class _FakeAt:
+            """@ 组件桩：承载 ``qq`` / ``name``（production 只构造 @，不读其它字段）。
+
+            ``qq`` 收 ``int | str``：宿主签名是 ``At(qq: int | str)``，sender_id
+            是字符串。不接受参数的桩会让 ``At(qq=...)`` 直接 TypeError，从而把
+            "已插入 @" 的断言变成永远走 except 降级分支的假绿。
+            """
+
+            def __init__(self, qq: Any = "", name: Any = "", **_: Any) -> None:
+                self.qq = qq
+                self.name = name
+                self.type = "at"
+
+            def __str__(self) -> str:
+                # 同 _FakeReply：@ 不得进入 get_plain_text 正文，否则断言被污染。
+                return ""
+
+        components.At = _FakeAt
     if not hasattr(components, "Image"):
         components.Image = type("Image", (), {})
     if not hasattr(components, "Record"):

@@ -5,7 +5,6 @@ import {
 	summarizeWhitelist,
 	uniqueWhitelistItems,
 	validateWhitelistLines,
-	WHITELIST_ILLEGAL_RE,
 } from "./config-form.mjs";
 import {
 	createConfigRequestCoordinator,

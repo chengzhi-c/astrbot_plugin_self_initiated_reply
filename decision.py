@@ -57,6 +57,12 @@ QUOTE_DECISION_HINT = (
 # 免打扰时段的时/分上下界（HH:MM 解析后的合法性校验）。
 _MAX_QUIET_HOUR = 23
 _MAX_QUIET_MINUTE = 59
+# 判断路径读宿主历史的下限：默认提示词明示「优先参考最近至少 8 条当前会话历史」，
+# 读少于 8 条会让模型反复回宿主补历史。与生成路径的 models.MIN_RECENT_TEXT_RECORDS
+# （=5，且被 recent_message_limit 夹住）**故意不同源**：判断只需回答"此刻该不该接"，
+# 8 条是提示词契约；生成要产出正文，阈值跟着用户的缓存上限走。改任一侧都不得
+# 顺手统一到另一侧。
+DECISION_HISTORY_FLOOR = 8
 
 
 def _localtime_minutes() -> int:
@@ -296,9 +302,8 @@ class DecisionMaker:
         recent = await self.build_recent_messages(
             umo,
             state,
-            # 下限 8：默认提示词明示「优先参考最近至少 8 条历史」，读太少会让
-            # 模型按提示词要求反复回宿主补历史；配置高于 8 时尊重配置。
-            limit=max(8, self.settings.decision_history_min_messages),
+            # 下限见 DECISION_HISTORY_FLOOR 的取值理由；配置高于下限时尊重配置。
+            limit=max(DECISION_HISTORY_FLOOR, self.settings.decision_history_min_messages),
         )
         image_context = await self._build_image_context(
             umo,

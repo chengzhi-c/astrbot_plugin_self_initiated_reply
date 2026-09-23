@@ -192,35 +192,29 @@ const providerDeps = {
 	onDirty: () => configIo.setDirty(true),
 };
 
-const visionProviderControl = createProviderControl(
+/* 三个 Provider 控件同构，差异只在元素前缀、占位文案，以及 judge 额外要切换
+   容器 class 与 hint 文案。数组驱动：新增控件只加一行，渲染/失败回退也不会漏。 */
+const PROVIDER_CONTROLS = [
 	{
-		select: els.visionProviderSelect,
-		input: els.visionProviderInput,
-		button: els.visionProviderManualBtn,
+		name: "vision",
+		select: () => els.visionProviderSelect,
+		input: () => els.visionProviderInput,
+		button: () => els.visionProviderManualBtn,
 		placeholder: "使用当前会话模型",
 	},
-	providerDeps,
-);
-
-const visionJudgeProviderControl = createProviderControl(
 	{
-		select: els.visionJudgeProviderSelect,
-		input: els.visionJudgeProviderInput,
-		button: els.visionJudgeProviderManualBtn,
+		name: "visionJudge",
+		select: () => els.visionJudgeProviderSelect,
+		input: () => els.visionJudgeProviderInput,
+		button: () => els.visionJudgeProviderManualBtn,
 		placeholder: "与识图模型一致",
 	},
-	providerDeps,
-);
-
-const judgeProviderControl = createProviderControl(
 	{
-		select: els.judgeProviderSelect,
-		input: els.judgeProviderInput,
-		button: els.providerManualBtn,
+		name: "judge",
+		select: () => els.judgeProviderSelect,
+		input: () => els.judgeProviderInput,
+		button: () => els.providerManualBtn,
 		placeholder: "使用当前会话默认模型",
-	},
-	{
-		...providerDeps,
 		onModeChange: (manual) => {
 			if (els.providerField)
 				els.providerField.classList.toggle("manual", manual);
@@ -231,7 +225,27 @@ const judgeProviderControl = createProviderControl(
 			}
 		},
 	},
-);
+];
+
+const providerControlsByName = {};
+const providerControlList = PROVIDER_CONTROLS.map((spec) => {
+	const control = createProviderControl(
+		{
+			select: spec.select(),
+			input: spec.input(),
+			button: spec.button(),
+			placeholder: spec.placeholder,
+		},
+		spec.onModeChange
+			? { ...providerDeps, onModeChange: spec.onModeChange }
+			: providerDeps,
+	);
+	providerControlsByName[spec.name] = control;
+	return control;
+});
+const visionProviderControl = providerControlsByName.vision;
+const visionJudgeProviderControl = providerControlsByName.visionJudge;
+const judgeProviderControl = providerControlsByName.judge;
 
 const configIo = createConfigIo({
 	getEls: () => els,
@@ -252,6 +266,7 @@ const configIo = createConfigIo({
 });
 
 async function loadProviders() {
+	const renderAll = () => providerControlList.forEach((control) => control.render());
 	try {
 		const result = await apiGet("providers");
 		if (!result || result.ok === false)
@@ -260,20 +275,15 @@ async function loadProviders() {
 			? result.providers.filter((item) => item && item.id)
 			: [];
 		providerListAvailable = true;
-		judgeProviderControl.render();
-		visionProviderControl.render();
-		visionJudgeProviderControl.render();
+		renderAll();
 		if (els.providerListState) els.providerListState.textContent = "";
 		return { listAvailable: true };
 	} catch (error) {
 		providerOptions = [];
 		providerListAvailable = false;
-		judgeProviderControl.render();
-		visionProviderControl.render();
-		visionJudgeProviderControl.render();
-		judgeProviderControl.setManual(true);
-		visionProviderControl.setManual(true);
-		visionJudgeProviderControl.setManual(true);
+		// 列表不可用时全部切手动输入：循环保证不会漏掉后加的控件。
+		renderAll();
+		providerControlList.forEach((control) => control.setManual(true));
 		if (els.providerListState) {
 			els.providerListState.textContent =
 				"Provider 列表不可用，三个 Provider 均可手动填写";

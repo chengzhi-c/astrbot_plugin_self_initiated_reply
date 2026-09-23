@@ -853,6 +853,33 @@
                   0 表示从不引用，100 表示每次都引用；用于「按概率引用」，以及判断模型未给出决定时。
                 </p>
               </label>
+              <label class="field">
+                <span class="field-label">主动回复 @ 对方</span>
+                <select id="mentionModeInput" data-config-key="mention_mode">
+                  <option value="off">不 @（默认）</option>
+                  <option value="always">每次都 @</option>
+                  <option value="random">按概率 @</option>
+                </select>
+                <p class="field-hint" id="mentionModeHint">
+                  @ 本次回复所依据的那条消息的发送者（与上面「引用消息」是两个独立开关，可同时开启；取不到发送者 ID 或不支持 @ 的平台自动降级为普通发送）。
+                </p>
+              </label>
+              <label class="field">
+                <span class="field-label">@ 概率<em>%</em></span>
+                <input
+                  type="number"
+                  id="mentionProbabilityInput"
+                  data-integer
+                  data-config-key="mention_probability"
+                  min="0"
+                  max="100"
+                  step="5"
+                  aria-describedby="mentionProbabilityHint"
+                />
+                <p class="field-hint" id="mentionProbabilityHint">
+                  0 表示从不 @，100 表示每次都 @；仅在「按概率 @」时生效。
+                </p>
+              </label>
             </div>
           </section>
 

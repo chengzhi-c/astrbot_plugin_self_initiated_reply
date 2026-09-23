@@ -29,7 +29,7 @@ from typing import Any, Protocol
 from astrbot.api import logger
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "1.4.0"
+PLUGIN_VERSION = "1.5.0"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -921,6 +921,14 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         surfaces=_PANEL,
     ),
     ConfigSpec("quote_probability", "int", 50, 0, 100, step=5, surfaces=_PANEL),
+    ConfigSpec(
+        "mention_mode",
+        "enum",
+        "off",
+        options=("off", "always", "random"),
+        surfaces=_PANEL,
+    ),
+    ConfigSpec("mention_probability", "int", 50, 0, 100, step=5, surfaces=_PANEL),
     ConfigSpec("log_reply_content", "bool", False),
     ConfigSpec(
         "bot_aliases",
@@ -1262,6 +1270,8 @@ class Settings:
     max_reply_chars: int
     quote_mode: str
     quote_probability: int
+    mention_mode: str
+    mention_probability: int
     log_reply_content: bool
     bot_aliases: list[str]
     whitelist: set[str]

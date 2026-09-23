@@ -17,6 +17,8 @@ export function configPayload(overrides = {}) {
     skip_after_direct_call: true,
     quote_mode: "off",
     quote_probability: 50,
+    mention_mode: "off",
+    mention_probability: 50,
     judge_provider_id: "",
     message_delay_sec: 60,
     min_silence_sec: 45,

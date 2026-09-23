@@ -24,7 +24,7 @@ from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
-from astrbot.api.message_components import Reply
+from astrbot.api.message_components import At, Reply
 
 from .models import (
     PLUGIN_ID,
@@ -41,7 +41,7 @@ from .models import (
     now_ts,
 )
 from .outbound import OutboundGateway
-from .utils import event_message_id
+from .utils import event_message_id, event_self_id, event_sender_id
 
 # 注入回调的类型别名。这五个全按位置调用，故用 Callable；models.py 的三个
 # Protocol 有关键字形参（limit / enabled+provider_id / force），Callable 表达不了。
@@ -145,6 +145,69 @@ class DeliveryRunner:
             return True
         except Exception as exc:
             logger.debug("[%s] quote component skipped: %s", PLUGIN_ID, exc)
+            return False
+
+    # ------------------------------------------------------------------
+    # @ 对方（可选装饰，与引用正交）
+    # ------------------------------------------------------------------
+
+    def _should_mention(self) -> bool:
+        """本次是否 @ 对方。
+
+        模式语义：``off`` 从不 @（默认，向后兼容）；``always`` 每次都 @；
+        ``random`` 按 ``mention_probability``。100 必 @、0 必不 @
+        （随机值域为 [0, 1)）。
+
+        与 ``_should_quote`` 的关键差异：**没有 model 模式**。是否 @ 不该由判断模型
+        决定——那是投递形态，不是"该不该接话"的判断内容；把塞进裁决 JSON 会让模型
+        多背一个与判断无关的输出字段（quote 的 model 模式是历史兼容，不扩展到这里）。
+        ``off``/``always`` 下不调用 ``_random_value()``：不消耗随机序列，
+        同批测试的随机数轨迹才可复现。
+        """
+        mode = self.settings.mention_mode
+        if mode == "off":
+            return False
+        if mode == "always":
+            return True
+        return self._random_value() * 100 < self.settings.mention_probability
+
+    def _mention_target_id(self, umo: str) -> str:
+        """@ 目标 = 本次主动回复所依据的那条消息的发送者。
+
+        与引用目标同源（都取 ``_last_events[umo]``），语义是"回应刚才说话的人"。
+        **绝不**从会话历史里挑人、@ 多个或 @ Bot 自己：取不到就降级，不猜。
+        事件已被回收时返回空串，降级为不 @。
+        """
+        last_event = self._last_events.get(umo)
+        if last_event is None:
+            return ""
+        sender_id = event_sender_id(last_event)
+        if sender_id and sender_id == event_self_id(last_event):
+            # 自己的消息不 @（Bot 会被自己 @ 上，属明显误用）。
+            return ""
+        return sender_id
+
+    def _resolve_mention_id(self, umo: str) -> str:
+        """本次发送要 @ 的发送者 ID；不需要 @ 或取不到 ID 时返回空串。"""
+        if not self._should_mention():
+            return ""
+        mention_id = self._mention_target_id(umo)
+        if not mention_id:
+            logger.debug("[%s] mention skipped: no sender id for session=%s", PLUGIN_ID, umo)
+        return mention_id
+
+    @staticmethod
+    def _attach_mention(chain_owner: Any, sender_id: str) -> bool:
+        """把 ``At`` 组件插到消息链首，@ ``sender_id``。
+
+        失败一律静默降级为普通发送（返回 False）：@ 是装饰性组件，宿主链不可写或
+        平台不支持（部分频道/私聊形态）都不该让整次回复失败。降级纪律与引用一致。
+        """
+        try:
+            chain_owner.chain.insert(0, At(qq=sender_id))
+            return True
+        except Exception as exc:
+            logger.debug("[%s] mention component skipped: %s", PLUGIN_ID, exc)
             return False
 
     async def deliver_reply(
@@ -293,6 +356,9 @@ class DeliveryRunner:
 
         last_event = self._last_events.get(umo)
         quote_id = self._resolve_quote_id(umo, quote)
+        # @ 与引用同源取目标，但 @ 只走事件路径：context 兜底的前提就是事件已不在
+        # 手边，没有 sender_id 可用（见 _send_via_context 与契约 §14）。
+        mention_id = self._resolve_mention_id(umo) if last_event else ""
         if last_event:
             return await self._send_via_event(
                 umo,
@@ -301,6 +367,7 @@ class DeliveryRunner:
                 ledger=ledger,
                 expected_generation=expected_generation,
                 quote_id=quote_id,
+                mention_id=mention_id,
             )
         return await self._send_via_context(
             umo,
@@ -318,6 +385,7 @@ class DeliveryRunner:
         ledger: AttemptLedger,
         expected_generation: int | None,
         quote_id: str = "",
+        mention_id: str = "",
     ) -> SendOutcome:
         """事件路径投递：装饰钩子 → 代次复核 → 事件 send → 发送后钩子。
 
@@ -393,6 +461,13 @@ class DeliveryRunner:
                 # 引用组件在装饰钩子之后插入：钩子（如文转图片）改的是链内容，
                 # 引用是本次发送的外层标注，插在链首即宿主约定的引用形态。
                 self._attach_quote(result, quote_id)
+            if mention_id:
+                # @ 组件同样插在装饰钩子之后。**必须插在 quote 之后**：
+                # ``insert(0)`` 让后插者位于更前，故先 Reply 后 At 才能得到
+                # [At, Reply, ...正文]——与 QuestQQ/OneBot 的 CQ 码约定一致
+                # （先点名后引用）。两步都是同步的，不新增 await 点——
+                # 「复核点 3 与 send 零 await」的结构性防线性质不变。
+                self._attach_mention(result, mention_id)
             logger.debug(
                 "[%s] event send begin ledger_id=%s session=%s chars=%d chain_items=%d",
                 PLUGIN_ID,

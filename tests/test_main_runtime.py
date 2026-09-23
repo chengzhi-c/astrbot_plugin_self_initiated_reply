@@ -1113,6 +1113,44 @@ def test_manual_check_records_sender_id(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+def test_decorated_command_check_reads_body_from_event_text(tmp_path: Path) -> None:
+    """装饰器路径 ``/selfreply check 你好`` 必须取到用户附带的测试内容。
+
+    装饰器处理器恒定传 ``arg=""``（它不解析参数），正文只能由
+    ``commands.strip_command_prefix(event_text(event))`` 取出。这条路径缺失时
+    内联路径的 ``arg`` 已非空、不会暴露缺口，故单独钉住。
+
+    变异锚定：删掉 ``commands.py`` 的 ``strip_command_prefix`` 调用（改成直接用
+    ``arg``），本用例的 ``recent[-1].text`` 变空串即红。
+    """
+
+    async def scenario(plugin, main):
+        original_check = plugin._pipeline.check_session
+
+        async def fake_check(*args, **kwargs):
+            return "完成"
+
+        plugin._pipeline.check_session = fake_check
+        plugin.settings.whitelist.add(UMO)
+        try:
+            event = _make_event(
+                umo=UMO,
+                sender_id="sender-42",
+                message_str="/selfreply check 你好啊",
+            )
+            # 装饰器路径：action="check" 且不带 arg（main.selfreply_check 的形态）
+            await plugin._command_text(event, "check", "")
+            state = plugin._state_for(UMO)
+            assert state.recent, "check 未写入历史"
+            assert state.recent[-1].text == "你好啊", (
+                f"装饰器路径未从事件原文取到测试内容: {state.recent[-1].text!r}"
+            )
+        finally:
+            plugin._pipeline.check_session = original_check
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_version_consistency_across_metadata() -> None:
     """版本号的每一处对外载体都必须与 ``PLUGIN_VERSION`` 一致。
 

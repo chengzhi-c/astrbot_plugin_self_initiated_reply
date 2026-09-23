@@ -65,6 +65,13 @@ def parse_command_text(text: str) -> tuple[str, str] | None:
 
 
 def strip_command_prefix(text: str) -> str:
+    """取指令正文（``/selfreply check 你好`` → ``你好``）；非指令文本原样返回。
+
+    ``check`` 取测试内容的唯一路径：装饰器路径 ``main.selfreply_check`` 恒定传
+    ``arg=""``（它不解析参数），此时用户附带的 ``/selfreply check 你好`` 只能由
+    本函数从事件原文取出。删掉它会让装饰器路径的 check 静默丢失测试内容，
+    而内联路径的 ``arg`` 已非空、不会暴露这个缺口。
+    """
     parsed = parse_command_text(text)
     return parsed[1] if parsed else text
 
