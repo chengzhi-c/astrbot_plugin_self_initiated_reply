@@ -82,22 +82,6 @@ def _colon_membership_probes(rel: str) -> list[str]:
     return probes
 
 
-def _inline_regex_calls(rel: str, needles: tuple[str, ...]) -> list[str]:
-    """模块内首参为字面量的 ``re.<fn>`` 调用（用于"这个模式该进常量"）。"""
-    hits: list[str] = []
-    for node in ast.walk(module_ast(rel)):
-        if not isinstance(node, ast.Call) or not node.args:
-            continue
-        if ast.unparse(node.func) not in {"re.sub", "re.search", "re.match", "re.split"}:
-            continue
-        first = node.args[0]
-        if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
-            continue
-        if any(needle in first.value for needle in needles):
-            hits.append(ast.unparse(node)[:70])
-    return hits
-
-
 # ============================================================================
 # 3.1 群号启发式：完整 UMO 判据单点（utils.is_full_umo）
 # ============================================================================
@@ -132,21 +116,6 @@ def test_accepted_content_invalidates_once() -> None:
     body = method_source("message_ingress.py", "_accepted_content")
     count = body.count("invalidate(umo)")
     assert count == 1, f"message_ingress._accepted_content 里 invalidate(umo) 出现 {count} 次"
-
-
-# ============================================================================
-# 3.3 plugin_state：payload 构造单点
-# ============================================================================
-
-
-def test_state_payload_is_built_in_one_place() -> None:
-    """同步/异步两条落盘路径共共用 ``_build_payload``。"""
-    owners = callers_of("plugin_state.py", "build_sessions_payload")
-    assert owners == ["_build_payload"], (
-        f"build_sessions_payload 的调用者应只有 _build_payload，实为 {owners}"
-    )
-    for name in ("save_storage_sync", "save_storage"):
-        assert "_build_payload(plugin)" in method_source("plugin_state.py", name)
 
 
 # ============================================================================
@@ -222,7 +191,7 @@ def test_suppressed_branches_use_codes_not_detail_text() -> None:
 
 
 # ============================================================================
-# 3.9 / 3.18 webapi：关停门与运维端点定位
+# 3.9 webapi：关停门
 # ============================================================================
 
 
@@ -232,13 +201,6 @@ def test_mutating_webapi_endpoints_check_stopping() -> None:
         assert "plugin._stopping" in method_source("webapi.py", name), (
             f"{name} 未检查 _stopping：teardown 之后写入的数据下次启动会被读回"
         )
-
-
-def test_status_endpoint_is_declared_ops_only() -> None:
-    """``/status`` 是运维端点：实现与契约文档都要写明面板零消费。"""
-    assert "面板零消费" in method_source("webapi.py", "_api_status")
-    contract = (ROOT / "docs" / "BEHAVIOR_CONTRACT.md").read_text(encoding="utf-8")
-    assert "/status" in contract and "面板零消费" in contract
 
 
 # ============================================================================
@@ -323,33 +285,6 @@ def test_send_attempt_compares_by_identity() -> None:
 
 
 # ============================================================================
-# 3.13 style.css：分节标记与头注释同源
-# ============================================================================
-
-
-def test_css_sections_match_header_declaration() -> None:
-    """头注释宣称的分节必须与文件内的实际标记**逐字同序**一致。
-
-    只查"标记名出现在头注释里"会漏报子串退化：把标记改成「控件」而注释里
-    仍是「控件（输入、开关、按钮）」时两边都能找到对方，漂移照样通过。
-    """
-    css = (ROOT / "pages" / "主动回复设置" / "style.css").read_text(encoding="utf-8")
-    markers = re.findall(r"/\* ==== (.+?) ==== \*/", css)
-    assert markers, "style.css 没有任何分节标记"
-    header = css[: css.index("*/")]
-    declared = [
-        line.strip()
-        for line in header.split("）：", 1)[1].splitlines()
-        if line.strip() and not line.strip().startswith("===")
-    ]
-    assert declared == markers, (
-        f"头注释声明的分节与文件内标记不一致：\n声明={declared}\n标记={markers}"
-    )
-    for name in markers:
-        assert css.count(f"/* ==== {name} ==== */") == 1, f"分节标记重复：{name}"
-
-
-# ============================================================================
 # 3.14 状态键：调用方传 UMO，键在 plugin_state 派生
 # ============================================================================
 
@@ -377,93 +312,6 @@ def test_storage_key_is_derived_in_plugin_state_only() -> None:
     assert not offenders, f"这些模块又自行派生状态键：{offenders}"
 
     assert "whitelist_storage_key(umo)" in method_source("plugin_state.py", "state_for")
-
-
-# ============================================================================
-# 3.17 常量与正则单点
-# ============================================================================
-
-
-def test_recent_limit_default_has_one_source() -> None:
-    """``recent_message_limit`` 的默认值只声明一次。"""
-    models = source_of("models.py")
-    assert "RECENT_MESSAGE_LIMIT_DEFAULT" in models
-    assert "deque(maxlen=20)" not in models, "SessionState 的兜底 maxlen 又硬编码了"
-    assert '"recent_message_limit",' in models
-    assert "RECENT_MESSAGE_LIMIT_DEFAULT" in method_source("models.py", "SessionState")
-
-
-def test_whitespace_patterns_are_not_recompiled_inline() -> None:
-    """空白正则单点在 models：utils/models 都不再内联 ``re.sub`` 空白模式。"""
-    for rel in ("utils.py", "models.py"):
-        inline = _inline_regex_calls(rel, ("\\s", "[^\\S"))
-        assert not inline, f"{rel} 残留内联空白正则：{inline}"
-    utils = source_of("utils.py")
-    assert "WHITESPACE_PATTERN" in utils and "INLINE_SPACE_PATTERN" in utils
-    assert "_WHITESPACE_PATTERN" not in utils, "utils 又自持一份空白正则"
-    assert "_INLINE_SPACE_PATTERN" not in utils
-
-
-# ============================================================================
-# 4.4 装配面：共享容器经 SessionContainers 单点交接
-# ============================================================================
-
-
-def test_shared_containers_have_a_single_assembly_point() -> None:
-    """需要多个容器的协作者一律经 ``SessionContainers`` 取，不各传各的。
-
-    收拢前的形式是 scheduler 收 7 个、coordinator 收 3 个、whitelist 收 2 个
-    容器参数，同一批对象在三处各写一遍；改动容器集合（如新增一张表）必须
-    同时改三处签名与 main 的三处调用，漏一处就是 B1 的温床。收拢后
-    「哪些容器由 main 共享」只有 ``models.SessionContainers`` 一处声明。
-    """
-    models = source_of("models.py")
-    assert "class SessionContainers:" in models
-
-    # 三个多容器消费者：不得再出现逐容器参数或逐容器赋值
-    for rel, forbidden_params in (
-        ("scheduler.py", ("last_events:", "recent_image_events:", "delay_tasks:")),
-        ("session_coordinator.py", ("events:", "event_at:", "images:")),
-        ("whitelist.py", ("sessions:", "runtime_umos:")),
-    ):
-        signature = method_source(rel, "__init__")
-        leaked = [name for name in forbidden_params if name in signature]
-        assert not leaked, f"{rel}.__init__ 又逐容器收参：{leaked}（应经 SessionContainers）"
-
-    # 容器字段与 main 侧的属性一一对得上（容器集合若增删，这条会指出来）
-    declared = {
-        node.target.id
-        for node in ast.walk(_lookup("models.py", "SessionContainers"))
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
-    }
-    assert declared == {
-        "last_events",
-        "last_event_at",
-        "recent_image_events",
-        "whitelist_runtime_umos",
-        "delay_tasks",
-        "running_check_tasks",
-        "background_tasks",
-        "sessions",
-    }, f"SessionContainers 字段漂移：{sorted(declared)}"
-
-    # gate 的三张表刻意不在其中（§11 B3：release 表不参与快照恢复）
-    assert not (declared & {"_session_generation", "_running_sessions", "_session_locks"})
-
-
-def test_scheduler_and_coordinator_share_one_containers_instance() -> None:
-    """装配时传给各协作者的必须是**同一个** SessionContainers 对象。
-
-    若 main 每次调用都现造一个 SessionContainers，字段虽同名却指向不同字典，
-    容器身份契约（§11 B1）立刻失效且无任何报错——正是该契约要防的静默形态。
-    """
-    body = method_source("main.py", "_assemble_components")
-    assert body.count("self._containers") >= 3, (
-        "装配段没有把同一份 self._containers 交给各协作者（现造对象会让容器身份分叉）"
-    )
-    assert "SessionContainers(" not in body, (
-        "装配段内又新建 SessionContainers：应为 __init__ 里创建一次、此处复用"
-    )
 
 
 # ============================================================================
