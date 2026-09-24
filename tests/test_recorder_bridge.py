@@ -215,7 +215,7 @@ async def test_get_local_image_path_url_match(bridge_mod, tmp_path) -> None:
 
 
 async def test_get_local_image_path_first_image_fallback(bridge_mod, tmp_path) -> None:
-    """无匹配 URL 时取第一个 image 组件。"""
+    """单图无匹配 URL 时可安全取唯一 image 组件。"""
 
     target = tmp_path / "first.png"
     target.write_bytes(PNG_BYTES)
@@ -231,8 +231,24 @@ async def test_get_local_image_path_first_image_fallback(bridge_mod, tmp_path) -
     assert result == target
 
 
+async def test_get_local_image_path_without_url_rejects_multi_image(bridge_mod, tmp_path) -> None:
+    """多图记录缺少目标 URL 时不得把首图误配给当前图片。"""
+
+    target = tmp_path / "first.png"
+    target.write_bytes(PNG_BYTES)
+
+    record = _record_with(
+        {"type": "image", "url": "a", "local_path": str(target)},
+        {"type": "image", "url": "b", "local_path": str(target)},
+    )
+    bridge = bridge_mod.MessageRecorderBridge(
+        _context_with(_api_with(record=record, resolver=lambda _value: str(target)))
+    )
+    assert await bridge.get_local_image_path("m1") is None
+
+
 async def test_get_local_image_path_url_mismatch_multi_image_rejected(bridge_mod, tmp_path) -> None:
-    """多图记录中 URL 未匹配时拒绝盲取首图。
+    """多图记录中 URL 缺失或未匹配时拒绝盲取首图。
 
     多图消息的第二张图走这里时，首图组件是**另一张图**的本地路径，
     盲 fallback 会让 Vision 描述错图。单图消息（见 first_image_fallback）
