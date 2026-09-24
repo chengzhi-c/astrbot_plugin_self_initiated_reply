@@ -760,11 +760,11 @@ async def test_send_escaping_from_gateway_after_adapter_call_stays_unknown(
 ) -> None:
     """护栏：异常逃出 ``OutboundGateway.send`` 时必须仍记 UNKNOWN。
 
-    ``outbound.py`` 的 ``except Exception`` 用 ``str(exc)`` 构造 ``SendOutcome``。
-    若 adapter 抛出的异常对象自身 ``__str__`` 坏掉，这次 ``str()`` 会在 except
-    块内二次抛出，不再被同一 try 捕获，于是异常**逃出 gateway**。
+    gateway 内部虽把 adapter 异常转成 UNKNOWN，但它自身的 except 块或后续记账
+    仍可能抛（历史形态：``str(exc)`` 二次抛出，已由 ``safe_exc_text`` 堵住；
+    但"gateway 可能抛"这一通道本身是结构性的——任何新增的记账/日志分支都可能
+    再引入）。此时 adapter 早已调用过，真实状态是「可能已提交」。
 
-    这条通道的真实状态是「adapter 已调用过，可能已提交」，必须保守记 UNKNOWN。
     若按「gateway 之后才算已提交」的直觉去写标志位，这里会翻转成
     FAILED_BEFORE_SUBMIT —— 不消耗冷却 → 后续触发重发 → 重复消息。
 
@@ -772,23 +772,31 @@ async def test_send_escaping_from_gateway_after_adapter_call_stays_unknown(
     即将开始」，而非「gateway 已返回」。
     """
     _, models, runner, _ = _make_runner(tmp_path)
+    delivery_mod = _delivery_module()
 
-    class UnstringableError(RuntimeError):
-        def __str__(self) -> str:
-            raise ValueError("__str__ is broken")
+    class GatewayEscape(RuntimeError):
+        pass
 
     async def boom_context_send(umo: str, message: object) -> None:
-        raise UnstringableError
+        raise RuntimeError("adapter called, then gateway escapes")
 
     runner._context_send = boom_context_send
 
-    outcome = await runner.send_reply("s1", "你好", expected_generation=1)
+    # 让 gateway 在 adapter 之后、返回之前抛：真实 gateway 先完成 send 调用，
+    # 再抛——等价于「adapter 已调用过」这一前提成立时的逃出。
+    real_gateway = delivery_mod.OutboundGateway
 
-    # 路径锚定：detail 必须来自坏 __str__ 抛出的那个 ValueError，证明异常确实是
-    # 从 gateway 内部逃出的，而不是走了别的失败通道后碰巧也返回 UNKNOWN。
-    assert outcome.detail == "__str__ is broken", (
-        f"detail={outcome.detail!r}，未走「异常逃出 gateway」通道，断言无意义"
-    )
+    class EscapingGateway(real_gateway):  # type: ignore[misc, valid-type]
+        async def send(self, message, *, kind="reply"):
+            await super().send(message, kind=kind)
+            raise GatewayEscape("gateway escaped after adapter call")
+
+    delivery_mod.OutboundGateway = EscapingGateway
+    try:
+        outcome = await runner.send_reply("s1", "你好", expected_generation=1)
+    finally:
+        delivery_mod.OutboundGateway = real_gateway
+
     assert outcome.status is models.SendStatus.UNKNOWN, (
         f"异常逃出 gateway 后被判为 {outcome.status!r}；adapter 已调用过，"
         "判成提交前失败会不消耗冷却而重发"
@@ -804,23 +812,26 @@ async def test_event_send_escaping_from_gateway_stays_unknown(tmp_path: Path) ->
     """
     _, models, runner, last_events = _make_runner(tmp_path)
 
-    class UnstringableError(RuntimeError):
-        def __str__(self) -> str:
-            raise ValueError("__str__ is broken")
-
     async def boom_send(_message: object) -> None:
-        raise UnstringableError
+        raise RuntimeError("adapter called, then gateway escapes")
 
     event = FakeEvent()
     event.send = boom_send
     last_events["s1"] = event
 
-    outcome = await runner.send_reply("s1", "你好", expected_generation=1)
+    real_gateway = _delivery_module().OutboundGateway
 
-    # 路径锚定，同 context 侧那条：detail 必须来自坏 __str__ 抛出的 ValueError。
-    assert outcome.detail == "__str__ is broken", (
-        f"detail={outcome.detail!r}，未走「异常逃出 gateway」通道，断言无意义"
-    )
+    class EscapingGateway(real_gateway):  # type: ignore[misc, valid-type]
+        async def send(self, message, *, kind="reply"):
+            await super().send(message, kind=kind)
+            raise RuntimeError("gateway escaped after adapter call")
+
+    _delivery_module().OutboundGateway = EscapingGateway
+    try:
+        outcome = await runner.send_reply("s1", "你好", expected_generation=1)
+    finally:
+        _delivery_module().OutboundGateway = real_gateway
+
     assert outcome.status is models.SendStatus.UNKNOWN, (
         f"事件路径异常逃出 gateway 后被判为 {outcome.status!r}；adapter 已调用过，"
         "判成提交前失败会不消耗冷却而重发"

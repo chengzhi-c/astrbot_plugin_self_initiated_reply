@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,6 +36,8 @@ def _make_decision(
     history_records: list | None = None,
     history_error: Exception | None = None,
     image_context: str = "",
+    quarantine: list | None = None,
+    swallowing: bool = False,
 ):
     _, _, models = _load_modules()
     decision_mod = _decision_module()
@@ -57,6 +60,15 @@ def _make_decision(
             raise model_error
         return SimpleNamespace(completion_text=model_text, result_chain=None)
 
+    async def swallowing_generate(provider_id, prompt):
+        """吞掉取消的 provider：模拟 SDK 在 CancelledError 后继续 await。"""
+        calls["model"] += 1
+        try:
+            await asyncio.sleep(model_sleep or 30.0)
+        except asyncio.CancelledError:
+            await asyncio.sleep(30.0)
+        return SimpleNamespace(completion_text=model_text, result_chain=None)
+
     async def read_history(umo, limit):
         calls["history"] += 1
         if history_error is not None:
@@ -72,9 +84,12 @@ def _make_decision(
         clock=lambda: clock_value[0],
         minutes_now=lambda: minutes_now if minutes_now is not None else 60,
         resolve_provider=resolve_provider,
-        llm_generate=llm_generate,
+        llm_generate=swallowing_generate if swallowing else llm_generate,
         read_history=read_history,
         build_image_context=build_image_context,
+        quarantine_task=(lambda task, reason: quarantine.append((task, reason)))
+        if quarantine is not None
+        else None,
     )
     return decision_mod, models, maker, clock_value, calls
 
@@ -203,6 +218,65 @@ async def test_model_timeout_reason(tmp_path: Path) -> None:
     result = await maker.ask_decision_model("s1", state, trigger="message_delay")
     assert result["should_reply"] is False
     assert result["reason"] == "判断模型超时"
+
+
+async def test_timeout_returns_even_when_provider_swallows_cancellation(tmp_path: Path) -> None:
+    """宿主 provider 吞掉取消时，判断超时必须仍然按时返回。
+
+    缺陷形态：``asyncio.wait_for`` 的语义是"超时后取消内层并**等它真正结束**"，
+    若 provider 在 CancelledError 后继续 await（SDK 重试循环 / 裸 except），
+    判断任务永不返回 → 会话锁与运行标记永不释放，该会话从此拒绝一切检查；
+    ``terminate()`` 也会超时把插件拖进 DEGRADED。
+
+    修法：``asyncio.wait`` 只等待、不含取消语义，超时即返回，未收敛的任务
+    在宽限窗口后交隔离登记。宽限窗口是刻意的（``DECISION_CONVERGE_GRACE_SEC``）：
+    它把"响应取消"与"吞掉取消"分开——后者要触发插件降级，不能误判。
+    故本用例的耗时上界是「超时 + 宽限 + 余量」，而**不是**「超时」。
+    """
+    quarantined: list = []
+    _, models, maker, _, _ = _make_decision(
+        tmp_path,
+        {"decision_model_enabled": True, "decision_timeout_sec": 0.05},
+        swallowing=True,
+        quarantine=quarantined,
+    )
+    state = _state(models)
+    started = time.monotonic()
+    result = await asyncio.wait_for(
+        maker.ask_decision_model("s1", state, trigger="message_delay"), timeout=10.0
+    )
+    elapsed = time.monotonic() - started
+    assert result["should_reply"] is False
+    assert result["reason"] == "判断模型超时"
+    grace = _decision_module().DECISION_CONVERGE_GRACE_SEC
+    assert elapsed < 0.05 + grace + 1.0, f"判断超时未按时返回，耗时 {elapsed:.2f}s"
+    # 宽限耗尽仍未收敛的 provider 任务必须被登记为隔离（否则是静默孤儿）
+    assert quarantined, "吞取消的 provider 任务未被隔离登记"
+
+
+async def test_timeout_returns_promptly_when_provider_honors_cancellation(tmp_path: Path) -> None:
+    """provider 正常响应取消时，超时返回不应被完整宽限窗口拖慢。
+
+    宽限只对"吞掉取消"的宿主动用；守规矩的 provider 在 ``cancel()`` 后立刻
+    结束，``asyncio.wait`` 随即返回，故总耗时应显著小于「超时 + 宽限」。
+    """
+    quarantined: list = []
+    _, models, maker, _, _ = _make_decision(
+        tmp_path,
+        {"decision_model_enabled": True, "decision_timeout_sec": 0.05},
+        model_sleep=30.0,
+        quarantine=quarantined,
+    )
+    state = _state(models)
+    started = time.monotonic()
+    result = await asyncio.wait_for(
+        maker.ask_decision_model("s1", state, trigger="message_delay"), timeout=10.0
+    )
+    elapsed = time.monotonic() - started
+    grace = _decision_module().DECISION_CONVERGE_GRACE_SEC
+    assert result["reason"] == "判断模型超时"
+    assert elapsed < grace, f"守规矩的 provider 不该被宽限拖慢，耗时 {elapsed:.2f}s"
+    assert not quarantined, "响应取消的 provider 任务不得被隔离登记"
 
 
 async def test_model_generate_exception_reason(tmp_path: Path) -> None:

@@ -10,8 +10,14 @@ const TAB_GROUPS = {
   "sec-runtime": "sec-runtime",
   "sec-vision": "sec-runtime",
 };
+const REDUCED_MOTION_MEDIA = "(prefers-reduced-motion: reduce)";
+// MediaQueryList 是活对象：`.matches` 会随环境变化，故惰性持有一份单例复用，
+// 不必每次调用都新建（旧实现每次 matchMedia，等于每处平滑滚动各建一份）。
+let reducedMotionQuery = null;
 function prefersReducedMotion() {
-  return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!window.matchMedia) return false;
+  if (!reducedMotionQuery) reducedMotionQuery = window.matchMedia(REDUCED_MOTION_MEDIA);
+  return reducedMotionQuery.matches;
 }
 export function setupMoreActionsMenu(els) {
   if (!els.moreActions || !els.moreActionsBtn || !els.moreActionsMenu) return;
@@ -28,7 +34,18 @@ export function setupMoreActionsMenu(els) {
       window.requestAnimationFrame(() => first?.focus());
     }
   };
-  const closeMenu = () => setOpen(false);
+  // 关闭时若焦点还在菜单里（点了菜单项 / 键盘操作后），隐藏菜单会让焦点掉到
+  // body，键盘用户的下一次 Tab 从文档开头重新开始。焦点不在菜单内时不还
+  // （点页面别处关闭、断点切换），免得把用户正处的焦点抢到触发器上。
+  // 桌面端菜单常显、trigger 是 display:none，focus() 对它本就是 no-op。
+  const closeMenu = () => {
+    const restoreFocus = Boolean(
+      document.activeElement &&
+        els.moreActionsMenu.contains(document.activeElement),
+    );
+    setOpen(false);
+    if (restoreFocus) els.moreActionsBtn.focus();
+  };
   els.moreActionsBtn.addEventListener("click", () => {
     setOpen(els.moreActionsMenu.hidden, true);
   });
@@ -142,6 +159,24 @@ export function updateTopbarStuck(els) {
   const y = window.scrollY || document.documentElement.scrollTop || 0;
   els.topbar.classList.toggle("is-stuck", y > 8);
 }
+/* 顶栏实际高度写回 --topbar-h：静态令牌（88/64/62）与实测值对不上——1024px
+   断点内实测 83px，换行断点实测 115px。该令牌只被 .sidenav 的 sticky top 与
+   scroll-margin-top 消费，与 .topbar 自身高度完全独立（实测把变量设成
+   200px/20px，顶栏高度恒为 83px），因此不存在「高度→变量→布局→高度」的
+   正反馈；只写一次即收敛（实测 writes=1）。静态值保留为无 JS 时的兜底。
+   只在整数值变化时写，避免无谓的样式重算。 */
+export function syncTopbarHeight(els) {
+  if (!els.topbar || typeof window.ResizeObserver !== "function") return;
+  const write = () => {
+    const height = Math.round(els.topbar.getBoundingClientRect().height);
+    if (!height) return;
+    const root = document.documentElement;
+    if (root.style.getPropertyValue("--topbar-h") === `${height}px`) return;
+    root.style.setProperty("--topbar-h", `${height}px`);
+  };
+  new window.ResizeObserver(write).observe(els.topbar);
+  write();
+}
 export function createScrollHandler(els) {
   let ticking = false;
   return () => {
@@ -156,7 +191,7 @@ export function createScrollHandler(els) {
 export function applyDim(on) {
   document.documentElement.classList.toggle("dimmed", on);
   const btn = document.getElementById("dimBtn");
-  if (btn) btn.classList.toggle("active", on);
+  if (btn) setPressed(btn, on);
   try {
     localStorage.setItem(DIM_KEY, on ? "1" : "0");
   } catch (e) {
@@ -166,12 +201,18 @@ export function applyDim(on) {
 export function applyBold(on) {
   document.documentElement.classList.toggle("bold-text", on);
   const btn = document.getElementById("boldBtn");
-  if (btn) btn.classList.toggle("active", on);
+  if (btn) setPressed(btn, on);
   try {
     localStorage.setItem(BOLD_KEY, on ? "1" : "0");
   } catch (e) {
     /* ignore */
   }
+}
+// 开关的视觉态与 aria-pressed 同源：只改类会让读屏用户看到一个"没有状态"
+// 的按钮（.active 是纯视觉约定）。
+function setPressed(button, on) {
+  button.classList.toggle("active", on);
+  button.setAttribute("aria-pressed", String(Boolean(on)));
 }
 let dimBoldTouched = false;
 function markDimBoldTouched() {

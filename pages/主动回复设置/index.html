@@ -315,6 +315,7 @@
                 type="button"
                 title="压暗亮度"
                 aria-label="压暗亮度"
+                aria-pressed="false"
               >
                 <svg class="inline-icon" aria-hidden="true">
                   <use href="#i-dim" /></svg
@@ -326,6 +327,7 @@
                 type="button"
                 title="粗体字"
                 aria-label="粗体字"
+                aria-pressed="false"
               >
                 <svg class="inline-icon" aria-hidden="true">
                   <use href="#i-bold" /></svg
@@ -360,7 +362,7 @@
 
       <main class="layout">
         <!-- 分区导航：桌面为左侧 sticky 栏，移动端转为顶部横向滚动条 -->
-        <nav class="sidenav" id="sidenav" aria-label="配置分区导航">
+        <nav class="sidenav" aria-label="配置分区导航">
           <p class="sidenav-title">配置分区</p>
           <span
             class="sidenav-fade sidenav-fade-start"
@@ -574,10 +576,10 @@
                 </legend>
                 <div class="field-grid">
                   <label class="field">
-                    <span class="field-label">消息后延迟<em>秒</em></span>
+                    <span class="field-label" id="messageDelayInputLabel">消息后延迟<em>秒</em></span>
                     <input
                       type="number"
-                      id="messageDelayInput"
+                      id="messageDelayInput" aria-labelledby="messageDelayInputLabel"
                       data-integer
                       data-config-key="message_delay_sec"
                       min="5"
@@ -590,10 +592,10 @@
                     </p>
                   </label>
                   <label class="field">
-                    <span class="field-label">最小静默<em>秒</em></span>
+                    <span class="field-label" id="minSilenceInputLabel">最小静默<em>秒</em></span>
                     <input
                       type="number"
-                      id="minSilenceInput"
+                      id="minSilenceInput" aria-labelledby="minSilenceInputLabel"
                       data-integer
                       data-config-key="min_silence_sec"
                       min="0"
@@ -613,10 +615,10 @@
                 </legend>
                 <div class="field-grid">
                   <label class="field">
-                    <span class="field-label">冷却<em>秒</em></span>
+                    <span class="field-label" id="cooldownInputLabel">冷却<em>秒</em></span>
                     <input
                       type="number"
-                      id="cooldownInput"
+                      id="cooldownInput" aria-labelledby="cooldownInputLabel"
                       data-integer
                       data-config-key="cooldown_sec"
                       min="0"
@@ -635,10 +637,10 @@
                 </legend>
                 <div class="field-grid">
                   <label class="field">
-                    <span class="field-label">少于多少条时补读历史</span>
+                    <span class="field-label" id="minContextInputLabel">少于多少条时补读历史</span>
                     <input
                       type="number"
-                      id="minContextInput"
+                      id="minContextInput" aria-labelledby="minContextInputLabel"
                       data-integer
                       data-config-key="decision_history_min_messages"
                       min="0"
@@ -705,6 +707,7 @@
                   class="provider-manual-input"
                   type="text"
                   id="judgeProviderInput"
+                  aria-describedby="providerHint"
                   placeholder="手动填写 Provider ID"
                   aria-label="手动填写判断模型 Provider ID"
                   hidden
@@ -720,10 +723,10 @@
                 ></span>
               </div>
               <label class="field">
-                <span class="field-label">判断温度</span>
+                <span class="field-label" id="decisionTempInputLabel">判断温度</span>
                 <input
                   type="number"
-                  id="decisionTempInput"
+                  id="decisionTempInput" aria-labelledby="decisionTempInputLabel"
                   data-config-key="decision_temperature"
                   min="0"
                   max="2"
@@ -733,10 +736,10 @@
                 <p class="field-hint" id="decisionTempHint">越高越发散，默认 0.2</p>
               </label>
               <label class="field">
-                <span class="field-label">判断超时<em>秒</em></span>
+                <span class="field-label" id="decisionTimeoutInputLabel">判断超时<em>秒</em></span>
                 <input
                   type="number"
-                  id="decisionTimeoutInput"
+                  id="decisionTimeoutInput" aria-labelledby="decisionTimeoutInputLabel"
                   data-config-key="decision_timeout_sec"
                   min="1"
                   max="300"
@@ -823,9 +826,9 @@
 
             <div class="field-grid">
               <label class="field">
-                <span class="field-label">主动回复引用消息</span>
+                <span class="field-label" id="quoteModeInputLabel">主动回复引用消息</span>
                 <select
-                  id="quoteModeInput"
+                  id="quoteModeInput" aria-labelledby="quoteModeInputLabel"
                   data-config-key="quote_mode"
                   aria-describedby="quoteModeHint"
                 >
@@ -838,10 +841,10 @@
                 </p>
               </label>
               <label class="field">
-                <span class="field-label">引用概率<em>%</em></span>
+                <span class="field-label" id="quoteProbabilityInputLabel">引用概率<em>%</em></span>
                 <input
                   type="number"
-                  id="quoteProbabilityInput"
+                  id="quoteProbabilityInput" aria-labelledby="quoteProbabilityInputLabel"
                   data-integer
                   data-config-key="quote_probability"
                   min="0"
@@ -854,8 +857,8 @@
                 </p>
               </label>
               <label class="field">
-                <span class="field-label">主动回复 @ 对方</span>
-                <select id="mentionModeInput" data-config-key="mention_mode">
+                <span class="field-label" id="mentionModeInputLabel">主动回复 @ 对方</span>
+                <select id="mentionModeInput" aria-labelledby="mentionModeInputLabel" data-config-key="mention_mode" aria-describedby="mentionModeHint">
                   <option value="off">不 @（默认）</option>
                   <option value="always">每次都 @</option>
                   <option value="random">按概率 @</option>
@@ -865,10 +868,10 @@
                 </p>
               </label>
               <label class="field">
-                <span class="field-label">@ 概率<em>%</em></span>
+                <span class="field-label" id="mentionProbabilityInputLabel">@ 概率<em>%</em></span>
                 <input
                   type="number"
-                  id="mentionProbabilityInput"
+                  id="mentionProbabilityInput" aria-labelledby="mentionProbabilityInputLabel"
                   data-integer
                   data-config-key="mention_probability"
                   min="0"
@@ -886,10 +889,10 @@
           <!-- 第五层：运行边界。主动回复能调用什么能力（高级组，默认折叠） -->
           <details class="panel panel-collapsible" id="sec-runtime">
             <summary>
-              <span class="summary-title"
+              <h2 class="summary-title"
                 ><svg class="panel-icon" aria-hidden="true">
                   <use href="#i-tools" /></svg
-                >运行边界</span
+                >运行边界</h2
               >
               <span class="muted">主动回复默认不碰插件工具</span>
             </summary>
@@ -911,10 +914,10 @@
           <!-- 第六层：看不看图。可选增强，默认收起 -->
           <details class="panel panel-collapsible" id="sec-vision">
             <summary>
-              <span class="summary-title"
+              <h2 class="summary-title"
                 ><svg class="panel-icon" aria-hidden="true">
                   <use href="#i-image" /></svg
-                >图片识别</span
+                >图片识别</h2
               >
               <span class="muted">可选增强，默认关闭</span>
             </summary>
@@ -954,25 +957,28 @@
                     data-config-key="vision_provider_id"
                     data-config-control="vision"
                   >
-                    <select id="visionProviderSelect">
-                      <option value="">使用当前会话模型</option>
-                    </select>
+                    <div class="provider-control">
+                      <select id="visionProviderSelect">
+                        <option value="">使用当前会话模型</option>
+                      </select>
+                      <button
+                        type="button"
+                        class="btn-link"
+                        id="visionProviderManualBtn"
+                        aria-controls="visionProviderInput"
+                        aria-expanded="false"
+                      >
+                        手动输入
+                      </button>
+                    </div>
                     <input
+                      class="provider-manual-input"
                       type="text"
                       id="visionProviderInput"
                       placeholder="手动输入 Provider ID"
                       aria-label="手动填写识图模型 Provider ID"
                       hidden
                     />
-                    <button
-                      type="button"
-                      class="btn-link"
-                      id="visionProviderManualBtn"
-                      aria-controls="visionProviderInput"
-                      aria-expanded="false"
-                    >
-                      手动输入
-                    </button>
                   </div>
                 </div>
                 <div class="field provider-cell">
@@ -984,35 +990,38 @@
                     data-config-key="vision_judge_provider_id"
                     data-config-control="visionJudge"
                   >
-                    <select id="visionJudgeProviderSelect">
-                      <option value="">与识图模型一致</option>
-                    </select>
+                    <div class="provider-control">
+                      <select id="visionJudgeProviderSelect">
+                        <option value="">与识图模型一致</option>
+                      </select>
+                      <button
+                        type="button"
+                        class="btn-link"
+                        id="visionJudgeProviderManualBtn"
+                        aria-controls="visionJudgeProviderInput"
+                        aria-expanded="false"
+                      >
+                        手动输入
+                      </button>
+                    </div>
                     <input
+                      class="provider-manual-input"
                       type="text"
                       id="visionJudgeProviderInput"
                       placeholder="手动输入 Provider ID"
                       aria-label="手动填写判断阶段识图 Provider ID"
                       hidden
                     />
-                    <button
-                      type="button"
-                      class="btn-link"
-                      id="visionJudgeProviderManualBtn"
-                      aria-controls="visionJudgeProviderInput"
-                      aria-expanded="false"
-                    >
-                      手动输入
-                    </button>
                   </div>
                 </div>
                 <div class="field-row">
                   <label class="field">
-                    <span class="field-label"
+                    <span class="field-label" id="visionMaxImagesInputLabel"
                       >单次最多识别图片数<em>张</em></span
                     >
                     <input
                       type="number"
-                      id="visionMaxImagesInput"
+                      id="visionMaxImagesInput" aria-labelledby="visionMaxImagesInputLabel"
                       data-integer
                       data-config-key="vision_max_images"
                       min="1"
@@ -1023,10 +1032,10 @@
                     <p class="field-hint" id="visionMaxImagesHint">单次最多读取几张图</p>
                   </label>
                   <label class="field">
-                    <span class="field-label">图片有效时间<em>秒</em></span>
+                    <span class="field-label" id="visionImageAgeInputLabel">图片有效时间<em>秒</em></span>
                     <input
                       type="number"
-                      id="visionImageAgeInput"
+                      id="visionImageAgeInput" aria-labelledby="visionImageAgeInputLabel"
                       data-integer
                       data-config-key="vision_image_age_sec"
                       min="60"
@@ -1037,10 +1046,10 @@
                     <p class="field-hint" id="visionImageAgeHint">超过此时长未活动的图片不再识别</p>
                   </label>
                   <label class="field">
-                    <span class="field-label">识图超时<em>秒</em></span>
+                    <span class="field-label" id="visionTimeoutInputLabel">识图超时<em>秒</em></span>
                     <input
                       type="number"
-                      id="visionTimeoutInput"
+                      id="visionTimeoutInput" aria-labelledby="visionTimeoutInputLabel"
                       data-config-key="vision_timeout_sec"
                       min="1"
                       max="120"

@@ -143,7 +143,7 @@ def _schedule_message_check(
     trigger = CheckTrigger.MESSAGE_DELAY
     plugin._scheduler.schedule_delayed_check(
         umo,
-        delay_sec=plugin._scheduler.message_trigger_delay(trigger),
+        delay_sec=plugin._scheduler.message_trigger_delay(),
         trigger=trigger,
         force=False,
         generation=generation,

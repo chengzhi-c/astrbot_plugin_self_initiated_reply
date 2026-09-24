@@ -784,7 +784,14 @@ def test_rollback_drops_unknown_delay_umo(tmp_path) -> None:
 
 
 def test_rollback_reschedule_failure_is_logged(tmp_path) -> None:
-    """回滚重调度抛异常时只记录 debug 日志，不中断回滚。"""
+    """回滚重调度抛异常时只记录 debug 日志，不中断回滚。
+
+    变异锚定：本用例同时钉住「回滚的后续步骤真的被执行」——只断言
+    ``ok is False`` 是假绿（重调度异常被 re-raise 中断回滚时，外层同样返回
+    False），而 ``_restore_plugin_state`` 里 ``clear_parsers`` 之后的
+    ``ensure_patrol`` / ``ensure_image_cleanup`` 全部被跳过。故这里加 spy，
+    断言回滚收尾的三个步骤各发生一次。
+    """
 
     async def scenario(plugin, main):
         plugin.sessions[UMO] = plugin._state_for(UMO)
@@ -799,10 +806,89 @@ def test_rollback_reschedule_failure_is_logged(tmp_path) -> None:
         plugin._scheduler.schedule_delayed_check = lambda *a, **k: (_ for _ in ()).throw(
             RuntimeError("reschedule failed")
         )
-        web = sys.modules["astrbot.api.web"]
-        web.request.payload = {"whitelist_sessions": []}
-        result = await plugin._api_post_config()
+
+        # spy：回滚的收尾步骤必须仍然跑到（重调度异常只记 debug，不中断回滚）
+        calls = {"clear_parsers": 0, "ensure_patrol": 0, "ensure_image_cleanup": 0}
+        real_clear_parsers = plugin._vision.clear_parsers
+        real_ensure_patrol = plugin._scheduler.ensure_patrol
+        real_ensure_image_cleanup = plugin._scheduler.ensure_image_cleanup
+
+        def spy_clear_parsers() -> None:
+            calls["clear_parsers"] += 1
+            real_clear_parsers()
+
+        def spy_ensure_patrol() -> None:
+            calls["ensure_patrol"] += 1
+            real_ensure_patrol()
+
+        def spy_ensure_image_cleanup() -> None:
+            calls["ensure_image_cleanup"] += 1
+            real_ensure_image_cleanup()
+
+        plugin._vision.clear_parsers = spy_clear_parsers
+        plugin._scheduler.ensure_patrol = spy_ensure_patrol
+        plugin._scheduler.ensure_image_cleanup = spy_ensure_image_cleanup
+        try:
+            web = sys.modules["astrbot.api.web"]
+            web.request.payload = {"whitelist_sessions": []}
+            result = await plugin._api_post_config()
+        finally:
+            plugin._vision.clear_parsers = real_clear_parsers
+            plugin._scheduler.ensure_patrol = real_ensure_patrol
+            plugin._scheduler.ensure_image_cleanup = real_ensure_image_cleanup
+
         assert result.get("ok") is False
+        assert calls["clear_parsers"] == 1, "回滚未丢弃 parser 缓存"
+        assert calls["ensure_patrol"] == 1, "重调度异常后回滚被中断，巡检拓扑未恢复"
+        assert calls["ensure_image_cleanup"] == 1, "重调度异常后回滚被中断，图片清理拓扑未恢复"
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_cancelled_config_apply_rolls_back(tmp_path) -> None:
+    """配置应用被取消时必须回滚，不得留下半应用态（白名单已清空 / 磁盘已改）。
+
+    缺陷形态：``_apply_config_updates`` 只有 ``except Exception``，而
+    ``CancelledError`` 继承 ``BaseException``——在 ``_persist_config`` 或
+    ``_save_storage`` 处被取消时，此前步骤（settings.apply、
+    whitelist.replace 的 prune）已经生效，回滚却不会执行：内存里白名单被清空、
+    会话状态被回收，磁盘配置可能已写新值，重启后同样错。
+    """
+
+    async def scenario(plugin, main):
+        umo = UMO
+        plugin.settings.whitelist = {umo}
+        plugin.settings.cooldown_sec = 111
+        state = plugin._state_for(umo)
+        state.daily_count = 3
+        original_state = plugin.sessions[umo]
+
+        # 只在配置应用路径上取消：其余调用（如 terminate 的最终落盘）恢复原实现，
+        # 否则测试收尾会连带抛 CancelledError。
+        real_save = plugin._save_storage
+        calls = {"count": 0}
+
+        async def cancelled_save():
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise asyncio.CancelledError()
+            await real_save()
+
+        plugin._save_storage = cancelled_save
+        try:
+            web = sys.modules["astrbot.api.web"]
+            web.request.payload = {"whitelist_sessions": [], "cooldown_sec": 909}
+            with pytest.raises(asyncio.CancelledError):
+                await plugin._api_post_config()
+        finally:
+            plugin._save_storage = real_save
+
+        # 取消必须触发同一套回滚
+        assert plugin.settings.cooldown_sec == 111, "取消后配置未回滚"
+        assert umo in plugin.settings.whitelist, "取消后白名单未回滚"
+        assert umo in plugin.sessions, "取消后被 prune 的会话状态未复活"
+        assert plugin.sessions[umo] is original_state, "取消回滚丢了对象身份"
+        assert plugin.sessions[umo].daily_count == 3, "取消回滚丢了日配额"
 
     with_plugin(tmp_path, scenario)
 

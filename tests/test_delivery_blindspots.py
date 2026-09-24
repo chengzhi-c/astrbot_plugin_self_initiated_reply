@@ -7,9 +7,11 @@ context 兜底的 UNKNOWN/False 语义。经注入假门卫/钩子/发送器直�
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
+from typing import Any
 
-from .host_stubs import FakeEvent
+from .host_stubs import FakeEvent, capture_logs
 from .test_delivery_runner import (
     FakeContextSend,
     FakeHook,
@@ -300,31 +302,59 @@ async def test_deliver_failure_with_directs_and_gate_flip(tmp_path: Path) -> Non
     assert result == "会话已更新，放弃旧回复。"
 
 
-async def test_deliver_log_reply_content_preview(tmp_path: Path) -> None:
-    """log_reply_content 开启：长短回复预览分支都走 DEBUG 记录。"""
-    _, models, runner, _ = _make_runner(
+async def test_deliver_log_reply_content_preview(tmp_path: Path, caplog: Any) -> None:
+    """log_reply_content 开启：长短回复预览分支都走 DEBUG 记录。
+
+    变异锚定：把 ``delivery.py`` 的 ``if self.settings.log_reply_content and reply:``
+    改成 ``if False:``，本用例红——只断言返回值是假绿（返回值与预览分支无关），
+    必须断言 DEBUG 记录里的预览文本本身。
+
+    断言内容：长回复截断到 ``_LOG_REPLY_PREVIEW_CHARS`` 并**带省略号**（去掉省略号
+    即红：截断后的长度相等，只有省略号能区分「截断」与「恰好这么长」），短回复
+    原样记录不截断。
+    """
+    delivery_mod, models, runner, _ = _make_runner(
         tmp_path, save=FakeSave(), config={"log_reply_content": True}
     )
     state = _state(models)
-    long_result = await runner.deliver_reply(
-        "s1",
-        state,
-        "长" * 100,
-        0,
-        ledger=models.AttemptLedger(),
-        expected_generation=None,
-        force=False,
-        trigger="message_delay",
-    )
+    long_reply = "长" * 100
+    short_reply = "短回复"
+    limit = delivery_mod._LOG_REPLY_PREVIEW_CHARS
+
+    with capture_logs(caplog, delivery_mod.logger, logging.DEBUG):
+        long_result = await runner.deliver_reply(
+            "s1",
+            state,
+            long_reply,
+            0,
+            ledger=models.AttemptLedger(),
+            expected_generation=None,
+            force=False,
+            trigger="message_delay",
+        )
+        short_result = await runner.deliver_reply(
+            "s1",
+            state,
+            short_reply,
+            0,
+            ledger=models.AttemptLedger(),
+            expected_generation=None,
+            force=False,
+            trigger="message_delay",
+        )
+
     assert long_result == "已主动回复。"
-    short_result = await runner.deliver_reply(
-        "s1",
-        state,
-        "短回复",
-        0,
-        ledger=models.AttemptLedger(),
-        expected_generation=None,
-        force=False,
-        trigger="message_delay",
-    )
     assert short_result == "已主动回复。"
+
+    previews = [
+        record.getMessage()
+        for record in caplog.records
+        if "proactive reply sent" in record.getMessage() and "text=" in record.getMessage()
+    ]
+    assert len(previews) == 2, f"预览分支未记录（被改坏即只剩非预览那条）：{caplog.records}"
+    assert f"text={long_reply[:limit]}…" in previews[0], (
+        f"长回复未按 {limit} 字截断并加省略号：{previews[0]}"
+    )
+    assert f"chars={len(long_reply)}" in previews[0]
+    assert f"text={short_reply}" in previews[1], f"短回复未原样记录：{previews[1]}"
+    assert "…" not in previews[1], "短回复不该被截断"

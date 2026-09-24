@@ -42,6 +42,24 @@ from .models import (
 from .outbound import OutboundGateway
 from .utils import build_history_text, cap_context_text, clean_reply, response_text
 
+
+def _consume_task_result(task: asyncio.Task[Any]) -> None:
+    """取回已结束任务的结果，消除"异常无人取回"的循环级 ERROR。
+
+    asyncio 在任务以异常收尾且无人读取结果时，向事件循环的异常处理器投一条
+    ``Task exception was never retrieved``。那条日志没有本插件的上下文，
+    排障时无法与生成链路关联（宿主 ``run_agent`` 在 request_stop 后仍可能以
+    异常收尾）。取消与正常结束都不产生该日志，取一次结果即可消除。
+    """
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except Exception:
+        # 取结果本身不应成为新的失败源
+        pass
+
+
 # 回复长度档位的措辞。档位值来自 _conf_schema 的 reply_length_mode；
 # 未知值按 balanced 兜底（配置漂移不应让 prompt 缺失长度约束）。
 _LENGTH_HINTS = {
@@ -143,13 +161,10 @@ class _GenerateRun:
         "ledger",
         "tool_boundary_state",
         "reset_coro",
-        "original_send",
         "had_instance_send",
         "original_instance_send",
         "tracker_installed",
         "tracked_send",
-        "outbound",
-        "req",
         "build_result",
         "quarantined",
     )
@@ -179,13 +194,10 @@ class _GenerateRun:
         self.tool_boundary_state: dict[str, Any] | None = None
         # finally 是唯一回收点；build 前必须占位，避免 UnboundLocalError。
         self.reset_coro: Any = None
-        self.original_send: Any = None
         self.had_instance_send = False
         self.original_instance_send: Any = None
         self.tracker_installed = False
         self.tracked_send: Any = None
-        self.outbound: OutboundGateway | None = None
-        self.req: Any = None
         self.build_result: Any = None
         # 宿主吞掉取消、run_task 被隔离到后台时为真：此后不能摘除 send
         # tracker，否则存活 agent 的工具直发变成裸发（绕过预算/代次/停止闸门）。
@@ -249,6 +261,10 @@ class GenerationRunner:
             quarantine(run_task, "generation stop interrupted")
             raise
         if done:
+            # 收敛成功也必须取回结果：run_agent 以异常收尾时若不读，asyncio 会在
+            # 事件循环里留下无归属的 "Task exception was never retrieved" ERROR，
+            # 与本插件日志无法关联，排障方向被误导。
+            _consume_task_result(run_task)
             return
 
         run_task.cancel()
@@ -258,6 +274,8 @@ class GenerationRunner:
             run_task.cancel()
             quarantine(run_task, "generation cancellation interrupted")
             raise
+        if done:
+            _consume_task_result(run_task)
         if not done:
             quarantine(run_task, "agent runner ignored cancellation")
 
@@ -372,7 +390,6 @@ class GenerationRunner:
         event_dict = getattr(last_event, "__dict__", {})
         run.had_instance_send = isinstance(event_dict, dict) and "send" in event_dict
         run.original_instance_send = event_dict.get("send") if run.had_instance_send else None
-        run.original_send = original_send
         outbound = OutboundGateway(
             original_send,
             max_direct_sends=MAX_DIRECT_TOOL_SENDS,
@@ -387,7 +404,6 @@ class GenerationRunner:
             ),
             ledger=run.ledger,
         )
-        run.outbound = outbound
 
         async def tracked_send(message: MessageChain) -> Any:
             is_tool_direct = getattr(message, "type", "") == "tool_direct_result"
@@ -448,7 +464,6 @@ class GenerationRunner:
         req.audio_urls = []
         req.func_tool = self._runtime().new_tool_set()
         req.session_id = run.umo
-        run.req = req
         run.tool_boundary_state = self.install_agent_tool_boundary(last_event, inherit_tools)
         await self._load_conversation_into(req, last_event, run.umo)
         last_event.set_extra("provider_request", req)
@@ -493,6 +508,10 @@ class GenerationRunner:
             raise RuntimeError("run_agent 尚未产出 build_result 就进入运行阶段")
         run_task = asyncio.ensure_future(self._drain(build_result.agent_runner))
         self._background_tasks.add(run_task)
+        # 取结果先于丢弃：宿主 run_agent 以异常收尾时，不读结果会让 asyncio
+        # 投一条无归属的 "Task exception was never retrieved"。回调按注册顺序
+        # 执行，故本回调在 _discard_background 之前跑，此时任务已定。
+        run_task.add_done_callback(_consume_task_result)
         run_task.add_done_callback(self._discard_background)
 
         def mark_quarantined() -> None:

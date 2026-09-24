@@ -11,6 +11,7 @@ import asyncio
 import logging
 from collections import deque
 from pathlib import Path
+from typing import Any
 
 from .host_stubs import capture_logs, messages_at_least, until
 from .test_session_scheduler import _make_scheduler
@@ -164,27 +165,54 @@ async def test_delayed_check_error_logs_traceback(tmp_path: Path, caplog: object
     assert "RuntimeError: delayed check broken" in records[-1].exc_text
 
 
-async def test_patrol_loop_outer_backoff_on_cleanup_error(tmp_path: Path) -> None:
-    """循环级异常（清理阶段）：走外层 except 的退避重试路径。"""
-    _, _, scheduler, _, _ = _make_scheduler(tmp_path, {"enabled_patrol_trigger": True})
-    scheduler.settings.check_interval_sec = 0
+async def test_patrol_loop_outer_backoff_on_cleanup_error(tmp_path: Path, monkeypatch: Any) -> None:
+    """循环级异常（清理阶段）：走外层 except 的退避重试路径。
+
+    变异锚定：删掉 ``scheduler.py`` 外层 except 里的退避 ``sleep``，本用例红。
+
+    只断言「≥2 次失败」是假绿：``check_interval_sec=0`` 时退避实参
+    ``min(60, 0) == 0``，与循环顶部的实参同为 0——**有没有那行都能立刻重试**。
+    这里把 ``check_interval_sec`` 设为 300（> ``PATROL_BACKOFF_DELAY_SEC``），
+    使顶部长睡与退避长睡**取值可分辨**（300 vs 60），再把 ``asyncio.sleep`` 换
+    成只记录、不真等的替身，于是「出现过一次 60 秒的 sleep」就是退避行存在的
+    直接证据，删除即红。
+    """
+    _, models, scheduler, _, _ = _make_scheduler(tmp_path, {"enabled_patrol_trigger": True})
+    scheduler.settings.check_interval_sec = 300
     flags = _run_flags(scheduler)
     scheduler.settings.whitelist = {"qq:GroupMessage:1"}
 
     failures = {"n": 0}
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def recording_sleep(delay, *args, **kwargs):
+        sleeps.append(delay)
+        # 替身一律不真等：300s 的巡检间隔与 60s 退避都只做记录，用例仍秒级完成。
+        await real_sleep(0)
 
     def boom() -> None:
         failures["n"] += 1
         raise RuntimeError("cleanup broken")
 
     scheduler.cleanup_events_if_needed = boom
+    monkeypatch.setattr(asyncio, "sleep", recording_sleep)
     task = asyncio.create_task(scheduler._patrol_loop())
     try:
-        # ≥2 次失败证明退避后重新进入循环体（外层 except + backoff 生效）
+        # ≥2 次失败证明异常后循环仍在推进（外层 except 未终止循环）
         await until(lambda: failures["n"] >= 2)
     finally:
         flags["run"] = False
         await asyncio.wait_for(task, timeout=5)
+
+    expected_backoff = min(models.PATROL_BACKOFF_DELAY_SEC, scheduler.settings.check_interval_sec)
+    assert expected_backoff != scheduler.settings.check_interval_sec, (
+        "夹具要求退避与巡检间隔可分辨，否则本用例退化为『有无 sleep』的空断言"
+    )
+    assert expected_backoff in sleeps, (
+        f"重试之间没有 {expected_backoff}s 的退避 sleep —— 外层退避已被删除（假绿）"
+        f"sleeps={sleeps!r}"
+    )
 
 
 async def test_ensure_patrol_spawns_and_stops(tmp_path: Path) -> None:

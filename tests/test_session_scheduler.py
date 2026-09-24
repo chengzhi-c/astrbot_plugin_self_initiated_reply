@@ -326,9 +326,9 @@ async def test_silence_interrupted_restarts_full_silence_cycle(
 def test_message_trigger_delay_computation(tmp_path: Path) -> None:
     _, models, scheduler, _, _ = _make_scheduler(tmp_path, {"min_silence_sec": 30})
     scheduler.settings.message_delay_sec = 60
-    assert scheduler.message_trigger_delay("message_delay") == 60
+    assert scheduler.message_trigger_delay() == 60
     scheduler.settings.min_silence_sec = 90
-    assert scheduler.message_trigger_delay("message_delay") == 90, "静默不小于消息延迟"
+    assert scheduler.message_trigger_delay() == 90, "静默不小于消息延迟"
 
 
 def test_remaining_silence_sec_computation(tmp_path: Path) -> None:

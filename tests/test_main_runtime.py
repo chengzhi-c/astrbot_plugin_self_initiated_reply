@@ -550,6 +550,19 @@ def test_degraded_state_rejects_new_spawn_and_force_check(tmp_path: Path) -> Non
         )
         assert plugin._last_events[UMO] is event
 
+        # add/remove 与 check 同口径。此前它们直接调用白名单写入，
+        # 降级态下由 `_add_whitelist_session` 抛 RuntimeError，用户看到的是
+        # 宿主报错文案（含内部异常原文），而 `/on` 又谎报「已启用」——三条
+        # 写指令三种表现。这里断言两条指令都返回精准文案且**不抛异常**。
+        before_add = set(plugin.settings.whitelist)
+        assert await plugin._command_text(event, "add") == (
+            "插件已降级，无法修改白名单（需重启插件恢复）。"
+        )
+        assert await plugin._command_text(event, "remove") == (
+            "插件已降级，无法修改白名单（需重启插件恢复）。"
+        )
+        assert set(plugin.settings.whitelist) == before_add, "降级拒绝后白名单不得被改动"
+
     with_plugin(tmp_path, scenario)
 
 
@@ -804,12 +817,26 @@ def test_terminate_quarantines_noncooperative_runner(tmp_path: Path) -> None:
 
 
 def test_quarantine_capacity_closes_spawn_barrier(tmp_path: Path) -> None:
+    """首例隔离即关闭 spawn 屏障（capacity 条件已删除，见 §5）。
+
+    历史实现有 ``len(quarantined) < MAX_QUARANTINED_TASKS`` 容量条件，但首例隔离
+    就经 ``_mark_degraded`` 把 lifecycle 切到 DEGRADED 且永不回退——容量条件被短路，
+    从未起过决定作用。契约：拒绝来自 lifecycle，`MAX_QUARANTINED_TASKS` 只是注册表
+    容量上限。故本用例直接给表填满也不再是"容量拒绝"的证明，改为断言真实语义。
+    """
+
     async def scenario(plugin, main):
         tasks = [
             asyncio.create_task(asyncio.sleep(3600)) for _ in range(main.MAX_QUARANTINED_TASKS)
         ]
         plugin._quarantined_tasks.update({task: "test capacity" for task in tasks})
         try:
+            # 仅填表（不置 DEGRADED）不再是拒绝理由——这正是要钉住的语义。
+            assert plugin._can_start_tasks() is True, (
+                "capacity 条件仍在对 lifecycle 之外起决定作用（与 §5 契约不符）"
+            )
+            # 经正规入口隔离一例后，lifecycle 切 DEGRADED，屏障生效
+            plugin._mark_degraded("capacity probe")
             assert plugin._can_start_tasks() is False
             assert plugin._track_background_task(asyncio.sleep(0)) is None
         finally:
@@ -886,6 +913,52 @@ def test_terminate_clears_tasks_and_saves(tmp_path: Path) -> None:
         assert plugin._delay_tasks == {}
         assert plugin._last_events == {}
         assert (tmp_path / "data" / "astrbot_plugin_self_initiated_reply" / "state.json").exists()
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_abandoned_final_save_does_not_overwrite_newer_state(tmp_path: Path) -> None:
+    """被隔离的最终落盘不得覆盖新实例写出的 state.json。
+
+    缺陷形态：宿主 reload 时不等隔离任务（``star_manager`` 未等待 quarantine
+    任务就构造下一个实例），旧实例的慢写若在 ``os.replace`` 之前落地，会用
+    陈旧快照覆盖新实例刚写出的状态——reload 后配额少计、白名单变更回退。
+    契约：终止超时置位放弃标志，仍在跑的写盘在替换前自我放弃（只删自己的
+    临时文件，不碰目标文件）。
+    """
+    from .host_stubs import load_main
+
+    load_main()
+    state_path = tmp_path / "data" / "astrbot_plugin_self_initiated_reply" / "state.json"
+
+    async def scenario(plugin, _main):
+        plugin.settings.whitelist = {UMO}
+        plugin._state_for(UMO).daily_count = 1
+        # 构造期的后台写盘（_startup_disk_writes 内的 to_thread）可能与下面的
+        # unlink 竞争：先等它收敛，否则用例会在"后台刚写完"与"用例刚 unlink"
+        # 之间摇摆。平台同款理由见 test_cleanup_nonblocking。
+        for _ in range(100):
+            if state_path.exists():
+                break
+            await asyncio.sleep(0.01)
+        # 对照：未置位放弃标志时状态落盘正常执行
+        await plugin._save_storage()
+        assert state_path.exists(), "未置位放弃标志时状态落盘应正常执行"
+
+        # 模拟：最终落盘被判超时 → 置位放弃标志
+        plugin._abandon_disk_writes = True
+        state_path.unlink()  # 抹掉文件，任何人再写都会"产生"它
+        await plugin._save_storage()
+        assert not state_path.exists(), "被放弃的写盘仍然发布了文件——它会覆盖新实例写出的更新状态"
+        # 等可能仍在跑的写线程收敛后再查临时文件（放弃是并发决策，
+        # 置位瞬间可能有写线程正处于"已建临时文件、尚未 replace"之间）
+        leftovers: list = []
+        for _ in range(100):
+            leftovers = list(state_path.parent.glob(f".{state_path.name}.*.tmp"))
+            if not leftovers:
+                break
+            await asyncio.sleep(0.01)
+        assert not leftovers, f"放弃的写盘遗留了临时文件：{leftovers}"
 
     with_plugin(tmp_path, scenario)
 
@@ -1597,7 +1670,7 @@ def test_startup_persist_failure_is_logged(tmp_path: Path, monkeypatch: Any, cap
     （而不是只看源码里有没有 ``if``）才能覆盖 ``if False and not persist(...)``
     这类"保留了分支却不再执行"的形态。
     """
-    from .host_stubs import capture_logs, load_main, messages_at_least
+    from .host_stubs import capture_logs, load_main, messages_at_least, until
 
     main = load_main()
     calls: list[str] = []
@@ -1609,6 +1682,9 @@ def test_startup_persist_failure_is_logged(tmp_path: Path, monkeypatch: Any, cap
     monkeypatch.setattr(main, "persist_settings_config", failing_persist)
 
     async def scenario(plugin, _main):
+        # 规范化落盘已后台化（含 fsync，不得阻塞事件循环，见
+        # tests/test_cleanup_nonblocking），故在此等它真正跑到调用点再断言。
+        await until(lambda: calls == ["persist"])
         return None
 
     with capture_logs(caplog, main.logger):
@@ -1633,14 +1709,17 @@ def test_startup_writes_skipped_when_disk_already_current(tmp_path: Path) -> Non
     import sys
 
     from .host_stubs import MAIN_PACKAGE_NAME, load_main, with_plugin
+    from .host_stubs import until as _until
 
     async def first_load(plugin, _main):
+        # 首启落盘已后台化：等两份文件真正出现，否则后续断言的前提不成立。
+        await _until(lambda: config_path.exists() and state_path.exists())
         return None
 
-    # 首启：文件不存在 → 必写
-    with_plugin(tmp_path, first_load)
     config_path = tmp_path / "config" / "astrbot_plugin_self_initiated_reply_config.json"
     state_path = tmp_path / "data" / "astrbot_plugin_self_initiated_reply" / "state.json"
+    # 首启：文件不存在 → 必写
+    with_plugin(tmp_path, first_load)
     assert config_path.exists(), "首启没有创建配置文件——本用例前提失效"
     assert state_path.exists(), "首启没有创建状态文件——本用例前提失效"
 
@@ -1661,7 +1740,9 @@ def test_startup_writes_skipped_when_disk_already_current(tmp_path: Path) -> Non
 
     async def second_load(plugin, _main):
         # 打桩必须发生在构造之前（启动写盘在 __init__ 里），断言发生在
-        # scenario 内（terminate 兑底落盘之前）。
+        # scenario 内（terminate 兑底落盘之前）。启动写盘已后台化，先等后台
+        # 任务跑完——不等的话"没写"与"还没写"不可区分，断言会变成恒绿假契约。
+        await asyncio.sleep(0.05)
         assert config_writes == [], (
             "磁盘未变化时仍重写了配置（无谓 fsync + 宿主 save_config 副作用）"
         )
@@ -1685,12 +1766,14 @@ def test_startup_still_writes_when_disk_shape_differs(tmp_path: Path) -> None:
     import json
 
     from .host_stubs import load_main, with_plugin
+    from .host_stubs import until as _until
 
     async def first_load(plugin, _main):
+        await _until(lambda: config_path.exists())
         return None
 
-    with_plugin(tmp_path, first_load)
     config_path = tmp_path / "config" / "astrbot_plugin_self_initiated_reply_config.json"
+    with_plugin(tmp_path, first_load)
     on_disk = json.loads(config_path.read_text(encoding="utf-8"))
     on_disk.pop("cooldown_sec")  # 制造旧形状：缺一个正式键
     config_path.write_text(json.dumps(on_disk, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1704,7 +1787,10 @@ def test_startup_still_writes_when_disk_shape_differs(tmp_path: Path) -> None:
         return original_persist(*args, **kwargs)
 
     async def second_load(plugin, _main):
-        # 迁移发生在 __init__，进入 scenario 时磁盘应已回到正式形状
+        # 迁移发生在 __init__，其落盘已后台化：等它真正写完再断言磁盘形状。
+        from .host_stubs import until
+
+        await until(lambda: bool(config_writes))
         assert config_writes, "磁盘为旧形状时启动没有重写配置——迁移落盘被误跳"
         migrated = json.loads(config_path.read_text(encoding="utf-8"))
         assert "cooldown_sec" in migrated, "重写后磁盘仍是旧形状"

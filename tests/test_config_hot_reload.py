@@ -62,7 +62,7 @@ def test_hot_reload_reaches_components(tmp_path) -> None:
         assert "冷却中" in gate, f"组件读到过期 cooldown_sec：{gate!r}"
 
         # scheduler 路径：消息触发延迟必须读到新 message_delay_sec
-        assert plugin._scheduler.message_trigger_delay("message_delay") == 88
+        assert plugin._scheduler.message_trigger_delay() == 88
 
     with_plugin(tmp_path, scenario)
 

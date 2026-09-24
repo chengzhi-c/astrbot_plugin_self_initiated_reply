@@ -176,10 +176,12 @@ export function createConfigIo(deps) {
 		const e = els();
 		if (!e.whitelistInput) return;
 		const text = e.whitelistInput.value;
-		const count = parseWhitelist(text).length;
-		if (e.whitelistCount) e.whitelistCount.textContent = String(count);
+		// 只 parse 一次：计数与摘要共用同一结果（两者共用同一套分隔/去重规则，
+		// 分别调用会让同一份文本被切分三遍）。
+		const parsed = parseWhitelist(text);
+		if (e.whitelistCount) e.whitelistCount.textContent = String(parsed.length);
 		if (e.whitelistSummary)
-			e.whitelistSummary.textContent = summarizeWhitelist(text);
+			e.whitelistSummary.textContent = summarizeWhitelist(text, parsed);
 	}
 	function formatWhitelist() {
 		const e = els();
@@ -257,13 +259,23 @@ export function createConfigIo(deps) {
 		field.error.textContent = "";
 		return true;
 	}
+	// 出错的控件可能躺在收起的 <details> 里（「运行边界」「图片识别」）：
+	// 折叠时元素不可见，focus() 既滚不到也不会展开，用户只看到一句 toast，
+	// 找不到是哪个字段。展开后再聚焦，让红字真的出现在视口里。
+	function revealAndFocus(element) {
+		if (!element) return;
+		const details = element.closest("details");
+		if (details && !details.open) details.open = true;
+		element.focus();
+		element.scrollIntoView({ block: "center" });
+	}
 	function validateAll() {
 		let firstBad = null;
 		for (const field of numberFields) {
 			if (!validateField(field) && !firstBad) firstBad = field.input;
 		}
 		if (firstBad) {
-			firstBad.focus();
+			revealAndFocus(firstBad);
 			return false;
 		}
 		return true;
@@ -279,7 +291,7 @@ export function createConfigIo(deps) {
 			e.whitelistError.classList.add("show");
 			// 只在保存路径抢焦点：input/blur 上抢会把用户困在该字段
 			// （点其他字段被拽回、Tab 逃不出），可达性缺陷。
-			if (focus) e.whitelistInput.focus();
+			if (focus) revealAndFocus(e.whitelistInput);
 			return false;
 		}
 		e.whitelistInput.removeAttribute("aria-invalid");
@@ -416,11 +428,18 @@ export function createConfigIo(deps) {
 				lastKnownConfig,
 			);
 			let result;
-			const offList = providerConfigKeys(e.configForm).some((key) =>
-				providerNeedsManualInput(
-					body[key], getProviderOptions(), isProviderListAvailable(),
-				)
-			);
+			// 先滤掉留空：留空表示「用当前会话默认模型」，而列表不可用时
+			// providerNeedsManualInput 对空串也返回 true，会把默认语义误报成
+			// 「不在列表中」。
+			const offList = providerConfigKeys(e.configForm)
+				.filter((key) => String(body[key] ?? "").trim() !== "")
+				.some((key) =>
+					providerNeedsManualInput(
+						body[key],
+						getProviderOptions(),
+						isProviderListAvailable(),
+					),
+				);
 			if (offList) {
 				showToast("部分 Provider ID 不在列表中，已继续保存，请确认拼写无误");
 			}
@@ -507,7 +526,7 @@ export function createConfigIo(deps) {
 			e.configForm.classList.remove("is-saving");
 			e.configForm.inert = false;
 			if (pendingFocus) {
-				pendingFocus.focus();
+				revealAndFocus(pendingFocus);
 				pendingFocus = null;
 			}
 			setSaving(false);

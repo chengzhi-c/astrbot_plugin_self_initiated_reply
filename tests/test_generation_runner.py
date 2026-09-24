@@ -745,6 +745,44 @@ async def test_quarantined_run_keeps_tool_send_tracker(tmp_path: Path) -> None:
     assert not background_tasks
 
 
+async def test_sealed_ledger_tool_send_is_gate_rejected_not_raised(tmp_path: Path) -> None:
+    """账本已封时的工具直发必须被闸门拒绝，而不是抛异常。
+
+    缺陷形态：``AttemptLedger.reserve`` 对已封账本抛 ``RuntimeError``，而
+    ``OutboundGateway.send`` 的调用点（``generation.tracked_send`` 的工具直发
+    分支）没有 ``except``——异常直接冒进宿主。后果是该次直发的记账
+    （``direct_send_count``）整条丢失，与"被隔离运行保留 tracker 是为让工具
+    直发继续受预算与代次约束"的意图相反：闸门判定被跳过，直接报错。
+
+    契约：账本已封时的迟到直发是可预期时序（被隔离的 run 在后台继续跑，
+    见 ``test_quarantined_run_keeps_tool_send_tracker``），必须降级为
+    ``SUPPRESSED`` 而非异常。
+    """
+    _, models, runner, _, _, _ = _make_runner(tmp_path)
+    outbound_mod = importlib.import_module(f"{PACKAGE_NAME}.outbound")
+
+    sent: list[object] = []
+
+    async def fake_send(message: object) -> None:
+        sent.append(message)
+
+    ledger = models.AttemptLedger()
+    done = asyncio.ensure_future(asyncio.sleep(0))
+    await done
+    ledger.seal()  # 生成已返回：账本封口
+
+    gateway = outbound_mod.OutboundGateway(fake_send, ledger=ledger)
+    message = SimpleNamespace(type="tool_direct_result", get_plain_text=lambda: "工具消息")
+
+    result = await gateway.send(message, kind="tool_direct")
+
+    assert result.outcome.status is models.SendStatus.SUPPRESSED, (
+        f"账本已封的迟到工具直发被判为 {result.outcome.status!r}；"
+        "抛异常会让记账整条丢失、闸门判定被跳过"
+    )
+    assert not sent, "被抑制的直发不得真正发出"
+
+
 async def test_generate_cancel_converges_no_orphan(tmp_path: Path) -> None:
     _, models, runner, runtime, _, background_tasks = _make_runner(tmp_path)
     event = FakeEvent()

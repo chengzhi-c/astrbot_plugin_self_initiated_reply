@@ -303,6 +303,13 @@ def _command(mutation: Mutation) -> list[str]:
 
 def _run_targets(mutation: Mutation) -> tuple[str, float, str]:
     """跑目标测试；返回 ``(状态, 秒数, 末行输出)``。"""
+    # 目标文件缺失时绝不能算捕获：``node --test`` 对「找不到文件」返回 1，与
+    # 「测试失败」同码，仅按退出码判定会把「目标测试被删掉/改名」记成 CAUGHT
+    # （正是本门禁要防的假绿灯）。pytest 对同一情况返回 4（落 ERROR，fail closed），
+    # 但没必要继续依赖各运行器的退出码语义——前置检查让两者一致 fail closed。
+    missing = [target for target in mutation.targets if not (ROOT / target).exists()]
+    if missing:
+        return "ERROR(no-target)", 0.0, f"目标不存在: {', '.join(missing)}"
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     started = time.monotonic()
     try:

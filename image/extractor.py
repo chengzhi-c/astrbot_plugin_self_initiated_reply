@@ -98,7 +98,15 @@ def _is_absolute_local_source(value: str) -> bool:
     normalized = str(value or "").strip()
     if not normalized:
         return False
-    if urlparse(normalized).scheme in URL_SCHEMES:
+    try:
+        scheme = urlparse(normalized).scheme
+    except (ValueError, TypeError):
+        # 对端可控值可能是 urlparse 无法解析的畸形 URL（实测
+        # ``urlparse("http://[::1/bad.png")`` 抛 ``Invalid IPv6 URL``）。
+        # 解析不出 scheme 即"不是带 scheme 前缀的地址"，按本地路径口径继续
+        # 判定；异常不得让整条图片提取链失败。
+        scheme = ""
+    if scheme in URL_SCHEMES:
         return False
     return os.path.isabs(normalized) or ntpath.isabs(normalized)
 
@@ -287,13 +295,27 @@ class ImageExtractor:
                         "path",
                         "local_path",
                     )
-                parsed_file = urlparse(raw_file)
-                if not raw_url and parsed_file.scheme in HTTP_SCHEMES:
+                # 逐图隔离 urlparse 的畸形输入：`http://[::1/x` 这类值会让
+                # urlparse 抛 ValueError，而它完全对端可控（OneBot 的 url/file
+                # 字段）。没有这层保护时畸形组件在前就会中断整条消息的图片
+                # 提取，后面的正常图片一并丢失（防护粒度与同文件 `_field_value`
+                # 一致：单组件失败只影响该组件）。
+                try:
+                    parsed_file = urlparse(raw_file)
+                    file_scheme = parsed_file.scheme
+                except (ValueError, TypeError):
+                    file_scheme = ""
+                if not raw_url and file_scheme in HTTP_SCHEMES:
                     raw_url, raw_file = raw_file, ""
-                elif raw_url and urlparse(raw_url).scheme not in HTTP_SCHEMES:
-                    if not raw_file:
-                        raw_file = raw_url
-                    raw_url = ""
+                elif raw_url:
+                    try:
+                        url_scheme = urlparse(raw_url).scheme
+                    except (ValueError, TypeError):
+                        url_scheme = ""
+                    if url_scheme not in HTTP_SCHEMES:
+                        if not raw_file:
+                            raw_file = raw_url
+                        raw_url = ""
                 if not raw_url and not raw_file:
                     continue
                 images.append(

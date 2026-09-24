@@ -1,3 +1,5 @@
+import { dimBoldWasTouched } from "./chrome.mjs";
+
 export const THEME_KEY = "selfreply-theme";
 const THEME_CYCLE = ["auto", "light", "dark"];
 export const THEME_LABELS = {
@@ -28,16 +30,21 @@ export function applyTheme(theme, themeToggle) {
   }
 }
 export async function persistTheme(theme, apiPost) {
-  // theme 省略 = 只改压暗/粗体：渲染态尚未反映服务端主题（GET 在途或
-  // localStorage 不可用）时 currentTheme() 恒为 "auto"，把它一并提交会把
-  // 服务端已存的 light/dark 静默改成跟随系统。后端对未提交的键保持原值。
-  if (theme) cacheThemeLocally(theme);
+  // 三个字段各自只在「用户真的动过它」时才提交：后端对未提交的键保持原值，
+  // 而渲染态在 GET ui/theme 返回前是本地默认（theme 恒为 "auto"、
+  // dim/bold 恒为 false），把它一并提交会把服务端已存的选择静默改掉。
+  const body = {};
+  if (theme) {
+    cacheThemeLocally(theme);
+    body.theme = theme;
+  }
+  if (dimBoldWasTouched()) {
+    body.dim = document.documentElement.classList.contains("dimmed");
+    body.bold = document.documentElement.classList.contains("bold-text");
+  }
+  if (Object.keys(body).length === 0) return;
   try {
-    await apiPost("ui/theme", {
-      ...(theme ? { theme } : {}),
-      dim: document.documentElement.classList.contains("dimmed"),
-      bold: document.documentElement.classList.contains("bold-text"),
-    });
+    await apiPost("ui/theme", body);
   } catch {
     /* 后端持久化失败仅当次生效 */
   }

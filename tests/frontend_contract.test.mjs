@@ -636,6 +636,139 @@ test("number inputs keep their hint in aria-describedby", async () => {
   );
 });
 
+test("field labels and aria wiring follow the single-source declarations", async () => {
+  // 可访问名与状态暴露的漂移都在运行时才可见（读屏播报、按钮状态），
+  // 这一组是结构锚：13 处 label.field 的控件必须由 .field-label 命名，
+  // 而非让它把 field-hint 一并算进可访问名；两个游离控件补上描述关联；
+  // dim/bold 开关声明初始 aria-pressed。
+  const html = await readFile(join(pageDir, "index.html"), "utf8");
+  const blocks = [...html.matchAll(/<label class="field">([\s\S]*?)<\/label>/g)].map(
+    (match) => match[1],
+  );
+  assert.ok(blocks.length >= 13, `label.field 只有 ${blocks.length} 处`);
+  for (const block of blocks) {
+    const label = block.match(/<span class="field-label" id="(\w+)"/);
+    const control = block.match(/<(?:input|select|textarea)\b[^>]*>/);
+    assert.ok(control, `field 块里找不到控件：${block.slice(0, 60)}`);
+    assert.ok(label, `field-label 缺少 id：${block.slice(0, 60)}`);
+    assert.match(
+      control[0],
+      new RegExp(`aria-labelledby="${label[1]}"`),
+      `控件未用 aria-labelledby 指向 ${label[1]}`,
+    );
+  }
+  assert.match(html, /id="mentionModeInput"[^>]*aria-describedby="mentionModeHint"/);
+  assert.match(html, /id="judgeProviderInput"[^>]*aria-describedby="providerHint"/);
+  assert.match(html, /id="dimBtn"[^>]*aria-pressed="false"/);
+  assert.match(html, /id="boldBtn"[^>]*aria-pressed="false"/);
+});
+
+test("vision provider fields share the judge layout wrapper", async () => {
+  // vision 的两个 Provider 字段缺 .provider-control 包裹层，select 与按钮
+  // 在网格里各占一行（与 judge 的横排布局不一致）。这条同时钉住包裹层存在与
+  // 手动输入框留在包裹层外（切换模式靠 hidden 属性，包进去会把按钮一起藏掉）。
+  const html = await readFile(join(pageDir, "index.html"), "utf8");
+  const fieldBlock = (key, inputId) => {
+    const from = html.indexOf(`data-config-key="${key}"`);
+    assert.ok(from >= 0, `找不到 ${key}`);
+    // 到手动输入框结束为止的窗口足够覆盖包裹层与两个控件声明。
+    const to = html.indexOf(`id="${inputId}"`, from);
+    assert.ok(to > from, `${key} 里找不到 ${inputId}`);
+    return html.slice(from, html.indexOf("</div>", to) + 6);
+  };
+  for (const [fieldKey, selectId, inputId] of [
+    ["vision_provider_id", "visionProviderSelect", "visionProviderInput"],
+    ["vision_judge_provider_id", "visionJudgeProviderSelect", "visionJudgeProviderInput"],
+  ]) {
+    const block = fieldBlock(fieldKey, inputId);
+    const wrapper = block.match(/<div class="provider-control">([\s\S]*?)<\/div>/);
+    assert.ok(wrapper, `${fieldKey} 缺 .provider-control 包裹层`);
+    assert.match(wrapper[1], new RegExp(`id="${selectId}"`));
+    assert.doesNotMatch(
+      wrapper[1],
+      new RegExp(`id="${inputId}"`),
+      `${inputId} 必须留在包裹层外：.provider-control 是「select + 按钮」两列容器`,
+    );
+  }
+  // judge 的对照结构必须仍在，否则这条会在"三个字段一起被改坏"时静默通过。
+  const judgeFrom = html.indexOf('id="judgeProviderField"');
+  assert.ok(judgeFrom >= 0, "judge 字段不见了");
+  const judge = html.slice(judgeFrom, html.indexOf("</div>", html.indexOf('id="judgeProviderInput"', judgeFrom)));
+  assert.match(judge, /<div class="provider-control">/);
+});
+
+test("summary headings expose the panel titles to the document outline", async () => {
+  // 两个折叠分区的标题原为 <span class="summary-title">，大纲里缺 2 项。
+  const html = await readFile(join(pageDir, "index.html"), "utf8");
+  const details = [...html.matchAll(/<details class="panel panel-collapsible"[\s\S]*?<\/summary>/g)];
+  assert.equal(details.length, 2, "折叠分区数变了");
+  for (const block of details) {
+    assert.match(block[0], /<summary>[\s\S]*<h2 class="summary-title"/);
+    assert.doesNotMatch(block[0], /<span class="summary-title"/);
+  }
+});
+
+test("theme.mjs keeps the dim/bold submission behind the touched guard", async () => {
+  // 行为断言在浏览器用例（`theme clicks never submit untouched dim/bold
+  // preferences`）；这条是源码锚，防的是把守卫整段删掉的回退。
+  const theme = await readFile(join(pageDir, "theme.mjs"), "utf8");
+  assert.match(theme, /if \(dimBoldWasTouched\(\)\) \{/);
+  assert.match(theme, /import \{ dimBoldWasTouched \} from "\.\/chrome\.mjs"/);
+});
+
+test("topbar height writeback stays single-sourced and guarded", async () => {
+  // 令牌必须由实测高度写回，且只在整数变化时写（避免无谓样式重算）。
+  const [chrome, app] = await Promise.all([
+    readFile(join(pageDir, "chrome.mjs"), "utf8"),
+    readFile(join(pageDir, "app.js"), "utf8"),
+  ]);
+  assert.match(chrome, /new window\.ResizeObserver\(write\)\.observe\(els\.topbar\)/);
+  assert.match(chrome, /getPropertyValue\("--topbar-h"\) === `\$\{height\}px`/);
+  assert.match(app, /syncTopbarHeight\(els\);/);
+});
+
+test("dead css rules stay deleted", async () => {
+  // 11 条死规则（CSSOM 删除 + 计算样式比对确认无视觉变化）逐条钉住，
+  // 防它们在后续编辑里被"顺手恢复"。断言按规则体取，不用裸子串：`.provider-hint`
+  // 这类名字在别的选择器里仍可能合法出现。选择器行允许前置空白：媒体查询里的
+  // 规则带缩进，只按顶格匹配会把它们漏掉（`:focus-visible` 与 `margin-left`
+  // 两条初版就是这么漏检的）。
+  const [css, html] = await Promise.all([
+    readFile(join(pageDir, "style.css"), "utf8"),
+    readFile(join(pageDir, "index.html"), "utf8"),
+  ]);
+  const dead = [
+    /^\s*\.sidenav-group:first-of-type \{/m,
+    /^\s*\.readout\.is-info \.stat-dot \{/m,
+    /^\s*\.sidenav-link\.is-current:not\(:focus-visible\) \{/m,
+    /^\s*\.provider-hint \{/m,
+    /^\s*\.form-actions-hint \{[^}]*margin-left: 0;/m,
+    /^\s*html\.bold-text \.form/m,
+  ];
+  for (const selector of dead) {
+    assert.doesNotMatch(css, selector, `死规则仍在：${selector}`);
+  }
+  // 断点块里的三条（@720 的 --prompt-workspace-height、reduced-motion 的
+  // .toast background、.sidenav 的 backdrop-filter）按"该块内不得出现"判定。
+  assert.doesNotMatch(css, /--prompt-workspace-height: auto/);
+  assert.doesNotMatch(
+    css,
+    /@media \(prefers-reduced-motion[^}]*\{[\s\S]*?\.toast \{/,
+    "reduced-motion 里的死 .toast 规则仍在",
+  );
+  assert.doesNotMatch(
+    css,
+    /^\.sidenav \{[^}]*backdrop-filter/m,
+    ".sidenav 的 backdrop-filter 仍在（背景不透明，该属性无可见效果）",
+  );
+  assert.doesNotMatch(html, /id="sidenav"/);
+
+  // 活规则不能被连带删掉：这三条都是"看起来像死规则"的真规则。
+  assert.match(css, /^\s*\.master \.readout\.is-info \.stat-dot \{/m);
+  assert.match(css, /^\s*\.vision-provider-field \.provider-control \{/m);
+  assert.match(css, /^\s*\.sidenav \{[^}]*box-shadow/m);
+});
+
 test("theme label names match between CSS content and JS labels", async () => {
   // 主题名（跟随系统/慈爱之惠/审判之司）写了两处：style.css 的 .theme-label::after
   // content（短标签）与 theme.mjs 的 THEME_LABELS（带"浅色 ·"/"深色 ·"前缀，用于
@@ -1064,6 +1197,8 @@ test("save validation guards on whitelist before the numeric scan", async () => 
     removeAttribute() {},
     addEventListener() {},
     insertAdjacentElement() {},
+    closest: () => null,
+    scrollIntoView() {},
     focus() {
       focused.push("cooldown_sec");
     },
@@ -1087,6 +1222,8 @@ test("save validation guards on whitelist before the numeric scan", async () => 
     ...fields[0],
     removeAttribute() {},
     setAttribute() {},
+    closest: () => null,
+    scrollIntoView() {},
     focus() {
       focused.push("whitelist_sessions");
     },
@@ -1227,6 +1364,10 @@ test("whitelist illegal-char save errors still paint the whitelist field", async
   const whitelistError = { textContent: "", classList };
   const whitelistInput = {
     ...fields[0],
+    // revealAndFocus 会先展开所在的 <details>（桩里没有，返回 null 即不在折叠面板内）
+    // 再滚动到视口：两者都是真实元素必有的接口。
+    closest: () => null,
+    scrollIntoView() {},
     removeAttribute(name) {
       delete attrs[name];
     },
@@ -1331,6 +1472,84 @@ test("unknown provider id warns but does not block save", async () => {
   assert.ok(toasts.some((msg) => msg.includes("不在列表中")));
 });
 
+test("an empty provider field never raises the off-list warning", async () => {
+  // 留空表示「用当前会话默认模型」，是合法默认语义。但列表不可用时
+  // providerNeedsManualInput 对空串也返回 true，于是保存时误报「不在列表中」，
+  // 用户会去改一个本来正确的字段。
+  const classList = { add() {}, remove() {}, toggle() {} };
+  const fields = [
+    { dataset: { configKey: "judge_provider_id", configControl: "judge" } },
+    { dataset: { configKey: "vision_provider_id", configControl: "vision" } },
+  ];
+  const form = {
+    classList,
+    inert: false,
+    querySelector: () => null,
+    querySelectorAll: () => fields,
+  };
+  const state = {
+    configLoaded: true,
+    savingConfig: false,
+    configRevision: TEST_REVISION,
+    isDirty: false,
+    requiresConfigRefresh: false,
+  };
+  const toasts = [];
+  const io = createConfigIo({
+    getEls: () => ({ configForm: form, configSaveState: { textContent: "", classList } }),
+    getState: () => state,
+    setState: (updates) => Object.assign(state, updates),
+    apiGet: async () => {
+      throw new Error("skip refresh");
+    },
+    apiPost: async () => ({ ok: true, config: {}, adjusted_fields: [] }),
+    showToast: (message) => toasts.push(message),
+    setStatState() {},
+    renderPromptPreview() {},
+    // 列表不可用 + 两个 Provider 都留空：这正是 providerNeedsManualInput
+    // 会误判的组合。
+    judgeProviderControl: { value: () => "", sync() {} },
+    visionProviderControl: { value: () => "", sync() {} },
+    visionJudgeProviderControl: { value: () => "", sync() {} },
+    fmtBool: String,
+    getProviderOptions: () => [],
+    isProviderListAvailable: () => false,
+  });
+
+  await io.saveConfig({ preventDefault() {} });
+
+  assert.equal(
+    toasts.some((message) => message.includes("不在列表中")),
+    false,
+    `留空的 Provider 被误报为不在列表中：${toasts.join(" / ")}`,
+  );
+
+  // 对照：真的填了一个列表里没有的 ID 仍必须报警，否则这条会被"永不报警"满足。
+  // 用独立 state：上一次保存会改动它，而 savingConfig 未回落时 saveConfig 直接返回。
+  const offListToasts = [];
+  const offListState = { ...state, savingConfig: false, requiresConfigRefresh: false };
+  const offListIo = createConfigIo({
+    getEls: () => ({ configForm: form, configSaveState: { textContent: "", classList } }),
+    getState: () => offListState,
+    setState: (updates) => Object.assign(offListState, updates),
+    apiGet: async () => {
+      throw new Error("skip refresh");
+    },
+    apiPost: async () => ({ ok: true, config: {}, adjusted_fields: [] }),
+    showToast: (message) => offListToasts.push(message),
+    setStatState() {},
+    renderPromptPreview() {},
+    judgeProviderControl: { value: () => "typo-id", sync() {} },
+    visionProviderControl: { value: () => "", sync() {} },
+    visionJudgeProviderControl: { value: () => "", sync() {} },
+    fmtBool: String,
+    getProviderOptions: () => [{ id: "real-id" }],
+    isProviderListAvailable: () => true,
+  });
+  await offListIo.saveConfig({ preventDefault() {} });
+  assert.ok(offListToasts.some((message) => message.includes("不在列表中")));
+});
+
 test("undici and abort failures map to the connection hint", () => {
   const hint = "无法连接插件 API，请重载页面或重启 AstrBot 后重试";
   assert.equal(normalizeApiError(new Error("fetch failed")).message, hint);
@@ -1357,17 +1576,17 @@ test("empty number fields reuse last loaded values", () => {
 
 test("whitelist format collapses a group UMO onto its bare group id", () => {
   const raw = [
-    "1076958977",
-    "1568455",
-    "272372284",
-    "阿c:FriendMessage:2381289480",
-    "阿c:GroupMessage:272372284",
+    "12345",
+    "12346",
+    "12347",
+    "qq:GroupMessage:12347",
+    "qq:FriendMessage:12348",
   ].join("\n");
   assert.deepEqual(uniqueWhitelistItems(raw), [
-    "1076958977",
-    "1568455",
-    "272372284",
-    "阿c:FriendMessage:2381289480",
+    "12345",
+    "12346",
+    "12347",
+    "qq:FriendMessage:12348",
   ]);
   assert.equal(
     summarizeWhitelist(raw),

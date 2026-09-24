@@ -313,7 +313,15 @@ def test_cache_hit_does_not_rewrite_file(tmp_path: Path) -> None:
 
 
 def test_config_rollback_restores_sessions_and_locks(tmp_path: Path) -> None:
-    """回滚必须恢复 sessions 与 _session_locks（与 settings 同级）。"""
+    """回滚必须恢复 sessions 与 _session_locks（与 settings 同级），
+    且被白名单变更 prune 掉的会话状态必须**原对象**复活（契约 §11 B2）。
+
+    §11 B2 的失效形态是静默的：``_whitelist.replace`` 会 pop 掉被移出会话的
+    ``SessionState``，回滚若只按 ``_restore_session_history`` 的「saved 里有而
+    sessions 里没有 → 新建对象」分支走，会话键虽在、**标量全清零**
+    （日配额/冷却/观察窗口）且对象身份丢失（在途任务写孤儿状态）。
+    ``whitelist.commit_change`` 有 ``pruned`` 回填，webapi 的回滚路径此前漏了。
+    """
 
     async def scenario(plugin, main):
         import sys
@@ -322,6 +330,15 @@ def test_config_rollback_restores_sessions_and_locks(tmp_path: Path) -> None:
         plugin.sessions[umo] = plugin._state_for(umo)
         plugin._gate.lock_for(umo)
         plugin.settings.whitelist = {umo}
+
+        # 造出非零标量：这些字段正是 §11 B2 要保的东西
+        state = plugin.sessions[umo]
+        state.daily_count = 5
+        state.last_proactive_at = 1234.0
+        state.last_proactive_observed_at = 2345.0
+        state.last_active_at = 3456.0
+        state.last_proactive_text = "上次回复"
+        original_state = plugin.sessions[umo]
 
         async def boom():
             raise OSError("disk full")
@@ -334,6 +351,15 @@ def test_config_rollback_restores_sessions_and_locks(tmp_path: Path) -> None:
         assert result.get("ok") is False
         assert umo in plugin.sessions
         assert umo in plugin._session_locks
+
+        # §11 B2：原对象复活（身份即正确性——在途任务持的是它）
+        restored = plugin.sessions[umo]
+        assert restored is original_state, "回滚未保住 SessionState 对象身份"
+        assert restored.daily_count == 5, f"日配额被清零：{restored.daily_count}"
+        assert restored.last_proactive_at == 1234.0, "冷却时间戳被清零"
+        assert restored.last_proactive_observed_at == 2345.0, "观察窗口被清零"
+        assert restored.last_active_at == 3456.0, "活跃时间被清零"
+        assert restored.last_proactive_text == "上次回复", "上次回复文本丢失"
 
     with_plugin(tmp_path, scenario)
 
@@ -974,6 +1000,7 @@ def test_new_config_keys_take_effect(tmp_path: Path) -> None:
 
     async def scenario(plugin, main):
         web = sys.modules["astrbot.api.web"]
+        assert plugin._scheduler.patrol_task is None, "前置：巡检未在跑"
         web.request.payload = {
             "recent_message_limit": 30,
             "reply_length_mode": "short",
@@ -1007,6 +1034,11 @@ def test_new_config_keys_take_effect(tmp_path: Path) -> None:
         assert s.enabled_patrol_trigger is True
         assert s.generation_timeout_sec == 90
         assert s.decision_history_min_messages == 8
+        # 拓扑同步：只写 settings 不够——「保存成功、状态显示开启、实际巡检
+        # 不跑」会持续到下次重启，且无任何日志。POST /config 是运行期改这些
+        # 键的唯一入口（官方 Dashboard 走整插件 reload）。
+        await asyncio.sleep(0)
+        assert plugin._scheduler.patrol_task is not None, "开启巡检后未启动巡检循环"
 
     with_plugin(tmp_path, scenario)
 
@@ -1151,5 +1183,64 @@ def test_invalidate_clears_observation_material(tmp_path: Path) -> None:
         assert UMO not in plugin._last_event_at
         assert UMO not in plugin._recent_image_events
         assert plugin._gate.current(UMO) > before
+
+    with_plugin(tmp_path, scenario)
+
+
+# ============================================================================
+# 指令在降级/在途态的口径一致（§6 越权拒绝先行、文案分流）
+# ============================================================================
+
+
+def test_on_command_is_rejected_when_degraded(tmp_path: Path) -> None:
+    """降级态下 ``/selfreply on`` 不得谎报"已启用"。
+
+    缺陷形态：check 分支有精准文案（"插件已降级…需重启插件恢复"），而 on 分支
+    完全没有生命周期门——降级态下回"主动回复插件已启用（重启后保持）"，同时把
+    ``settings.enabled`` 写成 True。用户以为已恢复，实际该实例仍拒绝一切新任务
+    （含 force check），巡检也不会重启，恢复只能靠重载插件。
+    """
+    from types import SimpleNamespace
+
+    async def scenario(plugin, main):
+        commands = sys.modules[f"{PACKAGE_NAME_R3}.commands"]
+        plugin._mark_degraded("probe")
+        event = SimpleNamespace(unified_msg_origin=UMO)
+        text = await commands.dispatch_command_action(plugin, event, "on")
+        assert "降级" in text, f"降级态 /on 未按降级文案拒绝，实际：{text}"
+        assert "已启用" not in text, f"降级态 /on 谎报已启用：{text}"
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_check_command_waits_for_previous_run_release(tmp_path: Path) -> None:
+    """在途检查时 ``/selfreply check`` 必须等在途运行让出标记，而不是自拒。
+
+    缺陷形态：check 先 ``invalidate(force_cancel=True)`` 取消旧检查，再立即进
+    pipeline；取消是异步投递的，旧任务尚未 ``unmark_running``，于是撞上
+    「已有判断任务在运行」——净效果是旧检查被静默掐掉、本次也没执行，用户必须
+    重发一次。
+    """
+
+    async def scenario(plugin, main):
+        commands = sys.modules[f"{PACKAGE_NAME_R3}.commands"]
+        event = _make_event()
+        plugin.settings.whitelist = {UMO}
+        plugin.settings.min_silence_sec = 0
+        plugin._last_events[UMO] = event
+        plugin._last_event_at[UMO] = main.now_ts()
+        plugin._state_for(UMO).last_active_at = main.now_ts() - 300
+
+        # 模拟"旧检查正在运行且需要一轮事件循环才让出"
+        plugin._gate.mark_running(UMO)
+
+        async def release_soon() -> None:
+            await asyncio.sleep(0)
+            plugin._gate.unmark_running(UMO)
+
+        asyncio.ensure_future(release_soon())
+
+        text = await commands.dispatch_command_action(plugin, event, "check")
+        assert "已有判断任务在运行" not in text, f"check 自拒了——旧检查被取消而本次未执行：{text}"
 
     with_plugin(tmp_path, scenario)

@@ -62,8 +62,26 @@ _UMO_PARTS = 3
 _EXCEPTION_URL_PATTERN = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>)\]]+")
 
 
+def safe_exc_text(exc: BaseException) -> str:
+    """异常文本提取的单点收口：``__str__`` 本身抛异常时退化为类型名。
+
+    ``str(exc)`` 不是安全的：异常对象的 ``__str__`` 可以抛（第三方 SDK 的
+    自定义异常、携带惰性格式化的异常都发生过）。实测后果不是"日志少一行"
+    ——它让异常**从投递路径逃出**：``delivery.send_reply`` / ``gateway.send``
+    在 ``except`` 块里构造 ``SendOutcome(status, str(exc))``，二次抛出会跳过
+    ledger 的 ``mark_recorded``，于是账本停在 sealed、``has_submission=False``
+    分支不消耗冷却与配额——消息若其实已提交，下一轮会重复发送。
+
+    故取异常文本必须防二次异常，且只在这里做：调用方不得直接 ``str(exc)``。
+    """
+    try:
+        return str(exc)
+    except Exception:
+        return type(exc).__name__
+
+
 def redact_url(value: str) -> str:
-    """去掉 query/fragment 后再截断，避免签名 token 进日志或对外文本。"""
+    """去掉 userinfo 与 query/fragment 后再截断，避免凭证进日志或对外文本。"""
     text = str(value or "").strip()
     if not text:
         return ""
@@ -73,19 +91,25 @@ def redact_url(value: str) -> str:
         return text[:LOG_URL_MAX_CHARS]
     if not parsed.scheme or not parsed.netloc:
         return text[:LOG_URL_MAX_CHARS]
+    # netloc 含 user:password@ 形态的 userinfo，原样输出会把 basic-auth 凭证
+    # 写进日志与 GET /status（与 query 里的签名 token 同类，必须一并去掉）。
+    # 从 netloc 尾部截取而非拼 hostname+port：后者要处理 IPv6 方括号，且
+    # `parsed.port` 对越界/非数字端口抛 ValueError——而本函数跑在异常处理
+    # 路径上，对端可控文本即可让它成为新的异常源。
+    netloc = parsed.netloc.rsplit("@", 1)[-1]
     suffix = _REDACTED_QUERY_MARK if (parsed.query or parsed.fragment) else ""
-    clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    clean = f"{parsed.scheme}://{netloc}{parsed.path}"
     return clean[: LOG_URL_MAX_CHARS - len(suffix)] + suffix
 
 
 def redact_exc_text(exc: BaseException) -> str:
-    """把异常文本里 URL 形态片段的 query/fragment 抹掉。
+    """把异常文本里 URL 形态片段的 userinfo 与 query/fragment 抹掉。
 
     provider SDK 的异常串常把请求 URL 整段带出来（含 api_key/Signature 等
     query 凭证）。这些文本既进日志，也进 ``reason`` 经 GET /status 出网，
     故统一在此收口。非 URL 片段原样保留，便于排查。
     """
-    return _EXCEPTION_URL_PATTERN.sub(lambda m: redact_url(m.group(0)), str(exc))
+    return _EXCEPTION_URL_PATTERN.sub(lambda m: redact_url(m.group(0)), safe_exc_text(exc))
 
 
 async def maybe_await(value: Any) -> Any:
@@ -416,7 +440,9 @@ def is_admin_event(event: AstrMessageEvent, admin_ids: set[str]) -> bool:
         # 宿主未实现或实现异常时不在此判定结果，继续走下面的 role / admin_ids
         # 兜底链；三级全不命中才算非管理员。降级方向是收紧权限而非放开。
         pass
-    role = str(getattr(event, "role", "") or getattr(event, "role_type", "")).lower()
+    # 宿主 ``AstrMessageEvent`` 只有 ``role``（群管理员走 ``group.group_admins``，
+    # 与 role 无关），故不再兜 ``role_type`` 这个宿主任何版本都没有的属性。
+    role = str(getattr(event, "role", "")).lower()
     if role in {"admin", "owner", "superuser"}:
         return True
     sender_id = event_sender_id(event)

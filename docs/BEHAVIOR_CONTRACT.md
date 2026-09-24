@@ -65,7 +65,7 @@
 
 ## 5. 终止与任务生命周期
 
-- 插件生命周期由单一 owner 持有：`RUNNING` 允许新任务；`STOPPING` 阻止 spawn 并等待收敛；`DEGRADED` 表示存在超出硬停止窗口的 quarantine task，拒绝所有新检查（包括 `force=True`）并要求重载插件或重启宿主恢复。`MAX_QUARANTINED_TASKS` 是代码容量上限；达到上限后不再接收新的主动任务。
+- 插件生命周期由单一 owner 持有：`RUNNING` 允许新任务；`STOPPING` 阻止 spawn 并等待收敛；`DEGRADED` 表示存在超出硬停止窗口的 quarantine task，拒绝所有新检查（包括 `force=True`）并要求重载插件或重启宿主恢复。**首例隔离即进入 DEGRADED**——`_can_start_tasks` 里的 `len(quarantined) < MAX_QUARANTINED_TASKS` 由 lifecycle 状态先行短路，故 `MAX_QUARANTINED_TASKS` 实际是注册表容量上限（防表无界增长），不是"还能再接受几个任务"的配额。
 - `terminate()` 开始后 spawn barrier 生效：不再启动任何新后台任务。
 - 生成超时不硬取消 run_agent：先 `request_stop` 优雅收敛，宽限
   `GRACEFUL_STOP_GRACE_SEC` 后仍不退才兜底取消；调用方取消时同样收敛，
@@ -164,8 +164,9 @@
   相对地，会话本身取不到属可接受降级，保持 DEBUG，避免噪音淹没告警通道。
 - `last_decisions` 的 reason 可含至多 200 字用户原文（运营可见）：`state.json`
   本就持久化 recent 全文，此处不是新增暴露面，取值见 `utils.DECISION_REASON_MAX_CHARS`；
-  经 `/selfreply status` 与 `GET /status` 呈现时再截断至 60 字
-  （`commands._RECENT_DECISION_REASON_MAX`，见 §13）。
+  经 `/selfreply status` 呈现时折单行并截断至 60 字
+  （`commands._RECENT_DECISION_REASON_MAX`，见 §13）。`GET /status` 是结构化
+  运维端点，回原始值不截断（截断属聊天呈现层，见 §13）。
 
 ## 10. 宿主兼容面
 

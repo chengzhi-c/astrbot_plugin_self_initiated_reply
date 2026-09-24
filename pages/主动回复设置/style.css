@@ -447,7 +447,6 @@ details.panel {
 	border-radius: var(--radius);
 	background: var(--surface);
 	box-shadow: var(--shadow-card);
-	backdrop-filter: blur(10px);
 }
 .sidenav-title {
 	margin: 0 4px 2px;
@@ -464,9 +463,6 @@ details.panel {
 	font-weight: 700;
 	letter-spacing: 0.12em;
 	text-transform: uppercase;
-}
-.sidenav-group:first-of-type {
-	margin-top: 0;
 }
 .sidenav-list {
 	display: flex;
@@ -597,6 +593,16 @@ details.panel {
 	color: var(--accent-text);
 	background: var(--surface-hover);
 }
+.theme-toggle:focus-visible,
+.btn-text-action:focus-visible {
+	outline: 3px solid var(--focus-color);
+	outline-offset: 2px;
+}
+.panel-collapsible > summary:focus-visible,
+.prompt-help > summary:focus-visible {
+	outline: 3px solid var(--focus-color);
+	outline-offset: 2px;
+}
 .theme-toggle svg {
 	width: 16px;
 	height: 16px;
@@ -628,8 +634,7 @@ html::after {
 html.dimmed::after {
 	background: rgba(0, 0, 0, 0.18);
 }
-html.bold-text body,
-html.bold-text .form {
+html.bold-text body {
 	font-weight: 600;
 }
 .action-dim.active,
@@ -830,10 +835,9 @@ html.bold-text .form {
 .readout.is-off .stat-dot {
 	background: var(--faint);
 	box-shadow: 0 0 0 3px var(--dot-halo);
-}
-.readout.is-info .stat-dot {
-	background: var(--ornament);
-	box-shadow: 0 0 0 3px var(--ornament-soft);
+	/* 同一 .master.is-on 内的「判断模型」读数可以是 is-off：那条动画来自
+	   `.master.is-on .stat-dot`，此处不重置就会让一个已关闭的读数继续脉冲。 */
+	animation: none;
 }
 
 /* ==== 面板与表单字段 ==== */
@@ -982,6 +986,7 @@ html.bold-text .form {
 	gap: 8px;
 }
 .btn-text-action {
+	min-height: var(--control-h);
 	padding: 2px 8px;
 	border: 1px solid var(--border-strong);
 	border-radius: 6px;
@@ -1221,13 +1226,10 @@ textarea {
 	grid-template-columns: auto;
 	justify-content: start;
 }
-.provider-hint {
-	display: block;
-	font-size: var(--fs-200);
-}
 .vision-provider-field .provider-control {
-	/* vision 场景 select/input/button 纵排：列宽退化与 judge 的横排差异
-	   仅在网格列定义，其余共享 .provider-control 基础规则。 */
+	/* vision 的两个 Provider 字段与 judge 统一为横排（select 占主列 + 按钮
+	   固定宽），列定义因此与 .provider-control 基类同值。保留独立规则是给
+	   vision 留一个只影响自己的列宽落点——直接改基类会同时波及 judge。 */
 	grid-template-columns: minmax(0, 1fr) auto;
 }
 .field-grid > .provider-cell {
@@ -1749,10 +1751,6 @@ textarea {
 		white-space: nowrap;
 		border: var(--border-w) solid transparent;
 	}
-	.sidenav-link.is-current:not(:focus-visible) {
-		box-shadow: none;
-		border-color: var(--border-strong);
-	}
 	.prompt-workspace,
 	.model-grid {
 		grid-template-columns: 1fr;
@@ -1838,14 +1836,14 @@ textarea {
 	.panel-collapsible > .details-body {
 		padding: 14px 16px 16px;
 	}
-	.prompt-workspace {
-		--prompt-workspace-height: auto;
-	}
 	.sidenav {
 		display: none;
 	}
 	.form-actions {
 		display: none;
+	}
+	.btn-text-action {
+		min-height: var(--tap);
 	}
 	.form {
 		padding-bottom: 152px;
@@ -1873,7 +1871,6 @@ textarea {
 	.mobile-savebar .mobile-save-state {
 		flex: 1 1 auto;
 		min-width: 0;
-		color: var(--muted);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -1931,9 +1928,6 @@ textarea {
 	.mtab:focus-visible {
 		outline: none;
 		box-shadow: var(--focus-ring);
-	}
-	.form-actions-hint {
-		margin-left: 0;
 	}
 	.toast {
 		right: 12px;
@@ -2030,8 +2024,5 @@ textarea {
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.01ms !important;
 		scroll-behavior: auto !important;
-	}
-	.toast {
-		background: var(--toast-bg);
 	}
 }

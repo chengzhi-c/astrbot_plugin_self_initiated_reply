@@ -39,6 +39,11 @@ from .utils import (
     response_text,
 )
 
+# 放弃 provider 任务后给它的收敛宽限：与生成路径同值同语义（宿主 SDK 吞掉
+# CancelledError 时留下的才是孤儿）。刻意本地重声明而非引用 models 的
+# GRACEFUL_STOP_GRACE_SEC——那是生成路径的行为调参，两者可独立调整。
+DECISION_CONVERGE_GRACE_SEC = 3.0
+
 DECISION_SYSTEM_PROMPT = "你是群聊主动回复时机判断器。只输出严格 JSON，不要输出解释。"
 # 裁决只输出短 JSON，120 token 足够且把判断调用成本封顶。
 DECISION_MAX_TOKENS = 120
@@ -83,15 +88,42 @@ class DecisionMaker:
         llm_generate: Callable[[str, str], Awaitable[Any]],
         read_history: ReadHistoryCallback,
         build_image_context: ImageContextCallback,
+        quarantine_task: Callable[[asyncio.Task[Any], str], None] | None = None,
     ) -> None:
         self.settings = settings
         self._clock = clock
         self._minutes_now = minutes_now
+        # 超时后仍未收敛的 provider 任务交给生命周期的隔离登记（可选注入：
+        # 测试与不关心生命周期的调用方可不传，此时退化为记 WARNING）。
+        self._quarantine_task = quarantine_task
         self._resolve_provider = resolve_provider
         self._llm_generate = llm_generate
         self._read_history = read_history
         self._build_image_context = build_image_context
         self._invalid_quiet_hours_logged: set[str] = set()
+
+    async def _converge_provider_task(self, task: asyncio.Task[Any], reason: str) -> None:
+        """收敛一个超时/被取消的 provider 任务：取消 → 宽限 → 未退才隔离登记。
+
+        ``asyncio.wait`` 不传播调用方取消、也不在内层未结束时清除它，故放弃
+        路径必须显式取消，且**不能**取消完就立即判定为孤儿——``cancel()`` 是
+        异步投递的，刚调用时 ``task.done()`` 必然为 False。故照
+        ``generation._graceful_stop`` 的形状给一个宽限窗口，只有宽限耗尽仍未
+        收敛（宿主 provider 吞掉 CancelledError）才交隔离登记：那才是真正的
+        孤儿任务，宁可登记也不要静默留下它。
+        """
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=DECISION_CONVERGE_GRACE_SEC)
+        if done or task.done():
+            return
+        if self._quarantine_task is not None:
+            self._quarantine_task(task, reason)
+            return
+        logger.warning(
+            "[%s] provider task ignored cancellation and is unregistered: %s",
+            PLUGIN_ID,
+            reason,
+        )
 
     # ------------------------------------------------------------------
     # 局部闸门判定（发送前重查；force 跳过全部闸门）
@@ -253,17 +285,29 @@ class DecisionMaker:
                 "elapsed_sec": self._clock() - started,
             }
         prompt = await self.build_decision_prompt(umo, state, trigger)
+        response: Any = None
+        # 超时用 asyncio.wait 而非 wait_for：wait_for 的语义是"超时后取消内层并
+        # **等它真正结束**"，宿主 provider 若吞掉 CancelledError（SDK 的重试循环
+        # 或裸 except 后继续 await），判断任务永不返回 → 会话锁与运行标记永不释放，
+        # 该会话从此拒绝一切检查，terminate() 也会超时把插件拖进 DEGRADED。
+        # wait 只等待、不含取消语义，超时即返回，未收敛的任务交隔离登记。
+        # （同款取舍见 generation._graceful_stop。）
+        task = asyncio.ensure_future(self._llm_generate(provider_id, prompt))
         try:
-            response = await asyncio.wait_for(
-                self._llm_generate(provider_id, prompt),
-                timeout=self.settings.decision_timeout_sec,
-            )
-        except TimeoutError:
-            return {
-                "should_reply": False,
-                "reason": "判断模型超时",
-                "elapsed_sec": self._clock() - started,
-            }
+            done, _ = await asyncio.wait({task}, timeout=self.settings.decision_timeout_sec)
+            if not done:
+                await self._converge_provider_task(task, "decision model timeout")
+                return {
+                    "should_reply": False,
+                    "reason": "判断模型超时",
+                    "elapsed_sec": self._clock() - started,
+                }
+            response = task.result()
+        except asyncio.CancelledError:
+            # wait 不把调用方的取消传给内层，必须自己传：否则调用方被取消时
+            # provider 任务成了无人持有的孤儿（现状 wait_for 会自动传播）。
+            await self._converge_provider_task(task, "decision cancelled")
+            raise
         except Exception as exc:
             # provider SDK 的异常文本常把请求 URL 整段带出来（含 api_key/Signature
             # 等 query 凭证）。reason 不只进日志，还经 GET /status 的 last_decisions

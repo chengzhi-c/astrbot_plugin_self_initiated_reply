@@ -8,6 +8,10 @@ import { extname, resolve, sep } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const PAGE_PATH = "/pages/%E4%B8%BB%E5%8A%A8%E5%9B%9E%E5%A4%8D%E8%AE%BE%E7%BD%AE/index.html";
+// 首屏就绪等待预算，与 app.js 的 BOOT_TIMEOUT_MS（12s）同量级：页面自身对首屏
+// 给的是 12s 看门狗 + 每次抓取 15s 硬上限，测试用 5s（expect 默认）会在负载高时
+// 偶发假红。这里只放宽"等页面启动完成"的窗口，不放宽任何断言。
+const BOOT_WAIT_MS = 15_000;
 const MIME = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -15,6 +19,18 @@ const MIME = {
   ".mjs": "text/javascript; charset=utf-8",
   ".png": "image/png",
 };
+// 源码里的字面量要当成正则用时逐字符转义；不用 String.replace 的替换模式
+// （"$&" 会被解释为匹配内容），逐个字符拼以免踩替换语义。
+const REGEXP_SPECIALS = new Set('.^$*+?()[]{}|\\'.split(""));
+const escapeRegExp = (text) =>
+  text
+    .split("")
+    .map((ch) => (REGEXP_SPECIALS.has(ch) ? "\\" + ch : ch))
+    .join("");
+// 可访问名里的行内元素边界可能带空格（"判断超时 秒" vs textContent 的
+// "判断超时秒"），故逐字符放宽空白而不是直接比较字面串。
+const looseText = (text) =>
+  text.split("").map(escapeRegExp).join("\\s*");
 
 let server;
 let baseUrl;
@@ -78,12 +94,14 @@ async function serveStatic(request, response) {
 
 async function installBridge(page, options = {}) {
   await page.addInitScript(
-    ({ config, providersFail, saveMode, theme, dim, bold, refreshConfigPending, themePending, cleanupRemoved, cleanupFail }) => {
+    ({ config, providersFail, saveMode, theme, dim, bold, refreshConfigPending, themePending, cleanupRemoved, cleanupFail, configFail }) => {
       const state = {
         saveMode,
         saveAttempts: 0,
         config,
         configCalls: 0,
+        providersFail,
+        configFail,
         refreshConfigPending,
         themePending,
         cleanupRemoved,
@@ -96,7 +114,7 @@ async function installBridge(page, options = {}) {
         apiGet: async (endpoint) => {
           window.__bridgeCalls.push({ method: "GET", endpoint });
           if (endpoint === "providers") {
-            if (providersFail) throw new Error("provider list unavailable");
+            if (state.providersFail) throw new Error("provider list unavailable");
             return { ok: true, providers: [{ id: "provider-a", label: "Provider A" }] };
           }
           if (endpoint === "config") {
@@ -191,7 +209,15 @@ async function openPage(page, query = "") {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
   });
   await page.goto(`${baseUrl}${PAGE_PATH}${query}`);
-  await expect(page.locator("#boot")).toHaveClass(/is-hidden/);
+  // 首屏等待预算显式放宽到页面的看门狗量级（app.js BOOT_TIMEOUT_MS = 12s）。
+  // 默认 5s（playwright.config 的 expect.timeout）是**断言**预算，不是加载预算：
+  // 本套件 49 条共用本 helper，负载高时偶发首屏超过 5s，失败点随机落在当时那条
+  // 用例上（实测 12 轮全量里 2 次，分别报在 893 与 1412 两条互不相干的用例上）。
+  // 这不放松任何断言——页面真加载失败时看门狗仍会隐藏 boot，随后各用例自己的
+  // 读值/toast/errors 断言照旧失败。
+  await expect(page.locator("#boot")).toHaveClass(/is-hidden/, {
+    timeout: BOOT_WAIT_MS,
+  });
   return errors;
 }
 
@@ -390,6 +416,547 @@ test("provider failure enables manual input for all provider controls", async ({
   expect(errors).toEqual([]);
 });
 
+test("a provider list failure keeps the provider already chosen in the form", async ({ page }) => {
+  // 刷新时 providers 失败：catch 分支先调 render()，而 render() 是
+  // `innerHTML = ""` 后 `select.value = current`——列表为空时写回即归零。
+  // 已选 Provider 就此丢失，之后（配置响应到达前）的保存会把空值提交回服务端，
+  // 而用户看到的只是「已保存」。取值必须发生在 render() 之前，取到后写进手动
+  // 输入框：列表不可用时这就是该控件唯一的展示与提交来源。
+  await installBridge(page, {
+    config: { judge_provider_id: "provider-a", vision_provider_id: "provider-b" },
+    refreshConfigPending: true,
+  });
+  const errors = await openPage(page);
+  await expect(page.locator("#judgeProviderSelect")).toHaveValue("provider-a");
+
+  // 制造一次真正走 catch 分支的刷新：providers 失败，config 响应挂起。
+  await page.locator("#messageDelayInput").fill("75");
+  await page.evaluate(() => {
+    window.__bridgeState.providersFail = true;
+  });
+  await page.locator("#refreshBtn").click();
+  await page.locator("#refreshBtn").click();
+  await expect(page.locator("#providerListState")).toContainText("三个 Provider 均可手动填写");
+
+  for (const [inputSelector, expected] of [
+    ["#judgeProviderInput", "provider-a"],
+    ["#visionProviderInput", "provider-b"],
+  ]) {
+    await expect(page.locator(inputSelector)).toHaveValue(expected);
+  }
+
+  // 配置响应仍在途（15s 窗口内），此刻保存必须带上原值而不是空串。
+  await page.locator("#saveTopBtn").click();
+  const body = await page.evaluate(() => {
+    const posts = window.__bridgeCalls.filter(
+      (call) => call.method === "POST" && call.endpoint === "config",
+    );
+    return posts[posts.length - 1]?.body || null;
+  });
+  expect(body).not.toBeNull();
+  expect(body.judge_provider_id).toBe("provider-a");
+  expect(body.vision_provider_id).toBe("provider-b");
+  expect(errors).toEqual([]);
+});
+
+test("theme clicks never submit untouched dim/bold preferences", async ({ page }) => {
+  // 回归守卫：GET ui/theme 在途时点主题，曾把服务端已存的 dim/bold 一并提交为
+  // 当前渲染态（此刻恒为 false）——后端语义是「未提交的键保持原值」，但前端每次
+  // 都提交两者，于是服务端的压暗/粗体被静默抹掉。未触碰过的键不得出现在请求体里，
+  // 与 theme 字段同一条规则。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { themePending: true, theme: "dark", dim: true, bold: true });
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.goto(`${baseUrl}${PAGE_PATH}`);
+  await expect(page.locator("#boot")).toHaveClass(/is-hidden/, {
+    timeout: BOOT_WAIT_MS,
+  });
+  await expect.poll(() => page.evaluate(() => typeof window.__resolveTheme)).toBe("function");
+
+  await page.locator("#themeToggle").click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__bridgeCalls.filter(
+          (call) => call.method === "POST" && call.endpoint === "ui/theme",
+        ).length,
+      ),
+    )
+    .toBe(1);
+  const themeOnly = await page.evaluate(() =>
+    window.__bridgeCalls
+      .filter((call) => call.method === "POST" && call.endpoint === "ui/theme")
+      .map((call) => call.body),
+  );
+  expect(themeOnly).toHaveLength(1);
+  expect(themeOnly[0].theme).toBe("light");
+  expect("dim" in themeOnly[0]).toBe(false);
+  expect("bold" in themeOnly[0]).toBe(false);
+
+  // 对照：用户真的点过压暗后，该次请求必须带上 dim / bold 两个键，否则本地状态
+  // 与服务端 prefs 分叉（刷新后用户的点击丢失）。
+  await page.evaluate(() => window.__resolveTheme());
+  await expect(page.locator("html")).toHaveClass(/dimmed/); // 服务端 dim=true 已落地
+  await page.locator("#dimBtn").click();
+  await expect(page.locator("html")).not.toHaveClass(/dimmed/);
+  const afterDim = await page.evaluate(() => ({
+    body: window.__bridgeCalls
+      .filter((call) => call.method === "POST" && call.endpoint === "ui/theme")
+      .map((call) => call.body)
+      .at(-1),
+    dimmed: document.documentElement.classList.contains("dimmed"),
+    bold: document.documentElement.classList.contains("bold-text"),
+  }));
+  // 点过之后两个键都要提交，且取值必须等于当前渲染态（服务端 bold=true 已落地）。
+  expect(afterDim.body).toEqual({ dim: afterDim.dimmed, bold: afterDim.bold });
+  expect(afterDim.body.dim).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test("topbar height token follows the measured topbar height across breakpoints", async ({ page }) => {
+  // 静态令牌（88/64/62）与实际顶栏高度一直对不上：1024px 断点内实测 83px、
+  // 换行断点实测 115px。令牌被 .sidenav 的 sticky top 与 scroll-margin-top
+  // 消费，脱节即侧栏被顶栏盖住、锚点标题被遮。修法是运行时把实测高度写回令牌，
+  // 并在断点/换行变化后重测——只写一次的实现在窄屏仍是错的。
+  await page.setViewportSize({ width: 900, height: 800 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  const probe = () =>
+    page.evaluate(() => ({
+      height: document.querySelector(".topbar").getBoundingClientRect().height,
+      token: getComputedStyle(document.documentElement)
+        .getPropertyValue("--topbar-h")
+        .trim(),
+    }));
+
+  for (const width of [900, 600, 1440, 400]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.waitForTimeout(120);
+    const { height, token } = await probe();
+    expect(
+      token,
+      `${width}px 视口：令牌 ${token} 与实测顶栏高度 ${height}px 不符`,
+    ).toBe(`${Math.round(height)}px`);
+  }
+
+  // 写回必须停在一处：观测 → 写变量 → 布局 → 观测 若形成正反馈会自激。
+  // 值不收敛时（例如写回未取整的小数）每次测量都会产生新的 style 变更。
+  const after = await page.evaluate(async () => {
+    const seen = [];
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => {
+      seen.push(root.style.getPropertyValue("--topbar-h"));
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ["style"] });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    observer.disconnect();
+    return seen;
+  });
+  expect(after, `写回未收敛，仍在重复写入：${after.join(",")}`).toEqual([]);
+
+  // 修好的可见症状：滚动后侧栏不再钻到顶栏底下。
+  await page.setViewportSize({ width: 900, height: 800 });
+  await page.waitForTimeout(120);
+  await page.evaluate(() => window.scrollTo(0, 1200));
+  await page.waitForTimeout(120);
+  const boxes = await page.evaluate(() => ({
+    navTop: document.querySelector(".sidenav").getBoundingClientRect().top,
+    barBottom: document.querySelector(".topbar").getBoundingClientRect().bottom,
+  }));
+  expect(boxes.navTop).toBeGreaterThanOrEqual(boxes.barBottom - 0.5);
+  expect(errors).toEqual([]);
+});
+
+test("anchor jumps keep the section title clear of the wrapped topbar", async ({ page }) => {
+  // 窄屏顶栏换行成两行（实测 115px）而令牌仍是 62px，scroll-margin-top 只有
+  // 78px：锚点跳转后分区标题落在顶栏底下（实测被遮 18px）。
+  await page.setViewportSize({ width: 600, height: 800 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await installBridge(page);
+  const errors = await openPage(page);
+  await page.locator('.mtab[data-target="sec-scope"]').click();
+  await page.waitForTimeout(200);
+  const boxes = await page.evaluate(() => ({
+    titleTop: document.querySelector("#sec-scope .panel-head h2").getBoundingClientRect().top,
+    barBottom: document.querySelector(".topbar").getBoundingClientRect().bottom,
+  }));
+  expect(boxes.titleTop).toBeGreaterThanOrEqual(boxes.barBottom);
+  expect(errors).toEqual([]);
+});
+
+test("mobile save state keeps three distinct colours", async ({ page }) => {
+  // ≤720px 的 `.mobile-savebar .mobile-save-state { color: var(--muted) }`
+  // 以同特异性且更靠后的位置覆盖了三态配色：成功/失败/待保存颜色完全一致，
+  // 移动端用户看不出保存结果。断言取实际计算色（并比对该状态的令牌），
+  // 而不是只查源码里有那条规则。
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  const states = await page.evaluate(() => {
+    // 每个状态用一个新建元素读：`.save-state` 带 color 过渡，在既有元素上改类
+    // 会读到过渡中间值。而状态由 setSaveState/applyConfigPayload 直接设置，
+    // 那时元素已带正确的类，故这里复现的是「稳态颜色」。
+    const bar = document.querySelector("#mobileSaveBar");
+    const read = (className) => {
+      const el = document.createElement("span");
+      el.className = `save-state mobile-save-state${className ? ` ${className}` : ""}`;
+      bar.appendChild(el);
+      const color = getComputedStyle(el).color;
+      el.remove();
+      return color;
+    };
+    const probe = (variable) => {
+      const el = document.createElement("div");
+      el.style.setProperty("color", `var(${variable})`);
+      bar.appendChild(el);
+      const value = getComputedStyle(el).color;
+      el.remove();
+      return value;
+    };
+    return {
+      neutral: read(""),
+      ok: read("is-ok"),
+      error: read("is-error"),
+      pending: read("is-pending"),
+      tokens: { ok: probe("--ok"), danger: probe("--danger"), accent: probe("--accent-text") },
+    };
+  });
+  expect(states.ok, "成功态未用 --ok").toBe(states.tokens.ok);
+  expect(states.error, "失败态未用 --danger").toBe(states.tokens.danger);
+  expect(states.pending, "待保存态未用 --accent-text").toBe(states.tokens.accent);
+  expect(states.neutral, "中性态未用 --muted").not.toBe(states.ok);
+
+  // 端到端对照：保存成功后移动端状态文字必须真的变绿，而不是只在孤立元素上成立。
+  await page.locator("#decisionPromptInput").scrollIntoViewIfNeeded();
+  await page.locator("#decisionPromptInput").fill("移动端配色");
+  await page.locator("#saveMobileBtn").click();
+  await expect(page.locator("#mobileSaveState")).toHaveText("已保存");
+  await expect
+    .poll(() => page.evaluate(() => getComputedStyle(document.querySelector("#mobileSaveState")).color))
+    .toBe(states.tokens.ok);
+  expect(errors).toEqual([]);
+});
+
+test("a switched-off readout stops its pulse animation", async ({ page }) => {
+  // `.master.is-on .stat-dot` 给的脉冲动画会命中卡内所有读数点，包括那个已关闭
+  // 的「判断模型」。is-off 只改颜色不重置动画，于是一个关掉的功能继续在脉冲。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { config: { decision_model_enabled: false, enabled: true } });
+  const errors = await openPage(page);
+  await expect(page.locator("#decisionModelStat")).toHaveClass(/is-off/);
+  await expect(page.locator("#selfStat")).toHaveClass(/is-on/);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => getComputedStyle(document.querySelector("#decisionModelStat .stat-dot")).animationName,
+      ),
+    )
+    .toBe("none");
+
+  // 对照：开着的那份必须仍有动画，否则这条断言会被"全局关掉动画"满足。
+  await page.evaluate(() =>
+    document.querySelector("#decisionModelStat").className = "readout is-on",
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => getComputedStyle(document.querySelector("#decisionModelStat .stat-dot")).animationName,
+      ),
+    )
+    .toBe("stat-pulse");
+  expect(errors).toEqual([]);
+});
+
+test("dark theme keyboard focus stays visible on the toggle, the text action and summaries", async ({ page }) => {
+  // 深色下三处元素沿用浏览器默认 outline（深色底上对比度约 1.03，等于看不见）。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { theme: "dark" });
+  const errors = await openPage(page);
+  const probe = (selector) => {
+    const el = document.querySelector(selector);
+    el.focus();
+    const style = getComputedStyle(el);
+    return {
+      focused: document.activeElement === el,
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+      outlineColor: style.outlineColor,
+      boxShadow: style.boxShadow,
+    };
+  };
+  const inspect = await page.evaluate(() => {
+    const read = (selector) => {
+      const el = document.querySelector(selector);
+      el.focus();
+      const style = getComputedStyle(el);
+      return {
+        focused: document.activeElement === el,
+        outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`,
+        boxShadow: style.boxShadow,
+        focusColor: getComputedStyle(document.documentElement)
+          .getPropertyValue("--focus-color")
+          .trim(),
+      };
+    };
+    const wrap = (selector) => {
+      const preview = document.createElement("div");
+      preview.style.color = `var(--focus-color)`;
+      document.body.appendChild(preview);
+      const focusColor = getComputedStyle(preview).color;
+      preview.remove();
+      return { ...read(selector), focusColor };
+    };
+    return {
+      themeToggle: wrap("#themeToggle"),
+      formatBtn: wrap("#formatWhitelistBtn"),
+      runtimeSummary: wrap("#sec-runtime > summary"),
+      promptHelpSummary: wrap(".prompt-help > summary"),
+    };
+  });
+  const rgb = (value) => value.match(/rgba?\(([^)]+)\)/)?.[1];
+  for (const [name, state] of Object.entries(inspect)) {
+    expect(state.focused, `${name} 未能聚焦`).toBe(true);
+    const visible =
+      (state.outline.startsWith("solid") && rgb(state.outline) === rgb(state.focusColor)) ||
+      state.boxShadow !== "none";
+    expect(
+      visible,
+      `${name} 在深色下的焦点环不可见：outline=${state.outline} focus=${state.focusColor} shadow=${state.boxShadow}`,
+    ).toBe(true);
+  }
+  expect(errors).toEqual([]);
+});
+
+test("provider and mention controls expose the labels screen readers should announce", async ({ page }) => {
+  // 可访问名必须是字段标题本身，而不是把 field-hint 一并算进去
+  // （读屏会念出「判断温度 越高越发散，默认 0.2」这种长串）。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  const names = await page.evaluate(() => {
+    const byLabel = (id) => {
+      const control = document.getElementById(id);
+      const label = document.getElementById(`${id}Label`);
+      return {
+        labelText: label?.textContent?.replace(/\s+/g, " ").trim() || null,
+        labelledby: control?.getAttribute("aria-labelledby") || null,
+        describedby: control?.getAttribute("aria-describedby") || null,
+      };
+    };
+    return {
+      decisionTemp: byLabel("decisionTempInput"),
+      mentionMode: byLabel("mentionModeInput"),
+      judgeProvider: document.getElementById("judgeProviderInput")?.getAttribute("aria-describedby"),
+    };
+  });
+  expect(names.decisionTemp.labelledby).toBe("decisionTempInputLabel");
+  expect(names.decisionTemp.labelText).toBe("判断温度");
+  expect(names.decisionTemp.describedby).toContain("decisionTempHint");
+  expect(names.mentionMode.labelledby).toBe("mentionModeInputLabel");
+  expect(names.mentionMode.describedby).toBe("mentionModeHint");
+  expect(names.judgeProvider).toBe("providerHint");
+  expect(errors).toEqual([]);
+});
+
+test("dim and bold switches expose their pressed state", async ({ page }) => {
+  // #dimBtn/#boldBtn 是切换开关，此前只有 .active 类，读屏无从得知当前状态。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { dim: false, bold: true });
+  const errors = await openPage(page);
+  await expect(page.locator("#dimBtn")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#boldBtn")).toHaveAttribute("aria-pressed", "true");
+
+  await page.locator("#dimBtn").click();
+  await expect(page.locator("#dimBtn")).toHaveAttribute("aria-pressed", "true");
+  await page.locator("#boldBtn").click();
+  await expect(page.locator("#boldBtn")).toHaveAttribute("aria-pressed", "false");
+  // 与视觉状态同源：类与 aria 不得各说一套。
+  const synced = await page.evaluate(() => ({
+    dimClass: document.getElementById("dimBtn").classList.contains("active"),
+    dimAria: document.getElementById("dimBtn").getAttribute("aria-pressed"),
+    boldClass: document.getElementById("boldBtn").classList.contains("active"),
+    boldAria: document.getElementById("boldBtn").getAttribute("aria-pressed"),
+  }));
+  expect(synced.dimAria).toBe(String(synced.dimClass));
+  expect(synced.boldAria).toBe(String(synced.boldClass));
+  expect(errors).toEqual([]);
+});
+
+test("the whitelist text action keeps a usable touch target", async ({ page }) => {
+  // #formatWhitelistBtn 实测 73×23px，低于 24px 的最小触控尺寸。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  const desktop = await page.locator("#formatWhitelistBtn").boundingBox();
+  expect(desktop.height, `桌面高度 ${desktop.height}px`).toBeGreaterThanOrEqual(24);
+
+  await page.setViewportSize({ width: 360, height: 800 });
+  const narrow = await page.locator("#formatWhitelistBtn").boundingBox();
+  expect(narrow.height, `窄屏高度 ${narrow.height}px`).toBeGreaterThanOrEqual(44);
+  expect(errors).toEqual([]);
+});
+
+test("folding panels keep their titles in the document outline", async ({ page }) => {
+  // 折叠分区标题原为 span，文档大纲里缺这两项，读屏的标题跳转找不到它们。
+  await installBridge(page);
+  const errors = await openPage(page);
+  const outline = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("h1, h2")).map((el) => ({
+      tag: el.tagName,
+      text: el.textContent.replace(/\s+/g, " ").trim(),
+    })),
+  );
+  const titles = outline.map((item) => item.text);
+  expect(titles).toContain("运行边界");
+  expect(titles).toContain("图片识别");
+  expect(outline.every((item) => item.tag === "H2" || item.tag === "H1")).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test("vision provider fields lay out on one row like the judge field", async ({ page }) => {
+  // 包裹层补上后，select 与实际接到的按钮必须同排；
+  // 手动输入框在包裹层外，切到手动模式时按钮不能跟着消失。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { config: { vision_main_enabled: true } });
+  const errors = await openPage(page);
+  await page.locator("#visionProviderSelect").evaluate((el) => {
+    const details = el.closest("details");
+    if (details) details.open = true;
+  });
+  const rows = await page.evaluate(() => {
+    const field = document.querySelector('[data-config-key="vision_provider_id"]');
+    const select = document.getElementById("visionProviderSelect");
+    const button = document.getElementById("visionProviderManualBtn");
+    const wrap = select.parentElement;
+    return {
+      sameWrapper: button.parentElement === wrap,
+      wrapperClass: wrap.className,
+      gridColumns: getComputedStyle(wrap).gridTemplateColumns.split(" ").length,
+      selectBottom: select.getBoundingClientRect().bottom,
+      buttonTop: button.getBoundingClientRect().top,
+      inputHidden: document.getElementById("visionProviderInput").hidden,
+      fieldTop: field.getBoundingClientRect().top,
+    };
+  });
+  expect(rows.sameWrapper, "select 与按钮不在同一个 .provider-control 里").toBe(true);
+  expect(rows.wrapperClass).toContain("provider-control");
+  expect(rows.gridColumns, "包裹层不是两列横排").toBe(2);
+  expect(rows.buttonTop).toBeLessThan(rows.selectBottom);
+
+  await page.locator("#visionProviderManualBtn").click();
+  await expect(page.locator("#visionProviderInput")).toBeVisible();
+  await expect(page.locator("#visionProviderManualBtn")).toBeVisible();
+  await expect(page.locator("#visionProviderManualBtn")).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
+  expect(errors).toEqual([]);
+});
+
+test("closing the compact menu returns focus to its trigger", async ({ page }) => {
+  // 点菜单项后菜单 hidden，焦点随之掉到 body。键盘用户的下一次 Tab 从文档
+  // 开头重新开始（顶栏之前的 skip-link 又跑一遍），等于被踢出上下文。
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  await page.locator("#moreActionsBtn").click();
+  await expect(page.locator("#moreActionsBtn")).toHaveAttribute("aria-expanded", "true");
+  await page.locator("#dimBtn").click();
+  await expect(page.locator("#moreActionsMenu")).toBeHidden();
+  await expect(page.locator("#moreActionsBtn")).toBeFocused();
+  // 下一次 Tab 必须落在顶栏内的下一项，而不是文档开头。
+  await page.keyboard.press("Tab");
+  const focused = await page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName);
+  expect(["saveTopBtn", "refreshBtn", "themeToggle", "moreActionsBtn"]).toContain(focused);
+
+  // 对照：焦点不在菜单内时（点页面别处关闭菜单）不得把焦点拽到触发器，
+  // 否则用户的下一次 Tab 从顶栏重新开始，等于被踢出上下文。
+  await page.locator("#moreActionsBtn").click();
+  await expect(page.locator("#moreActionsMenu")).toBeVisible();
+  await page.mouse.click(20, 400);
+  await expect(page.locator("#moreActionsMenu")).toBeHidden();
+  expect(await page.evaluate(() => document.activeElement?.id)).not.toBe(
+    "moreActionsBtn",
+  );
+  expect(errors).toEqual([]);
+});
+
+test("saving reveals the folded panel that holds the offending field", async ({ page }) => {
+  // vision 的数值字段在收起的 <details> 里。折叠时 focus() 对不可见元素无效，
+  // 用户只看到 "部分数值超出允许范围" 的 toast，找不到是哪个字段。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  await expect(page.locator("#sec-vision")).not.toHaveAttribute("open", "");
+  await page.locator("#visionMaxImagesInput").evaluate((el) => {
+    el.value = "9"; // max = 5
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.locator("#saveTopBtn").click();
+  await expect(page.locator("#toast")).toContainText("超出允许范围");
+  await expect(page.locator("#sec-vision")).toHaveAttribute("open", "");
+  await expect(page.locator("#visionMaxImagesInput")).toBeFocused();
+  await expect(page.locator("#visionMaxImagesInputError")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("a refresh withheld by pending edits says so instead of claiming success", async ({ page }) => {
+  // loadConfig 被协调器拦下时返回 false，但 doRefresh 无条件报「已刷新为
+  // 最新配置」。用户以为读到了磁盘上的新配置，随后保存又把他的编辑覆盖上去。
+  await installBridge(page, { refreshConfigPending: true });
+  const errors = await openPage(page);
+  await page.locator("#refreshBtn").click();
+  await page.locator("#refreshBtn").click();
+  await expect
+    .poll(() => page.evaluate(() => typeof window.__resolveRefreshConfig))
+    .toBe("function");
+  // 请求在途时编辑：响应到达后 canApplyLoad 为 false（editEpoch 已推进）。
+  await page.locator("#messageDelayInput").fill("80");
+  await page.evaluate(() => window.__resolveRefreshConfig());
+  await expect(page.locator("#toast")).toContainText("已保留当前内容");
+  await expect(page.locator("#toast")).not.toContainText("已刷新为最新配置");
+  await expect(page.locator("#messageDelayInput")).toHaveValue("80");
+
+  // 对照：干净的刷新仍必须报成功，否则这条会被"永远不报成功"满足。
+  await page.locator("#saveTopBtn").click();
+  await expect(page.locator("#navSaveState")).toHaveText("已保存");
+  await page.evaluate(() => {
+    window.__bridgeState.refreshConfigPending = false;
+  });
+  await page.locator("#refreshBtn").click();
+  await expect(page.locator("#toast")).toHaveText("已刷新为最新配置");
+  expect(errors).toEqual([]);
+});
+
+test("switching a provider input mode alone does not mark the form dirty", async ({ page }) => {
+  // 只是换输入方式（列表 ↔ 手动）不改配置值，却留下假的未保存标记，
+  // 用户被迫为一次无改动的点击保存一次。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { config: { judge_provider_id: "provider-a" } });
+  const errors = await openPage(page);
+  await expect(page.locator("#navSaveState")).toHaveText("已同步");
+
+  await page.locator("#providerManualBtn").click();
+  await expect(page.locator("#judgeProviderInput")).toBeVisible();
+  await expect(page.locator("#judgeProviderInput")).toHaveValue("provider-a");
+  await expect(page.locator("#navSaveState")).toHaveText("已同步");
+
+  await page.locator("#providerManualBtn").click();
+  await expect(page.locator("#judgeProviderSelect")).toBeVisible();
+  await expect(page.locator("#judgeProviderSelect")).toHaveValue("provider-a");
+  await expect(page.locator("#navSaveState"), "仅切模式不应标脏").toHaveText("已同步");
+
+  // 对照：真正改了值仍必须标脏，否则这条会被"永不标脏"满足。
+  await page.locator("#providerManualBtn").click();
+  await page.locator("#judgeProviderInput").fill("provider-b");
+  await expect(page.locator("#navSaveState")).toHaveText("有未保存改动");
+  expect(errors).toEqual([]);
+});
+
 test("prompt preview escapes HTML and theme choice persists", async ({ page }) => {
   await installBridge(page, { theme: "light" });
   const errors = await openPage(page);
@@ -450,7 +1017,9 @@ test("late theme prefs do not overwrite a dim click already made", async ({ page
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
   });
   await page.goto(`${baseUrl}${PAGE_PATH}`);
-  await expect(page.locator("#boot")).toHaveClass(/is-hidden/);
+  await expect(page.locator("#boot")).toHaveClass(/is-hidden/, {
+    timeout: BOOT_WAIT_MS,
+  });
   await expect.poll(() => page.evaluate(() => typeof window.__resolveTheme)).toBe("function");
   await page.locator("#dimBtn").click();
   await expect(page.locator("html")).toHaveClass(/dimmed/);
@@ -470,7 +1039,9 @@ test("late theme prefs do not overwrite a theme click already made", async ({ pa
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
   });
   await page.goto(`${baseUrl}${PAGE_PATH}`);
-  await expect(page.locator("#boot")).toHaveClass(/is-hidden/);
+  await expect(page.locator("#boot")).toHaveClass(/is-hidden/, {
+    timeout: BOOT_WAIT_MS,
+  });
   await expect.poll(() => page.evaluate(() => typeof window.__resolveTheme)).toBe("function");
   await page.locator("#themeToggle").click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");

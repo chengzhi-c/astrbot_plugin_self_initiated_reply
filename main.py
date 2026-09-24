@@ -52,6 +52,9 @@ from .session_gate import SessionGate
 # 该价值由本注释承载。
 CommandReply = AsyncGenerator[Any, None]
 
+# 隔离任务注册表的容量参照（不是"还能再接受几个任务"的配额）：首例隔离即经
+# _mark_degraded 关闭 spawn，此后不再有新任务，表规模自然受限。本常量供运维
+# 判读告警与测试模拟规模用，不参与任何门禁判定。
 MAX_QUARANTINED_TASKS = 8
 
 _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
@@ -163,18 +166,10 @@ class SelfInitiatedReplyPlugin(Star):
         # 改为通过 AstrBot 正常 LLM 管线自动触发，行为更接近 @Bot 回复。
         self.bridge = AstrBotBridge(context)
 
-        # 首次规范化落盘：把历史配置文件里的旧键写法（别名、超限值）写成正式
-        # 形状。磁盘已与序列化结果一致时跳过——重写只产生相同字节、两次 fsync
-        # 与宿主 save_config 副作用，还扰动 mtime。失败只让 write_json_atomic
-        # 记一条 warning 的话，用户看到的是 "配置正常加载、插件正常工作"，而磁盘上
-        # 一直是旧形状——这里补一条 ERROR，把"下次启动还会再迁一遍"的实情说清楚。
-        if not config_file_matches(self._config_path, self.settings):
-            if not persist_settings_config(self._config_path, self.config, self.settings):
-                logger.error(
-                    "[%s] 配置规范化落盘失败，本次运行仍用已加载配置：%s",
-                    PLUGIN_ID,
-                    self._config_path,
-                )
+        # 首次规范化落盘的**判定**在这里，落盘本体延后到构造末尾与其余启动
+        # 磁盘 IO 一起执行：此处 `_lifecycle_state` 尚未建立，spawn 路径不可用，
+        # 而写盘含 fsync，在会话循环上就地执行会阻塞所有会话。
+        self._pending_normalize_config = not config_file_matches(self._config_path, self.settings)
 
         self.sessions = load_sessions(
             self._storage_path,
@@ -205,6 +200,9 @@ class SelfInitiatedReplyPlugin(Star):
         self._quarantined_tasks: dict[asyncio.Task[Any], str] = {}
         self._lifecycle_state = PluginLifecycle.RUNNING
         self._stopping = False
+        # 跨实例落盘闸门：本实例被判"最终落盘超时"后置位，仍在跑的写盘在
+        # os.replace 前自我放弃，避免用陈旧快照覆盖新实例写出的 state.json。
+        self._abandon_disk_writes = False
         self._save_lock = asyncio.Lock()
         self._config_lock = asyncio.Lock()
         self._admin_file_mtime: float | None = None
@@ -228,21 +226,29 @@ class SelfInitiatedReplyPlugin(Star):
         )
         self._assemble_components()
 
-        self._save_storage_sync()
-        # 启动清理：rglob+全量 stat（配额 256MB）不得跑在宿主事件循环上。
-        # 有运行中的循环 → 后台任务走 run_image_cleanup（磁盘部分内部 to_thread）；
-        # 无循环（同步加载的宿主）→ 保持原地同步清理。
+        # 启动期磁盘 IO 统一在此执行（三处：配置规范化落盘、状态落盘、图片缓存
+        # 清理）。它们都含 fsync / 大目录遍历，跑在宿主事件循环上会阻塞该进程内
+        # 所有会话与 Web 面板（契约见 tests/test_cleanup_nonblocking）。
+        # - 有运行中的循环 → 全部交后台任务（各自的磁盘部分内部走 to_thread）。
+        # - 无循环（同步加载的宿主）→ 保持原地同步执行，且**不得**在此 spawn：
+        #   ensure_* 内部会 create_task，无循环时直接抛 RuntimeError 让插件加载失败。
+        has_loop = True
         try:
             asyncio.get_running_loop()
         except RuntimeError:
+            has_loop = False
+            if self._pending_normalize_config:
+                self._normalize_config_sync()
+            self._save_storage_sync()
             try:
                 self._scheduler.cleanup_image_sources(now=now_ts())
             except Exception as exc:
                 logger.warning("[%s] startup image cache cleanup failed: %s", PLUGIN_ID, exc)
         else:
-            self._track_background_task(self._startup_image_cleanup())
-        self._scheduler.ensure_patrol()
-        self._scheduler.ensure_image_cleanup()
+            self._track_background_task(self._startup_disk_writes())
+        if has_loop:
+            self._scheduler.ensure_patrol()
+            self._scheduler.ensure_image_cleanup()
         logger.info(
             "[%s] v%s enabled=%s whitelist=%d message_trigger=%s patrol_trigger=%s",
             PLUGIN_ID,
@@ -264,8 +270,22 @@ class SelfInitiatedReplyPlugin(Star):
         bind_api_handlers(self)
         register_web_apis(self)
 
-    def _startup_image_cleanup(self) -> Coroutine[Any, Any, None]:
+    def _startup_disk_writes(self) -> Coroutine[Any, Any, None]:
+        """构造期的磁盘 IO 后台任务：配置规范化落盘 + 状态落盘 + 图片缓存清理。
+
+        三者都含 fsync / 大目录遍历，跑在宿主事件循环上会阻塞该进程内所有
+        会话与 Web 面板（契约见 ``tests/test_cleanup_nonblocking``）。
+        """
+
         async def run() -> None:
+            if self._pending_normalize_config:
+                await self._normalize_config_off_loop()
+            try:
+                # 走 sync 版（含跳写判据）：本任务已在事件循环之外的目的地——
+                # to_thread 内执行，既不阻塞循环也不失去"内容一致即跳过"的语义。
+                await asyncio.to_thread(self._save_storage_sync)
+            except Exception as exc:
+                logger.warning("[%s] startup state save failed: %s", PLUGIN_ID, exc)
             try:
                 await self._scheduler.run_image_cleanup()
             except Exception as exc:
@@ -328,6 +348,8 @@ class SelfInitiatedReplyPlugin(Star):
             ),
             read_history=lambda umo, limit: self.bridge.read_astrbot_history(umo, limit=limit),
             build_image_context=self._vision.build_context,
+            # 判断超时后仍未收敛的 provider 任务交同一隔离登记（与生成路径同源）。
+            quarantine_task=self._quarantine_task,
         )
 
         self._generation = GenerationRunner(
@@ -412,6 +434,26 @@ class SelfInitiatedReplyPlugin(Star):
     def _save_storage_sync(self) -> None:
         save_storage_sync(self)
 
+    def _normalize_config_sync(self) -> None:
+        """同步的配置规范化落盘（无事件循环的宿主，或后台任务内部调用）。"""
+        if not persist_settings_config(self._config_path, self.config, self.settings):
+            logger.error(
+                "[%s] 配置规范化落盘失败，本次运行仍用已加载配置：%s",
+                PLUGIN_ID,
+                self._config_path,
+            )
+
+    async def _normalize_config_off_loop(self) -> None:
+        """把规范化落盘移出事件循环线程（fsync 不得阻塞所有会话）。"""
+        try:
+            await asyncio.to_thread(self._normalize_config_sync)
+        except Exception as exc:
+            logger.warning(
+                "[%s] 配置规范化落盘任务异常：%s",
+                PLUGIN_ID,
+                exc,
+            )
+
     async def _save_storage(self) -> None:
         await save_storage(self)
 
@@ -433,12 +475,14 @@ class SelfInitiatedReplyPlugin(Star):
         return self._lifecycle_state.value
 
     def _can_start_tasks(self) -> bool:
-        """Return whether new plugin-owned work may be scheduled."""
-        return (
-            self._lifecycle_state is PluginLifecycle.RUNNING
-            and not self._stopping
-            and len(self._quarantined_tasks) < MAX_QUARANTINED_TASKS
-        )
+        """Return whether new plugin-owned work may be scheduled.
+
+        容量条件（``len(quarantined) < MAX_QUARANTINED_TASKS``）已删除：首例隔离
+        即经 ``_mark_degraded`` 把 lifecycle 切到 DEGRADED 且永不回退，该条件被
+        先行短路、从未起过决定作用；留着它会让读者误以为"还能再接受几个任务"。
+        ``MAX_QUARANTINED_TASKS`` 仍是注册表容量上限（见 ``_quarantine_task``）。
+        """
+        return self._lifecycle_state is PluginLifecycle.RUNNING and not self._stopping
 
     def _reject_if_not_running(self, action: str) -> None:
         """拒绝非 RUNNING 态下的写操作，并按实际生命周期给出准确原因。
@@ -717,6 +761,10 @@ class SelfInitiatedReplyPlugin(Star):
         task = self._track_critical_task(persist())
         done, _ = await asyncio.wait({task}, timeout=max(0.0, TERMINATE_TASK_TIMEOUT_SEC))
         if not done:
+            # 硬窗口耗尽：宿主不等隔离任务就构造新实例，本实例的慢写若落地会用
+            # 陈旧快照覆盖新实例刚写出的 state.json（配额少计、白名单回退）。
+            # 置位放弃标志，让仍在跑的写盘在 os.replace 之前自我放弃。
+            self._abandon_disk_writes = True
             self._quarantine_task(task, "final state save deadline exceeded")
             return
         try:

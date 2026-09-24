@@ -6,6 +6,7 @@ check/on/off 等有副作用分支，经 plugin 回调访问状态（测试可�
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from astrbot.api.event import AstrMessageEvent
@@ -26,6 +27,12 @@ from .utils import (
     session_whitelisted,
     strip_leading_mentions,
 )
+
+# 手动检查前等待上一轮检查释放运行标记的预算。取消是异步投递的，正常情况
+# 下一个事件循环轮次即释放；预算只防「旧任务卡在不可取消的步骤里」，超时后
+# 照旧走既有「已有判断任务在运行」文案，不无限挂住指令回执。
+_MANUAL_CHECK_RELEASE_WAIT_SEC = 2.0
+_MANUAL_CHECK_RELEASE_POLL_SEC = 0.05
 
 if TYPE_CHECKING:
     from .main import SelfInitiatedReplyPlugin
@@ -171,7 +178,41 @@ def status_text(
     )
 
 
-def debug_text(settings: Settings, event: AstrMessageEvent, ignored_sender: bool) -> str:
+async def _await_previous_check_release(plugin: SelfInitiatedReplyPlugin, umo: str) -> None:
+    """有界等待该会话上一轮检查让出运行标记（最多等 ``_MANUAL_CHECK_RELEASE_WAIT_SEC``）。
+
+    背景：``/selfreply check`` 会先 ``invalidate(force_cancel=True)`` 取消在途
+    检查，但取消是异步投递的——旧任务要到下一个 await 点才真正退出并
+    ``unmark_running``。立即进 pipeline 会撞上 ``is_running`` 检查而返回
+    「已有判断任务在运行」：旧检查被静默掐掉、本次也没执行，用户得重发。
+    预算耗尽仍被占用时照旧返回，由 pipeline 给出既有文案（不无限挂住指令回执）。
+    """
+    deadline = _MANUAL_CHECK_RELEASE_WAIT_SEC
+    waited = 0.0
+    step = _MANUAL_CHECK_RELEASE_POLL_SEC
+    while waited < deadline and plugin._gate.is_running(umo):
+        event = plugin._gate.release_event(umo)
+        try:
+            await asyncio.wait_for(event.wait(), timeout=step)
+        except TimeoutError:
+            waited += step
+            continue
+        break
+
+
+def _lifecycle_reject_text(plugin: SelfInitiatedReplyPlugin, action: str) -> str:
+    """生命周期拒绝的统一文案（DEGRADED 与未启用分开说）。
+
+    DEGRADED 时插件是"已启用但降级"：统一说"未启用"会误导运营去改配置而不是
+    重启插件。多个写指令共用本函数，避免各自措辞漂移（曾出现 ``/on`` 在降级态
+    谎报"已启用"的形态）。
+    """
+    if plugin.lifecycle_state == "DEGRADED":
+        return f"插件已降级，无法{action}（需重启插件恢复）。"
+    return f"插件未启用或正在关闭，无法{action}。"
+
+
+def debug_text(event: AstrMessageEvent, ignored_sender: bool) -> str:
     text = event_text(event)
     return "\n".join(
         [
@@ -215,6 +256,8 @@ async def dispatch_command_action(
     if not umo:
         return "无法识别当前会话。"
     if action == "add":
+        if not plugin._can_start_tasks():
+            return _lifecycle_reject_text(plugin, "修改白名单")
         added = await plugin._add_whitelist_session(umo)
         return (
             f"已将当前会话加入主动回复白名单：{umo}"
@@ -222,16 +265,18 @@ async def dispatch_command_action(
             else f"当前会话已在主动回复白名单中：{umo}"
         )
     if action == "remove":
+        if not plugin._can_start_tasks():
+            return _lifecycle_reject_text(plugin, "修改白名单")
         removed = await plugin._remove_whitelist_session(umo)
         return f"已移出主动回复白名单：{umo}" if removed else f"当前会话本不在主动回复白名单：{umo}"
     if action == "check":
         if not plugin._can_start_tasks():
-            # 文案按实际生命周期区分：DEGRADED 时插件是"已启用但降级"，
-            # 统一说"未启用"会误导运营去改配置而不是重启插件。
-            if plugin.lifecycle_state == "DEGRADED":
-                return "插件已降级，无法手动检查（需重启插件恢复）。"
-            return "插件未启用或正在关闭，无法手动检查。"
+            return _lifecycle_reject_text(plugin, "手动检查")
         generation = plugin._coordinator.invalidate(umo)
+        # 旧检查被 force-cancel 后不会立即让出运行标记（取消是异步投递的），
+        # 直接进 pipeline 会撞上「已有判断任务在运行」——净效果是旧检查被静默
+        # 掐掉、新的也没执行，用户必须重发一次。故有界等待其释放。
+        await _await_previous_check_release(plugin, umo)
         plugin._coordinator.record_event(umo, event, now_ts())
         text = clean_chat_text(arg or strip_command_prefix(event_text(event)))
         if text:
@@ -257,6 +302,10 @@ async def dispatch_command_action(
                 plugin._prune_session(umo)
         return f"主动回复检查结果：{result}"
     if action == "on":
+        # 降级态下「已启用」是谎报：该实例仍拒绝一切新任务（含 force check），
+        # 巡逻也不会重启，恢复只能靠重载插件。文案与 check 分支同源。
+        if not plugin._can_start_tasks():
+            return _lifecycle_reject_text(plugin, "启用")
         async with plugin._config_lock:
             await plugin._persist_enabled(True)
             plugin._scheduler.ensure_patrol()
@@ -270,7 +319,6 @@ async def dispatch_command_action(
         return "主动回复插件已暂停（重启后保持）。"
     if action == "debug":
         return debug_text(
-            plugin.settings,
             event,
             ignored_sender=event_sender_id(event) in plugin.settings.ignored_sender_ids,
         )

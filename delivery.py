@@ -41,7 +41,7 @@ from .models import (
     now_ts,
 )
 from .outbound import OutboundGateway
-from .utils import event_message_id, event_self_id, event_sender_id
+from .utils import event_message_id, event_self_id, event_sender_id, safe_exc_text
 
 # 注入回调的类型别名。这五个全按位置调用，故用 Callable；models.py 的三个
 # Protocol 有关键字形参（limit / enabled+provider_id / force），Callable 表达不了。
@@ -521,18 +521,19 @@ class DeliveryRunner:
             self._clear_result(last_event)
             raise
         except Exception as exc:
+            safe_detail = safe_exc_text(exc)
             logger.warning(
                 "[%s] event send reply failed ledger_id=%s session=%s error=%s",
                 PLUGIN_ID,
                 ledger_id,
                 umo,
-                exc,
+                safe_detail,
                 exc_info=True,
             )
             self._clear_result(last_event)
             if send_started:
-                return SendOutcome(SendStatus.UNKNOWN, str(exc))
-            return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, str(exc))
+                return SendOutcome(SendStatus.UNKNOWN, safe_detail)
+            return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, safe_detail)
 
     async def _send_via_context(
         self,
@@ -612,16 +613,17 @@ class DeliveryRunner:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            safe_detail = safe_exc_text(exc)
             logger.warning(
                 "[%s] send reply failed ledger_id=%s session=%s error=%s",
                 PLUGIN_ID,
                 ledger_id,
                 umo,
-                exc,
+                safe_detail,
             )
             if send_started:
-                return SendOutcome(SendStatus.UNKNOWN, str(exc))
-            return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, str(exc))
+                return SendOutcome(SendStatus.UNKNOWN, safe_detail)
+            return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, safe_detail)
 
     def apply_proactive_state(
         self,

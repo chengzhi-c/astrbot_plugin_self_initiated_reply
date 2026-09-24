@@ -288,8 +288,13 @@ class SessionPipeline:
         *,
         expected_generation: int | None,
         observed_active_at: float | None,
-    ) -> bool:
-        """Apply one ledger outcome and retry only persistence, never state mutation."""
+    ) -> None:
+        """Apply one ledger outcome and retry only persistence, never state mutation.
+
+        结论只写进账本（``mark_recorded`` / ``mark_record_failed``），不返回 bool：
+        调用方 ``_finalize_ledger`` 从 ``ledger.phase`` 读结论，两处各判一次会让
+        "成功"出现两个真相源。
+        """
         logger.debug(
             "[%s] record proactive ledger_id=%s session=%s submissions=%s unknown=%s",
             PLUGIN_ID,
@@ -301,7 +306,7 @@ class SessionPipeline:
         try:
             if not ledger.has_submission:
                 ledger.mark_recorded()
-                return True
+                return
 
             final_states = [
                 attempt.state for attempt in ledger.attempts if attempt.kind == "final_reply"
@@ -335,7 +340,7 @@ class SessionPipeline:
                         ledger.ledger_id,
                         umo,
                     )
-                    return True
+                    return
                 logger.warning(
                     "[%s] record proactive persistence failed ledger_id=%s session=%s attempt=%d",
                     PLUGIN_ID,
@@ -346,7 +351,7 @@ class SessionPipeline:
                 if attempt_no + 1 < _MAX_RECORD_SAVE_ATTEMPTS:
                     await asyncio.sleep(_RECORD_SAVE_RETRY_SEC)
             ledger.mark_record_failed("state persistence retries exhausted")
-            return False
+            return
         except asyncio.CancelledError:
             if ledger.phase == LedgerPhase.RECORDING:
                 ledger.mark_record_failed("state persistence task cancelled")
@@ -361,7 +366,7 @@ class SessionPipeline:
                 umo,
                 exc,
             )
-            return False
+            return
 
     def _create_critical_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = self._track_critical_task(coro)
@@ -406,10 +411,13 @@ class SessionPipeline:
                 return ledger.phase == LedgerPhase.RECORDED
         try:
             await asyncio.shield(cast(asyncio.Future[Any], task))
-            return ledger.phase == LedgerPhase.RECORDED
         except asyncio.CancelledError:
             await asyncio.shield(cast(asyncio.Future[Any], task))
             raise
+        # 结论只从账本状态读：``_record_ledger`` 也自行返回 bool，但那条返回值
+        # 从未被消费（两个出口各判一次会让"成功"有两个真相源）。失败路径已由
+        # ``mark_record_failed`` 落进账本，故此处看 phase 即等价且单源。
+        return ledger.phase == LedgerPhase.RECORDED
 
     def session_check_guard(
         self, umo: str, *, force: bool, expected_generation: int | None

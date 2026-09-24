@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .models import AttemptLedger, SendOutcome, SendStatus, SuppressCode
+from .utils import safe_exc_text
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,19 @@ class OutboundGateway:
     async def send(self, message: Any, *, kind: str = "reply") -> OutboundResult:
         """Classify one outbound call and retain its evidence in the ledger."""
         is_direct = kind == "tool_direct"
+        if not self._ledger.accepts_attempts:
+            # 账本已封（生成已结束/被隔离、或在记 RECORDED）：迟到的工具直发是
+            # 可预期的时序，不是编程错误。`reserve` 的 RuntimeError 语义留给
+            # 真正的调用点错误，这里降级为闸门拒绝——被隔离的运行保留了 tracker
+            # （generation._cleanup_generation_state 的刻意取舍），其内的工具直发
+            # 必然走到这里；抛异常会让该次直发的记账整条丢失，与"继续受预算与
+            # 代次约束"的意图相反。
+            outcome = SendOutcome(
+                SendStatus.SUPPRESSED,
+                "ledger already sealed",
+                SuppressCode.GATE_REJECTED,
+            )
+            return OutboundResult(outcome)
         attempt = self._ledger.reserve(
             "tool_direct" if is_direct else "final_reply",
             self._message_text(message) if is_direct else "",
@@ -116,7 +130,7 @@ class OutboundGateway:
         except asyncio.CancelledError:
             outcome = SendOutcome(SendStatus.UNKNOWN, "sender cancelled after start")
         except Exception as exc:
-            outcome = SendOutcome(SendStatus.UNKNOWN, str(exc))
+            outcome = SendOutcome(SendStatus.UNKNOWN, safe_exc_text(exc))
         else:
             if raw_result is False:
                 outcome = SendOutcome(

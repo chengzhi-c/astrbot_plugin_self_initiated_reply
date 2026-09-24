@@ -60,9 +60,6 @@ from .storage import write_json_atomic
 # 历史兼容别名由 Settings.from_config 的 legacy_keys 回退读取，不入本名单。
 CONFIG_SCHEMA_KEYS = frozenset(spec.key for spec in CONFIG_SPECS)
 
-# 宿主 provider 管理器返回的 (id, provider) 二元组长度（get_all_providers 的历史形态）。
-_PROVIDER_TUPLE_LEN = 2
-
 
 def _config_value(config: Any, key: str, default: Any = "") -> Any:
     if isinstance(config, dict):
@@ -131,7 +128,7 @@ def _collect_provider_options(plugin: SelfInitiatedReplyPlugin) -> list[dict[str
     seen: set[str] = set()
     for provider in providers:
         fallback_id = ""
-        if isinstance(provider, tuple) and len(provider) == _PROVIDER_TUPLE_LEN:
+        if isinstance(provider, tuple) and len(provider) == 2:
             fallback_id = str(provider[0] or "")
             provider = provider[1]
         option = _provider_option(provider, fallback_id)
@@ -491,6 +488,11 @@ def _snapshot_plugin_state(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     **不可逆裁剪**的字段，共享引用会让回滚恢复一个已被裁小的 deque。
     其余标量字段的窗口内变更按现行语义保留——那是对真实事件的记录，
     回滚不应抹掉。
+
+    本快照**不足以**独立完成 §11 B2 的回滚：被白名单变更 ``pop`` 掉的会话状态
+    不在这里（快照时刻还在，但恢复时已被 ``_whitelist.replace`` 摘走）。
+    那部分由 ``_apply_config_updates`` 捕获 ``replace`` 的 ``pruned`` 返回值
+    并在恢复时先回填，见 ``_restore_plugin_state`` 的 ``pruned`` 参数。
     """
     return {
         "settings": copy.deepcopy(plugin.settings),
@@ -526,8 +528,24 @@ def _restore_session_history(plugin: SelfInitiatedReplyPlugin, saved: dict[str, 
             state.recent = deque(records, maxlen=limit)
 
 
-async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict[str, Any]) -> None:
-    """恢复配置应用前快照，重建被取消的延迟检查并恢复任务拓扑。"""
+async def _restore_plugin_state(
+    plugin: SelfInitiatedReplyPlugin,
+    snapshot: dict[str, Any],
+    *,
+    pruned: dict[str, Any] | None = None,
+) -> None:
+    """恢复配置应用前快照，重建被取消的延迟检查并恢复任务拓扑。
+
+    ``pruned`` 是 ``_whitelist.replace()`` 摘下的会话状态（键 → **原对象**）。
+    必须在 ``_restore_session_history`` **之前**回填（契约 §11 B2）：
+
+    - 不填的话，这些键在 ``snapshot["sessions"]`` 里有、在 ``plugin.sessions``
+      里没有，会走「新建 SessionState」分支——键回来了、日配额与冷却却清零，
+      且对象身份丢失（在途检查持旧引用，写回落在孤儿对象上，与 B1 同源）。
+    - 顺序不可反：``_restore_session_history`` 会删掉 ``saved`` 之外的键，
+      回填放在它之后就等于白填。``replace`` 全程同步且紧跟快照，故
+      ``pruned`` 的键必然都在快照里，回填不会引入快照外的键。
+    """
     # 原地恢复（保持 Settings 对象身份）：组件构造时各存 self.settings
     # 引用，整体替换会让它们读到过期配置。
     plugin.settings.apply(snapshot["settings"])
@@ -539,6 +557,8 @@ async def _restore_plugin_state(plugin: SelfInitiatedReplyPlugin, snapshot: dict
     plugin._coordinator.restore_inplace(snapshot)
     restore_container_inplace(plugin._whitelist_runtime_umos, snapshot["whitelist_runtime_umos"])
     plugin._gate.restore(snapshot["gate"])
+    if pruned:
+        plugin.sessions.update(pruned)
     _restore_session_history(plugin, snapshot["sessions"])
     # 回滚后重新调度被白名单变更取消的延迟检查（已取消的任务对象
     # 不可复用，只能按默认 message_delay 语义重建）。
@@ -579,6 +599,9 @@ async def _apply_config_updates(
 ) -> dict[str, Any]:
     """应用配置变更；任何失败回滚全部运行态后重新抛出。"""
     snapshot = _snapshot_plugin_state(plugin)
+    # 被白名单变更摘下的会话状态（键 → 原对象）。必须在回滚路径可见，
+    # 故声明在 try 之外；见 _restore_plugin_state 的 pruned 参数。
+    pruned: dict[str, Any] = {}
     try:
         candidate = plugin.settings.to_config_dict()
         # 幂等三层（均为刻意）：_strict_value 先拒绝类型错误（400），
@@ -597,7 +620,7 @@ async def _apply_config_updates(
         # self.settings 引用，整体替换会造成热更新后组件读旧值。
         plugin.settings.apply(new_settings)
         if "whitelist_sessions" in updates:
-            plugin._whitelist.replace(new_settings.whitelist)
+            pruned = plugin._whitelist.replace(new_settings.whitelist)
         if vision_changed:
             plugin._vision.clear_parsers()
         if updates:
@@ -620,6 +643,12 @@ async def _apply_config_updates(
                 await plugin._scheduler.stop_patrol()
         elif plugin.runtime_enabled:
             plugin._scheduler.ensure_image_cleanup()
+        # 影响后台任务拓扑的**其余**配置键也要重算注册：POST /config 是运行期
+        # 改这些键的唯一入口（官方 Dashboard 走整插件 reload），只判 enabled
+        # 会让「保存成功、状态显示开启、实际巡检不跑」持续到下次重启。
+        # enabled_patrol_trigger 的关闭方向由循环自身的 while 条件退出，无需操作。
+        if "enabled_patrol_trigger" in updates and plugin.runtime_enabled:
+            plugin._scheduler.ensure_patrol()
         _log_audited_changes(snapshot, new_settings, updates)
         config = new_settings.to_config_dict()
         adjusted_fields = sorted(
@@ -640,8 +669,21 @@ async def _apply_config_updates(
             "runtime_enabled": plugin.runtime_enabled,
             "adjusted_fields": adjusted_fields,
         }
+    except asyncio.CancelledError:
+        # 取消（宿主停止 / 调用方放弃）也要回滚：`CancelledError` 继承
+        # `BaseException`，不落下面的 `except Exception`，而此前的应用步骤
+        # （settings.apply / whitelist.replace / _persist_config）可能已完成，
+        # 留下"白名单已清空、磁盘已写新值、内存未回滚"的半应用态。
+        # 回滚自带 await，用 shield 防止二次取消打断它。
+        rollback = asyncio.ensure_future(_restore_plugin_state(plugin, snapshot, pruned=pruned))
+        try:
+            await asyncio.shield(rollback)
+        except asyncio.CancelledError:
+            # 二次取消不再等待：回滚任务已在跑，由主循环收敛
+            pass
+        raise
     except Exception:
-        await _restore_plugin_state(plugin, snapshot)
+        await _restore_plugin_state(plugin, snapshot, pruned=pruned)
         raise
 
 

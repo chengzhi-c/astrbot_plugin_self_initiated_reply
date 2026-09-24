@@ -163,7 +163,7 @@ MAX_RELEASE_WAIT_ROUNDS = 20
 # 最大延迟 = 窗口长，探测失败不变更缓存、窗口后重试。
 ADMIN_REFRESH_WINDOW_SEC = 30.0
 # 外部时间戳的容许时钟偏移：状态文件是可被手工编辑的外部输入，
-# 而 _finite_float 只挡 NaN/inf，负值与远未来原样穿透。两个方向危害不同：
+# 而纯数值转换（as_float）只挡 NaN/inf，负值与远未来原样穿透。两个方向危害不同：
 #
 # - 远未来（now+1e9）：remaining_silence_sec 变成数十年，该会话永久锁死；
 #   延迟检查以巨值为 timeout 停放，唤醒后重算仍是巨值又停回去，成为不死任务；
@@ -308,7 +308,7 @@ def as_timestamp(value: Any, *, now: float | None = None) -> float:
 
     与 ``as_float`` 的区别只在上界是动态的：时间戳的合法上界随时钟走，写死一个
     绝对值会随时间失效。NaN/inf/不可解析一律归 0.0（等价「从未活跃」），与
-    ``_finite_float`` 的原语义一致；新增的是两侧钳位。
+    ``as_float`` 的原语义一致；新增的是两侧钳位。
 
     ``now`` 可注入以便测试；默认取 ``now_ts()``。
     """
@@ -618,6 +618,17 @@ class AttemptLedger:
             and attempt.text
             and attempt.state in {AttemptState.DELIVERED, AttemptState.UNKNOWN}
         )
+
+    @property
+    def accepts_attempts(self) -> bool:
+        """账本是否还能受理新尝试（供调用方在 reserve 之前判闸门）。
+
+        ``reserve`` 对已封账本抛 ``RuntimeError``（编程错误语义）。但
+        "账本已封时收到迟到的工具直发"是可预期的时序：被隔离的运行会保留
+        tracker（见 ``generation._cleanup_generation_state``），其内的直发必然
+        走到这里。调用方据此降级为闸门拒绝，而不是让异常逃进宿主。
+        """
+        return self.phase is LedgerPhase.OPEN
 
     def reserve(self, kind: str, text: str = "") -> SendAttempt:
         if self.phase != LedgerPhase.OPEN:
@@ -1231,10 +1242,14 @@ def read_config_value(spec: ConfigSpec, config: Any) -> Any:
     """从宿主配置对象读一个键：正式键优先，缺失时按旧键顺序回退。
 
     只强制转换一次：把旧键值 coerce 成 fallback、再把 fallback 当 raw 二次
-    coerce，对 list 类键会静默清空——``container="set"`` 的第一次 coerce 产出
-    ``set``，而列表条目归一化只认 list/str，第二次遇到 set 得空列表。存量
-    配置里只有 ``whitelist``（无 ``whitelist_sessions``）的用户会整表丢白名单。
+    coerce，会让同一份值走两遍边界与截断（重复计警告、二次截断语义不清）。
+    存量配置里只有 ``whitelist``（无 ``whitelist_sessions``）的用户靠这条纪律
+    保证旧键值被**原样**采纳。
     守卫：``test_spec_table_legacy_fallback_matches_from_config``。
+
+    （历史注记：本 docstring 曾描述「二次 coerce 会把 set 容器清空」——
+    ``_list_items`` 现已接受 ``list/tuple/set/frozenset``，该失效形态不再成立；
+    纪律仍在，理由改为上面的「重复走边界」。）
 
     ``fallback`` 的语义是「``raw`` 强制失败时落回哪个值」：正式键存在时落回旧键
     的值而非静态默认，这是 ``vision_enabled`` → 两个新开关的迁移语义。

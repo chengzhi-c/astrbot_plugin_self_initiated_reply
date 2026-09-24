@@ -107,7 +107,7 @@ async def test_pipeline_record_retry_does_not_apply_state_twice() -> None:
     ledger.seal()
     ledger.start_recording(object())
 
-    result = await pipeline._record_ledger(
+    await pipeline._record_ledger(
         "s1",
         state,
         ledger,
@@ -116,12 +116,12 @@ async def test_pipeline_record_retry_does_not_apply_state_twice() -> None:
         observed_active_at=1.0,
     )
 
-    assert result is True
+    # 结论单源在账本状态（_record_ledger 不再返回 bool）
+    assert ledger.phase == "recorded"
     assert delivery.apply_calls == 1
     assert delivery.persist_calls == 2
     assert state.daily_count == 1
     assert len(state.recent) == 1
-    assert ledger.phase == "recorded"
 
 
 def _pipeline_with_delivery(package_name: str, delivery: object):
@@ -165,7 +165,7 @@ async def test_pipeline_persist_exhaustion_marks_record_failed_next_run_independ
     failed = _delivered_sealed_ledger(models)
     failed.start_recording(object())
 
-    result = await pipeline._record_ledger(
+    await pipeline._record_ledger(
         "s1",
         state,
         failed,
@@ -174,7 +174,6 @@ async def test_pipeline_persist_exhaustion_marks_record_failed_next_run_independ
         observed_active_at=1.0,
     )
 
-    assert result is False
     assert failed.phase == "record_failed"
     assert failed.record_failure == "state persistence retries exhausted"
     assert failed.start_recording(object()) is False
@@ -186,7 +185,7 @@ async def test_pipeline_persist_exhaustion_marks_record_failed_next_run_independ
     delivery.persist_calls = 0
     nxt = _delivered_sealed_ledger(models)
     nxt.start_recording(object())
-    second = await pipeline._record_ledger(
+    await pipeline._record_ledger(
         "s1",
         state,
         nxt,
@@ -195,7 +194,6 @@ async def test_pipeline_persist_exhaustion_marks_record_failed_next_run_independ
         observed_active_at=1.0,
     )
 
-    assert second is True
     assert nxt.phase == "recorded"
     assert delivery.apply_calls == 2
     assert state.daily_count == 2
@@ -240,7 +238,7 @@ async def test_pipeline_unknown_delivery_consumes_quota_without_history_entry() 
     assert ledger.has_unknown is True
     ledger.start_recording(object())
 
-    result = await pipeline._record_ledger(
+    await pipeline._record_ledger(
         "s1",
         state,
         ledger,
@@ -249,7 +247,6 @@ async def test_pipeline_unknown_delivery_consumes_quota_without_history_entry() 
         observed_active_at=42.0,
     )
 
-    assert result is True
     assert ledger.phase == "recorded"
     assert delivery.apply_calls == 1
     assert delivery.apply_kwargs == [
@@ -368,7 +365,7 @@ async def test_pipeline_record_exception_marks_record_failed() -> None:
     ledger = _delivered_sealed_ledger(models)
     ledger.start_recording(object())
 
-    result = await pipeline._record_ledger(
+    await pipeline._record_ledger(
         "s1",
         state,
         ledger,
@@ -377,7 +374,6 @@ async def test_pipeline_record_exception_marks_record_failed() -> None:
         observed_active_at=1.0,
     )
 
-    assert result is False
     assert ledger.phase == "record_failed"
     assert ledger.record_failure == "apply boom"
     assert delivery.apply_calls == 1

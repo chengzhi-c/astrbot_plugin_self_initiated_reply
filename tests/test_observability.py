@@ -73,52 +73,89 @@ _CHECKED_MODULES = [
     "decision.py",
     "delivery.py",
     "generation.py",
+    "image/extractor.py",
     "image/parser.py",
+    "image/recorder_bridge.py",
     "image/vision_runtime.py",
     "main.py",
     "message_ingress.py",
+    "models.py",
     "outbound.py",
     "plugin_state.py",
+    "runtime_adapter.py",
     "scheduler.py",
     "session_coordinator.py",
     "session_gate.py",
     "session_pipeline.py",
     "storage.py",
+    "utils.py",
     "webapi.py",
     "whitelist.py",
 ]
 
-# 生产模块里不适用本纪律的部分：它们是纯数据/叶子模块，没有任何日志调用，
-# 纳入清单只会让上面两条用例空转（_info_templates 恒空）。
-# 该清单由 test_checked_modules_cover_every_production_module 与生产模块清单
-# 双向钉住：新增带 logger 的生产模块漏登记即红。
+# 生产模块里**没有任何 logger 调用**的部分：不适用 INFO 纪律检查
+# （_info_templates 恒空，纳入清单只会让上面两条用例空转）。
+# 判据是「零 logger 调用」而非「零 INFO」——只有 WARNING/DEBUG 的模块**照常**
+# 参与 INFO 纪律（它们列在 _CHECKED_MODULES 里，新增 INFO 会被拦下）。
+# 该集与生产模块清单双向钉住（漏登记即红），集内成员由
+# test_unlogged_modules_really_have_no_log_calls 逐模块核验「真的零调用」。
 _UNLOGGED_MODULES = frozenset(
     {
         "__init__.py",
         "image/__init__.py",
         "image/_support.py",
-        "image/extractor.py",
-        "image/recorder_bridge.py",
-        "models.py",
-        "runtime_adapter.py",
-        "utils.py",
     }
 )
+
+# logger 的全部级别；用于核验豁免集（任何级别都算「有日志调用」）
+_LOGGER_LEVELS = frozenset({"debug", "info", "warning", "error", "exception", "critical"})
+
+
+def _logger_call_levels(rel: str) -> list[str]:
+    """模块内全部 ``logger.<level>(...)`` 调用的级别（用于豁免集核验）。"""
+    tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
+    levels: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if isinstance(node.func.value, ast.Name) and node.func.value.id == "logger":
+            if node.func.attr in _LOGGER_LEVELS:
+                levels.append(node.func.attr)
+    return levels
+
+
+def _first_arg_template(first: ast.expr) -> str | None:
+    """调用首参的静态模板（取不到静态文本时返回 None）。
+
+    f-string 首参取**常量片段拼接**：``logger.info(f"[%s] session={umo}")`` 的模板
+    为 ``"[%s] session="``。不采 f-string 时整条 INFO 可绕过白名单（此前只认
+    ``ast.Constant``，f-string 直接漏采，纪律开了天窗）。
+    """
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value
+    if isinstance(first, ast.JoinedStr):
+        return "".join(
+            part.value
+            for part in first.values
+            if isinstance(part, ast.Constant) and isinstance(part.value, str)
+        )
+    return None
 
 
 def _info_templates(rel: str) -> set[str]:
     tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
     found: set[str] = set()
     for node in ast.walk(tree):
-        if (
+        if not (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "info"
             and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
         ):
-            found.add(node.args[0].value)
+            continue
+        template = _first_arg_template(node.args[0])
+        if template is not None:
+            found.add(template)
     return found
 
 
@@ -131,6 +168,38 @@ def test_info_logs_are_whitelisted_only() -> None:
                 offenders.append((rel, template))
     assert not offenders, "新增 INFO 未登记白名单：\n" + "\n".join(
         f"  {rel}: {t}" for rel, t in offenders
+    )
+
+
+def test_unlogged_modules_really_have_no_log_calls() -> None:
+    """豁免集的语义必须是事实：集内模块真的零 ``logger.*`` 调用。
+
+    只按「有没有 INFO」豁免会漏：``models.py``/``runtime_adapter.py`` 等只有
+    WARNING/DEBUG，却同样不在纪律内，日后在其中新增 INFO 无人拦截。故判据收紧
+    为「零 logger 调用」，本用例是它的守门人——被豁免模块里出现任何一条日志
+    调用即红（实测：此前豁免集里的 ``models.py`` 3 条 warning、
+    ``runtime_adapter.py`` 9 条、``image/recorder_bridge.py`` 5 条都是反例）。
+    """
+    offenders = sorted(rel for rel in _UNLOGGED_MODULES if _logger_call_levels(rel))
+    assert not offenders, (
+        "以下豁免模块并非「零日志调用」，应移入 _CHECKED_MODULES 参与 INFO 纪律：\n"
+        + "\n".join(f"  {rel}: {_logger_call_levels(rel)}" for rel in offenders)
+    )
+
+
+def test_fstring_info_first_arg_is_collected() -> None:
+    """f-string 首参必须也被采集，否则整条 INFO 能绕过白名单（纪律开天窗）。
+
+    实测反例：``logger.info(f"[%s] session={umo}")`` 的首参是 ``ast.JoinedStr``，
+    旧实现只认 ``ast.Constant``——该行既不入 offenders（不红），也不进白名单
+    僵尸检查，新增 INFO 就此免检。
+    """
+    fstring_line = 'logger.info(f"[%s] unchecked session={umo}")\n'
+    template = _first_arg_template(ast.parse(fstring_line).body[0].value.args[0])
+
+    assert template == "[%s] unchecked session=", f"f-string 首参未被采集：{template!r}"
+    assert template not in _INFO_WHITELIST, (
+        "采集出的 f-string 模板撞上白名单条目，本用例失去判别力：请改用其他文案"
     )
 
 

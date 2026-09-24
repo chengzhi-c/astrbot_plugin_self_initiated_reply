@@ -488,7 +488,14 @@ def test_startup_persist_failure_is_not_swallowed() -> None:
         and "persist_settings_config" in ast.unparse(node.value)
     ]
     assert not bare_calls, f"启动路径又吞掉了 persist_settings_config 的返回值：{bare_calls}"
-    assert _call_count("main.py", "SelfInitiatedReplyPlugin.__init__", "logger.error") >= 1
+    # 返回值必须被消费：落盘失败要在启动路径上留下 ERROR。判定按**实现点**统计，
+    # 不锚 `__init__` 本体——规范化落盘已移出事件循环，其消费者是
+    # `_normalize_config_sync`（由构造期的后台任务调用）；锚死 `__init__` 等于
+    # 锁死实现位置，后续任何"把 IO 挪出循环"的改动都会被这条守卫误伤。
+    normalize_sync = "SelfInitiatedReplyPlugin._normalize_config_sync"
+    normalize_off_loop = "SelfInitiatedReplyPlugin._normalize_config_off_loop"
+    assert _call_count("main.py", normalize_sync, "logger.error") >= 1
+    assert _call_count("main.py", normalize_off_loop, "logger.warning") >= 1
 
 
 def _reset_value_expressions(rel: str, qualname: str) -> list[str]:
@@ -559,7 +566,15 @@ def test_documented_commands_parse_and_cover_every_action() -> None:
     先改了）——用户照文档操作会没任何反应；② 新增动作但三处说明都没写
     ——`metadata.yaml` 的 help 是宿主安装界面唯一展示面，漏写等于用户看不见。
     这里**真跑** `parse_command_text`，不比对文本：指令解析的唯一判据是它。
+
+    加载前必须显式装宿主 stub：``commands`` 顶层 import 宿主符号，本文件此前
+    靠其它测试文件先装好 stub 的全局副作用才通过——单独跑本文件即
+    ``ModuleNotFoundError``（实测）。宿主 stub 是本用例的前置条件，不应依赖
+    执行顺序。
     """
+    from .host_stubs import install_astrbot_stubs
+
+    install_astrbot_stubs()
     commands = load_package("selfreply_command_surface_package", "commands")
     surfaces = {rel: (ROOT / rel).read_text(encoding="utf-8") for rel in _COMMAND_SURFACES}
     surfaces["commands.help_text()"] = commands.help_text()

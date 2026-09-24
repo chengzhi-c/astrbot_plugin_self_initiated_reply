@@ -54,15 +54,17 @@ export function createProviderControl(refs, deps) {
   }
   if (refs.button) {
     refs.button.addEventListener("click", () => {
+      // 只是换输入方式不改配置值：标脏与否看前后取值是否真有变化，
+      // 否则用户点一下「手动输入」再点回「使用列表」就会留下一个假的未保存标记。
+      const before = value();
       if (manual) {
         sync(refs.input ? refs.input.value.trim() : "");
         if (manual) showToast("当前 Provider 不在列表中，继续保留手动输入");
-        else if (deps.onDirty) deps.onDirty();
-        return;
+      } else {
+        if (refs.input) refs.input.value = refs.select ? refs.select.value || "" : "";
+        setManual(true, true);
       }
-      if (refs.input) refs.input.value = refs.select ? refs.select.value || "" : "";
-      setManual(true, true);
-      if (deps.onDirty) deps.onDirty();
+      if (deps.onDirty && value() !== before) deps.onDirty();
     });
   }
   if (refs.select) {

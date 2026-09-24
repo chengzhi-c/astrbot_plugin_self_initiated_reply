@@ -44,7 +44,7 @@ from ..models import (
     MAX_IMAGE_DESCRIPTION_CACHE_BYTES,
     PLUGIN_ID,
 )
-from ..utils import redact_url, response_text
+from ..utils import redact_exc_text, redact_url, response_text
 from ._support import (
     ALLOWED_IMAGE_PORTS,
     HTTP_SCHEMES,
@@ -75,8 +75,19 @@ _UNABLE_PATTERNS = re.compile(
     r"无法.*获取|不能.*获取|抱歉.*图|sorry.*image",
     re.IGNORECASE,
 )
-# 模型答复至少要有这么长的正文，才值得匹配「无法描述」类拒答 pattern。
-_UNABLE_MIN_LENGTH = 10
+# 命中的拒答片段之外，剩余正文短于该值才判为拒答（片段构成整句主体）。
+#
+# 实测标定（tests/test_vision_parser_gaps.py 双向钉住，改坏任一侧即红）：
+# - 真拒答的剩余正文最长 8 字符（"无法识别这张图片的内容。" → 命中"无法识别"）；
+# - 有效描述的剩余正文最短 12 字符（"图片是一张支付失败截图，…"）。
+# 阈值取两者之间并留余量：偏大压不住误杀（有效描述被丢），偏小收不进真拒答。
+# 下面这个常量是**阈值本身**（=10），不是上面那个 12。
+#
+# 为什么不再有"正文过短即拒答"的独立分支：短正文本身不是拒答证据。既有用例
+# test_parse_falls_back_to_result_chain_plain_text 的 "来自chain" 只有 7 个字符，
+# 按长度直接判拒答会连同一切简短但有效的描述一起丢掉（那是新引入的误杀，
+# 与本次修复的方向相反）。空描述由调用方的 `not description` 分支处理。
+_UNABLE_RESIDUAL_MIN_LENGTH = 10
 # HTTP 状态码 >= 该值即视为下载失败（图片 URL 通常是 302 后的 CDN，4xx/5xx 一律放弃）。
 _HTTP_ERROR_STATUS_MIN = 400
 
@@ -110,13 +121,17 @@ def _scan_source_cache(
         try:
             if path.is_symlink():
                 continue
+            # 归属校验对目录同样必需：Windows 目录联接（junction）的
+            # is_symlink() 为 False 且 rglob 会穿透，缓存外的空目录会以
+            # 「缓存内的目录」身份进入回收表并被 rmdir。判据与文件同口径，
+            # resolve() 同时覆盖 junction 与 symlink，无需平台分支。
+            resolved = path.resolve()
+            resolved.relative_to(resolved_root)
             if path.is_dir():
                 directories.append(path)
                 continue
             if not path.is_file():
                 continue
-            resolved = path.resolve()
-            resolved.relative_to(resolved_root)
             stat_result = path.stat()
             files.append((stat_result.st_mtime, path, stat_result.st_size, resolved))
         except (OSError, ValueError):
@@ -164,8 +179,18 @@ def _remove_over_quota_cache_files(
     return removed
 
 
-def _remove_empty_cache_directories(directories: list[Path]) -> None:
+def _remove_empty_cache_directories(directories: list[Path], resolved_root: Path) -> None:
+    """Remove empty directories, re-checking that each one belongs to the cache.
+
+    The scan already filters by ownership; this second check is deliberate
+    defence in depth (same shape as the file path's two-layer guard) because
+    ``rmdir`` is unrecoverable once executed.
+    """
     for directory in sorted(directories, reverse=True):
+        try:
+            directory.resolve().relative_to(resolved_root)
+        except (OSError, ValueError):
+            continue
         try:
             if next(directory.iterdir(), None) is not None:
                 continue
@@ -618,7 +643,9 @@ class ImageParser:
             logger.info("[%s] image parsing timed out", PLUGIN_ID)
             return None
         except Exception as exc:
-            logger.warning("[%s] image parsing failed: %s", PLUGIN_ID, exc)
+            # provider SDK 的异常串常带出请求 URL（含 api_key/Signature 等
+            # query 凭证），与 decision/adapters 同口径脱敏后再记日志。
+            logger.warning("[%s] image parsing failed: %s", PLUGIN_ID, redact_exc_text(exc))
             return None
 
     @staticmethod
@@ -652,7 +679,7 @@ class ImageParser:
         except (TypeError, ValueError, OverflowError):
             quota = None
         removed += _remove_over_quota_cache_files(survivors, protected, quota)
-        _remove_empty_cache_directories(directories)
+        _remove_empty_cache_directories(directories, resolved_root)
         return removed
 
     async def parse_batch(
@@ -723,8 +750,10 @@ class ImageParser:
                 data_url = await self._fetch_image_data_url(file_value)
                 if data_url:
                     return data_url
+                # 失败不终局：继续尝试 ``url``（与 docstring 的「失败即继续下
+                # 一路」一致）。``file`` 是对端可控字段，在这里返回就等于给对端
+                # 一个「填个坏掉的 file_path 即可屏蔽 url 分支」的能力。
                 logger.info("[%s] image URL download failed: %s", PLUGIN_ID, redact_url(file_value))
-                return None
             path = Path(file_value)
             # 本地路径一律走 allowlist：image_info.trusted_local_path
             # 由提取层从「组件不是 Mapping」推断，而对端可控的 OneBot file 值
@@ -879,10 +908,20 @@ class ImageParser:
                         return None
                     return to_data_url(content_type, bytes(content))
         except Exception as exc:
-            logger.debug("[%s] image download failed: %s", PLUGIN_ID, exc)
+            logger.debug("[%s] image download failed: %s", PLUGIN_ID, redact_exc_text(exc))
             return None
 
     @staticmethod
     def _is_unable_to_describe(content: str) -> bool:
+        """正文去掉命中片段后所剩无几，才算 provider 给不出内容。
+
+        只按「全文任意位置命中 pattern」判定会误杀正常描述：描述一张报错截图
+        本身就必须提到「图片加载失败」「没有图片元素」这类字样，而这类描述
+        被丢弃后既不写缓存、又会让每次触发重复调用 provider。
+        """
         stripped = str(content or "").strip()
-        return len(stripped) >= _UNABLE_MIN_LENGTH and bool(_UNABLE_PATTERNS.search(stripped))
+        match = _UNABLE_PATTERNS.search(stripped)
+        if match is None:
+            return False
+        remainder = (stripped[: match.start()] + stripped[match.end() :]).strip()
+        return len(remainder) < _UNABLE_RESIDUAL_MIN_LENGTH

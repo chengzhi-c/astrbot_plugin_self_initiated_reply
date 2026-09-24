@@ -178,8 +178,12 @@ def _build_payload(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
 def save_storage_sync(plugin: SelfInitiatedReplyPlugin) -> None:
     """启动期状态落盘：磁盘已与待写快照一致时跳过（无谓 fsync 与 mtime 扰动）。
 
-    仅 ``__init__`` 调用：刚从同一文件加载出的内容零变化时重写是纯浪费；
-    首启（文件不存在）与真实变更（白名单过滤、跨天）则照常写。
+    仅 ``__init__`` 调用（含它的后台化路径）：刚从同一文件加载出的内容零变化时
+    重写是纯浪费；首启（文件不存在）与真实变更（白名单过滤、跨天）则照常写。
+
+    ``abandoned`` 闸门与 ``save_storage`` 同源：本函数跑在后台线程里，而
+    ``terminate`` 判超时可能发生在它执行期间——不复查的话，被判放弃的实例仍会在
+    替换前一刻发布陈旧快照，覆盖新实例写出的状态。
     """
     try:
         payload = _build_payload(plugin)
@@ -188,24 +192,43 @@ def save_storage_sync(plugin: SelfInitiatedReplyPlugin) -> None:
         return
     if sessions_payload_matches(plugin._storage_path, payload):
         return
-    if not write_sessions_payload(plugin._storage_path, payload):
-        logger.warning("[%s] initial state save failed path=%s", PLUGIN_ID, plugin._storage_path)
+    if not write_sessions_payload(
+        plugin._storage_path,
+        payload,
+        abandoned=lambda: plugin._abandon_disk_writes,
+    ):
+        if not plugin._abandon_disk_writes:
+            logger.warning(
+                "[%s] initial state save failed path=%s", PLUGIN_ID, plugin._storage_path
+            )
 
 
 async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
     async with plugin._save_lock:
+        if plugin._abandon_disk_writes:
+            # 本实例已被判"最终落盘超时"：宿主不等隔离任务就构造了新实例，
+            # 此时任何落盘都可能用陈旧快照覆盖新实例写出的状态。放弃是主动
+            # 决策，不是失败，故不抛异常、不记错误（DEBUG：正常停机路径的
+            # 细节，运维无需关注）。
+            logger.debug("[%s] state save skipped: instance abandoned", PLUGIN_ID)
+            return
         payload = _build_payload(plugin)
         write_task = asyncio.create_task(
-            asyncio.to_thread(write_sessions_payload, plugin._storage_path, payload)
+            asyncio.to_thread(
+                write_sessions_payload,
+                plugin._storage_path,
+                payload,
+                abandoned=lambda: plugin._abandon_disk_writes,
+            )
         )
         try:
             success = await asyncio.shield(write_task)
         except asyncio.CancelledError:
             success = await write_task
-            if not success:
+            if not success and not plugin._abandon_disk_writes:
                 raise OSError(f"状态文件写入失败：{plugin._storage_path}") from None
             raise
-        if not success:
+        if not success and not plugin._abandon_disk_writes:
             raise OSError(f"状态文件写入失败：{plugin._storage_path}")
 
 

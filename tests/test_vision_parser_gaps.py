@@ -717,6 +717,96 @@ def test_parse_result_chain_getter_failure_returns_none(tmp_path: Path) -> None:
 
 
 # ============================================================================
+# _is_unable_to_describe()：拒答判定（正文主体 vs 全文任意出现）
+# ============================================================================
+
+
+def test_unable_detection_keeps_descriptions_about_errors_and_failures() -> None:
+    """描述「报错截图／加载失败／纯文本界面」是有效描述，不得被判为拒答。
+
+    原实现「正文任意位置命中 pattern 即拒答」会连带丢弃这类描述：用户侧表现为
+    图片明明识别成功却拿不到描述，且描述不写缓存、每次触发都重复调用 provider。
+    """
+    _load_modules()
+    detect = _parser_module().ImageParser._is_unable_to_describe
+
+    rejections = [
+        "图片中显示上传失败的错误提示，红色文本位于中央。",
+        "这是一张报错截图，提示图片加载失败，请重试。",
+        "这张图里没有图片元素，是纯文本界面。",
+        # 同形态扩展：命中片段之外的正文足以构成描述
+        "截图里没有图片元素，只有一段报错文字。",
+        "图中没有图片，是纯文字的控制台输出。",
+        "图片是一张支付失败截图，提示「余额不足」。",
+    ]
+    for text in rejections:
+        assert detect(text) is False, f"正常描述被判为拒答: {text}"
+
+
+def test_unable_detection_still_matches_bare_refusals() -> None:
+    """只剩拒答话术（去掉命中片段后所剩无几）仍须判为拒答。"""
+    _load_modules()
+    detect = _parser_module().ImageParser._is_unable_to_describe
+
+    refusals = [
+        "无法查看这张图片",
+        "抱歉，我看不到图片内容",
+        "图片加载失败",
+        "无法识别图片中的内容",
+        "抱歉，我无法查看图片。",
+        "图片上传失败，无法识别。",
+        "sorry, I cannot see the image.",
+    ]
+    for text in refusals:
+        assert detect(text) is True, f"真拒答未被识别: {text}"
+
+
+def test_unable_detection_ignores_short_text_without_refusal_phrase() -> None:
+    """短正文本身不构成拒答证据：收紧误杀不得变成放宽。
+
+    ``result_chain`` 回落文本（既有用例 ``test_parse_falls_back_to_result_chain_plain_text``
+    的 "来自chain"）只有 7 个字符；把「短正文」直接当拒答会把它连同一切简短但
+    有效的描述一起丢掉。
+    """
+    _load_modules()
+    detect = _parser_module().ImageParser._is_unable_to_describe
+
+    assert detect("来自chain") is False
+    assert detect("一只猫") is False
+    assert detect("") is False
+
+
+def test_parse_keeps_error_screenshot_description_and_caches_it() -> None:
+    """端到端：报错截图的描述必须返回并写进缓存（改坏实现即红）。"""
+    _, image, _ = _load_modules()
+    description = "图片中显示上传失败的错误提示，红色文本位于中央。"
+
+    class Bridge:
+        def __init__(self):
+            self.calls = 0
+
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(completion_text=description)
+
+    bridge = Bridge()
+    parser = image.ImageParser(bridge, provider_id="p")
+
+    async def fake_resolve(_info):
+        return PNG_DATA_URL
+
+    parser._resolve_image_url = fake_resolve
+    info = image.ImageInfo(url="https://x/y.png")
+
+    assert asyncio.run(parser.parse(info, umo="s")) == description, "报错截图描述被判为拒答丢弃"
+    assert asyncio.run(parser.parse(info, umo="s")) == description
+    assert bridge.calls == 1, "描述未写缓存，第二次又调用了 provider"
+
+
+# ============================================================================
 # cleanup_source_cache()：清理守卫与异常降级
 # ============================================================================
 
@@ -1028,6 +1118,31 @@ def test_resolve_http_file_path_fetch_failure_returns_none(tmp_path: Path, monke
     monkeypatch.setattr(parser, "_fetch_image_data_url", fake_fetch)
     info = image.ImageInfo(file_path="https://x/y.png")
     assert asyncio.run(parser._resolve_image_url(info)) is None
+
+
+def test_resolve_http_file_path_failure_falls_back_to_url(tmp_path: Path, monkeypatch) -> None:
+    """``file_path`` 下载失败后必须继续尝试 ``url``，不得提前终止。
+
+    同函数 docstring 的契约是「任一路仅在成功时提前返回，失败即继续下一路」。
+    原实现在 ``file_path`` 下载失败处直接 ``return None``，于是：
+    1. ``url`` 分支被跳过（与该 docstring 矛盾）；
+    2. ``file`` 是对端可控字段，提前终止等于给对端一个「屏蔽 url 分支」的能力。
+    """
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    attempts: list[str] = []
+
+    async def fake_fetch(url):
+        attempts.append(url)
+        return None if url == "https://file-path.test/a.png" else PNG_DATA_URL
+
+    monkeypatch.setattr(parser, "_fetch_image_data_url", fake_fetch)
+    info = image.ImageInfo(file_path="https://file-path.test/a.png", url="https://url.test/b.png")
+
+    assert asyncio.run(parser._resolve_image_url(info)) == PNG_DATA_URL
+    assert attempts == ["https://file-path.test/a.png", "https://url.test/b.png"], (
+        "url 分支未被尝试（file_path 下载失败即终局）"
+    )
 
 
 def test_resolve_relative_path_via_recorder(tmp_path: Path) -> None:

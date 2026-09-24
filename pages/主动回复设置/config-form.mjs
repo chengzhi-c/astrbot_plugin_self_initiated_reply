@@ -30,8 +30,10 @@ function whitelistGroupId(item) {
   }
   return "";
 }
-export function uniqueWhitelistItems(text) {
-  const items = parseWhitelist(text);
+export function uniqueWhitelistItems(text, parsedItems = null) {
+  // ``parsedItems`` 是可选优化口：``summarizeWhitelist`` 已 parse 过时直接复用，
+  // 避免对同一份文本重复切分（输入事件每键触发一次，白名单几百行时不浪费）。
+  const items = parsedItems || parseWhitelist(text);
   const bareIds = new Set(items.filter((item) => /^\d+$/.test(item)));
   const seen = new Set();
   const unique = [];
@@ -44,9 +46,9 @@ export function uniqueWhitelistItems(text) {
   }
   return unique;
 }
-export function summarizeWhitelist(text) {
-  const items = parseWhitelist(text);
-  const unique = uniqueWhitelistItems(text);
+export function summarizeWhitelist(text, parsedItems = null) {
+  const items = parsedItems || parseWhitelist(text);
+  const unique = uniqueWhitelistItems(text, items);
   if (unique.length === 0) return "未配置会话（留空则不主动回复任何会话）";
   const pureNumbers = unique.filter((i) => /^\d+$/.test(i)).length;
   const umos = unique.length - pureNumbers;

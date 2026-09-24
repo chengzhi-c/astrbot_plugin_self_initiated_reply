@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1064,6 +1066,91 @@ def test_image_cache_is_lru_bounded() -> None:
     assert cache.get("c") == "desc-c"
 
 
+# ============================================================================
+# 魔数嗅探：BMP 头校验（两字节前缀不足以证明是图片）
+# ============================================================================
+
+
+def _real_bmp_bytes() -> bytes:
+    """最小的结构自洽 BMP 载荷（14 字节文件头 + 40 字节 DIB + 像素）。"""
+    pixel_data = b"\x00\x00\xff\x00"
+    offset = 14 + 40
+    size = offset + len(pixel_data)
+    header = b"BM" + size.to_bytes(4, "little") + b"\x00\x00\x00\x00" + offset.to_bytes(4, "little")
+    dib = (
+        (40).to_bytes(4, "little")
+        + (1).to_bytes(4, "little", signed=True)
+        + (1).to_bytes(4, "little", signed=True)
+        + (1).to_bytes(2, "little")
+        + (24).to_bytes(2, "little")
+        + b"\x00" * 24
+    )
+    return header + dib + pixel_data
+
+
+def _recorder_bridge_module():
+    """取 ``image.recorder_bridge`` 模块（façade 刻意不导出该内部类）。"""
+    _load_modules()
+    return sys.modules[f"{PACKAGE_NAME}.image.recorder_bridge"]
+
+
+def test_bmp_prefix_alone_does_not_sniff_as_an_image(tmp_path: Path) -> None:
+    """只以 ``BM`` 开头的文本不得被判为 ``image/bmp``，更不能被 base64 外传。
+
+    两字节前缀的误判面很宽（任何以 ``BM`` 开头的文本文件都命中），而命中后
+    文件内容会被 base64 编码发给第三方 Vision provider——「下游只能外传真实
+    图片」这条纵深假设因此失效。
+    """
+    _, image, _ = _load_modules()
+
+    text_payload = b"BM" + b"this is plain text, not a bitmap image" * 2
+    assert image.sniff_image_mime(text_payload) == "", "BM 开头的文本被判为 BMP"
+    assert image.sniff_image_mime(b"BM") == "", "两字节 BM 被判为 BMP"
+    assert image.sniff_image_mime(b"BM" * 7) == "", "重复 BM 被判为 BMP"
+
+    path = tmp_path / "note.bmp"
+    path.write_bytes(text_payload)
+    bridge = _recorder_bridge_module().MessageRecorderBridge()
+    assert bridge.image_to_data_url(path) is None, "BM 开头的文本文件被 base64 外传"
+
+
+def test_real_bmp_payload_still_sniffs_and_converts(tmp_path: Path) -> None:
+    """对照：结构合法的真 BMP 仍须通过嗅探与转换（收紧不得变成误杀）。"""
+    _, image, _ = _load_modules()
+    payload = _real_bmp_bytes()
+
+    assert image.sniff_image_mime(payload) == "image/bmp", "真 BMP 被嗅探器误杀"
+
+    path = tmp_path / "picture.bmp"
+    path.write_bytes(payload)
+    bridge = _recorder_bridge_module().MessageRecorderBridge()
+    result = bridge.image_to_data_url(path)
+    assert result is not None, "真 BMP 被拒，识图功能受损"
+    assert result.startswith("data:image/bmp;base64,")
+
+
+def test_bmp_sniffing_matches_the_mime_extension_table() -> None:
+    """嗅探集与 ``MIME_EXTENSIONS`` 同址维护：能嗅出就必须能落盘（反之亦然）。
+
+    ``_support.py`` 的注释把两者定义为同一格式集；改动 BMP 判据时若只改
+    一边，会出现"嗅探通过但内容寻址落盘拒绝"（或反向）的不一致。
+    """
+    _load_modules()
+    support = sys.modules[f"{PACKAGE_NAME}.image._support"]
+
+    detected = {
+        "image/jpeg": b"\xff\xd8\xff\xe0" + b"\x00" * 32,
+        "image/png": b"\x89PNG\r\n\x1a\n" + b"\x00" * 32,
+        "image/gif": b"GIF89a" + b"\x00" * 32,
+        "image/webp": b"RIFF\x24\x00\x00\x00WEBP" + b"\x00" * 32,
+        "image/bmp": _real_bmp_bytes(),
+    }
+    for mime, payload in detected.items():
+        assert support.sniff_image_mime(payload) == mime
+        assert mime in support.MIME_EXTENSIONS, f"{mime} 可嗅探但无扩展名映射"
+    assert set(detected) == set(support.MIME_EXTENSIONS), "两个格式集已漂移"
+
+
 def test_image_info_cache_key_prefers_url_then_file() -> None:
     _, image, _ = _load_modules()
     url_info = image.ImageInfo(url="https://x/y.png", file_path="/tmp/y.png")
@@ -1266,6 +1353,119 @@ def test_image_context_numbering_follows_original_position() -> None:
 # ============================================================================
 
 
+def _make_directory_junction(link: Path, target: Path) -> None:
+    """用 ``mklink /J`` 建目录联接（Windows 上无需管理员）。
+
+    创建失败时 ``pytest.skip``：某些环境/权限/文件系统下会失败，若让用例变红
+    就成了"环境问题冒充缺陷"。跳过时给出原因，避免静默空转报告 PASSED。
+    """
+    try:
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:  # cmd 不可执行（非 Windows 等）
+        pytest.skip(f"目录联接不可用: {exc}")
+    if completed.returncode != 0:
+        detail = (completed.stdout + completed.stderr).strip()
+        pytest.skip(f"目录联接创建失败（rc={completed.returncode}）: {detail}")
+    if not link.is_dir() or link.is_symlink():
+        pytest.skip("目录联接未生效或形态不符（is_symlink=True），无法验证")
+    # 自证探针有效：联接内路径的 resolve() 必须真的穿透到缓存根之外。若该前提
+    # 不成立（例如文件系统不解析联接），断言 `outside` 存活就失去意义——那种
+    # 情况必须显式失败，而不是变成假绿灯。
+    assert link.resolve() == target.resolve(), "探针无效：resolve() 未穿透目录联接"
+
+
+def test_cleanup_does_not_rmdir_directories_reached_through_a_junction(tmp_path: Path) -> None:
+    """目录联接把 rglob 引到缓存外的空目录时，不得删除它们。
+
+    Windows 目录联接（junction）的 ``is_symlink()`` 为 False、``rglob`` 会穿透，
+    而原实现只对**文件**做 ``resolve().relative_to(resolved_root)`` 校验，目录
+    直接进回收表——``cleanup_source_cache`` 于是删掉了缓存树之外的目录。
+    """
+    _, image, _ = _load_modules()
+
+    root = tmp_path / "image_cache"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    victim = outside / "victim"
+    victim.mkdir(parents=True)
+    link = root / "linked"
+    _make_directory_junction(link, outside)
+
+    image.ImageParser.cleanup_source_cache(root, max_age_sec=60, max_total_bytes=None, now=5000.0)
+
+    assert outside.exists(), "缓存外的目录被链接穿透后删除"
+    assert victim.exists(), "缓存外的子目录被链接穿透后删除"
+
+
+def test_cleanup_still_rmdirs_empty_directories_inside_the_cache(tmp_path: Path) -> None:
+    """对照：缓存树内的空目录仍须回收（守卫不得变成"永不清理"）。"""
+    _, image, _ = _load_modules()
+
+    root = tmp_path / "image_cache"
+    inner = root / "aa"
+    inner.mkdir(parents=True)
+
+    image.ImageParser.cleanup_source_cache(root, max_age_sec=60, max_total_bytes=None, now=5000.0)
+
+    assert not inner.exists(), "缓存内空目录未被回收，清理退化"
+
+
+def test_cleanup_does_not_delete_outside_files_reached_through_a_junction(tmp_path: Path) -> None:
+    """目录联接下的**过期文件**也不得被删——这才是真实拦截点。
+
+    空目录形态（上一条）只钉住目录侧；扫描函数的文件归属校验同样关键：
+    ``rglob`` 穿过联接后会把缓存外的文件收进回收表，若扫描侧不做
+    ``resolve().relative_to(resolved_root)``，``_remove_expired_cache_files``
+    会按 mtime 直接 ``unlink`` 它们（实测：缓存外的过期文件真被删除）。
+    """
+    _, image, _ = _load_modules()
+
+    root = tmp_path / "image_cache"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "ancient.jpg"
+    victim.write_bytes(b"\xff\xd8\xff\xe0" + b"x" * 32)
+    # 刷成年老时间戳，确保落入过期集合
+    old = 1000.0
+    os.utime(victim, (old, old))
+    link = root / "linked"
+    _make_directory_junction(link, outside)
+
+    removed = image.ImageParser.cleanup_source_cache(
+        root, max_age_sec=60, max_total_bytes=None, now=5000.0
+    )
+
+    assert victim.exists(), (
+        f"缓存外的过期文件被目录联接引到后删除了（removed={removed}）——扫描侧的文件归属校验缺失"
+    )
+    assert removed == 0, f"不该有任何文件被回收，实际 removed={removed}"
+
+
+def test_remove_empty_cache_directories_rechecks_ownership(tmp_path: Path) -> None:
+    """纵深：列表里混入缓存外目录时，回收函数自身也必须拒绝。
+
+    与文件那条的"双层防护"同款：扫描侧的过滤是第一层，回收侧自校验是第二层。
+    直接调用时列表由调用方给出，故这里显式传一个缓存外目录。
+    """
+    _load_modules()
+    parser_mod = sys.modules[f"{PACKAGE_NAME}.image.parser"]
+
+    root = tmp_path / "image_cache"
+    root.mkdir()
+    outside = tmp_path / "outside_empty"
+    outside.mkdir()
+
+    parser_mod._remove_empty_cache_directories([outside], root.resolve())
+
+    assert outside.exists(), "回收函数未自校验归属，缓存外目录被删"
+
+
 def test_cleanup_never_rmdirs_a_directory_that_still_holds_files(tmp_path: Path) -> None:
     """非空目录不得进入 rmdir——即使宿主的 rmdir 不抛 ENOTEMPTY。
 
@@ -1325,6 +1525,64 @@ def test_cleanup_never_rmdirs_a_directory_that_still_holds_files(tmp_path: Path)
 # ============================================================================
 # 提取层真实逻辑盲区（分类留痕时识别出的第三类，非防御性代码）
 # ============================================================================
+
+
+def test_malformed_image_url_does_not_drop_the_whole_message() -> None:
+    """单张图的畸形 URL 不得连带丢弃同条消息里其余正常图片。
+
+    ``urlparse("http://[::1/bad.png")`` 抛 ``ValueError: Invalid IPv6 URL``，且
+    该值完全对端可控（OneBot 的 url/file 字段）。原实现把两次 ``urlparse`` 放在
+    逐图循环里却不做逐图保护：畸形值在前则整条消息的图片提取中断
+    （``extract_images`` 返回 ``[]``），后面的正常图片一并丢失——用户侧表现为
+    "带两张图的消息，一张都识别不了"，且不产生任何告警。
+    """
+    _, image, _ = _load_modules()
+
+    malformed = "http://[::1/bad.png"
+    good = "https://cdn.test/good.png"
+
+    cases = {
+        "畸形 url 在前": [
+            SimpleNamespace(type="image", url=malformed),
+            SimpleNamespace(type="image", url=good),
+        ],
+        "畸形 url 在后": [
+            SimpleNamespace(type="image", url=good),
+            SimpleNamespace(type="image", url=malformed),
+        ],
+        "畸形 file 在前": [
+            SimpleNamespace(type="image", file=malformed),
+            SimpleNamespace(type="image", url=good),
+        ],
+        "畸形 url 与正常 file 同组件": [
+            SimpleNamespace(type="image", url=malformed, file=good),
+        ],
+    }
+
+    for label, components in cases.items():
+        extracted = image.ImageExtractor.extract_images(
+            SimpleNamespace(get_messages=lambda batch=components: batch)
+        )
+        survivors = [item for item in extracted if good in (item.url or item.file_path)]
+        assert survivors, f"{label}：同条消息里的正常图片被畸形 URL 连带丢弃"
+
+
+def test_malformed_image_url_in_a_mapping_component_is_isolated() -> None:
+    """Mapping（裸 OneBot 段）形态同样逐图隔离。"""
+    _, image, _ = _load_modules()
+
+    malformed = "http://[::1/bad.png"
+    good = "https://cdn.test/good.png"
+    components = [
+        {"type": "image", "url": malformed},
+        {"type": "image", "url": good},
+    ]
+
+    extracted = image.ImageExtractor.extract_images(
+        SimpleNamespace(get_messages=lambda: components)
+    )
+
+    assert [item.url for item in extracted if item.url] == [good], "畸形 URL 丢弃了整条消息的图片"
 
 
 def test_component_type_accepts_enum_repr_shape() -> None:

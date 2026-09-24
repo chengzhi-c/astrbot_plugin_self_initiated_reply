@@ -25,6 +25,7 @@ import {
 	setupMobileTabs,
 	setupMoreActionsMenu,
 	setupNav,
+	syncTopbarHeight,
 	themeWasTouched,
 	updateNavFades,
 	updateTopbarStuck,
@@ -275,9 +276,15 @@ async function loadProviders() {
 	} catch (error) {
 		providerOptions = [];
 		providerListAvailable = false;
-		// 列表不可用时全部切手动输入：循环保证不会漏掉后加的控件。
+		// 顺序是硬约束：control.render() 会先 innerHTML="" 再写回旧值，列表为空时
+		// 写回即归零（实测 beforeRender="provider-a" → afterRender=""）。故当前值
+		// 必须在 renderAll() **之前**取；render 之后同步交给 sync()——此时
+		// isListAvailable() 为 false，它必然落到手动分支，把值写进输入框（该输入框
+		// 此后既是显示来源也是 buildConfigSaveBody 的取值来源）。反过来写等于没改。
+		const preserved = providerControlList.map((control) => control.value());
 		renderAll();
-		providerControlList.forEach((control) => control.setManual(true));
+		// 列表不可用时全部切手动输入：循环保证不会漏掉后加的控件。
+		providerControlList.forEach((control, index) => control.sync(preserved[index]));
 		if (els.providerListState) {
 			els.providerListState.textContent =
 				"Provider 列表不可用，三个 Provider 均可手动填写";
@@ -295,7 +302,9 @@ async function loadAll({ force = false } = {}) {
 	loadInFlight = true;
 	try {
 		await loadProviders();
-		await configIo.loadConfig({ force });
+		// 透传 loadConfig 的结果：false 表示这次响应被协调器拦下（表单已脏或
+		// 有编辑在此请求期间发生），配置并没有被替换。
+		return await configIo.loadConfig({ force });
 	} finally {
 		loadInFlight = false;
 	}
@@ -311,8 +320,14 @@ async function doRefresh() {
 	els.refreshBtn.disabled = true;
 	els.refreshBtn.classList.add("is-loading");
 	try {
-		await loadAll({ force: true });
-		showToast("已刷新为最新配置");
+		const applied = await loadAll({ force: true });
+		// 只说真话：表单脏时响应被拦下，内容仍是用户编辑的那份，谎报「已刷新为
+		// 最新配置」会让用户以为磁盘内容已生效（随后保存会把他的编辑覆盖上去）。
+		showToast(
+			applied === false
+				? "检测到未保存改动，已保留当前内容，请保存后再刷新"
+				: "已刷新为最新配置",
+		);
 	} catch (err) {
 		showToast(err.message || "刷新失败");
 	} finally {
@@ -431,6 +446,7 @@ configIo.setupValidation();
 setupMoreActionsMenu(els);
 setupMobileTabs(els);
 window.addEventListener("scroll", createScrollHandler(els), { passive: true });
+syncTopbarHeight(els);
 updateTopbarStuck(els);
 configIo.attachDirtyListeners();
 

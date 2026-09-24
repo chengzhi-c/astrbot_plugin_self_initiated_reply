@@ -8,7 +8,7 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from ..models import sanitize_prompt_variable
+from ..models import MAX_IMAGE_BYTES, sanitize_prompt_variable
 
 # 图片来源 scheme 判定，两个集合用途不同，勿合并：
 # - HTTP_SCHEMES：可下载的远端地址；
@@ -32,6 +32,13 @@ _GIF_PREFIXES = (b"GIF87a", b"GIF89a")
 _BMP_PREFIX = b"BM"
 _RIFF_PREFIX = b"RIFF"
 _WEBP_TAG = b"WEBP"
+
+# BMP 文件头长度与合理性上界：`bfType` 只有两字节，单看它会把任何以 "BM"
+# 开头的文本判成图片，而命中后文件内容会被 base64 外传给第三方 Vision
+# provider（「下游只能外传真实图片」的纵深假设因此失效）。故按完整文件头校验：
+# 14 字节头 + `bfSize`/`bfOffBits` 落在结构上可能的范围内。
+_BMP_HEADER_SIZE = 14
+_BMP_SIZE_SANITY = MAX_IMAGE_BYTES
 
 # 缓存键取原形（不摘要化）的值长度上界。远长于任何真实路径/URL，短于要保护的
 # 内存量级；超过即摘要化，理由见 ImageInfo.cache_key 的 docstring。
@@ -90,6 +97,22 @@ def to_data_url(mime: str, content: bytes) -> str:
     return f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}"
 
 
+def _looks_like_bmp(data: bytes) -> bool:
+    """BMP 判据取完整 14 字节文件头，而非两字节 ``BM`` 前缀。
+
+    ``bfSize``（偏移 2，4 字节小端）是文件总长度、``bfOffBits``（偏移 10，
+    4 字节小端）是像素数据偏移。二者的结构约束是
+    ``14 <= bfOffBits <= bfSize``：真 BMP 必然满足，而以 ``BM`` 开头的文本
+    几乎必然违反（实测 ``b"BM" + b"text..."`` 的 bfSize/bfOffBits 解析为
+    巨大或 0 值）。上界复用 ``MAX_IMAGE_BYTES``，与图片字节上限同源。
+    """
+    if len(data) < _BMP_HEADER_SIZE or not data.startswith(_BMP_PREFIX):
+        return False
+    size = int.from_bytes(data[2:6], "little")
+    offset = int.from_bytes(data[10:14], "little")
+    return _BMP_HEADER_SIZE <= offset <= size <= _BMP_SIZE_SANITY
+
+
 def sniff_image_mime(data: bytes) -> str:
     """Return the MIME type implied by magic bytes, else ``""``."""
     if not data:
@@ -102,7 +125,7 @@ def sniff_image_mime(data: bytes) -> str:
         return "image/gif"
     if data.startswith(_RIFF_PREFIX) and data[8:12] == _WEBP_TAG:
         return "image/webp"
-    if data.startswith(_BMP_PREFIX):
+    if _looks_like_bmp(data):
         return "image/bmp"
     return ""
 
@@ -144,11 +167,13 @@ class ImageCache:
     def put(self, key: str, value: str) -> bool:
         value = str(value)
         value_size = self._value_size(value)
+        if self._max_size == 0 or (self._max_bytes is not None and value_size > self._max_bytes):
+            # 容量判定必须在摘除旧值之前：拒绝写入不应带「删除既有值」的
+            # 副作用（一次超预算的写入会清掉本该仍在的有效描述）。
+            return False
         previous = self._cache.pop(key, None)
         if previous is not None:
             self._bytes_used -= self._value_size(previous)
-        if self._max_size == 0 or (self._max_bytes is not None and value_size > self._max_bytes):
-            return False
 
         self._cache[key] = value
         self._bytes_used += value_size

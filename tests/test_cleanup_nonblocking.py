@@ -157,9 +157,9 @@ async def test_settings_config_write_offloads_file_io_to_thread(tmp_path: Path) 
     threads: list[int] = []
     original = storage.write_json_atomic
 
-    def probe(path, data):
+    def probe(path, data, **kwargs):
         threads.append(threading.get_ident())
-        return original(path, data)
+        return original(path, data, **kwargs)
 
     storage.write_json_atomic = probe
     try:
@@ -243,9 +243,9 @@ def test_mutating_webapi_endpoints_write_off_the_event_loop(tmp_path: Path) -> N
         threads: list[int] = []
 
         def make_probe(original):
-            def probe(path, data):
+            def probe(path, data, **kwargs):
                 threads.append(threading.get_ident())
-                return original(path, data)
+                return original(path, data, **kwargs)
 
             return probe
 
@@ -272,3 +272,66 @@ def test_mutating_webapi_endpoints_write_off_the_event_loop(tmp_path: Path) -> N
             web.request.payload = {}
 
     with_plugin(tmp_path, scenario)
+
+
+def test_plugin_construction_writes_off_the_event_loop(tmp_path: Path) -> None:
+    """插件构造期的两处同步写盘不得跑在事件循环线程上。
+
+    构造段含两次「规范化落盘」（配置 + 状态）：两者都是 ``write_json_atomic``
+    （临时文件 + ``os.fsync`` + ``replace``），在宿主事件循环上执行时，磁盘慢
+    或 ``state.json`` 大就会阻塞该进程内所有会话与 Web 面板。同文件里
+    ``rglob`` 那半已钉住同一契约（见本模块 docstring），本用例锚定 fsync 这半。
+
+    构造期无 loop 分支（同步加载的宿主）不适用——那里没有事件循环可阻塞，
+    故只断言「有循环时写盘不在循环线程」。
+    """
+    from .host_stubs import load_main, with_plugin
+
+    load_main()
+    storage = None
+    module_name = None
+
+    async def scenario(plugin, _main):
+        nonlocal storage, module_name
+        import sys
+
+        package = type(plugin).__module__.rsplit(".", 1)[0]
+        module_name = f"{package}.storage"
+        storage = sys.modules[module_name]
+
+    with_plugin(tmp_path, scenario)
+    assert storage is not None and module_name is not None
+
+    threads: list[int] = []
+    original = storage.write_json_atomic
+
+    def probe(path, data, **kwargs):
+        threads.append(threading.get_ident())
+        return original(path, data, **kwargs)
+
+    storage.write_json_atomic = probe
+    try:
+        # 第二次构造（同一 tmp_path）：上一次已在磁盘留下正式形状，故规范化
+        # 落盘会被跳过——先删掉两个文件，逼出「首次规范化落盘」这条路径。
+        for name in ("config.json", "state.json"):
+            for path in tmp_path.rglob(name):
+                path.unlink()
+
+        seen: list[int] = []
+
+        async def second(plugin, _main):
+            # 构造期的磁盘 IO 已后台化：等探针真正被调用，否则"没写"与"还没写"
+            # 不可区分，断言会退化成恒绿假契约。
+            for _ in range(200):
+                if threads:
+                    break
+                await asyncio.sleep(0.01)
+            seen.extend(threads)
+
+        with_plugin(tmp_path, second)
+        assert seen, "构造期未发生写盘——用例已失去覆盖对象"
+        assert all(thread != threading.get_ident() for thread in seen), (
+            "构造期写盘在事件循环线程内执行——fsync 会阻塞所有会话"
+        )
+    finally:
+        storage.write_json_atomic = original

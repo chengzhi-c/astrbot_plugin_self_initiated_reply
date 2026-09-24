@@ -179,6 +179,56 @@ def test_redaction_degrades_on_non_url_shapes() -> None:
     assert redact("http://[::1") == "http://[::1"
 
 
+def test_redaction_strips_userinfo_credentials() -> None:
+    """netloc 里的 user:password@ 与 query 里的签名同等敏感，必须一并剥掉。
+
+    缺陷形态：只剥 query/fragment 时 ``https://alice:SECRET@host/a.jpg`` 会
+    原样输出（无 query 时连 ``<redacted>`` 标记都没有），basic-auth 凭证进日志
+    并经 GET /status 出网。
+    """
+    redact = _load_utils().redact_url
+
+    out = redact("https://alice:SUPERSECRET@img.example.com/a.jpg")
+    assert "SUPERSECRET" not in out, f"userinfo 密码泄漏：{out}"
+    assert "alice" not in out, f"userinfo 用户名泄漏：{out}"
+    assert out == "https://img.example.com/a.jpg"
+    # 与 query 同时出现时两个都剥
+    both = redact("https://alice:SECRET@img.example.com/a.jpg?Signature=X&token=Y")
+    assert "SECRET" not in both and "Signature" not in both, f"组合形态泄漏：{both}"
+    assert both == "https://img.example.com/a.jpg?<redacted>"
+    # 无 userinfo 时行为不变（含 IPv6 与显式端口）
+    assert redact("http://[::1]:8080/a.jpg") == "http://[::1]:8080/a.jpg"
+    assert redact("https://img.example.com:8443/a.jpg") == "https://img.example.com:8443/a.jpg"
+    # 越界/非数字端口不得让脱敏自身抛异常（对端可控文本即可构造）
+    assert redact("http://host:99999/a.jpg") == "http://host:99999/a.jpg"
+    assert redact("http://host:abc/a.jpg") == "http://host:abc/a.jpg"
+
+
+def test_exception_text_extraction_survives_broken_str() -> None:
+    """``__str__`` 抛异常的异常不得让取文本本身崩溃，也不得因此泄漏。
+
+    缺陷形态：投递路径在 ``except`` 块里构造 ``SendOutcome(status, str(exc))``，
+    二次抛出会让异常逃出 gateway/send_reply → ledger 停在 sealed →
+    ``has_submission=False`` 不消耗冷却与配额 → 已提交的消息重复发送。
+    ``redact_exc_text`` 同样跑在异常处理路径上，故一并要求它不抛。
+    """
+    utils_mod = _load_utils()
+
+    class BrokenStr(Exception):
+        def __str__(self) -> str:  # pragma: no cover - 由被测代码触发
+            raise RuntimeError("__str__ is broken")
+
+    text = utils_mod.safe_exc_text(BrokenStr())
+    assert text == "BrokenStr", f"退化值应是类型名，实得 {text!r}"
+    # 含 URL 的坏 ``__str__`` 异常：redact_exc_text 也不得抛
+    redacted = utils_mod.redact_exc_text(BrokenStr())
+    assert redacted == "BrokenStr"
+    # 正常异常照旧脱敏
+    assert "SECRET" not in utils_mod.redact_exc_text(
+        RuntimeError("Client error '401' for url 'https://h/a?api_key=SECRET'")
+    )
+
+
 def test_redacted_length_never_exceeds_budget() -> None:
     """输出长度恒 <= LOG_URL_MAX_CHARS——标记必须计入截断预算。
 
@@ -201,3 +251,62 @@ def test_redacted_length_never_exceeds_budget() -> None:
 
     # 超长带签名的 URL 仍不得泄漏凭证
     assert "SECRET_SIGNATURE" not in redact(long_signed)
+
+
+def _capture_vision_parse_failure_log(parser_mod, exc: BaseException) -> str:
+    """让 provider 调用抛指定异常，返回 ``image parsing failed`` 那行日志。"""
+    lines: list[str] = []
+
+    class _Recorder:
+        def __getattr__(self, _name):
+            def _log(message, *args, **_kwargs):
+                try:
+                    lines.append(str(message) % args if args else str(message))
+                except Exception:
+                    lines.append(str(message))
+
+            return _log
+
+    class _RaisingBridge:
+        """桥接替身：provider 解析与调用都抛指定异常。"""
+
+        async def resolve_provider_id(self, _umo, _configured):
+            return "vision-provider"
+
+        async def llm_generate_direct(self, **_kwargs):
+            raise exc
+
+    original_logger = parser_mod.logger
+    parser_mod.logger = _Recorder()
+    try:
+        parser = parser_mod.ImageParser(_RaisingBridge())
+
+        # 绕开网络：直接给出可解析的 data URL
+        async def _fake_resolve(_image):
+            return "data:image/png;base64,iVBORw0KGgo="
+
+        parser._resolve_image_url = _fake_resolve  # type: ignore[method-assign]
+        image = parser_mod.ImageInfo(url=SIGNED_URL)
+        asyncio.run(parser.parse(image, umo="s1"))
+    finally:
+        parser_mod.logger = original_logger
+    failures = [line for line in lines if "image parsing failed" in line]
+    return failures[-1] if failures else ""
+
+
+def test_vision_provider_exception_log_drops_credentials() -> None:
+    """Vision provider 异常日志必须脱敏（与 decision/adapters 同一口径）。
+
+    缺陷形态：``image/parser.py`` 的 ``except Exception`` 直接记 ``exc``，而
+    provider SDK 的异常串常把请求 URL 整段带出来（含 api_key/Signature 等
+    query 凭证）——实测会把签名原样写进日志。
+
+    变异锚定：把该处 ``redact_exc_text(exc)`` 换回裸 ``exc``，本用例红。
+    """
+    parser_mod = _load_parser()
+    exc = RuntimeError(f"Client error '401' for url '{SIGNED_URL}'")
+    line = _capture_vision_parse_failure_log(parser_mod, exc)
+    assert line, "未捕获 vision 解析失败日志——用例已失去覆盖对象"
+    for secret in SECRETS:
+        assert secret not in line, f"vision 异常日志泄漏凭证 {secret}：{line}"
+    assert "<redacted>" in line, f"未标记 query 已被剥离：{line}"

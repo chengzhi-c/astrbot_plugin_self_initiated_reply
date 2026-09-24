@@ -15,6 +15,7 @@ import os
 import tempfile
 import time
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -87,12 +88,10 @@ def _persist_config_obj(config_obj: Any, data: dict[str, Any]) -> bool:
     return False
 
 
-def config_file_matches(path: Path, settings: Settings) -> bool:
-    """启动跳写判据：磁盘配置已解析内容与 ``Settings`` 序列化结果是否逐字等价。
+def _json_file_matches(path: Path, expected: dict[str, Any]) -> bool:
+    """磁盘 JSON 已解析内容与期望字典是否逐字等价（跳写判据的唯一实现）。
 
-    只有等价才可跳过启动期的规范化落盘：文件缺失/损坏/非对象一律返回 False，
-    确保首启创建与旧形状迁移照常写。比较用 ``to_config_dict()`` 的正式键形态，
-    集合已按排序输出，与落盘字节同源。
+    文件缺失/损坏/非对象一律返回 False，确保首启创建与旧形状迁移照常写。
     """
     try:
         if not path.exists():
@@ -100,21 +99,36 @@ def config_file_matches(path: Path, settings: Settings) -> bool:
         disk = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return False
-    return isinstance(disk, dict) and disk == settings.to_config_dict()
+    return isinstance(disk, dict) and disk == expected
+
+
+def config_file_matches(path: Path, settings: Settings) -> bool:
+    """启动跳写判据：磁盘配置已解析内容与 ``Settings`` 序列化结果是否逐字等价。
+
+    只有等价才可跳过启动期的规范化落盘。比较用 ``to_config_dict()`` 的正式键形态，
+    集合已按排序输出，与落盘字节同源。
+    """
+    return _json_file_matches(path, settings.to_config_dict())
 
 
 def sessions_payload_matches(path: Path, payload: dict[str, Any]) -> bool:
-    """状态文件跳写判据（与 config_file_matches 同构）：等价才跳。"""
-    try:
-        if not path.exists():
-            return False
-        disk = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return False
-    return isinstance(disk, dict) and disk == payload
+    """状态文件跳写判据（与 ``config_file_matches`` 共用同一实现）：等价才跳。"""
+    return _json_file_matches(path, payload)
 
 
-def write_json_atomic(path: Path, data: dict[str, Any]) -> bool:
+def write_json_atomic(
+    path: Path,
+    data: dict[str, Any],
+    *,
+    abandoned: Callable[[], bool] | None = None,
+) -> bool:
+    """原子写 JSON；``abandoned`` 在替换前复查，为真则放弃发布。
+
+    ``abandoned`` 服务插件 reload 的跨实例竞态：旧实例的最终落盘可能因磁盘慢
+    超过硬窗口而被隔离（宿主不等隔离任务就构造新实例），其慢写落地时会用陈旧
+    快照覆盖新实例刚写出的 ``state.json``（配额少计、白名单变更回退）。闸门在
+    ``os.replace`` **之前**复查，此时新实例可能已经启动，放弃的是自己的临时文件。
+    """
     tmp_path: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,6 +144,9 @@ def write_json_atomic(path: Path, data: dict[str, Any]) -> bool:
             json.dump(data, handle, ensure_ascii=False, indent=2)
             handle.flush()
             os.fsync(handle.fileno())
+        if abandoned is not None and abandoned():
+            logger.debug("[%s] abandoned write dropped path=%s", PLUGIN_ID, path)
+            return False
         os.replace(tmp_path, path)
         return True
     except (OSError, UnicodeEncodeError, TypeError, ValueError) as exc:
@@ -348,8 +365,13 @@ def build_sessions_payload(
     return payload
 
 
-def write_sessions_payload(path: Path, payload: dict[str, Any]) -> bool:
-    return write_json_atomic(path, payload)
+def write_sessions_payload(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    abandoned: Callable[[], bool] | None = None,
+) -> bool:
+    return write_json_atomic(path, payload, abandoned=abandoned)
 
 
 def persist_settings_config(path: Path, config_obj: Any, settings: Settings) -> bool:
