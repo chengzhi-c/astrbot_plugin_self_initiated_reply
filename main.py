@@ -479,7 +479,8 @@ class SelfInitiatedReplyPlugin(Star):
         容量条件（``len(quarantined) < MAX_QUARANTINED_TASKS``）已删除：首例隔离
         即经 ``_mark_degraded`` 把 lifecycle 切到 DEGRADED 且永不回退，该条件被
         先行短路、从未起过决定作用；留着它会让读者误以为"还能再接受几个任务"。
-        ``MAX_QUARANTINED_TASKS`` 仍是注册表容量上限（见 ``_quarantine_task``）。
+        ``MAX_QUARANTINED_TASKS`` 仅是隔离注册表的规模参照（供运维判读与测试模拟用，
+        见定义处注释），``_quarantine_task`` 不做容量判定。
         """
         return self._lifecycle_state is PluginLifecycle.RUNNING and not self._stopping
 

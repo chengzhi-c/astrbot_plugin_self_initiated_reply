@@ -277,13 +277,11 @@ class DeliveryRunner:
                         return STOPPING_REPLY_TEXT
                     return STALE_REPLY_MESSAGE
                 return "主动发送失败。"
-        else:
-            # 仅有工具直发。真正的把关在 OutboundGateway：确定未提交会退还
-            # direct_send_count，于是 session_pipeline 的 `not reply and not
-            # direct_send_count` 会先行短路，走不到这一支。能到这里说明至少有一条
-            # 直发是 DELIVERED/UNKNOWN——UNKNOWN 可能已达，扣配额是正确的兜底。
-            pass
-
+        # reply 为空（仅剩工具直发）时无需再发文本。真正的把关在 OutboundGateway：
+        # 确定未提交会退还 direct_send_count，于是 session_pipeline 的
+        # `not reply and not direct_send_count` 会先行短路，空 reply 到不了发送失败
+        # 分支。能到这里说明至少有一条直发是 DELIVERED/UNKNOWN——UNKNOWN 可能
+        # 已达，扣配额是正确的兜底。
         if self.settings.log_reply_content and reply:
             preview = (
                 reply
