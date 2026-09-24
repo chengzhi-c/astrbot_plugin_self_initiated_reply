@@ -87,6 +87,14 @@ def test_fe_writable_keys_match_panel_surfaces() -> None:
 
 
 def test_frontend_has_no_handwritten_default_config() -> None:
+    """前端不得自持一份默认配置表（``DEFAULT_CONFIG``）。
+
+    行为测试管不了这条：前端自己写默认值时，面板加载前/加载失败时的初态仍然
+    "看起来正常"，只是与后端 ``CONFIG_SPECS`` 各有一份——后端改默认值而前端
+    没跟上，表现为"加载失败那一刻显示了另一个默认值"，无任何报错。
+    真正的加载行为由 ``tests/frontend_browser.test.mjs`` 钉住，这里只守
+    "不得存在第二份默认值"这个结构不变量。
+    """
     form = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
     io = (ROOT / "pages" / "主动回复设置" / "config-io.mjs").read_text(encoding="utf-8")
     assert "DEFAULT_CONFIG" not in form

@@ -367,7 +367,7 @@ if (els.cleanupImageCacheBtn) {
 if (els.resetPromptBtn) {
 	els.resetPromptBtn.addEventListener("click", () => {
 		if (!state.configLoaded) {
-			showToast("配置尚未成功加载，请先刷新页面");
+			showToast(configIo.configNotLoadedMessage());
 			return;
 		}
 		els.decisionPromptInput.value =

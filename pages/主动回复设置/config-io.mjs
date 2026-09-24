@@ -398,7 +398,7 @@ export function createConfigIo(deps) {
 			return;
 		}
 		if (!state.configLoaded) {
-			showToast("配置尚未成功加载，请先刷新页面");
+			showToast(configNotLoadedMessage());
 			return;
 		}
 		// 白名单校验先行短路：两个校验器都会 focus 各自首个非法字段，
@@ -568,5 +568,13 @@ export function createConfigIo(deps) {
 		loadConfig,
 		saveConfig,
 		cleanupImageCache,
+		configNotLoadedMessage,
 	};
+}
+
+// 配置未加载完时禁止写操作（保存、重置提示词）的统一判据与文案。
+// 两处调用点共用：提示文案分叉会让同一个前置条件对用户呈现两种说法，
+// 而判据分叉更危险——一处放开、一处仍拦时，被放开的那处会把空表单写成盘。
+export function configNotLoadedMessage() {
+	return "配置尚未成功加载，请先刷新页面";
 }

@@ -1777,6 +1777,59 @@ test("a STALE_WRITE response adopts the server revision and requires a refresh",
   assert.equal(posts, 1, "STALE_WRITE 后不得在刷新前再次提交");
 });
 
+test("save is rejected while the initial config load has not completed", async () => {
+  // 配置未加载完时保存会把空表单当成用户的真实选择写盘：每个字段都回落默认值，
+  // 用户的既有配置被静默覆盖。这条同时是 app.js 重置提示词按钮的前置契约——
+  // 两处共用同一判据，改判据必须两处一起改（否则一处放开、一处仍拦）。
+  const field = (key, value = "", dataset = {}) => ({
+    dataset: { configKey: key, ...dataset },
+    type: "text",
+    value,
+  });
+  const form = {
+    classList: { add() {}, remove() {}, toggle() {} },
+    inert: false,
+    querySelector: () => null,
+    querySelectorAll: () => [field("cooldown_sec", "900")],
+  };
+  const elements = { configForm: form, whitelistInput: null, whitelistCount: null };
+  const state = {
+    configLoaded: false,
+    savingConfig: false,
+    configRevision: TEST_REVISION,
+    isDirty: false,
+  };
+  const posts = [];
+  const toasts = [];
+  const io = createConfigIo({
+    getEls: () => elements,
+    getState: () => state,
+    setState: (updates) => Object.assign(state, updates),
+    apiGet: async () => ({}),
+    apiPost: async (endpoint, body) => {
+      posts.push({ endpoint, body });
+      return { ok: true, config_revision: TEST_REVISION };
+    },
+    showToast: (message) => toasts.push(message),
+    setStatState() {},
+    renderPromptPreview() {},
+    judgeProviderControl: { value: () => "", sync() {} },
+    visionProviderControl: { value: () => "", sync() {} },
+    visionJudgeProviderControl: { value: () => "", sync() {} },
+    fmtBool: String,
+  });
+
+  await io.saveConfig({ preventDefault() {} });
+
+  assert.equal(posts.length, 0, "配置未加载完不得发起保存请求");
+  assert.ok(
+    toasts.some((message) => message.includes("配置尚未成功加载")),
+    `未给出加载未完成提示，实际 toast：${toasts.join(" | ")}`,
+  );
+  assert.equal(state.savingConfig, false);
+  assert.equal(form.inert, false);
+});
+
 test("boot watchdog yields to in-flight first load instead of failing early", async () => {
   // 首屏串行两个请求（各 FETCH_TIMEOUT_MS 上限，最坏 30s）会超过 12s 的 boot
   // 定时器：看门狗在加载在途时必须重新武装而不是误报「加载超时」，否则慢网

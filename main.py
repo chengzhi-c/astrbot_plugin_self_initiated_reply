@@ -40,9 +40,8 @@ from .session_gate import SessionGate
 #   4.23.3: inspect.signature(handler)
 #   4.27.2: inspect.signature(handler, eval_str=True)   ← 一个参数之差
 # `eval_str=True` 会把 `from __future__ import annotations` 产出的字符串注解真的
-# eval 一遍，于是 TYPE_CHECKING-only 的名字在那一步 NameError，整个插件拒绝加载：
-#   加载插件「业镜 · 主动回复」... 原因：name 'CommandReply' is not defined
-# 宿主里没有 get_type_hints；早前注释写成「等价于 get_type_hints」是猜的，已订正。
+# eval 一遍，于是 TYPE_CHECKING-only 的名字在那一步 NameError，整个插件拒绝加载。
+# 宿主里没有 get_type_hints（故不是「等价于 get_type_hints」）。
 # 守卫：scripts/compat_check.py::_handler_signature_gaps 照抄这一步，两个宿主版本上
 # 都会红（4.23.3 上宿主自己不会失败，但那不是可依赖的事实——它已经变过一次）。
 #
