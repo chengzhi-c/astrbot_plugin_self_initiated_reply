@@ -1247,10 +1247,6 @@ def read_config_value(spec: ConfigSpec, config: Any) -> Any:
     保证旧键值被**原样**采纳。
     守卫：``test_spec_table_legacy_fallback_matches_from_config``。
 
-    （历史注记：本 docstring 曾描述「二次 coerce 会把 set 容器清空」——
-    ``_list_items`` 现已接受 ``list/tuple/set/frozenset``，该失效形态不再成立；
-    纪律仍在，理由改为上面的「重复走边界」。）
-
     ``fallback`` 的语义是「``raw`` 强制失败时落回哪个值」：正式键存在时落回旧键
     的值而非静态默认，这是 ``vision_enabled`` → 两个新开关的迁移语义。
     """
