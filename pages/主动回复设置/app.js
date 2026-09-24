@@ -141,30 +141,25 @@ async function getBridge() {
 	return window.AstrBotPluginPage;
 }
 
-function apiGet(endpoint, params = {}) {
+function request(method, endpoint, payload = {}) {
 	return requestPluginApi({
 		getBridge,
 		pluginId: PLUGIN_ID,
 		endpoint,
-		method: "GET",
-		params,
+		method,
+		params: method === "GET" ? payload : {},
+		body: method === "POST" ? payload : {},
 		fetchImpl: window.fetch.bind(window),
 		pageUrl: window.location.href,
-		timeoutMs: FETCH_TIMEOUT_MS,
 	});
 }
 
+function apiGet(endpoint, params = {}) {
+	return request("GET", endpoint, params);
+}
+
 function apiPost(endpoint, body = {}) {
-	return requestPluginApi({
-		getBridge,
-		pluginId: PLUGIN_ID,
-		endpoint,
-		method: "POST",
-		body,
-		fetchImpl: window.fetch.bind(window),
-		pageUrl: window.location.href,
-		timeoutMs: FETCH_TIMEOUT_MS,
-	});
+	return request("POST", endpoint, body);
 }
 
 function fmtBool(value) {
@@ -225,15 +220,8 @@ const PROVIDER_CONTROLS = [
 const providerControlsByName = {};
 const providerControlList = PROVIDER_CONTROLS.map((spec) => {
 	const control = createProviderControl(
-		{
-			select: spec.select,
-			input: spec.input,
-			button: spec.button,
-			placeholder: spec.placeholder,
-		},
-		spec.onModeChange
-			? { ...providerDeps, onModeChange: spec.onModeChange }
-			: providerDeps,
+		spec,
+		spec.onModeChange ? { ...providerDeps, onModeChange: spec.onModeChange } : providerDeps,
 	);
 	providerControlsByName[spec.name] = control;
 	return control;
@@ -430,16 +418,10 @@ try {
 	/* localStorage 不可用 */
 }
 
-if (els.saveTopBtn) {
-	els.saveTopBtn.addEventListener("click", () =>
-		els.configForm.requestSubmit(),
-	);
-}
-if (els.saveMobileBtn) {
-	els.saveMobileBtn.addEventListener("click", () =>
-		els.configForm.requestSubmit(),
-	);
-}
+// 两个显式保存按钮都走原生提交（底部按钮 type="submit" 同理）：同一语义一种实现。
+[els.saveTopBtn, els.saveMobileBtn].forEach((btn) => {
+	if (btn) btn.addEventListener("click", () => els.configForm.requestSubmit());
+});
 
 setupNav(els);
 configIo.setupValidation();

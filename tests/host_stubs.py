@@ -443,7 +443,7 @@ class _FakeMessageEventResult:
 
 
 class FakeToolSet:
-    """Mirror the ToolSet surface main.py depends on (tools/add/remove/get/names)."""
+    """Mirror the ToolSet surface main.py depends on (tools/add/remove)."""
 
     def __init__(self) -> None:
         self.tools: list[Any] = []
@@ -453,15 +453,6 @@ class FakeToolSet:
 
     def remove_tool(self, name: str) -> None:
         self.tools = [tool for tool in self.tools if getattr(tool, "name", "") != name]
-
-    def get_tool(self, name: str) -> Any | None:
-        for tool in self.tools:
-            if getattr(tool, "name", "") == name:
-                return tool
-        return None
-
-    def names(self) -> list[str]:
-        return [str(getattr(tool, "name", "")) for tool in self.tools]
 
 
 class _FakeBuildConfig:
@@ -648,7 +639,6 @@ class FakeEvent:
         self._extra: dict[str, Any] = {}
         self._stopped = False
         self.sent_texts: list[str] = []
-        self.trace = _FakeTrace()
 
     # sender / platform identity
     def get_sender_id(self) -> str:
@@ -662,12 +652,6 @@ class FakeEvent:
 
     def is_admin(self) -> bool:
         return self._is_admin
-
-    def get_platform_name(self) -> str:
-        return self._platform
-
-    def get_platform_id(self) -> str:
-        return f"{self._platform}-{self._sender_id}"
 
     # message lifecycle
     def is_stopped(self) -> bool:
@@ -701,11 +685,6 @@ class FakeEvent:
         else:
             self.sent_texts.append(str(getattr(message, "text", message) or ""))
         return None
-
-
-class _FakeTrace:
-    def record(self, *_: Any, **__: Any) -> None:
-        pass
 
 
 class FakeContext:

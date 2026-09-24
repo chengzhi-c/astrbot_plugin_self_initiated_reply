@@ -104,20 +104,25 @@ function setCurrentNav(els, active) {
   }
   syncMobileTabs(els, active);
 }
+// 章节跳转单点：侧栏链接与移动 tab 共用（差别只在 preventDefault /
+// history 与「谁负责 setCurrentNav」，由调用方各自处理）。
+function jumpToSection(targetId) {
+  const target = document.getElementById(targetId);
+  if (!target) return false;
+  const details = target.closest("details");
+  if (details && !details.open) details.open = true;
+  target.scrollIntoView({
+    behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" });
+  return true;
+}
 export function setupNav(els) {
   const links = Array.from(document.querySelectorAll(".sidenav-link"));
   if (!links.length) return;
   const byTarget = new Map(links.map((link) => [link.dataset.target, link]));
   links.forEach((link) => {
     link.addEventListener("click", (e) => {
-      const target = document.getElementById(link.dataset.target);
-      if (!target) return;
-      e.preventDefault();
-      const details = target.closest("details");
-      if (details && !details.open) details.open = true;
-      target.scrollIntoView({
-        behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start", });
-      try {
+      if (!jumpToSection(link.dataset.target)) return;
+      e.preventDefault();      try {
         history.replaceState(null, "", "#" + link.dataset.target);
       } catch (_) {
         /* ignore */
@@ -141,15 +146,16 @@ export function setupNav(els) {
 }
 export function setupMobileTabs(els) {
   if (!els.mobileTabbar) return;
+  const byTarget = new Map(
+    Array.from(document.querySelectorAll(".sidenav-link")).map((link) => [
+      link.dataset.target,
+      link,
+    ]),
+  );
   els.mobileTabbar.querySelectorAll(".mtab").forEach((tab) => {
     tab.addEventListener("click", () => {
-      const target = document.getElementById(tab.dataset.target);
-      if (!target) return;
-      const details = target.closest("details");
-      if (details && !details.open) details.open = true;
-      target.scrollIntoView({
-        behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start", });
-      const link = document.querySelector('.sidenav-link[data-target="' + tab.dataset.target + '"]');
+      if (!jumpToSection(tab.dataset.target)) return;
+      const link = byTarget.get(tab.dataset.target);
       if (link) setCurrentNav(els, link);
     });
   });

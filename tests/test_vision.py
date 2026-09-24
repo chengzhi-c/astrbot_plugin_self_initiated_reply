@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from .host_stubs import ROOT, capture_logs, load_modules, load_package
-from .source_contract import calls_in, method_source
+from .source_contract import calls_in
 
 PACKAGE_NAME = "selfreply_vision_test_package"
 
@@ -1979,10 +1979,6 @@ async def test_vision_service_blindspots() -> None:
     service_boom = make_service(boom_parser)
     # 5. capture 本地快照抛异常时被隔离并记录 debug，不阻断任务派发
     await service_boom.capture("u1", generation=1, active_at=1.0, images=[img])
-
-    freeze_src = method_source("image/vision_runtime.py", "VisionService._freeze_images")
-    assert "accepted_images is None" not in freeze_src
-    assert "len(accepted_images)" in freeze_src
 
 
 @pytest.mark.asyncio

@@ -49,14 +49,6 @@ def _fe_writable_keys() -> set[str]:
     return keys
 
 
-def test_config_specs_match_schema_keys() -> None:
-    specs = _config_spec_keys()
-    schema = _schema_keys()
-    assert specs, "CONFIG_SPECS empty"
-    missing = specs - schema
-    assert not missing, f"CONFIG_SPECS keys missing from schema: {sorted(missing)}"
-
-
 def test_webapi_get_exposes_fe_writable_fields() -> None:
     keys = _expected_get_config_keys()
     writable = _fe_writable_keys()

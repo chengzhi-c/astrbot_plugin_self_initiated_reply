@@ -2,6 +2,7 @@ import { providerNeedsManualInput } from "./frontend-core.mjs";
 /**
  * @param {{select: HTMLSelectElement|null, input: HTMLInputElement|null,
  *          button: HTMLButtonElement|null, placeholder: string}} refs
+ *          元素引用（多余字段被忽略）。
  * @param {{ getOptions: () => any[], isListAvailable: () => boolean,
  *           showToast: (msg: string) => void,
  *           onModeChange?: (manual: boolean) => void,

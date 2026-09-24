@@ -246,63 +246,10 @@ def test_from_config_migrates_legacy_alias_keys() -> None:
     assert "cooldown_seconds" not in persisted
 
 
-def test_config_rollback_preserves_container_identity(tmp_path) -> None:
-    """B1 回归：回滚必须原地恢复共享容器，不得属性重绑定。
-
-    缺陷链：``_restore_plugin_state`` 曾用 ``plugin._last_events = snapshot[...]``
-    整体替换 dict，而 scheduler/coordinator/whitelist 构造时捕获的是原 dict
-    对象引用 → 一次失败的配置 POST 后协作对象继续写孤儿容器、main 从新容器
-    读，该会话主动回复静默停止直到重启。
-
-    与 Settings 身份断言同构：容器身份必须存活。
-    """
-
-    async def scenario(plugin, main):
-        scheduler_events = plugin._scheduler._last_events
-        coordinator_events = plugin._coordinator._events
-        whitelist_sessions = plugin._whitelist._sessions
-        coordinator_event_at = plugin._coordinator._event_at
-
-        # 先注入一份运行态，确保快照有内容可回滚
-        event = object()
-        plugin._last_events[UMO] = event
-        plugin._last_event_at[UMO] = 1.0
-        plugin._state_for(UMO).daily_count = 7
-
-        # 让配置持久化失败触发回滚
-        original_persist = plugin._persist_config
-
-        async def failing_persist():
-            raise OSError("sync failed")
-
-        plugin._persist_config = failing_persist
-        try:
-            web = sys.modules["astrbot.api.web"]
-            web.request.payload = {"cooldown_sec": 777}
-            result = await plugin._api_post_config()
-            assert result.get("ok") is False
-        finally:
-            plugin._persist_config = original_persist
-
-        # 容器身份必须存活：协作对象仍持有同一 dict 对象
-        assert plugin._last_events is scheduler_events
-        assert plugin._coordinator._events is coordinator_events
-        assert plugin._coordinator._event_at is coordinator_event_at
-        assert plugin._whitelist._sessions is whitelist_sessions
-        assert plugin._scheduler._last_events is plugin._last_events
-        # 回滚后内容恢复：事件与时间戳仍在
-        assert plugin._last_events.get(UMO) is event
-        assert plugin._last_event_at.get(UMO) == 1.0
-
-    with_plugin(tmp_path, scenario)
-
-
 # _restore_plugin_state 原地恢复的 5 个容器 → 全部持有者绑定。
-# 上一条守卫只钉了 4 个绑定（_last_events 的 scheduler/coordinator 侧、
-# _coordinator._event_at、_whitelist._sessions），其余 7 个当时无人看守：
-# delivery/generation 侧的 _last_events、scheduler 侧的 _last_event_at 与
-# _recent_image_events/_whitelist_runtime_umos、coordinator 侧的 _images、
-# whitelist 侧的 _runtime_umos——任一处退回属性重绑定都不会变红。
+# 这 11 个绑定任一处退回属性重绑定都不会变红：scheduler/coordinator/whitelist
+# 构造时捕获的是容器对象本身的引用，main 从新 dict 读而它们继续写旧 dict，
+# 该会话主动回复静默停止直到重启，且不抛异常、无日志。
 # 表驱动而非逐行 assert，是为了新增持有者时只加一行、且失败信息能点名是谁。
 CONTAINER_HOLDERS: tuple[tuple[str, str, str], ...] = (
     ("_last_events", "_scheduler", "_last_events"),
@@ -325,10 +272,9 @@ CONTAINER_HOLDERS: tuple[tuple[str, str, str], ...] = (
 def test_config_rollback_preserves_every_container_holder(tmp_path) -> None:
     """回滚后**每一个**持有者都必须仍指向 main 侧的同一容器对象。
 
-    与上一条的区别是覆盖面：这条按 ``CONTAINER_HOLDERS`` 表枚举全部 11 个
-    绑定，而非抽查 4 个。缺陷模式同 B1——``_restore_plugin_state`` 里任何一
-    行退回 ``plugin.X = snapshot[...]``，该容器的所有持有者都会继续读写孤儿
-    对象，主动回复静默停止直到重启。
+    按 ``CONTAINER_HOLDERS`` 表枚举全部 11 个绑定。缺陷模式同 B1——
+    ``_restore_plugin_state`` 里任何一行退回 ``plugin.X = snapshot[...]``，
+    该容器的所有持有者都会继续读写孤儿对象，主动回复静默停止直到重启。
     """
 
     async def scenario(plugin, main):

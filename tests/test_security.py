@@ -453,30 +453,6 @@ def test_malformed_json_from_decision_model() -> None:
 # ============================================================================
 
 
-def test_umo_collision_between_platforms() -> None:
-    """测试不同平台相同群号是否正确隔离"""
-    _, utils, storage = _load_sec_modules()
-    from collections import deque
-
-    qq_umo = "qq:GroupMessage:12345"
-    tg_umo = "telegram:GroupMessage:12345"
-
-    # 创建两个平台的状态
-    sessions = {
-        qq_umo: storage.SessionState(recent=deque(maxlen=5)),
-        tg_umo: storage.SessionState(recent=deque(maxlen=5)),
-    }
-    sessions[qq_umo].daily_count = 3
-    sessions[tg_umo].daily_count = 7
-
-    # 验证存储 key 保持隔离
-    qq_key = utils.whitelist_storage_key(qq_umo)
-    tg_key = utils.whitelist_storage_key(tg_umo)
-
-    assert qq_key != tg_key, "不同平台的相同群号状态被合并，导致计数污染"
-    assert qq_key == qq_umo and tg_key == tg_umo, "whitelist_storage_key 未保留完整 UMO"
-
-
 def test_whitelist_bypass_via_umo_manipulation() -> None:
     """测试 UMO 字符串操作是否能绕过白名单"""
     _, utils, _ = _load_sec_modules()

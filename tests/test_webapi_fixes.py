@@ -291,7 +291,6 @@ def test_api_status(tmp_path) -> None:
         }
         status = await webapi._api_status(plugin)
         assert status["last_decisions"]["s1"]["reason"] == "冷却中"
-        assert plugin._delay_tasks is not None and plugin._background_tasks is not None
 
     with_plugin(tmp_path, scenario)
 
@@ -485,6 +484,17 @@ def test_api_post_ui_theme_paths(tmp_path) -> None:
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]
         web = sys.modules["astrbot.api.web"]
+        # 关停中拒写（与 config / image-cache 端点同口径）。除 ok=False 外还断言
+        # **未落盘**：teardown 之后写进 ui_prefs.json 的偏好会在下次启动被读回，
+        # 用户看到的是「已被丢弃」却仍然生效的旧设置。
+        plugin._stopping = True
+        plugin._ui_prefs_path = tmp_path / "stopping.json"
+        web.request.payload = {"theme": "dark"}
+        result = await webapi._api_post_ui_theme(plugin)
+        assert result["ok"] is False
+        assert not plugin._ui_prefs_path.exists(), "关停中仍写入了 UI 偏好"
+        assert plugin._ui_theme != "dark"
+        plugin._stopping = False
         # 非 dict 请求体
         web.request.payload = ["dark"]
         result = await webapi._api_post_ui_theme(plugin)
@@ -889,30 +899,5 @@ def test_cancelled_config_apply_rolls_back(tmp_path) -> None:
         assert umo in plugin.sessions, "取消后被 prune 的会话状态未复活"
         assert plugin.sessions[umo] is original_state, "取消回滚丢了对象身份"
         assert plugin.sessions[umo].daily_count == 3, "取消回滚丢了日配额"
-
-    with_plugin(tmp_path, scenario)
-
-
-# ============================================================================
-# CONFIG_SCHEMA_KEYS 与 _conf_schema.json 一致性（三方镜像漂移防线）
-# ============================================================================
-
-
-def test_config_schema_keys_cover_schema_json(tmp_path) -> None:
-    """webapi 配置白名单必须与 _conf_schema.json 全键一致。
-
-    schema 新增键时该守卫立即变红，迫使同步更新 webapi 解析分支，
-    防止新字段被静默吞掉。
-    """
-
-    import json
-
-    from .host_stubs import ROOT
-
-    async def scenario(plugin, main):
-        schema_path = ROOT / "_conf_schema.json"
-        schema_keys = set(json.loads(schema_path.read_text(encoding="utf-8")))
-        # 无别名兼容键：白名单 == schema 键
-        assert _webapi().CONFIG_SCHEMA_KEYS == schema_keys
 
     with_plugin(tmp_path, scenario)

@@ -113,6 +113,13 @@ export function createConfigIo(deps) {
 	function els() {
 		return getEls();
 	}
+	// 「保存状态未知」的单点：POST 抛错与响应体校验失败是同一语义（无法确认服务
+	// 端是否已写入），三行状态与文案必须同进同退，否则两处文案会各自漂移。
+	function markSaveUnknown() {
+		setState({ requiresConfigRefresh: true });
+		setSaveState("保存状态未知", "error");
+		showToast("保存状态未知，请刷新配置后重试", true);
+	}
 	function setSaveState(message, state) {
 		saveStateKind = state;
 		const e = els();
@@ -343,9 +350,7 @@ export function createConfigIo(deps) {
 		if (initialLoad && e.configForm) e.configForm.inert = true;
 		try {
 			const config = await apiGet("config");
-			const requiredKeys = configControls(e.configForm).map(
-				(control) => control.dataset.configKey,
-			);
+			const requiredKeys = configSaveKeys(e.configForm);
 			if (!isSuccessfulConfigPayload(config, requiredKeys)) {
 				const missing = missingConfigPayloadKeys(config, requiredKeys);
 				throw new Error(
@@ -446,9 +451,7 @@ export function createConfigIo(deps) {
 			try {
 				result = await apiPost("config", body);
 			} catch (error) {
-				setState({ requiresConfigRefresh: true });
-				setSaveState("保存状态未知", "error");
-				showToast("保存状态未知，请刷新配置后重试", true);
+				markSaveUnknown();
 				return;
 			}
 			if (!result || result.ok !== true) {
@@ -497,13 +500,8 @@ export function createConfigIo(deps) {
 					result.config?.runtime_enabled ??
 					getState().runtimeEnabled,
 			};
-			if (!isSuccessfulConfigPayload(
-				savedConfig,
-				configControls(e.configForm).map((control) => control.dataset.configKey),
-			)) {
-				setState({ requiresConfigRefresh: true });
-				setSaveState("保存状态未知", "error");
-				showToast("保存状态未知，请刷新配置后重试", true);
+			if (!isSuccessfulConfigPayload(savedConfig, configSaveKeys(e.configForm))) {
+				markSaveUnknown();
 				return;
 			}
 			const adjusted = Array.isArray(result.adjusted_fields)
@@ -543,14 +541,12 @@ export function createConfigIo(deps) {
 			if (!result || result.ok !== true)
 				throw new Error(result?.error || "图片缓存清理失败");
 			const removed = Number(result.removed || 0);
-			if (e.cleanupImageCacheState) {
-				e.cleanupImageCacheState.textContent = removed
-					? `已清理 ${removed} 个过期图片`
-					: "没有需要清理的过期图片";
-			}
-			showToast(
-				removed ? `已清理 ${removed} 个过期图片` : "没有需要清理的过期图片",
-			);
+			// 状态栏与 toast 共用同一句：分开写会让两侧文案各说各话。
+			const summary = removed
+				? `已清理 ${removed} 个过期图片`
+				: "没有需要清理的过期图片";
+			if (e.cleanupImageCacheState) e.cleanupImageCacheState.textContent = summary;
+			showToast(summary);
 		} catch (error) {
 			if (e.cleanupImageCacheState)
 				e.cleanupImageCacheState.textContent = "清理失败";

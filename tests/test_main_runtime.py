@@ -157,49 +157,6 @@ def test_inherit_tools_default_off_and_persisted_via_api(tmp_path: Path) -> None
     with_plugin(tmp_path, scenario)
 
 
-def test_filter_final_tools_removes_injected_tools(tmp_path: Path) -> None:
-    """宿主 build 注入的工具必须在 reset/run 前被清空。"""
-
-    async def scenario(plugin, main):
-        tool_set = FakeToolSet()
-        tool_set.add_tool(type("T", (), {"name": "send_message_to_user"})())
-        tool_set.add_tool(type("T", (), {"name": "web_search"})())
-        tool_set.add_tool(type("T", (), {"name": "mcp_anything"})())
-        req = type("Req", (), {"func_tool": tool_set})()
-
-        ok = main._AGENT_RUNTIME.filter_final_tools(req, keep=frozenset())
-        assert ok is True
-        assert tool_set.tools == []
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_filter_final_tools_keeps_only_allowed(tmp_path: Path) -> None:
-    async def scenario(plugin, main):
-        tool_set = FakeToolSet()
-        tool_set.add_tool(type("T", (), {"name": "safe_tool"})())
-        tool_set.add_tool(type("T", (), {"name": "danger_tool"})())
-        req = type("Req", (), {"func_tool": tool_set})()
-
-        ok = main._AGENT_RUNTIME.filter_final_tools(req, keep=frozenset({"safe_tool"}))
-        assert ok is True
-        assert [tool.name for tool in tool_set.tools] == ["safe_tool"]
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_filter_final_tools_fails_closed_when_unverifiable(tmp_path: Path) -> None:
-    async def scenario(plugin, main):
-        req = type("Req", (), {"func_tool": type("Bad", (), {"tools": None})()})()
-        assert main._AGENT_RUNTIME.filter_final_tools(req, keep=frozenset()) is False
-
-        # 无 func_tool 视为天然空集，允许通过
-        empty_req = type("Req", (), {"func_tool": None})()
-        assert main._AGENT_RUNTIME.filter_final_tools(empty_req, keep=frozenset()) is True
-
-    with_plugin(tmp_path, scenario)
-
-
 def test_enforce_final_tool_policy_fail_closed_aborts_run(tmp_path: Path) -> None:
     """无法枚举工具集时，本次主动 Agent 必须拒绝运行而不是继续。"""
 

@@ -2,11 +2,15 @@
 
 用法::
 
-    python scripts/gates.py
+    python scripts/gates.py [--with-mutation]
 
 顺序：ruff check → ruff format --check → mypy →
-前端 syntax + contract → 浏览器质量（Playwright）→ pytest → 变异门禁 →
-真实宿主兼容（有 astrbot 时）。
+前端 syntax + contract → 浏览器质量（Playwright）→ pytest → 真实宿主兼容
+（有 astrbot 时）。
+
+``--with-mutation`` 才跑变异门禁（另约 90s）。它锚定的是「既有测试还能抓既有缺陷」，
+CI 把它限制为 nightly / 手动触发（见 ``.github/workflows/ci.yml`` 的 mutation 作业），
+逐次本地都跑是纯浪费；本地默认快车道不含它，需要时显式打开。
 
 与 CI 的差异（**本脚本是本地快车道，CI 才是权威**）：
 - ``frontend-browser`` 需要本机已 ``npm ci`` 且装过 Chromium；缺少时明确 SKIP
@@ -22,6 +26,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import shutil
 import subprocess
@@ -69,6 +74,15 @@ def _run_compat_gate() -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="本地质量门禁快车道（CI 才是权威）",
+    )
+    parser.add_argument(
+        "--with-mutation",
+        action="store_true",
+        help="额外跑变异门禁（约 90s；CI 由 nightly/手动触发，本地默认不跑）",
+    )
+    args = parser.parse_args()
     # ruff 在 git 仓库内默认尊重 .gitignore（.venv/ 等本地目录已被忽略），
     # 与 CI lint 作业的 `ruff check .` 同一口径，无需手工维护文件列表。
     _run("ruff check", [sys.executable, "-m", "ruff", "check", "."])
@@ -96,8 +110,12 @@ def main() -> int:
         [sys.executable, "-m", "pytest", "-q", "--cov=.", "--cov-report=term-missing"],
     )
     # 放在 pytest 之后：变异门禁会临时改写源码并逐字节恢复，此时全量用例已跑完，
-    # 两者不共享同一轮工作树状态。
-    _run("mutation gate", [sys.executable, "scripts/mutation_gate.py"])
+    # 两者不共享同一轮工作树状态。默认不跑——它锚定的缺陷只在改动那些测试或锚点时
+    # 才可能回归，逐次跑是纯浪费（CI 的 mutation 作业同理只在 nightly/手动触发）。
+    if args.with_mutation:
+        _run("mutation gate", [sys.executable, "scripts/mutation_gate.py"])
+    else:
+        _skip("mutation gate", "pass --with-mutation to run it (CI runs it nightly)")
     # 最后跑：compat_check 会在临时目录里 import 真实宿主（cwd 由它自己切走），
     # 与前面各步无状态交叠。
     _run_compat_gate()

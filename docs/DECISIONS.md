@@ -171,6 +171,22 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
 选择集，`F401` 随之不在启用之列，两条 `# noqa: F401` 会被连带报成「未启用」——那是
 命令副作用，不是存量问题。只用配置本身跑。
 
+**日志断言一律经 `capture_logs(模块.logger)`，禁用 `caplog.at_level(..., logger="astrbot")`**
+（`tests/test_observability.py`、`tests/test_runtime_adapter_blindspots.py`）：生产代码都
+`from astrbot.api import logger`，而测试里桩 logger 的 name 是 `host_stubs.py` 自己起的
+`selfreply-main-test`——传 `"astrbot"` 时级别提升落在一个不相关的 logger 上。现状能过
+纯属巧合（桩 logger `propagate=True`，caplog 的 handler 挂在 root），一旦宿主侧改成
+`propagate=False`，所有日志断言恒空且无人会发现。配套地，承重日志在被测文档里承诺了
+级别时，断言必须钉 `record.levelno`：否则「降到 INFO 被噪音淹没」「升到 ERROR 触发无关
+告警通道」两个方向都不报。实测：把泄漏告警 `logger.warning` 改成 `info` 或 `error`，
+两条方向都能被 `test_leak_warning_task_threshold` 捕获。
+
+**`POST /ui/theme` 关停门有行为断言**（`tests/test_webapi_fixes.py::test_api_post_ui_theme_paths`）：
+teardown 之后落盘的偏好会在下次启动被读回，用户看到「已被丢弃」却仍然生效的旧设置。
+该门在生产里是**两层**（锁外预检 + 锁内复查），只删一层另一层兜住，所以变异验证必须
+两处一起删才能证明断言有效——这与本仓库其余端点（config / image-cache）的口径一致，
+源码层断言（`test_single_source_anchors.py`）保留作第三层。
+
 ## 核实后刻意不改的项
 
 以下都是「看起来能删/能收，实测后判定不该动」的项，不必重新测一遍：
@@ -194,6 +210,16 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
   都有另一层兜住，行为等价，故不入变异表；这是刻意的纵深，不是重复实现。
 - **发布门禁脚本体量**（`scripts/`）：按发布缺陷逐条长出，每条都对应一次真实事故；
   与 `gates.py` / CI 的引用关系是它的存在理由，不做合并。
+- **`compat_check._runtime_api_gaps` 不改成行为冒烟**：曾试过把 52 行签名枚举换成
+  「对 `http://127.0.0.1/x.png` 跑一次 `_fetch_image_data_url` 断言返回 None」。
+  撤回理由两条：一是**净代码零缩减**（`with` + async probe + 标签字典反而更长），
+  没换来任何维护面收益；二是冒烟要 import `ImageParser` → 需要真实 `astrbot`，
+  而签名枚举只依赖 httpx/httpcore，`_bootstrap()` 的假包路径（本地未装宿主时）也能跑。
+  签名枚举守的「本仓库**直接使用**的第三方 API 形态」确实与依赖上界不同层：上界只挡
+  大版本，挡不住小版本的签名变化。
+- **`gates.py` 默认不跑变异门禁**（`--with-mutation` 才跑）：它锚定的是「既有测试还能
+  抓既有缺陷」，只在改动那些测试或锚点时才可能回归。CI 的 mutation 作业本来就只在
+  nightly / 手动触发，本地逐次跑 90s 是纯浪费。本地快车道与 CI 的分工因此对齐。
 - **扩充 ruff 规则集**：逐条实测后只加了 `RUF100`。`S110`+`SIM105`（吞异常）里
   `S110` 默认只报裸 `except: pass` 与 `except Exception: pass`（16 条），开
   `check-typed-exception` 后涨到 39 条，而 `SIM105` 只有 18 条——差集全是**多 except
@@ -242,8 +268,16 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
 
   **同步义务**：改动上述任一类未覆盖行时，必须同步本归类（行号与占比以最近一次
   `pytest --cov=. --cov-report=term-missing` 实测为准）。
-- **不合并或删减测试**：全部测试函数体做 AST 归一化后**零重复**，前几条语句相同者
-  仅个别几组且语义各自不同。
+- **测试去重的判据是「被更强断言覆盖」，不是「行数差不多」**：收敛掉的重复用例
+  各有一条覆盖它的用例，且覆盖方的断言集是它的超集（例：`test_config_schema.py` 的
+  「规格表键 == schema 键且顺序一致」蕴含另两条只做集合比较的用例；`CONTAINER_HOLDERS`
+  表驱动用例逐一枚举 11 个持有者绑定，强于原先抽查 4 个的那条）。删除后 17 条变异
+  仍全部被捕获（`scripts/mutation_gate.py` 实测），是这条收缩没有削弱承重保护的证据。
+  剩下的不重复靠这条纪律保持：**新用例若与既有用例断言同一事实，必须说明覆盖方为何
+  不是超集**，说不出来就不加。
+- **双层防护里的源码层断言不按「重复」删**：例如 `_eligible_image_entries` 的
+  「贴纸判据不得脱离 `skip_stickers` 短路」那条，行为层只能覆盖**已构造出的**异常
+  形态，源码层禁掉的是无法构造的行为形态。二者不是镜像实现。
 - **不重构 `style.css`**：文件内零 id 选择器；重复规则体**绝大多数**是单声明出现在
   不同选择器上下文（实测 13 组里 6 组是多声明，去掉刻意一致的两份深色令牌块后仍余 5 组：
   `h2`/`.master-copy b`、`.sidenav-link:focus-visible`/`.mtab:focus-visible`、

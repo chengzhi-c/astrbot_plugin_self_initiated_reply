@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from .host_stubs import base_runtime_capabilities, load_package
+from .host_stubs import base_runtime_capabilities, capture_logs, load_package
 
 PACKAGE_NAME = "selfreply_runtime_test_package"
 
@@ -216,7 +216,7 @@ def test_filter_final_tools_violation_warning_names_offenders(caplog: object) ->
 
     # remove_tool 成功但集合未变（宿主假移除）：具名违规 + 匿名各一
     sneaky_set = _ToolSet([_Tool("rogue"), _Tool("")], remove_noop=True)
-    with caplog.at_level(logging.WARNING, logger="astrbot"):
+    with capture_logs(caplog, runtime.logger, logging.WARNING):
         assert (
             adapter.filter_final_tools(
                 SimpleNamespace(func_tool=sneaky_set), keep=frozenset({"safe"})
@@ -236,7 +236,7 @@ def test_filter_final_tools_drop_violation_warning_names_offenders(caplog: objec
     runtime = _load_adapter()
     adapter = _adapter(runtime)
     sneaky_set = _ToolSet([_Tool("danger"), _Tool("ok")], remove_noop=True)
-    with caplog.at_level(logging.WARNING, logger="astrbot"):
+    with capture_logs(caplog, runtime.logger, logging.WARNING):
         assert (
             adapter.filter_final_tools(
                 SimpleNamespace(func_tool=sneaky_set), drop=frozenset({"danger"})
@@ -271,7 +271,7 @@ def test_missing_func_tool_attribute_fails_closed_not_open(caplog: object) -> No
         """连 func_tool 属性都没有的 req（宿主改名该字段后的形态）。"""
 
     # 缺属性 → fail closed（两种模式都必须拦）
-    with caplog.at_level(logging.DEBUG, logger="astrbot"):
+    with capture_logs(caplog, runtime.logger, logging.DEBUG):
         assert adapter.filter_final_tools(NoFuncTool(), keep=frozenset()) is False
     warnings = [record for record in caplog.records if record.levelno >= logging.WARNING]
     rendered = [record.getMessage() for record in warnings]
@@ -349,7 +349,7 @@ def test_fail_closed_emits_exactly_one_warning(caplog: object) -> None:
 
     # 移除后枚举失败：filter 内部会再调 final_tool_ids，最易产生重复告警
     vanish_set = _ToolSet([_Tool("x")], none_after=True)
-    with caplog.at_level(logging.DEBUG, logger="astrbot"):
+    with capture_logs(caplog, runtime.logger, logging.DEBUG):
         assert (
             adapter.filter_final_tools(SimpleNamespace(func_tool=vanish_set), keep=frozenset())
             is False
@@ -368,7 +368,7 @@ def test_fail_closed_warning_names_the_reason(caplog: object) -> None:
     runtime = _load_adapter()
     adapter = _adapter(runtime)
 
-    with caplog.at_level(logging.WARNING, logger="astrbot"):
+    with capture_logs(caplog, runtime.logger, logging.WARNING):
         result = adapter.filter_final_tools(SimpleNamespace(func_tool=object()), keep=frozenset())
     assert result is False
     messages = [record.getMessage() for record in caplog.records]
