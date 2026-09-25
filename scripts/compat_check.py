@@ -15,28 +15,32 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_PACKAGE = "astrbot_plugin_self_initiated_reply"
 
 
-def _bootstrap() -> None:
-    """进程级准备（sys.path / cwd / 假包注册），只在入口调用。
+class _BootstrapState(NamedTuple):
+    workdir: Path
+    injected_root: bool
+    injected_package: bool
 
-    import 本模块必须无副作用：tests/test_host_contract.py 只为取
-    EXPECTED_HANDLER_COUNT 而 import，模块级 chdir 会把 pytest 进程的工作目录
-    切到临时目录、假包注册会顶掉 sys.modules 里的同名真包。
+
+def _register_plugin_package() -> bool:
+    """包导入兼容；仅当入口自己注册了假包时返回 ``True`` 供清理。
+
+    优先用已安装的包（CI 的 pip install -e 后运行）；本地直接跑脚本而未安装时，
+    以包名把仓库根注册进 sys.modules（与 tests 加载模式同源）。Windows 中文路径下
+    editable 安装的 .pth 会被 pip 以错误编码写入导致 import 失败（CI ubuntu UTF-8
+    无此问题），此回退保证本地也能验证。
+
+    调用前已经存在的同名模块属于调用者，恢复阶段必须原样保留。
     """
-    sys.path.insert(0, str(ROOT))
-    # astrbot 包 import 会在 cwd 生成运行时 data/ 目录：切到临时目录防污染工作区
-    os.chdir(tempfile.mkdtemp(prefix="astrbot-compat-"))
-
-    # 包导入兼容：优先用已安装的包（CI 的 pip install -e 后运行）；本地直接跑
-    # 脚本而未安装时，以包名把仓库根注册进 sys.modules（与 tests 加载模式同源）。
-    # Windows 中文路径下 editable 安装的 .pth 会被 pip 以错误编码写入导致 import
-    # 失败（CI ubuntu UTF-8 无此问题），此回退保证本地也能验证。
     try:
         import astrbot_plugin_self_initiated_reply  # noqa: F401
     except ModuleNotFoundError:
@@ -44,7 +48,64 @@ def _bootstrap() -> None:
 
         _pkg = types.ModuleType("astrbot_plugin_self_initiated_reply")
         _pkg.__path__ = [str(ROOT)]
-        sys.modules["astrbot_plugin_self_initiated_reply"] = _pkg
+        sys.modules[PLUGIN_PACKAGE] = _pkg
+        return True
+    return False
+
+
+def _bootstrap() -> _BootstrapState:
+    """进程级准备（sys.path / cwd / 假包注册），只在入口调用。
+
+    返回自建临时目录与本次实际注入的进程状态，生命周期归调用方（``main``）：
+    删除必须发生在 cwd 复原之后（Windows 上反序删正被占为 cwd 的目录会
+    PermissionError）。
+
+    import 本模块必须无副作用：tests/test_host_contract.py 只为取
+    EXPECTED_HANDLER_COUNT 而 import，模块级 chdir 会把 pytest 进程的工作目录
+    切到临时目录、假包注册会顶掉 sys.modules 里的同名真包。
+    """
+    # astrbot 包 import 会在 cwd 生成运行时 data/ 目录：切到临时目录防污染工作区
+    previous_cwd = Path(os.getcwd())
+    root = str(ROOT)
+    injected_root = root not in sys.path
+    if injected_root:
+        sys.path.insert(0, root)
+    workdir: Path | None = None
+    injected_package = False
+    try:
+        workdir = Path(tempfile.mkdtemp(prefix="astrbot-compat-"))
+        os.chdir(workdir)
+        injected_package = _register_plugin_package()
+    except BaseException:
+        # 任一步失败都复原 cwd / sys.path / sys.modules 并删掉自建目录：异常沿
+        # 调用栈冒泡时，不能让调用进程（本地是人、CI 是 gates.py）留在临时目录
+        # 里工作，也不能把 preparer 异常变成"目录没人拥有"的泄漏。
+        _restore_process_state(
+            previous_cwd,
+            _BootstrapState(workdir or Path(), injected_root, injected_package),
+        )
+        if workdir is not None:
+            _discard_workdir(workdir)
+        raise
+    return _BootstrapState(workdir, injected_root, injected_package)
+
+
+def _restore_process_state(previous_cwd: Path, state: _BootstrapState) -> None:
+    """复原 ``_bootstrap`` 注入的进程状态（cwd 先、sys.path 与 sys.modules 后）。"""
+    os.chdir(previous_cwd)
+    if state.injected_root and str(ROOT) in sys.path:
+        sys.path.remove(str(ROOT))
+    if state.injected_package and PLUGIN_PACKAGE in sys.modules:
+        del sys.modules[PLUGIN_PACKAGE]
+
+
+def _discard_workdir(workdir: Path) -> None:
+    """删除自有临时工作目录（调用方须已复原 cwd，见 Windows 删除语义注释）。
+
+    显式失败：rmtree 抛错（目录被占/文件句柄未关）不能吞成静默退出码，否则
+    宿主运行时 data/ 无声残留在系统 temp 里，反复运行只会积重难返。
+    """
+    shutil.rmtree(workdir)
 
 
 # 宿主危险内置工具模块：这些模块内所有 FunctionTool 子类的 name 必须全部被
@@ -246,8 +307,15 @@ def run_contract_checks() -> int:
 
 
 def main() -> int:
-    _bootstrap()
-    return run_contract_checks()
+    previous_cwd = Path(os.getcwd())
+    state = _bootstrap()
+    try:
+        return run_contract_checks()
+    finally:
+        # 顺序不可换：先复原 cwd 再删目录（Windows 上删正被占为 cwd 的目录会
+        # PermissionError）；rmtree 失败照常抛出，不伪装成 exit 0。
+        _restore_process_state(previous_cwd, state)
+        _discard_workdir(state.workdir)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 MAIN_PACKAGE_NAME = "selfreply_main_test_package"
 
+
+def arg_value(argv: list[str], flag: str) -> str:
+    """取 ``--flag=value`` / ``--flag value`` 两种写法里的值。"""
+    for index, arg in enumerate(argv):
+        if arg == flag:
+            return argv[index + 1]
+        if arg.startswith(f"{flag}="):
+            return arg.split("=", 1)[1]
+    raise AssertionError(f"{flag} 不在 argv 中: {argv}")
+
+
 # 单源守卫的扫描面：用 rglob 并在此单点声明排除目录，避免各守卫各写一套。
 # 非递归的 ROOT.glob("*.py") 会把 image/ 子包漏在视野外。
 _NON_PRODUCTION_DIRS = frozenset(
@@ -310,9 +321,22 @@ def capture_logs(caplog: Any, logger: Any, level: int = logging.DEBUG) -> Any:
     只调级别、不改传播，于是 ``caplog.records`` 恒空，日志断言变成假绿灯。本辅助
     在块内临时放行传播并复原。
 
+    但真实宿主会在 ``astrbot`` logger 上挂一份 caplog 的同实例处理器
+    （``LogManager`` 把 root 的 handler 桥接到具名 logger）。放行传播后同一条
+    记录经目标 logger 与 root 各进该处理器一次，``caplog.records`` 出现两份相同
+    正文，计数型断言（"只许一条告警"）被打红。故块内先把这份重复的处理器临时
+    摘除，退出后连同 ``propagate`` 一起精确复原——只摘重复的那一份，loguru 转发
+    与 WebUI 日志流所在的宿主持处理器原样留在目标 logger 上。
+
     ``logger`` 传被测模块的 ``logger`` 对象（如 ``storage.logger``），不要传名字：
     模块按动态包名加载，同一份源码在不同测试里可能绑到不同 logger 实例。
     """
+    handlers_before = list(logger.handlers)
+    # caplog.handler 是本次捕获的处理器；宿主已把它桥接到目标 logger 上，
+    # 放行传播后会与 root 上的同一实例重复入账。只摘这一份（通常 0 或 1 个）。
+    duplicates = [handler for handler in handlers_before if handler is caplog.handler]
+    for handler in duplicates:
+        logger.removeHandler(handler)
     previous = logger.propagate
     logger.propagate = True
     try:
@@ -321,6 +345,9 @@ def capture_logs(caplog: Any, logger: Any, level: int = logging.DEBUG) -> Any:
             yield caplog
     finally:
         logger.propagate = previous
+        # 整体回填快照而非逐个 addHandler：保持原顺序与实例，避免把暂离的
+        # 处理器挪到列表末尾，也避免 at_level 内部的增删被误留在目标 logger 上。
+        logger.handlers = handlers_before
 
 
 def messages_at_least(caplog: Any, level: int) -> list[str]:

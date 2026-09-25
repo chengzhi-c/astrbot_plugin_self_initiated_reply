@@ -18,11 +18,26 @@
 
 语义与退出码：
 
-- 逐条：锚点在文件内必须**恰好出现一次**（否则 exit 2，绝不静默跳过）→ 注入 →
-  跑目标测试 → **测试必须失败**（失败=捕获=通过）→ ``finally`` 恢复并逐字节校验文件。
+- 逐条：锚点在文件内必须**恰好出现一次**（否则 exit 2，绝不静默跳过）→ 基线自检
+  → 注入 → 跑目标测试 → **测试必须失败**（失败=捕获=通过）→ ``finally`` 恢复并逐字节校验文件。
 - 目标测试意外全绿 → ``MISSED``，exit 1。
 - 目标测试挂死（超过单条超时）→ 记为 ``TIMEOUT``，exit 1：不把「不知道」当通过。
+- 基线不干净 / 报告缺失或不可解析 / setup·teardown·钩子清理失败 / runner 崩溃
+  → ``ERROR``，exit 1：不把「不知道」当捕获。
 - ``--list`` 只做锚点自检与清单打印，不跑测试（锚点腐烂可在此提前发现）。
+
+可信度判据（为何不再只看退出码，均为实测）：
+
+- 注入前每个唯一 ``(runner, targets)`` 先跑一次**未变异基线**并缓存；基线必须
+  ``rc=0``、报告含 >=1 个真实目标用例、``failures=0``、``errors=0``，否则该变异
+  直接 ERROR 且不得注入。没有这道闸，「目标测试本来就挂」会被任何变异记成 CAUGHT。
+- ``node --test`` 把文件加载失败（语法错误 / import 抛错）报成
+  ``<failure type="testCodeFailure">`` 且 ``rc=1``；before/after hook 失败则报成
+  ``<failure type="hookFailed">``。只按 ``rc==1`` 判捕获，等于把「目标根本跑不起来」
+  或钩子失败当捕获。
+- 空 ``.mjs`` 被 node 记成 1 个 pass（实测），所以基线必须核查**真实用例数**。
+- ``pytest`` 的 teardown/setup 失败在 JUnit 里是 ``errors=1, failures=0``（实测），
+  旧判据只看 ``rc!=0``，会把它算捕获。
 """
 
 from __future__ import annotations
@@ -33,7 +48,9 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import NamedTuple
 
@@ -42,6 +59,15 @@ ROOT = Path(__file__).resolve().parents[1]
 # 单条变异的测试超时：目标测试子集都是秒级（实测最长 ~6s），120s 足够区分
 # 「注入导致挂死」与「机器慢」。超时按未通过处理，不静默放行。
 PER_MUTATION_TIMEOUT_SEC = 120.0
+
+# node --test junit reporter 用 failure/@type 区分真实用例断言与钩子失败
+# （实测 24.15.0：hook 失败为 hookFailed，message 是自由文本）。
+NODE_CODE_FAILURE = "testCodeFailure"
+JS_SUFFIXES = (".mjs", ".cjs", ".js")
+
+# 基线缓存：``(runner, targets)`` -> ``None``（干净）或失败原因。
+# 只在本进程内有效（不进盘、不跨次运行），每次 ``main()`` 前清空。
+_BASELINES: dict[tuple[str, tuple[str, ...]], str | None] = {}
 
 
 class Mutation(NamedTuple):
@@ -285,9 +311,18 @@ def _clear_pycache(rel: str) -> None:
         shutil.rmtree(pycache, ignore_errors=True)
 
 
-def _command(mutation: Mutation) -> list[str]:
+def _command(mutation: Mutation, *, tmp_root: Path, report: Path, phase: str) -> list[str]:
+    """构造该次运行的命令（runner 无关），pytest 额外绑定新建的 basetemp。"""
     if mutation.runner == "node":
-        return ["node", "--test", *mutation.targets]
+        return [
+            "node",
+            "--test",
+            "--test-reporter=junit",
+            f"--test-reporter-destination={report}",
+            *mutation.targets,
+        ]
+    basetemp = tmp_root / f"basetemp-{phase}"
+    basetemp.mkdir(parents=True, exist_ok=True)
     return [
         sys.executable,
         "-m",
@@ -297,12 +332,254 @@ def _command(mutation: Mutation) -> list[str]:
         "-p",
         "no:cacheprovider",
         "--no-header",
+        f"--basetemp={basetemp}",
+        f"--junitxml={report}",
         *mutation.targets,
     ]
 
 
+def _run_env(tmp_root: Path) -> dict[str, str]:
+    """该次运行的 env：TEMP/TMP 指向同一专属根；不借 PYTEST_ADDOPTS。"""
+    root = str(tmp_root)
+    env = dict(os.environ, TEMP=root, TMP=root, PYTHONDONTWRITEBYTECODE="1")
+    # 外部遗留的这两项会让显式 --basetemp 与超时判据失效，必须剔除。
+    env.pop("PYTEST_ADDOPTS", None)
+    env.pop("PYTEST_DEBUG_TEMPROOT", None)
+    return env
+
+
+def _scratch_root() -> Path:
+    """本次 main() 的专属临时根：报告 / basetemp / TEMP+TMP 全部落在其下。
+
+    不硬编码盘符或路径（``tempfile.mkdtemp``），也不落在仓库内；每次运行新建，
+    在 ``finally`` 里清理。
+    """
+    return Path(tempfile.mkdtemp(prefix="mutation-gate-"))
+
+
+def _cleanup_scratch(root: Path) -> str | None:
+    """清理自有临时根；失败返回原因（调用方据此落 ERROR，不静默）。"""
+    try:
+        shutil.rmtree(root)
+    except OSError as exc:
+        return f"清理临时根失败: {exc}"
+    return None
+
+
+def _is_file_level(case: ET.Element) -> bool:
+    """node 文件级失败：``name`` 即被测文件路径，说明真实用例一个都没跑起来。"""
+    return (case.get("name") or "").endswith(JS_SUFFIXES)
+
+
+def _node_real_code_failure(case: ET.Element) -> str | None:
+    """真实用例的 ``testCodeFailure`` 消息；文件级 / 钩子失败返回 ``None``。"""
+    if _is_file_level(case):
+        return None
+    failure = case.find("failure")
+    if failure is None:
+        return None
+    if (failure.get("type") or "") != NODE_CODE_FAILURE:
+        return None
+    return failure.get("message") or ""
+
+
+def _report_summary(root: ET.Element, *, runner: str) -> dict:
+    """把 JUnit 根压成纯数据摘要（表驱动判定用，无副作用）。"""
+    cases = list(root.iter("testcase"))
+    suites = list(root.iter("testsuite"))
+    counts = {
+        key: sum(int(suite.get(key) or 0) for suite in suites)
+        for key in ("tests", "failures", "errors")
+    }
+    return {
+        "runner": runner,
+        "reported": counts,
+        "pytest_failures": sum(1 for case in cases if case.find("failure") is not None),
+        "pytest_errors": sum(1 for case in cases if case.find("error") is not None),
+        "node_code_failures": [
+            msg for case in cases if (msg := _node_real_code_failure(case)) is not None
+        ],
+        "node_real_cases": sum(1 for case in cases if not _is_file_level(case)),
+    }
+
+
+def _baseline_ok(summary: dict, *, rc: int) -> bool:
+    """基线判据：干净，且报告里真有目标用例在跑。"""
+    if rc != 0:
+        return False
+    reported = summary["reported"]
+    if reported["failures"] or reported["errors"]:
+        return False
+    if summary["runner"] == "node":
+        # 空 .mjs 被 node 记成 1 pass（实测），所以「有 tests」不等于「有用例」。
+        return summary["node_real_cases"] > 0
+    return reported["tests"] > 0
+
+
+def _baseline_reason(summary: dict, rc: int) -> str:
+    reported = summary["reported"]
+    if rc != 0:
+        return f"基线未变异即失败（rc={rc}）"
+    if reported["failures"]:
+        return "基线报告 failures>0"
+    if reported["errors"]:
+        return "基线报告 errors>0"
+    return "基线报告没有真实目标用例"
+
+
+def _is_pytest_caught(root: ET.Element) -> bool:
+    """pytest：failures>0 且 errors==0 才算捕获（teardown/setup 失败是 error）。"""
+    summary = _report_summary(root, runner="pytest")
+    reported = summary["reported"]
+    if reported["errors"]:
+        return False
+    if reported["failures"] != summary["pytest_failures"]:
+        return False
+    return reported["failures"] > 0 and summary["pytest_failures"] > 0
+
+
+def _is_node_caught(root: ET.Element) -> bool:
+    """node：至少一个真实用例的 ``testCodeFailure``（文件级 / 钩子失败都不算）。"""
+    return bool(_report_summary(root, runner="node")["node_code_failures"])
+
+
+def _read_report(path: Path) -> ET.Element | None:
+    """读并解析 JUnit 报告；缺失或不可解析一律 ``None``（调用方落 ERROR）。"""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    try:
+        return ET.fromstring(text)
+    except ET.ParseError:
+        return None
+
+
+def _node_invocation(mutation: Mutation, scratch: Path, phase: str) -> tuple[list[str], Path]:
+    """node 的命令与报告路径；报告落在专属 scratch 根下。"""
+    report = scratch / f"junit-node-{phase}.xml"
+    argv = [
+        "node",
+        "--test",
+        "--test-reporter=junit",
+        f"--test-reporter-destination={report}",
+        *mutation.targets,
+    ]
+    return argv, report
+
+
+def _pytest_invocation(
+    mutation: Mutation, scratch: Path, phase: str
+) -> tuple[list[str], Path, Path]:
+    """pytest 的命令、报告路径与专属临时根；basetemp 由 ``_command`` 负责 mkdir。"""
+    report = scratch / f"junit-{phase}.xml"
+    tmp_root = scratch / f"run-{phase}"
+    argv = _command(mutation, tmp_root=tmp_root, report=report, phase=phase)
+    return argv, report, tmp_root
+
+
+def _invocation(mutation: Mutation, scratch: Path, phase: str) -> tuple[list[str], Path, Path]:
+    if mutation.runner == "node":
+        argv, report = _node_invocation(mutation, scratch, phase)
+        return argv, report, scratch
+    return _pytest_invocation(mutation, scratch, phase)
+
+
+def _execute(argv: list[str], tmp_root: Path) -> tuple[int | None, float, str]:
+    """跑一次测试进程；返回 ``(rc, 秒数, 末行输出)``，超时 rc 为 ``None``。"""
+    started = time.monotonic()
+    try:
+        done = subprocess.run(
+            argv,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=PER_MUTATION_TIMEOUT_SEC,
+            env=_run_env(tmp_root),
+        )
+    except subprocess.TimeoutExpired:
+        return None, time.monotonic() - started, f">{PER_MUTATION_TIMEOUT_SEC:.0f}s 未退出"
+    output = (done.stdout or "") + (done.stderr or "")
+    last_line = next((line for line in reversed(output.splitlines()) if line.strip()), "")
+    return done.returncode, time.monotonic() - started, last_line.strip()[:100]
+
+
+def _node_reject_reason(root: ET.Element, summary: dict) -> str:
+    """node 未捕获的具体原因（hook / 文件级 / 其他），供人读。"""
+    hooks = [
+        failure.get("message") or "hook failure"
+        for case in root.iter("testcase")
+        if (failure := case.find("failure")) is not None and failure.get("type") == "hookFailed"
+    ]
+    if hooks:
+        return f"钩子失败而非目标用例失败（{hooks[0]}）"
+    if summary["reported"]["errors"]:
+        return "运行器报错（文件级失败）"
+    return "无真实 testCodeFailure"
+
+
+def _finalize(
+    mutation: Mutation, rc: int | None, elapsed: float, detail: str, report: Path
+) -> tuple[str, float, str]:
+    """把一次运行的结果按**报告实体**判定为状态（退出码只用于区分 MISSED）。"""
+    if rc is None:
+        return "TIMEOUT", elapsed, detail
+    root = _read_report(report)
+    if root is None:
+        return "ERROR(no-report)", elapsed, "报告缺失或不可解析"
+    summary = _report_summary(root, runner=mutation.runner)
+    if rc == 0:
+        return "MISSED", elapsed, detail
+    if mutation.runner == "node":
+        if _is_node_caught(root):
+            return "CAUGHT", elapsed, detail
+        return f"ERROR({rc})", elapsed, _node_reject_reason(root, summary)
+    if _is_pytest_caught(root):
+        return "CAUGHT", elapsed, detail
+    reported = summary["reported"]
+    if reported["errors"]:
+        return f"ERROR({rc})", elapsed, "报告含 error（setup/teardown/清理失败）"
+    return f"ERROR({rc})", elapsed, "报告无失败用例"
+
+
+def _run_baseline(mutation: Mutation, scratch: Path) -> str | None:
+    """注入前在**未变异**源码上跑一次基线；通过返回 ``None``，否则返回失败原因。
+
+    失败的变异不得注入：目标测试本来就挂时，任何变异都会被记成 CAUGHT（假绿）。
+    """
+    argv, report, tmp_root = _invocation(mutation, scratch, "baseline")
+    rc, _elapsed, _detail = _execute(argv, tmp_root)
+    problem: str | None = None
+    if rc is None:
+        problem = f"基线超时（>{PER_MUTATION_TIMEOUT_SEC:.0f}s）"
+    else:
+        root = _read_report(report)
+        if root is None:
+            problem = "基线报告缺失或不可解析"
+        else:
+            summary = _report_summary(root, runner=mutation.runner)
+            if not _baseline_ok(summary, rc=rc):
+                problem = _baseline_reason(summary, rc)
+    _BASELINES[(mutation.runner, mutation.targets)] = problem
+    return problem
+
+
+def _ensure_baseline(mutation: Mutation, scratch: Path) -> str | None:
+    """带缓存的基线：同一 ``(runner, targets)`` 在本次 main() 内只跑一次。"""
+    key = (mutation.runner, mutation.targets)
+    if key in _BASELINES:
+        return _BASELINES[key]
+    return _run_baseline(mutation, scratch)
+
+
 def _run_targets(mutation: Mutation) -> tuple[str, float, str]:
-    """跑目标测试；返回 ``(状态, 秒数, 末行输出)``。"""
+    """跑目标测试；返回 ``(状态, 秒数, 末行输出)``。
+
+    自己负责建基线（``_ensure_baseline`` 带缓存），因此测试可以单独调用它。
+    ``main()`` 里基线排在改写源文件之前，这里再取一次只是命中缓存。
+    """
     # 目标文件缺失时绝不能算捕获：``node --test`` 对「找不到文件」返回 1，与
     # 「测试失败」同码，仅按退出码判定会把「目标测试被删掉/改名」记成 CAUGHT
     # （正是本门禁要防的假绿灯）。pytest 对同一情况返回 4（落 ERROR，fail closed），
@@ -310,34 +587,26 @@ def _run_targets(mutation: Mutation) -> tuple[str, float, str]:
     missing = [target for target in mutation.targets if not (ROOT / target).exists()]
     if missing:
         return "ERROR(no-target)", 0.0, f"目标不存在: {', '.join(missing)}"
-    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-    started = time.monotonic()
+
+    scratch = _scratch_root()
+    status = "ERROR(internal)"
+    elapsed = 0.0
+    final_detail = ""
     try:
-        done = subprocess.run(
-            _command(mutation),
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=PER_MUTATION_TIMEOUT_SEC,
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
-        return "TIMEOUT", time.monotonic() - started, f">{PER_MUTATION_TIMEOUT_SEC:.0f}s 未退出"
-    elapsed = time.monotonic() - started
-    output = (done.stdout or "") + (done.stderr or "")
-    last_line = next((line for line in reversed(output.splitlines()) if line.strip()), "")
-    # 只有「测试真的失败」才算捕获。pytest 的 2/3/4/5 是中断/内部错误/用法错误/
-    # 没收集到用例，node 的非 1 退出码是运行器自身问题——把它们当捕获，会让门禁
-    # 在目标测试被删掉/改名时假绿（这正是本门禁要防的假绿灯）。
-    if done.returncode == 0:
-        status = "MISSED"
-    elif done.returncode == 1:
-        status = "CAUGHT"
-    else:
-        status = f"ERROR({done.returncode})"
-    return status, elapsed, last_line.strip()[:100]
+        baseline = _ensure_baseline(mutation, scratch)
+        if baseline is not None:
+            status, final_detail = "ERROR(baseline)", baseline
+        else:
+            argv, report, tmp_root = _invocation(mutation, scratch, "run")
+            rc, elapsed, detail = _execute(argv, tmp_root)
+            status, _elapsed, final_detail = _finalize(mutation, rc, elapsed, detail, report)
+    finally:
+        # 清理失败同样是不确定状态：不能静默降级成 CAUGHT/MISSED。
+        problem = _cleanup_scratch(scratch)
+        if problem:
+            print(f"WARN: {problem}", file=sys.stderr)
+            status, final_detail = "ERROR(cleanup)", problem
+    return status, elapsed, final_detail
 
 
 def _anchor_problems(selected: tuple[Mutation, ...]) -> list[str]:
@@ -383,9 +652,30 @@ def main(argv: list[str] | None = None) -> int:
         print(f"OK: {len(selected)} 条变异锚点自检通过")
         return 0
 
+    _BASELINES.clear()
     failures: list[str] = []
     print(f"==> 变异门禁：{len(selected)} 条（每条必须让目标测试失败）")
     for mutation in selected:
+        # 基线必须在注入前的干净源码上跑（缓存按 (runner, targets) 去重），
+        # 所以基线排在改写文件之前。
+        scratch = _scratch_root()
+        try:
+            baseline = _ensure_baseline(mutation, scratch)
+        finally:
+            cleanup_problem = _cleanup_scratch(scratch)
+        if cleanup_problem is not None:
+            label = "ERROR(cleanup)"
+            print(f"  [FAIL] {label:<7} {0.0:5.1f}s {mutation.key} ({mutation.contract})")
+            print(f"         {cleanup_problem}")
+            failures.append(f"{mutation.key}={label}")
+            continue
+        if baseline is not None:
+            label = "ERROR(baseline)"
+            print(f"  [FAIL] {label:<7} {0.0:5.1f}s {mutation.key} ({mutation.contract})")
+            print(f"         {baseline}")
+            failures.append(f"{mutation.key}={label}")
+            continue
+
         path = ROOT / mutation.rel
         original_bytes = path.read_bytes()
         original_text = _read(path)

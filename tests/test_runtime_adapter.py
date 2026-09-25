@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from .host_stubs import base_runtime_capabilities, load_package
+from .host_stubs import base_runtime_capabilities, load_modules
 
 PACKAGE_NAME = "selfreply_runtime_test_package"
 
 
 def _load_adapter():
-    return load_package(PACKAGE_NAME, "runtime_adapter")
+    return load_modules(PACKAGE_NAME, "runtime_adapter")[0]
 
 
 def test_runtime_adapter_validates_private_agent_capabilities() -> None:

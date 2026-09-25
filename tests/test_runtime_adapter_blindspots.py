@@ -10,13 +10,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from .host_stubs import base_runtime_capabilities, capture_logs, load_package
+from .host_stubs import base_runtime_capabilities, capture_logs, load_modules
 
 PACKAGE_NAME = "selfreply_runtime_test_package"
 
 
 def _load_adapter():
-    return load_package(PACKAGE_NAME, "runtime_adapter")
+    return load_modules(PACKAGE_NAME, "runtime_adapter")[0]
 
 
 def _adapter(runtime, **overrides):

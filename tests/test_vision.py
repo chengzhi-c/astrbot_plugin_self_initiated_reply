@@ -1747,17 +1747,13 @@ def _find_host_platform_sources() -> Path | None:
     三级候选，全部要求版本等于 metadata.yaml 的锁定版：
 
     1. ``SELFREPLY_HOST_SRC`` 环境变量指定的源码树（人工指定，不校验版本）
-    2. **pip 安装的 astrbot 包**——wheel 自带完整适配器源码。CI 的 compat 作业
-       会 ``pip install astrbot==<锁定版>``，走这条本守卫才能在 CI 里真正生效
-    3. 本机兼容矩阵解包目录 ``<盘>:/astrbot-compat/srcs/astrbot-<ver>/``
+    2. **pip 安装的 astrbot 包**——wheel 自带完整适配器源码，版本由
+       ``importlib.metadata`` 精确校验后才采用
+    3. 仓库同级/上一级目录下的兼容矩阵解包副本 ``astrbot-compat/srcs/``
 
-    两个踩过的坑：版本必须精确锚定，曾用
-    ``sorted(glob("astrbot-*"), reverse=True)`` 取"最新"，那是字典序，
-    ``astrbot-4.5.8`` 排在 ``astrbot-4.23.3`` 前面（"5" > "2"），于是扫了旧版
-    源码，得出的漂移结论与锁定版无关。盘符探测顺序见下方
-    ``("E", "D", "C")``；Git Bash 的 ``/e/...`` 只是 shell 侧挂载映射，
-    Python 的 Path 不认，会静默 ``is_dir()==False`` 让本守卫恒 skip
-    （"探针无效时通过不算结论" 的同类陷阱）。
+    踩过的坑：版本必须精确锚定，曾用 ``sorted(glob("astrbot-*"), reverse=True)``
+    取"最新"，那是字典序，``astrbot-4.5.8`` 排在 ``astrbot-4.23.3`` 前面
+    （"5" > "2"），于是扫了旧版源码，得出的漂移结论与锁定版无关。
     """
     env = os.environ.get("SELFREPLY_HOST_SRC", "").strip()
     if env:
@@ -1791,7 +1787,7 @@ def _find_host_platform_sources() -> Path | None:
         # 宿主未安装 / 元数据缺失 / 布局变动：继续走本地源码副本候选。
         pass
 
-    bases = [Path(f"{drive}:/astrbot-compat/srcs") for drive in ("E", "D", "C")] + [
+    bases = [
         ROOT.parent / "astrbot-compat" / "srcs",
         ROOT.parent.parent / "astrbot-compat" / "srcs",
     ]
@@ -1819,6 +1815,8 @@ def test_host_platform_adapters_do_not_use_system_tmp_path() -> None:
     本机无宿主源码副本时跳过；但**不允许静默空转**：找到源码后先自证探针有效
     （目录里确有平台适配器包，且覆盖了 `_HOST_INBOUND_IMAGE_SOURCES` 的全部
     条目），再做断言。否则「指错目录 → 扫到 0 个文件 → 绿灯」会变成假结论。
+    定位方式见 `_find_host_platform_sources`：显式环境变量、已安装锁定版 astrbot、
+    仓库同级/上一级的 compat 解包副本，都是与机器无关的入口。
     """
     sources = _find_host_platform_sources()
     if sources is None:

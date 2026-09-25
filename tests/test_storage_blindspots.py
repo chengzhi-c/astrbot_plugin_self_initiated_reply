@@ -15,9 +15,9 @@ from .test_storage_and_umo import PACKAGE_NAME, _load_modules
 
 
 def _storage_module():
-    from .host_stubs import load_package
+    from .host_stubs import load_modules
 
-    return load_package(PACKAGE_NAME, "storage")
+    return load_modules(PACKAGE_NAME, "storage")[0]
 
 
 # ============================================================================
