@@ -114,11 +114,12 @@ export function createConfigIo(deps) {
 		return getEls();
 	}
 	// 「保存状态未知」的单点：POST 抛错与响应体校验失败是同一语义（无法确认服务
-	// 端是否已写入），三行状态与文案必须同进同退，否则两处文案会各自漂移。
+	// 端是否已写入），状态、toast 文案与保存前置守卫同进同退，否则三处文案会各自漂移。
+	const SAVE_UNKNOWN_MESSAGE = "保存状态未知，请刷新配置后重试";
 	function markSaveUnknown() {
 		setState({ requiresConfigRefresh: true });
 		setSaveState("保存状态未知", "error");
-		showToast("保存状态未知，请刷新配置后重试", true);
+		showToast(SAVE_UNKNOWN_MESSAGE, true);
 	}
 	function setSaveState(message, state) {
 		saveStateKind = state;
@@ -186,7 +187,13 @@ export function createConfigIo(deps) {
 		// 只 parse 一次：计数与摘要共用同一结果（两者共用同一套分隔/去重规则，
 		// 分别调用会让同一份文本被切分三遍）。
 		const parsed = parseWhitelist(text);
-		if (e.whitelistCount) e.whitelistCount.textContent = String(parsed.length);
+		// 计数取**去重后**的长度：这个读数的标签是「生效会话」，而后端把裸群号与
+		// 其群 UMO 视为同一会话（utils.session_whitelisted）。用未去重的 parsed.length
+		// 时，`12347` + `qq:GroupMessage:12347` 会让顶栏读 2 而下方的摘要读
+		// 「已识别 1 个有效会话」——两条都是 aria-live="polite"，读屏连续播报
+		// 两个互相抵消的数字。
+		const unique = uniqueWhitelistItems(text, parsed);
+		if (e.whitelistCount) e.whitelistCount.textContent = String(unique.length);
 		if (e.whitelistSummary)
 			e.whitelistSummary.textContent = summarizeWhitelist(text, parsed);
 	}
@@ -399,7 +406,7 @@ export function createConfigIo(deps) {
 			return;
 		}
 		if (state.requiresConfigRefresh) {
-			showToast("保存状态未知，请刷新配置后重试");
+			showToast(SAVE_UNKNOWN_MESSAGE);
 			return;
 		}
 		if (!state.configLoaded) {
@@ -530,6 +537,15 @@ export function createConfigIo(deps) {
 			setSaving(false);
 		}
 	}
+	// 刷新响应被协调器作废（loadConfig 返回 false）时的口径：表单仍脏，说明用户的
+	// 编辑还在盘外，给「保存后再刷新」的操作指引；表单已干净时无法仅凭 false 判断
+	// 具体竞态来源，因此用中性说明，不虚构「有未保存改动」。此处只读 state，不推进
+	// 任何 epoch。
+	function lateRefreshMessage() {
+		return getState().isDirty
+			? "检测到未保存改动，已保留当前内容，请保存后再刷新"
+			: "响应未应用，已保留当前内容";
+	}
 	async function cleanupImageCache() {
 		const e = els();
 		if (!e.cleanupImageCacheBtn) return;
@@ -565,6 +581,7 @@ export function createConfigIo(deps) {
 		saveConfig,
 		cleanupImageCache,
 		configNotLoadedMessage,
+		lateRefreshMessage,
 	};
 }
 

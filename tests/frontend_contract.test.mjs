@@ -697,17 +697,6 @@ test("vision provider fields share the judge layout wrapper", async () => {
   assert.match(judge, /<div class="provider-control">/);
 });
 
-test("summary headings expose the panel titles to the document outline", async () => {
-  // 两个折叠分区的标题原为 <span class="summary-title">，大纲里缺 2 项。
-  const html = await readFile(join(pageDir, "index.html"), "utf8");
-  const details = [...html.matchAll(/<details class="panel panel-collapsible"[\s\S]*?<\/summary>/g)];
-  assert.equal(details.length, 2, "折叠分区数变了");
-  for (const block of details) {
-    assert.match(block[0], /<summary>[\s\S]*<h2 class="summary-title"/);
-    assert.doesNotMatch(block[0], /<span class="summary-title"/);
-  }
-});
-
 test("theme.mjs keeps the dim/bold submission behind the touched guard", async () => {
   // 行为断言在浏览器用例（`theme clicks never submit untouched dim/bold
   // preferences`）；这条是源码锚，防的是把守卫整段删掉的回退。

@@ -59,7 +59,6 @@ function getEls() {
 		configForm: $("configForm"),
 		enabledInput: $("enabledInput"),
 		decisionModelInput: $("decisionModelInput"),
-		providerField: $("judgeProviderField"),
 		providerHint: $("providerHint"),
 		providerListState: $("providerListState"),
 		decisionPromptInput: $("decisionPromptInput"),
@@ -182,11 +181,14 @@ const providerDeps = {
 	onDirty: () => configIo.setDirty(true),
 };
 
-/* 三个 Provider 控件同构。差异只在占位文案，以及 judge 要切换容器 class 与 hint。
-   元素在此直接取：它们不参与其余逻辑，不必再进 getEls。 */
+/* 三个 Provider 控件同构。差异只在占位文案，以及 judge 要切换 hint 文案。
+   容器类（manual）由 createProviderControl.setManual 统一挂载——三个控件都必须
+   传 field，否则该类只会挂到 judge 上，vision 两个字段切手动后会落回基类列定义、
+   按钮被拉成整行宽。元素在此直接取：它们不参与其余逻辑，不必再进 getEls。 */
 const PROVIDER_CONTROLS = [
 	{
 		name: "vision",
+		field: $("visionProviderField"),
 		select: $("visionProviderSelect"),
 		input: $("visionProviderInput"),
 		button: $("visionProviderManualBtn"),
@@ -194,6 +196,7 @@ const PROVIDER_CONTROLS = [
 	},
 	{
 		name: "visionJudge",
+		field: $("visionJudgeProviderField"),
 		select: $("visionJudgeProviderSelect"),
 		input: $("visionJudgeProviderInput"),
 		button: $("visionJudgeProviderManualBtn"),
@@ -201,13 +204,12 @@ const PROVIDER_CONTROLS = [
 	},
 	{
 		name: "judge",
+		field: $("judgeProviderField"),
 		select: $("judgeProviderSelect"),
 		input: $("judgeProviderInput"),
 		button: $("providerManualBtn"),
 		placeholder: "使用当前会话默认模型",
 		onModeChange: (manual) => {
-			if (els.providerField)
-				els.providerField.classList.toggle("manual", manual);
 			if (els.providerHint) {
 				els.providerHint.textContent = manual
 					? "手动输入为空时使用当前会话默认模型"
@@ -311,11 +313,9 @@ async function doRefresh() {
 		const applied = await loadAll({ force: true });
 		// 只说真话：表单脏时响应被拦下，内容仍是用户编辑的那份，谎报「已刷新为
 		// 最新配置」会让用户以为磁盘内容已生效（随后保存会把他的编辑覆盖上去）。
-		showToast(
-			applied === false
-				? "检测到未保存改动，已保留当前内容，请保存后再刷新"
-				: "已刷新为最新配置",
-		);
+		// 口径由 configIo 判定：脏表单给操作指引，干净表单只用中性提示；响应为何
+		// 作废由协调器决定，页面不臆测具体竞态来源。
+		showToast(applied === false ? configIo.lateRefreshMessage() : "已刷新为最新配置");
 	} catch (err) {
 		showToast(err.message || "刷新失败");
 	} finally {

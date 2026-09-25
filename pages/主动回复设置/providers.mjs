@@ -1,8 +1,11 @@
 import { providerNeedsManualInput } from "./frontend-core.mjs";
 /**
- * @param {{select: HTMLSelectElement|null, input: HTMLInputElement|null,
- *          button: HTMLButtonElement|null, placeholder: string}} refs
- *          元素引用（多余字段被忽略）。
+ * @param {{field?: HTMLElement|null, select: HTMLSelectElement|null,
+ *          input: HTMLInputElement|null, button: HTMLButtonElement|null,
+ *          placeholder: string}} refs
+ *          元素引用（多余字段被忽略）。``field`` 是包裹层，手动/列表切换由
+ *          ``setManual`` 在它上面挂 ``manual`` 类；缺省时不挂类（该控件不参与
+ *          列宽切换）。
  * @param {{ getOptions: () => any[], isListAvailable: () => boolean,
  *           showToast: (msg: string) => void,
  *           onModeChange?: (manual: boolean) => void,
@@ -13,6 +16,13 @@ export function createProviderControl(refs, deps) {
   const { getOptions, isListAvailable, showToast, onModeChange } = deps;
   function setManual(enabled, focusInput = false) {
     manual = Boolean(enabled);
+    // 容器类由本函数统一负责：三个 Provider 控件（judge / vision / visionJudge）
+    // 共用这一处实现。只让 judge 的 onModeChange 加类时，vision 两个字段切手动
+    // 后容器类恒为空，于是 .vision-provider-field 的两列定义继续生效，按钮被拉成
+    // 整行宽（实测 373px，judge 同态 78px）。
+    // 注意这是「类没挂上」而不是 CSS 优先级问题：.provider-field.manual 含 3 个
+    // 类（0,3,0）本就压过 .vision-provider-field（0,2,0），无需为 vision 另写规则。
+    if (refs.field) refs.field.classList.toggle("manual", manual);
     if (refs.button) {
       refs.button.textContent = manual ? "使用列表" : "手动输入";
       refs.button.setAttribute("aria-expanded", String(manual));

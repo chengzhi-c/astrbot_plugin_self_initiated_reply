@@ -314,6 +314,28 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
   契约——改写法即红，与真实行为无关。要守行为请补浏览器/契约行为用例（参照
   `save validation guards on whitelist before the numeric scan` 由源码顺序改为行为断言）。
 
+## Provider 手动态：容器类由控件自己挂，不靠 per-spec 回调
+
+三个 Provider 字段（judge / vision / visionJudge）的「手动输入 ↔ 使用列表」切换
+形态同源：`pages/主动回复设置/providers.mjs` 的 `setManual` 在读入 `refs.field`
+时自行 `classList.toggle("manual", …)`，`app.js` 的 `PROVIDER_CONTROLS` 每一项都必须
+传 `field`。
+
+**不要退回「让 judge 的 `onModeChange` 加类」那种写法。** 那是本缺陷的成因：
+`manual` 类只在 judge 的 spec 上有回调，vision 两个字段切手动后容器类恒为空，
+于是 `.vision-provider-field .provider-control` 的两列定义继续生效——按钮被拉成
+整行宽。实测 1440×1000 下按钮宽 373px，而 judge 同态 78px。
+
+为什么 CSS 不用改（这是一个容易误判的点）：`.provider-field.manual .provider-control`
+含 **3 个类**（特异性 0,3,0），`.vision-provider-field .provider-control` 只有 **2 个**
+（0,2,0）。前者本来就压过后者，与源码先后位置无关；此前失败的唯一原因是那个类
+从未被挂到 vision 容器上。给 vision 补 `:not(.manual)` 或再写一条
+`.vision-provider-field.manual` 覆盖规则都是多余的。
+
+守卫：`tests/frontend_browser.test.mjs` 的
+`vision provider fields lay out on one row like the judge field` 在手动态量取
+容器类名、列数与按钮宽度（阈值 100px 不锁像素），并反向断言切回列表态恢复两列。
+
 ## 吸顶态不得改变 topbar 的占位高度
 
 `.topbar` 是页面首个 `position: sticky` 元素，粘附态只能用 `border-color` /

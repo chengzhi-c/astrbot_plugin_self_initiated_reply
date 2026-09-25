@@ -381,10 +381,43 @@ test("a late refresh does not overwrite an edit that was saved meanwhile", async
   await page.waitForTimeout(120);
 
   await expect(page.locator("#messageDelayInput")).toHaveValue("75");
+  // 保存已完成后响应才被协调器作废：内容已是最新且已落盘，此刻再说"有未保存
+  // 改动"是假话（用户刚刚保存过），只会逼他重复保存。toast 必须是中性的那句。
+  await expect(page.locator("#toast")).toHaveText("响应未应用，已保留当前内容");
   const revisionAfter = await page.evaluate(
     () => window.__bridgeState.config.config_revision,
   );
   expect(revisionAfter).toBe(savedRevision);
+  expect(errors).toEqual([]);
+});
+
+test("a late refresh on a form edited after the save names the pending edits", async ({ page }) => {
+  // 上一条守"保存后表单已干净"的中性口径，这一条守它的另一半：保存成功后用户
+  // 又改了字段。此时迟到响应携带的快照早于本次保存，必须仍被协调器作废——
+  // 应用它会把用户保存过的那一版连同他的新编辑一起退回旧值。
+  // toast 必须落到脏表单那句：只说"已保留当前内容"也能满足上面那条干净用例，
+  // 于是"响应未应用、请保存后再刷新"这句可操作的指引在产品里彻底消失。
+  await installBridge(page, { refreshConfigPending: true });
+  const errors = await openPage(page);
+  await page.locator("#messageDelayInput").fill("75");
+  await page.locator("#refreshBtn").click();
+  // 脏表单需二次点击确认；确认后请求才真正发出并挂起。
+  await page.locator("#refreshBtn").click();
+  await expect
+    .poll(() => page.evaluate(() => typeof window.__resolveRefreshConfig))
+    .toBe("function");
+
+  await page.locator("#saveTopBtn").click();
+  await expect(page.locator("#navSaveState")).toHaveText("已保存");
+  // 保存之后的新编辑：isDirty 重新变真，editEpoch 也已推进。
+  await page.locator("#messageDelayInput").fill("80");
+  await page.evaluate(() => window.__resolveRefreshConfig());
+
+  await expect(page.locator("#toast")).toHaveText(
+    "检测到未保存改动，已保留当前内容，请保存后再刷新",
+  );
+  await expect(page.locator("#messageDelayInput")).toHaveValue("80");
+  await expect(page.locator("#navSaveState")).toContainText("有未保存改动");
   expect(errors).toEqual([]);
 });
 
@@ -854,6 +887,60 @@ test("vision provider fields lay out on one row like the judge field", async ({ 
     "aria-expanded",
     "true",
   );
+
+  // 手动态的列宽：三个 Provider 控件必须同源。只让 judge 挂 manual 类时，
+  // vision 两个字段的容器类恒为空，.vision-provider-field 的两列定义继续生效，
+  // 按钮被拉成整行宽——实测 373px vs judge 78px。
+  // 阈值取 100px 而非精确 78px：字体栈在不同平台有毫米级差异，这里只要量级判据。
+  await page.locator("#visionJudgeProviderManualBtn").click();
+  const manual = await page.evaluate(() => {
+    const measure = (fieldId, buttonId) => {
+      const field = document.getElementById(fieldId);
+      const button = document.getElementById(buttonId);
+      return {
+        hasManualClass: field.classList.contains("manual"),
+        columns: getComputedStyle(field.querySelector(".provider-control"))
+          .gridTemplateColumns,
+        buttonWidth: Math.round(button.getBoundingClientRect().width),
+      };
+    };
+    return {
+      vision: measure("visionProviderField", "visionProviderManualBtn"),
+      visionJudge: measure(
+        "visionJudgeProviderField",
+        "visionJudgeProviderManualBtn",
+      ),
+    };
+  });
+  for (const [label, state] of Object.entries(manual)) {
+    expect(state.hasManualClass, `${label} 容器未挂 manual 类`).toBe(true);
+    expect(
+      state.columns.trim().split(/\s+/).length,
+      `${label} 手动态仍是两列：${state.columns}`,
+    ).toBe(1);
+    expect(
+      state.buttonWidth,
+      `${label} 手动按钮被拉成整行宽：${state.buttonWidth}px`,
+    ).toBeLessThan(100);
+  }
+
+  // 反向锚：切回列表态必须恢复两列（防「恒单列」式的错误修复）
+  await page.locator("#visionProviderManualBtn").click();
+  await expect(page.locator("#visionProviderManualBtn")).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  const restored = await page.evaluate(() => {
+    const field = document.getElementById("visionProviderField");
+    return {
+      hasManualClass: field.classList.contains("manual"),
+      columns: getComputedStyle(field.querySelector(".provider-control"))
+        .gridTemplateColumns,
+    };
+  });
+  expect(restored.hasManualClass).toBe(false);
+  expect(restored.columns.trim().split(/\s+/).length).toBe(2);
+
   expect(errors).toEqual([]);
 });
 
@@ -1263,6 +1350,38 @@ test("integer controls reject fractional input before save", async ({ page }) =>
   expect(errors).toEqual([]);
 });
 
+test("a sidenav click moves the hash and the single aria-current without observers", async ({ page }) => {
+  // 这条只守点击路径本身：IntersectionObserver 在滚动时也会改 aria-current，
+  // 不显式禁用的话「加载后把某个链接点亮」的任一实现都能让断言通过。禁用后
+  // 只有点击能改变状态，同时覆盖 hash 同步与唯一性。
+  await page.addInitScript(() => {
+    delete window.IntersectionObserver;
+  });
+  await page.setViewportSize({ width: 900, height: 1000 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  const target = page.locator('.sidenav-link[data-target="sec-triggers"]');
+  await expect(page.locator('.sidenav-link[data-target="selfStat"]')).toHaveAttribute(
+    "aria-current",
+    "location",
+  );
+
+  await target.click();
+
+  await expect(target).toHaveAttribute("aria-current", "location");
+  await expect(page).toHaveURL(/#sec-triggers$/);
+  expect(errors).toEqual([]);
+  // 唯一性：aria-current 同时落在两个链接上，读屏用户就分不清当前位置。
+  const currents = await page.evaluate(() =>
+    Array.from(document.querySelectorAll(".sidenav-link"))
+      .filter((link) => link.getAttribute("aria-current") === "location")
+      .map((link) => link.dataset.target),
+  );
+  expect(currents).toEqual(["sec-triggers"]);
+  // is-current 与 aria-current 同源：只有一处更新会让视觉态与读播报分叉。
+  await expect(page.locator(".sidenav-link.is-current")).toHaveCount(1);
+});
+
 test("backend field errors paint the offending number control", async ({ page }) => {
   await installBridge(page, { saveMode: "field-error" });
   const errors = await openPage(page);
@@ -1466,3 +1585,43 @@ test("topbar must not change its height when the stuck class toggles", async ({ 
   expect(errors).toEqual([]);
 });
 
+test("whitelist count and summary agree on the same deduplicated input", async ({
+  page,
+}) => {
+  // 顶栏读数的标签是「生效会话」，与下方摘要的「已识别 N 个有效会话」是同一事实
+  // 的两种呈现：后端把裸群号与其群 UMO 视为同一会话（utils.session_whitelisted）。
+  // 计数若用未去重的 parseWhitelist().length，`12347` + 对应 UMO 会让顶栏读 2、
+  // 摘要读 1——两条读数都是 aria-live="polite"，读屏连续播报两个互相抵消的数字。
+  await installBridge(page);
+  const errors = await openPage(page);
+  const read = () =>
+    page.evaluate(() => {
+      const input = document.getElementById("whitelistInput");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      return {
+        count: document.getElementById("whitelistCount").textContent,
+        summary: document.getElementById("whitelistSummary").textContent,
+      };
+    });
+
+  // 折叠：裸群号与它的群 UMO 是同一个会话，计数必须按去重后的算
+  await page.locator("#whitelistInput").fill("12347\nqq:GroupMessage:12347");
+  const collapsed = await read();
+  expect(collapsed.count).toBe("1");
+  expect(collapsed.summary).toContain("已识别 1 个有效会话");
+  expect(collapsed.summary).toContain("存在 1 处重复");
+
+  // 反向锚：两个真正不同的会话不得被折叠成 1（防「恒 1」式的错误修复）
+  await page.locator("#whitelistInput").fill("111\nqq:GroupMessage:222");
+  const two = await read();
+  expect(two.count).toBe("2");
+  expect(two.summary).toContain("已识别 2 个有效会话");
+
+  // 完全重复的同一项同样按去重后计数
+  await page.locator("#whitelistInput").fill("12347\n12347");
+  const dup = await read();
+  expect(dup.count).toBe("1");
+  expect(dup.summary).toContain("已识别 1 个有效会话");
+
+  expect(errors).toEqual([]);
+});

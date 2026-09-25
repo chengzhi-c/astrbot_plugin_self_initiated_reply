@@ -122,7 +122,8 @@ export function setupNav(els) {
   links.forEach((link) => {
     link.addEventListener("click", (e) => {
       if (!jumpToSection(link.dataset.target)) return;
-      e.preventDefault();      try {
+      e.preventDefault();
+      try {
         history.replaceState(null, "", "#" + link.dataset.target);
       } catch (_) {
         /* ignore */
