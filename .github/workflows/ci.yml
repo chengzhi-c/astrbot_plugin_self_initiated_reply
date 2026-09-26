@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        # ruff 精确钉版的唯一权威：本地开发用 uvx ruff / gates.py（版本区间见
+        # ruff 精确钉版的唯一权威：本地开发用 uvx ruff（版本区间见
         # pyproject [dev]），两边不构成“同值声明”，无需跨源互锁。
         run: pip install ruff==0.16.1
       - name: Ruff check

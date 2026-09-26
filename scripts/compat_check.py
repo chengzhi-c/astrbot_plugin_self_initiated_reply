@@ -78,7 +78,7 @@ def _bootstrap() -> _BootstrapState:
         injected_package = _register_plugin_package()
     except BaseException:
         # 任一步失败都复原 cwd / sys.path / sys.modules 并删掉自建目录：异常沿
-        # 调用栈冒泡时，不能让调用进程（本地是人、CI 是 gates.py）留在临时目录
+        # 调用栈冒泡时，不能让调用进程（本地是人、CI 是 compat 作业）留在临时目录
         # 里工作，也不能把 preparer 异常变成"目录没人拥有"的泄漏。
         _restore_process_state(
             previous_cwd,

@@ -261,7 +261,7 @@ async def test_call_event_hook_passes_through_sync_callback() -> None:
     assert await adapter.call_event_hook("evt", "t") == "sync"
 
 
-def test_host_contract_checks_listed() -> None:
+def test_runtime_contract_checks_listed() -> None:
     """compat_check 的存在性清单与适配层契约单源（增删符号必须同步）。"""
     runtime = _load_adapter()
     contract = dict(runtime.AstrBotRuntimeAdapter.host_contract())

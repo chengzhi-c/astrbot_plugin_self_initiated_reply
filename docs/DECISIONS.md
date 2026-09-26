@@ -15,9 +15,6 @@ pathspec 交叉核验）曾漂移过两次，而分发主路径不产生 wheel�
 ——“缓存泄漏进包”这类问题在结构上不再存在。pyproject 的 wheel/sdist 配置保留
 （本地构建仍干净），但不再有发布链依赖它。
 
-`mutation` 作业只在 nightly/手动触发：它锚定的是“既有测试还能抓既有缺陷”，只在
-有人改那些测试或锚点时才可能变红，逐 push 跑是纯浪费。
-
 ## 双面板
 
 `CONFIG_SPECS.surfaces` 区分官方 Dashboard（`host`）与自定义设置页（`panel`）。常用键上自定义页；巡检、勿扰、回复长度、日上限、`log_reply_content` 等只在 Dashboard。两套面板读写同一份配置。前端可写键必须等于 panel 面，由 `test_fe_writable_keys_match_panel_surfaces` 锁定。
@@ -92,9 +89,9 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 
 `recorder_bridge` 按平台消息 ID 查本地图片时，多图记录里 URL 未命中必须拒绝
 盲取首图（首图属于另一张图，错配会让 Vision 描述错图）；单图消息宽容取用
-唯一组件是安全的。`gates`/`compat` 的处理器数量上限
-`EXPECTED_HANDLER_COUNT` 以 `scripts/compat_check.py` 为单一事实源，
-`tests/test_host_contract.py` 经 import 引用。
+唯一组件是安全的。处理器数量上限 `EXPECTED_HANDLER_COUNT` 以
+`scripts/compat_check.py` 为单一事实源，`tests/test_runtime_adapter.py` 经
+import 引用。
 
 远程图片使用 `httpx` + `httpcore` 的固定地址传输：DNS 只在每个请求入口解析一次，
 TCP 连接使用已验证 IP，原 hostname 继续承担 Host/SNI；环境代理关闭，重定向由 HTTPX
@@ -114,14 +111,13 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 
 不拆的理由是扇入成本远大于文件长度的收益：`models` 被绝大多数生产模块以 import
 语句直接引用，`Settings`、`SessionState` 与 `config_revision` 是全仓共享的叶子类型。
-把配置子系统搬到新模块要同时改这些 import、`tests/source_contract.py` 的路径锚
-与 `pyproject.toml` 的 mypy 显式文件清单，属高 churn、零行为收益的重排；
+把配置子系统搬到新模块要同时改这些 import 与 `pyproject.toml` 的 mypy 显式文件清单，
+属高 churn、零行为收益的重排；
 而"读一个文件要切换几次心智模型"的代价，靠下面的结构契约即可抵消。
 
 取而代之的守卫是结构契约而非文件边界：配置键的单源由 `ConfigSpec` 表 +
 `test_config_schema` 断言，前端可写键由 `test_config_source_of_truth` 与 panel
-面比对，镜像实现由 `test_single_source_anchors` 反推。新增职责时按同一方式加断言，
-不靠拆文件降低阅读成本。
+面比对。新增职责时按同一方式加断言，不靠拆文件降低阅读成本。
 
 ## image/parser.py 不拆分
 
@@ -139,23 +135,10 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 让读者拿到定位索引，不复用文件边界。`webapi.py` 同理，一并补齐。将来若测试改为
 只依赖公开接口，可重新评估拆分。
 
-## 变异门禁（`scripts/mutation_gate.py`）
+## 门禁与守卫的准入证据
 
-门槛的准入判据写在文件 docstring 里，此处只记它为何存在：本仓库的承重不变量靠测试守住，
-而「测试是否真能捕获目标缺陷」只靠人工纪律（写测试时先把实现改坏看它变红）会漏：
-实测 17 条承重变异里 6 条被当时的门禁放行，其中 4 条是真实缺口（闸门判定顺序、
-UNKNOWN 的代次门、重定向上限、面板 `config_revision` 格式校验）。现在这四条已各有用例
-并被门禁登记。
-
-一条变异只当满足下列之一才准入：破坏 `BEHAVIOR_CONTRACT.md` 的具名不变量、
-P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得入表**：纯性能调参、
-双层防护中的冗余层、行为等价的写法替换——实测反例两条，勿回收：放宽图片端口白名单
-（传输层 `_FixedAddressTransport` 会二次拦截）、静默等待余量 `+0.1s` 改 `0.001s`
-（只把一次等待拆成多次轮询）。
-
-## 新增门禁的准入证据
-
-两处守卫，各自的「现有门禁抓不到」证据（准入判据同「变异门禁」一节）。
+新增门禁前先证明「现有 ruff/pytest 抓不到目标缺陷」。以下是仍在生效的守卫
+各自的准入证据。
 
 **设置页字面量 id 契约**（`tests/frontend_contract.test.mjs`）：`app.js` 的 `$("id")` 与
 `chrome.mjs` 的 `getElementById("id")` 拼错、或页面删掉对应元素，都不抛异常——调用点
@@ -183,9 +166,8 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
 
 **`POST /ui/theme` 关停门有行为断言**（`tests/test_webapi.py::test_api_post_ui_theme_paths`）：
 teardown 之后落盘的偏好会在下次启动被读回，用户看到「已被丢弃」却仍然生效的旧设置。
-该门在生产里是**两层**（锁外预检 + 锁内复查），只删一层另一层兜住，所以变异验证必须
-两处一起删才能证明断言有效——这与本仓库其余端点（config / image-cache）的口径一致，
-源码层断言（`test_single_source_anchors.py`）保留作第三层。
+该门在生产里是**两层**（锁外预检 + 锁内复查），只删一层另一层兜住，行为断言
+锁住两层并存——与本仓库其余端点（config / image-cache）的口径一致。
 
 ## 核实后刻意不改的项
 
@@ -207,9 +189,7 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
   那样写、哪条边界是刻意的）；它们是该仓库可评审性的来源，收敛它只会让下一个读者
   重新推导一遍。变更史、评审轮次与外部条目号不属此类，不该保留。
 - **双层防护中的冗余层**：例如图片端口白名单与传输层地址校验重叠——去掉任一层
-  都有另一层兜住，行为等价，故不入变异表；这是刻意的纵深，不是重复实现。
-- **发布门禁脚本体量**（`scripts/`）：按发布缺陷逐条长出，每条都对应一次真实事故；
-  与 `gates.py` / CI 的引用关系是它的存在理由，不做合并。
+  都有另一层兜住，行为等价；这是刻意的纵深，不是重复实现。
 - **`compat_check._runtime_api_gaps` 不改成行为冒烟**：曾试过把 52 行签名枚举换成
   「对 `http://127.0.0.1/x.png` 跑一次 `_fetch_image_data_url` 断言返回 None」。
   撤回理由两条：一是**净代码零缩减**（`with` + async probe + 标签字典反而更长），
@@ -217,9 +197,6 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
   而签名枚举只依赖 httpx/httpcore，`_bootstrap()` 的假包路径（本地未装宿主时）也能跑。
   签名枚举守的「本仓库**直接使用**的第三方 API 形态」确实与依赖上界不同层：上界只挡
   大版本，挡不住小版本的签名变化。
-- **`gates.py` 默认不跑变异门禁**（`--with-mutation` 才跑）：它锚定的是「既有测试还能
-  抓既有缺陷」，只在改动那些测试或锚点时才可能回归。CI 的 mutation 作业本来就只在
-  nightly / 手动触发，本地逐次跑 90s 是纯浪费。本地快车道与 CI 的分工因此对齐。
 - **扩充 ruff 规则集**：逐条实测后只加了 `RUF100`。`S110`+`SIM105`（吞异常）里
   `S110` 默认只报裸 `except: pass` 与 `except Exception: pass`（16 条），开
   `check-typed-exception` 后涨到 39 条，而 `SIM105` 只有 18 条——差集全是**多 except
@@ -271,13 +248,9 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 - **测试去重的判据是「被更强断言覆盖」，不是「行数差不多」**：收敛掉的重复用例
   各有一条覆盖它的用例，且覆盖方的断言集是它的超集（例：`test_config_schema.py` 的
   「规格表键 == schema 键且顺序一致」蕴含另两条只做集合比较的用例；`CONTAINER_HOLDERS`
-  表驱动用例逐一枚举 11 个持有者绑定，强于原先抽查 4 个的那条）。删除后 17 条变异
-  仍全部被捕获（`scripts/mutation_gate.py` 实测），是这条收缩没有削弱承重保护的证据。
+  表驱动用例逐一枚举 11 个持有者绑定，强于原先抽查 4 个的那条）。
   剩下的不重复靠这条纪律保持：**新用例若与既有用例断言同一事实，必须说明覆盖方为何
   不是超集**，说不出来就不加。
-- **双层防护里的源码层断言不按「重复」删**：例如 `_eligible_image_entries` 的
-  「贴纸判据不得脱离 `skip_stickers` 短路」那条，行为层只能覆盖**已构造出的**异常
-  形态，源码层禁掉的是无法构造的行为形态。二者不是镜像实现。
 - **不重构 `style.css`**：文件内零 id 选择器；重复规则体**绝大多数**是单声明出现在
   不同选择器上下文（实测 13 组里 6 组是多声明，去掉刻意一致的两份深色令牌块后仍余 5 组：
   `h2`/`.master-copy b`、`.sidenav-link:focus-visible`/`.mtab:focus-visible`、
