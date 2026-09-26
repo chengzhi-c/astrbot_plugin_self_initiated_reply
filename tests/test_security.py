@@ -812,7 +812,7 @@ def test_clean_reply_returns_empty_when_filtering_consumes_everything() -> None:
     _, utils, _ = _load_sec_modules()
 
     # 空白变体标记：LEAK 要求 "tool call" 单空格，行内模式容忍 \s+，
-    # 于是 "[tool call]" 绕过整条早退、只被行内清理吃掉， 清完就只剩空白
+    # 于是 "[tool call]" 绕过整条早退、只被行内清理吃掉，清完就只剩空白
     single = utils.clean_reply("[tool  call] leaked", allow_multiline=False, max_chars=100)
     assert single == ""
 

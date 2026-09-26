@@ -588,7 +588,7 @@ def test_record_proactive_attempt_refreshes_day_before_counting() -> None:
 
     调用方 `SessionPipeline.check_session_locked` 的跨天刷新发生在判断+生成之前，二者相隔
     可达数十秒（判断超时 20s + 生成超时 60s）。若本方法不自带刷新，跨零点的
-    自增会记到昨日键，随下一次 refresh_day 归零， 日配额闸门被绕过一次。
+    自增会记到昨日键，随下一次 refresh_day 归零，日配额闸门被绕过一次。
     """
     models, _, _ = _load_modules()
 

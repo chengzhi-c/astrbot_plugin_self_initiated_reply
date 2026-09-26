@@ -766,7 +766,7 @@ async def test_send_escaping_from_gateway_after_adapter_call_stays_unknown(
     再引入）。此时 adapter 早已调用过，真实状态是「可能已提交」。
 
     若按「gateway 之后才算已提交」的直觉去写标志位，这里会翻转成
-    FAILED_BEFORE_SUBMIT， 不消耗冷却 → 后续触发重发 → 重复消息。
+    FAILED_BEFORE_SUBMIT，不消耗冷却 → 后续触发重发 → 重复消息。
 
     故标志位必须在 ``await outbound.send`` **之前**置位：语义是「adapter 调用
     即将开始」，而非「gateway 已返回」。

@@ -62,7 +62,7 @@ def test_bare_command_word_is_parsed_as_command() -> None:
 
 
 # RL-5（Web 配置读取失败返回 None）的守卫已迁至
-# test_webapi_fixes.py::test_api_get_config_error_path， 那里是真调 API 断言
+# test_webapi_fixes.py::test_api_get_config_error_path，那里是真调 API 断言
 # 载荷形状，比在 except 尾段里搜 "return" 更直接，也不会因重排 except 而误红。
 
 

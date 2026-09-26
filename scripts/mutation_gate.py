@@ -4,7 +4,7 @@
 人工纪律（``docs/BEHAVIOR_CONTRACT.md`` 开头：先把被测逻辑改坏、确认该测试变红、再恢复）。
 实测这条纪律会漏：17 条承重变异里有 6 条被现有门禁放行，其中 4 条是真实缺口
 （闸门判定顺序、UNKNOWN 的代次门、重定向上限、前端 config_revision 格式校验）。
-本脚本把该纪律自动化——每条变异都**必须**让指定测试失败。
+本脚本把该纪律自动化：每条变异都**必须**让指定测试失败。
 
 准入判据（新增条目必须满足其一，并在 ``note`` 里写明理由）：
 
@@ -610,7 +610,7 @@ def _run_targets(mutation: Mutation) -> tuple[str, float, str]:
     # 目标文件缺失时绝不能算捕获：``node --test`` 对「找不到文件」返回 1，与
     # 「测试失败」同码，仅按退出码判定会把「目标测试被删掉/改名」记成 CAUGHT
     # （正是本门禁要防的假绿灯）。pytest 对同一情况返回 4（落 ERROR，fail closed），
-    # 但没必要继续依赖各运行器的退出码语义——前置检查让两者一致 fail closed。
+    # 但没必要继续依赖各运行器的退出码语义，前置检查让两者一致 fail closed。
     missing = [target for target in mutation.targets if not (ROOT / target).exists()]
     if missing:
         return "ERROR(no-target)", 0.0, f"目标不存在: {', '.join(missing)}"

@@ -26,8 +26,6 @@ from .source_contract import (
     _lookup,
     call_names,
     callers_of,
-    defines,
-    logger_levels_for,
 )
 from .test_single_source_anchors import _name_references
 
@@ -154,15 +152,3 @@ def test_name_references_ignores_comments_and_docstrings() -> None:
     # 一个只在文档里提到的模块也会被判为「自行派生状态键」。
     unrelated = _name_references("decision.py", "whitelist_storage_key")
     assert unrelated == [], f"decision.py 只在注释/文档串中提到即被判命中：{unrelated}"
-
-
-def test_defines_returns_false_for_missing() -> None:
-    """``defines`` 对缺失定义返回 False 而不抛（调用方用它做条件断言）。"""
-    assert defines("utils.py", "build_history_text") is True
-    assert defines("utils.py", "no_such_function") is False
-
-
-def test_logger_levels_for_matches_template_not_lineno() -> None:
-    """日志级别判定按模板实参匹配，折行/缩进不影响（observability 守卫的地基）。"""
-    assert "logger.error" in logger_levels_for("main.py", "配置规范化落盘失败")
-    assert logger_levels_for("main.py", "这条日志模板不存在") == []

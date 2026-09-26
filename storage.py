@@ -261,9 +261,9 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
     ``recent`` 用 ``maxlen=recent_limit`` 的 deque 承载，配置调小后自动裁剪。
 
     失败时分三层，全部不阻断插件加载（宁可丢历史，不可起不来）：
-    1. 文件损坏 / 编码错误 / 版本号不符， 先备份原文件再继续（``_backup_state_file``），
+    1. 文件损坏 / 编码错误 / 版本号不符，先备份原文件再继续（``_backup_state_file``），
        不静默覆盖用户数据；版本不符仍尽力按当前结构解析，避免丢弃仍兼容的部分。
-    2. 单个会话条目畸形， 记 warning 后跳过该条，其余会话正常载入。
+    2. 单个会话条目畸形，记 warning 后跳过该条，其余会话正常载入。
     3. 字段级异常值（NaN/负数/远未来/未知 role） 由 ``as_timestamp`` /
        ``as_int`` 归一，不让脏值进入运行期计算。时间戳钳到
        ``[0, now + MAX_CLOCK_SKEW_SEC]``：状态文件可被手工编辑，远未来值会让
