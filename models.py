@@ -262,7 +262,7 @@ def as_bool(value: Any, default: bool = False) -> bool:
     """Parse a persisted/host config flag. Broader than ``parse_decision_json``.
 
     Config values come from Dashboard/JSON files and historically used on/启用/开启.
-    Decision-model JSON only accepts true/yes/1/是 — do not reuse this set there.
+    Decision-model JSON only accepts true/yes/1/是; do not reuse this set there.
     """
     if isinstance(value, bool):
         return value

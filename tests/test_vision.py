@@ -1642,9 +1642,9 @@ def test_extract_images_swaps_url_and_file_by_scheme() -> None:
 # （例如改用 get_astrbot_system_tmp_path() 的系统临时目录），本测试即红。
 #
 # 分三类：
-#   local   — 落盘到 <data> 子树，靠 allowlist 放行（必须在 <data> 内）
-#   remote  — 只给 http(s) URL 或 base64，不经本地路径（allowlist 无关）
-#   peer    — file 值由对端可控，正是 allowlist 要拦的（不得放行）
+#   local:  落盘到 <data> 子树，靠 allowlist 放行（必须在 <data> 内）
+#   remote: 只给 http(s) URL 或 base64，不经本地路径（allowlist 无关）
+#   peer:   file 值由对端可控，正是 allowlist 要拦的（不得放行）
 _HOST_INBOUND_IMAGE_SOURCES: dict[str, tuple[str, str]] = {
     "dingtalk": ("local", "data/temp"),
     "lark": ("remote", "base64"),
