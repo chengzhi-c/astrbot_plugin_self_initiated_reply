@@ -148,7 +148,6 @@ export function createConfigIo(deps) {
 		const bottomSave = e.saveBottomBtn;
 		if (bottomSave) bottomSave.classList.toggle("is-dirty", dirty);
 		if (e.navSaveDot) e.navSaveDot.classList.toggle("is-dirty", dirty);
-		if (e.mobileSaveBar) e.mobileSaveBar.classList.toggle("is-dirty", dirty);
 		if (e.navSaveState)
 			e.navSaveState.textContent = dirty ? "有未保存改动" : "已同步";
 		if (dirty && saveStateKind !== "saving")

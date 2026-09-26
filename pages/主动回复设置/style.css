@@ -1225,12 +1225,6 @@ textarea {
 	grid-template-columns: auto;
 	justify-content: start;
 }
-.vision-provider-field .provider-control {
-	/* vision 的两个 Provider 字段与 judge 统一为横排（select 占主列 + 按钮
-	   固定宽），列定义因此与 .provider-control 基类同值。保留独立规则是给
-	   vision 留一个只影响自己的列宽落点，直接改基类会同时波及 judge。 */
-	grid-template-columns: minmax(0, 1fr) auto;
-}
 .field-grid > .provider-cell {
 	grid-column: span 2;
 }

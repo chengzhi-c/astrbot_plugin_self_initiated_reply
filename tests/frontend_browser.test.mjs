@@ -198,7 +198,7 @@ async function openPage(page, query = "") {
   await page.goto(`${baseUrl}${PAGE_PATH}${query}`);
   // 首屏等待预算显式放宽到页面的看门狗量级（app.js BOOT_TIMEOUT_MS = 12s）。
   // 默认 5s（playwright.config 的 expect.timeout）是**断言**预算，不是加载预算：
-  // 本套件 49 条共用本 helper，负载高时偶发首屏超过 5s，失败点随机落在当时那条
+  // 本套件绝大多数用例共用本 helper，负载高时偶发首屏超过 5s，失败点随机落在当时那条
   // 用例上（实测 12 轮全量里 2 次，分别报在 893 与 1412 两条互不相干的用例上）。
   // 这不放松任何断言，页面真加载失败时看门狗仍会隐藏 boot，随后各用例自己的
   // 读值/toast/errors 断言照旧失败。
@@ -486,15 +486,7 @@ test("theme clicks never submit untouched dim/bold preferences", async ({ page }
   // 与 theme 字段同一条规则。
   await page.setViewportSize({ width: 1440, height: 1000 });
   await installBridge(page, { themePending: true, theme: "dark", dim: true, bold: true });
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
-  page.on("console", (message) => {
-    if (message.type() === "error") errors.push(`console: ${message.text()}`);
-  });
-  await page.goto(`${baseUrl}${PAGE_PATH}`);
-  await expect(page.locator("#boot")).toHaveClass(/is-hidden/, {
-    timeout: BOOT_WAIT_MS,
-  });
+  const errors = await openPage(page);
   await expect.poll(() => page.evaluate(() => typeof window.__resolveTheme)).toBe("function");
 
   await page.locator("#themeToggle").click();
@@ -886,8 +878,8 @@ test("vision provider fields lay out on one row like the judge field", async ({ 
   );
 
   // 手动态的列宽：三个 Provider 控件必须同源。只让 judge 挂 manual 类时，
-  // vision 两个字段的容器类恒为空，.vision-provider-field 的两列定义继续生效，
-  // 按钮被拉成整行宽，实测 373px vs judge 78px。
+  // vision 两个字段靠 .provider-field.manual 收成单列，按钮被拉成整行宽
+  // 的历史缺陷实测 373px vs judge 78px。
   // 阈值取 100px 而非精确 78px：字体栈在不同平台有毫米级差异，这里只要量级判据。
   await page.locator("#visionJudgeProviderManualBtn").click();
   const manual = await page.evaluate(() => {
@@ -1095,15 +1087,7 @@ test("dimming and bold restore from ui prefs", async ({ page }) => {
 test("late theme prefs do not overwrite a dim click already made", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await installBridge(page, { themePending: true, dim: false, bold: false });
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
-  page.on("console", (message) => {
-    if (message.type() === "error") errors.push(`console: ${message.text()}`);
-  });
-  await page.goto(`${baseUrl}${PAGE_PATH}`);
-  await expect(page.locator("#boot")).toHaveClass(/is-hidden/, {
-    timeout: BOOT_WAIT_MS,
-  });
+  const errors = await openPage(page);
   await expect.poll(() => page.evaluate(() => typeof window.__resolveTheme)).toBe("function");
   await page.locator("#dimBtn").click();
   await expect(page.locator("html")).toHaveClass(/dimmed/);
@@ -1117,15 +1101,7 @@ test("late theme prefs do not overwrite a dim click already made", async ({ page
 test("late theme prefs do not overwrite a theme click already made", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await installBridge(page, { themePending: true, theme: "dark", dim: false, bold: false });
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
-  page.on("console", (message) => {
-    if (message.type() === "error") errors.push(`console: ${message.text()}`);
-  });
-  await page.goto(`${baseUrl}${PAGE_PATH}`);
-  await expect(page.locator("#boot")).toHaveClass(/is-hidden/, {
-    timeout: BOOT_WAIT_MS,
-  });
+  const errors = await openPage(page);
   await expect.poll(() => page.evaluate(() => typeof window.__resolveTheme)).toBe("function");
   await page.locator("#themeToggle").click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
@@ -1142,12 +1118,7 @@ test("dim and bold clicks never submit the theme field", async ({ page }) => {
   // 一次压暗就把服务端已存的 dark 静默改成跟随系统。压暗/粗体只改自己那两个字段。
   await page.setViewportSize({ width: 1440, height: 1000 });
   await installBridge(page, { themePending: true, theme: "dark", dim: false, bold: false });
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
-  page.on("console", (message) => {
-    if (message.type() === "error") errors.push(`console: ${message.text()}`);
-  });
-  await page.goto(`${baseUrl}${PAGE_PATH}`);
+  const errors = await openPage(page);
   await expect.poll(() => page.evaluate(() => typeof window.__resolveTheme)).toBe("function");
   await page.locator("#dimBtn").click();
   await expect(page.locator("html")).toHaveClass(/dimmed/);
@@ -1431,11 +1402,12 @@ test("mobile save bar submits the same body as the top save button", async ({ pa
   await installBridge(page);
   const errors = await openPage(page);
   await expect(page.locator("#mobileSaveBar")).toBeVisible();
-  await expect(page.locator("#mobileSaveBar")).not.toHaveClass(/is-dirty/);
+  // 移动端脏反馈由 #mobileSaveState 文案承担（容器上的 is-dirty 是空转类，已删）。
+  await expect(page.locator("#mobileSaveState")).toHaveText("已同步");
 
   await page.locator("#decisionPromptInput").scrollIntoViewIfNeeded();
   await page.locator("#decisionPromptInput").fill("移动端改的提示词");
-  await expect(page.locator("#mobileSaveBar")).toHaveClass(/is-dirty/);
+  await expect(page.locator("#mobileSaveState")).toHaveText("有未保存改动");
 
   await page.locator("#saveMobileBtn").click();
   await expect(page.locator("#mobileSaveState")).toHaveText("已保存");
@@ -1449,7 +1421,8 @@ test("mobile save bar submits the same body as the top save button", async ({ pa
   expect(body.decision_prompt_template).toBe("移动端改的提示词");
   // 顶部与移动端按钮走同一个表单提交：CAS 基线随行发出，缺它会被后端拒为 STALE_WRITE。
   expect(body.base_revision).toBe(`sha256:${"b".repeat(64)}`);
-  await expect(page.locator("#mobileSaveBar")).not.toHaveClass(/is-dirty/);
+  // 保存成功后脏提示必须被覆盖，否则用户看到"已保存"与"有未保存改动"并存。
+  await expect(page.locator("#mobileSaveState")).not.toHaveText("有未保存改动");
   expect(errors).toEqual([]);
 });
 

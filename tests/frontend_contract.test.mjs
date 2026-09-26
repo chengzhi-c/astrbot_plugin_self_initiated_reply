@@ -48,6 +48,42 @@ const providerControls = (value = "") => ({
   vision: { value: () => value, sync() {} },
   visionJudge: { value: () => value, sync() {} },
 });
+// createConfigIo 的调桩工厂：多数用例只关心 apiPost / showToast / apiGet 三处，
+// 其余九个键（elements/state/setState/setStatState/renderPromptPreview/三个
+// Provider 控件/fmtBool）逐字相同，缺任何一个会让 saveConfig 在调用点抛 TypeError
+// 而不是断言失败，所以这里给足默认值，用例只写自己的差异点。
+// judge 参数收整组控件：只有 judge 需要特定值的用例传 `providerControls("typo-id")`。
+const makeConfigIo = ({
+  elements,
+  state,
+  apiPost,
+  showToast = () => {},
+  apiGet = async () => {
+    throw new Error("skip refresh");
+  },
+  judge = providerControls(),
+  providerOptions,
+  providerListAvailable,
+}) =>
+  createConfigIo({
+    getEls: () => elements,
+    getState: () => state,
+    setState: (updates) => Object.assign(state, updates),
+    apiGet,
+    apiPost,
+    showToast,
+    setStatState() {},
+    renderPromptPreview() {},
+    judgeProviderControl: judge.judge,
+    visionProviderControl: judge.vision,
+    visionJudgeProviderControl: judge.visionJudge,
+    fmtBool: String,
+    getProviderOptions: typeof providerOptions === "function" ? providerOptions : () => providerOptions ?? [],
+    isProviderListAvailable:
+      typeof providerListAvailable === "function"
+        ? providerListAvailable
+        : () => providerListAvailable ?? false,
+  });
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pageDir = join(root, "pages", "主动回复设置");
@@ -279,15 +315,14 @@ test("config load failure names the missing fields", async () => {
     querySelector: () => null,
     querySelectorAll: () => [field("cooldown_sec"), field("min_silence_sec")],
   };
-  const io = createConfigIo({
-    getEls: () => ({ configForm: form }),
-    getState: () => ({
+  const io = makeConfigIo({
+    elements: { configForm: form },
+    state: {
       configLoaded: false,
       savingConfig: false,
       configRevision: "",
       isDirty: false,
-    }),
-    setState() {},
+    },
     apiGet: async () => ({
       ok: true,
       enabled: true,
@@ -296,13 +331,6 @@ test("config load failure names the missing fields", async () => {
       cooldown_sec: 900,
     }),
     apiPost: async () => ({}),
-    showToast() {},
-    setStatState() {},
-    renderPromptPreview() {},
-    judgeProviderControl: providerControls().judge,
-    visionProviderControl: providerControls().vision,
-    visionJudgeProviderControl: providerControls().visionJudge,
-    fmtBool: String,
   });
   await assert.rejects(() => io.loadConfig(), /缺少字段 min_silence_sec/);
 });
@@ -740,7 +768,7 @@ test("topbar height writeback stays single-sourced and guarded", async () => {
 });
 
 test("dead css rules stay deleted", async () => {
-  // 11 条死规则（CSSOM 删除 + 计算样式比对确认无视觉变化）逐条钉住，
+  // 已删死规则（CSSOM 删除 + 计算样式比对确认无视觉变化）逐条钉住，
   // 防它们在后续编辑里被"顺手恢复"。断言按规则体取，不用裸子串：`.provider-hint`
   // 这类名字在别的选择器里仍可能合法出现。选择器行允许前置空白：媒体查询里的
   // 规则带缩进，只按顶格匹配会把它们漏掉（`:focus-visible` 与 `margin-left`
@@ -775,9 +803,8 @@ test("dead css rules stay deleted", async () => {
   );
   assert.doesNotMatch(html, /id="sidenav"/);
 
-  // 活规则不能被连带删掉：这三条都是"看起来像死规则"的真规则。
+  // 活规则不能被连带删掉：这两条都是"看起来像死规则"的真规则。
   assert.match(css, /^\s*\.master \.readout\.is-info \.stat-dot \{/m);
-  assert.match(css, /^\s*\.vision-provider-field \.provider-control \{/m);
   assert.match(css, /^\s*\.sidenav \{[^}]*box-shadow/m);
 });
 
@@ -905,13 +932,9 @@ test("config save path follows the form-declared writable keys", async () => {
   };
   assert.deepEqual(configSaveKeys(form).sort(), expectedKeys);
   assert.deepEqual(buildConfigSaveBody(form, controls).whitelist_sessions, ["group:a", "group:b"]);
-  const io = createConfigIo({
-    getEls: () => elements,
-    getState: () => state,
-    setState: (updates) => Object.assign(state, updates),
-    apiGet: async () => {
-      throw new Error("skip refresh");
-    },
+  const io = makeConfigIo({
+    elements,
+    state,
     apiPost: async (endpoint, body) => {
       posts.push({ endpoint, body });
       return {
@@ -924,12 +947,7 @@ test("config save path follows the form-declared writable keys", async () => {
     showToast(message) {
       lastToast = message;
     },
-    setStatState() {},
-    renderPromptPreview() {},
-    judgeProviderControl: controls.judge,
-    visionProviderControl: controls.vision,
-    visionJudgeProviderControl: controls.visionJudge,
-    fmtBool: String,
+    judge: controls,
   });
 
   await io.saveConfig({ preventDefault() {} });
@@ -1005,13 +1023,10 @@ test("successful save applies the returned config and clears dirty state", async
     visionJudge: provider("vision-judge"),
   };
   const savedKeys = Object.fromEntries(configSaveKeys(form).map((key) => [key, true]));
-  const io = createConfigIo({
-    getEls: () => elements,
-    getState: () => state,
-    setState: (updates) => Object.assign(state, updates),
-    apiGet: async () => {
-      throw new Error("skip refresh");
-    },
+  const io = makeConfigIo({
+    elements,
+    state,
+    judge: controls,
     apiPost: async () => ({
       ok: true,
       config: {
@@ -1026,13 +1041,6 @@ test("successful save applies the returned config and clears dirty state", async
       runtime_enabled: true,
       adjusted_fields: [],
     }),
-    showToast() {},
-    setStatState() {},
-    renderPromptPreview() {},
-    judgeProviderControl: controls.judge,
-    visionProviderControl: controls.vision,
-    visionJudgeProviderControl: controls.visionJudge,
-    fmtBool: String,
   });
 
   await io.saveConfig({ preventDefault() {} });
@@ -1103,13 +1111,10 @@ test("saved whitelist count reflects the server-normalized payload", async () =>
     visionJudge: provider("vision-judge"),
   };
   const savedKeys = Object.fromEntries(configSaveKeys(form).map((key) => [key, true]));
-  const io = createConfigIo({
-    getEls: () => elements,
-    getState: () => state,
-    setState: (updates) => Object.assign(state, updates),
-    apiGet: async () => {
-      throw new Error("skip refresh");
-    },
+  const io = makeConfigIo({
+    elements,
+    state,
+    judge: controls,
     // 服务端把提交的两条归一化成一条（例如去重/裁剪后仅剩 group:a）。
     apiPost: async () => ({
       ok: true,
@@ -1125,13 +1130,6 @@ test("saved whitelist count reflects the server-normalized payload", async () =>
       runtime_enabled: true,
       adjusted_fields: [],
     }),
-    showToast() {},
-    setStatState() {},
-    renderPromptPreview() {},
-    judgeProviderControl: controls.judge,
-    visionProviderControl: controls.vision,
-    visionJudgeProviderControl: controls.visionJudge,
-    fmtBool: String,
   });
 
   await io.saveConfig({ preventDefault() {} });
@@ -1214,24 +1212,14 @@ test("save validation guards on whitelist before the numeric scan", async () => 
   };
   const posts = [];
   const toasts = [];
-  const io = createConfigIo({
-    getEls: () => elements,
-    getState: () => state,
-    setState: (updates) => Object.assign(state, updates),
-    apiGet: async () => {
-      throw new Error("skip refresh");
-    },
+  const io = makeConfigIo({
+    elements,
+    state,
     apiPost: async (endpoint) => {
       posts.push(endpoint);
       return { ok: true, config: {}, config_revision: TEST_REVISION };
     },
     showToast: (msg) => toasts.push(msg),
-    setStatState() {},
-    renderPromptPreview() {},
-    judgeProviderControl: providerControls().judge,
-    visionProviderControl: providerControls().vision,
-    visionJudgeProviderControl: providerControls().visionJudge,
-    fmtBool: String,
   });
   // 不调 setupValidation()：那会 document.createElement（本用例无 DOM）。
   // numberFields 为空时 validateAll() 必定返回 true，于是唯一能让保存短路的
@@ -1285,24 +1273,14 @@ test("non-whitelist illegal-char save errors do not paint the whitelist field", 
     requiresConfigRefresh: false,
   };
   const toasts = [];
-  const io = createConfigIo({
-    getEls: () => elements,
-    getState: () => state,
-    setState: (updates) => Object.assign(state, updates),
-    apiGet: async () => {
-      throw new Error("skip refresh");
-    },
+  const io = makeConfigIo({
+    elements,
+    state,
     apiPost: async () => ({
       ok: false,
       error: "bot_aliases 条目含非法字符",
     }),
     showToast: (msg) => toasts.push(msg),
-    setStatState() {},
-    renderPromptPreview() {},
-    judgeProviderControl: providerControls().judge,
-    visionProviderControl: providerControls().vision,
-    visionJudgeProviderControl: providerControls().visionJudge,
-    fmtBool: String,
   });
 
   await io.saveConfig({ preventDefault() {} });
@@ -1361,24 +1339,13 @@ test("whitelist illegal-char save errors still paint the whitelist field", async
     isDirty: false,
     requiresConfigRefresh: false,
   };
-  const io = createConfigIo({
-    getEls: () => elements,
-    getState: () => state,
-    setState: (updates) => Object.assign(state, updates),
-    apiGet: async () => {
-      throw new Error("skip refresh");
-    },
+  const io = makeConfigIo({
+    elements,
+    state,
     apiPost: async () => ({
       ok: false,
       error: "whitelist_sessions 条目含非法字符",
     }),
-    showToast() {},
-    setStatState() {},
-    renderPromptPreview() {},
-    judgeProviderControl: providerControls().judge,
-    visionProviderControl: providerControls().vision,
-    visionJudgeProviderControl: providerControls().visionJudge,
-    fmtBool: String,
   });
 
   await io.saveConfig({ preventDefault() {} });
@@ -1414,26 +1381,17 @@ test("unknown provider id warns but does not block save", async () => {
   };
   const toasts = [];
   let posted = false;
-  const io = createConfigIo({
-    getEls: () => elements,
-    getState: () => state,
-    setState: (updates) => Object.assign(state, updates),
-    apiGet: async () => {
-      throw new Error("skip refresh");
-    },
+  const io = makeConfigIo({
+    elements,
+    state,
+    judge: providerControls("typo-id"),
     apiPost: async () => {
       posted = true;
       return { ok: true, config: {}, adjusted_fields: [] };
     },
     showToast: (msg) => toasts.push(msg),
-    setStatState() {},
-    renderPromptPreview() {},
-    judgeProviderControl: providerControls("typo-id").judge,
-    visionProviderControl: providerControls().vision,
-    visionJudgeProviderControl: providerControls().visionJudge,
-    fmtBool: String,
-    getProviderOptions: () => [{ id: "real-id", label: "real" }],
-    isProviderListAvailable: () => true,
+    providerOptions: [{ id: "real-id", label: "real" }],
+    providerListAvailable: true,
   });
 
   await io.saveConfig({ preventDefault() {} });
@@ -1465,25 +1423,11 @@ test("an empty provider field never raises the off-list warning", async () => {
     requiresConfigRefresh: false,
   };
   const toasts = [];
-  const io = createConfigIo({
-    getEls: () => ({ configForm: form, configSaveState: { textContent: "", classList } }),
-    getState: () => state,
-    setState: (updates) => Object.assign(state, updates),
-    apiGet: async () => {
-      throw new Error("skip refresh");
-    },
+  const io = makeConfigIo({
+    elements: { configForm: form, configSaveState: { textContent: "", classList } },
+    state,
     apiPost: async () => ({ ok: true, config: {}, adjusted_fields: [] }),
     showToast: (message) => toasts.push(message),
-    setStatState() {},
-    renderPromptPreview() {},
-    // 列表不可用 + 两个 Provider 都留空：这正是 providerNeedsManualInput
-    // 会误判的组合。
-    judgeProviderControl: providerControls().judge,
-    visionProviderControl: providerControls().vision,
-    visionJudgeProviderControl: providerControls().visionJudge,
-    fmtBool: String,
-    getProviderOptions: () => [],
-    isProviderListAvailable: () => false,
   });
 
   await io.saveConfig({ preventDefault() {} });
@@ -1498,23 +1442,14 @@ test("an empty provider field never raises the off-list warning", async () => {
   // 用独立 state：上一次保存会改动它，而 savingConfig 未回落时 saveConfig 直接返回。
   const offListToasts = [];
   const offListState = { ...state, savingConfig: false, requiresConfigRefresh: false };
-  const offListIo = createConfigIo({
-    getEls: () => ({ configForm: form, configSaveState: { textContent: "", classList } }),
-    getState: () => offListState,
-    setState: (updates) => Object.assign(offListState, updates),
-    apiGet: async () => {
-      throw new Error("skip refresh");
-    },
+  const offListIo = makeConfigIo({
+    elements: { configForm: form, configSaveState: { textContent: "", classList } },
+    state: offListState,
+    judge: providerControls("typo-id"),
     apiPost: async () => ({ ok: true, config: {}, adjusted_fields: [] }),
     showToast: (message) => offListToasts.push(message),
-    setStatState() {},
-    renderPromptPreview() {},
-    judgeProviderControl: providerControls("typo-id").judge,
-    visionProviderControl: providerControls().vision,
-    visionJudgeProviderControl: providerControls().visionJudge,
-    fmtBool: String,
-    getProviderOptions: () => [{ id: "real-id" }],
-    isProviderListAvailable: () => true,
+    providerOptions: [{ id: "real-id" }],
+    providerListAvailable: true,
   });
   await offListIo.saveConfig({ preventDefault() {} });
   assert.ok(offListToasts.some((message) => message.includes("不在列表中")));
@@ -1654,24 +1589,14 @@ test("a failed POST leaves the page requiring a refresh before the next save", a
   };
   const toasts = [];
   let posts = 0;
-  const io = createConfigIo({
-    getEls: () => elements,
-    getState: () => state,
-    setState: (updates) => Object.assign(state, updates),
-    apiGet: async () => {
-      throw new Error("skip refresh");
-    },
+  const io = makeConfigIo({
+    elements,
+    state,
     apiPost: async () => {
       posts += 1;
       throw new Error("Failed to fetch");
     },
     showToast: (message) => toasts.push(message),
-    setStatState() {},
-    renderPromptPreview() {},
-    judgeProviderControl: providerControls().judge,
-    visionProviderControl: providerControls().vision,
-    visionJudgeProviderControl: providerControls().visionJudge,
-    fmtBool: String,
   });
 
   await io.saveConfig({ preventDefault() {} });
@@ -1711,13 +1636,9 @@ test("a STALE_WRITE response adopts the server revision and requires a refresh",
   };
   const toasts = [];
   let posts = 0;
-  const io = createConfigIo({
-    getEls: () => elements,
-    getState: () => state,
-    setState: (updates) => Object.assign(state, updates),
-    apiGet: async () => {
-      throw new Error("skip refresh");
-    },
+  const io = makeConfigIo({
+    elements,
+    state,
     apiPost: async () => {
       posts += 1;
       return {
@@ -1728,12 +1649,6 @@ test("a STALE_WRITE response adopts the server revision and requires a refresh",
       };
     },
     showToast: (message) => toasts.push(message),
-    setStatState() {},
-    renderPromptPreview() {},
-    judgeProviderControl: providerControls().judge,
-    visionProviderControl: providerControls().vision,
-    visionJudgeProviderControl: providerControls().visionJudge,
-    fmtBool: String,
   });
 
   await io.saveConfig({ preventDefault() {} });
@@ -1766,22 +1681,15 @@ test("save is rejected while the initial config load has not completed", async (
   };
   const posts = [];
   const toasts = [];
-  const io = createConfigIo({
-    getEls: () => elements,
-    getState: () => state,
-    setState: (updates) => Object.assign(state, updates),
+  const io = makeConfigIo({
+    elements,
+    state,
     apiGet: async () => ({}),
     apiPost: async (endpoint, body) => {
       posts.push({ endpoint, body });
       return { ok: true, config_revision: TEST_REVISION };
     },
     showToast: (message) => toasts.push(message),
-    setStatState() {},
-    renderPromptPreview() {},
-    judgeProviderControl: providerControls().judge,
-    visionProviderControl: providerControls().vision,
-    visionJudgeProviderControl: providerControls().visionJudge,
-    fmtBool: String,
   });
 
   await io.saveConfig({ preventDefault() {} });
