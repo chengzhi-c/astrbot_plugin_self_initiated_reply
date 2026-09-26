@@ -59,14 +59,16 @@ from ._support import (
 )
 from .recorder_bridge import MessageRecorderBridge
 
-VISION_PROMPT_VERSION = "v1"
-
-# 顶层常量：prompt 模板变更必须同步 bump VISION_PROMPT_VERSION（缓存键语义，
-# 守卫见 tests/test_vision_parser_gaps.py 的模板指纹锚定）。
+# 顶层常量：prompt 模板是描述缓存的语义键之一。
+# VISION_PROMPT_VERSION 直接由模板内容派生，模板一改缓存键自动变，
+# 不再依赖"改模板记得手动 bump 版本"的人工同步。
 VISION_PROMPT_TEXT = "简要描述这张图片，重点说明文字和关键物体，不超过80字。"
 VISION_SYSTEM_PROMPT_TEXT = (
     "你是主动回复插件的图片理解器。只描述图片中可观察到的内容，不要猜测身份、隐私或图片之外的信息。"
 )
+VISION_PROMPT_VERSION = hashlib.sha256(
+    (VISION_PROMPT_TEXT + VISION_SYSTEM_PROMPT_TEXT).encode("utf-8")
+).hexdigest()[:12]
 
 
 _UNABLE_PATTERNS = re.compile(

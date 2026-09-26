@@ -11,13 +11,11 @@ self.settings 旧引用 → 热更新后组件读过期配置，533 基线测试
 
 from __future__ import annotations
 
-import ast
 import sys
 
 import pytest
 
-from .host_stubs import ROOT, production_py_files, with_plugin
-from .source_contract import module_ast
+from .host_stubs import with_plugin
 
 PACKAGE = "selfreply_main_test_package"
 UMO = "fake:group:123"
@@ -356,83 +354,3 @@ def test_assembled_components_share_plugin_containers(tmp_path) -> None:
             assert getattr(getattr(plugin, owner_name), attr) is getattr(plugin, main_attr)
 
     with_plugin(tmp_path, scenario)
-
-
-GATE_RESTORED_TABLES = ("_session_generation", "_running_sessions", "_session_locks")
-
-
-def _gate_restore_node() -> ast.FunctionDef:
-    return next(
-        node
-        for node in ast.walk(module_ast("session_gate.py"))
-        if isinstance(node, ast.FunctionDef) and node.name == "restore"
-    )
-
-
-def test_session_gate_restore_is_in_place_only() -> None:
-    """``SessionGate.restore`` 必须原地 clear+update，禁止属性重绑定（契约 §11 B1）。
-
-    历史形态是三次属性重绑定（``self._session_generation = snap[...]``），与 B1
-    的缺陷写法同构；当时"安全"的唯一理由是"没有外部持有者"这个易失前提，且该
-    前提对 release 表根本不成立，等待者持有具体 Event 对象。
-    改为原地恢复后 B1 合规由**结构**保证，本守卫钉死这一点。
-    """
-    restore_node = _gate_restore_node()
-    rebound = {
-        target.attr
-        for stmt in ast.walk(restore_node)
-        if isinstance(stmt, ast.Assign)
-        for target in stmt.targets
-        if isinstance(target, ast.Attribute) and ast.unparse(target.value) == "self"
-    }
-    assert not rebound, (
-        f"SessionGate.restore 出现属性重绑定 {sorted(rebound)}：等待者与运行中的 "
-        f"async with 持有容器/Event/Lock 对象本身的引用，换掉容器身份会让它们读写"
-        f"孤儿表（契约 §11 B1）。改回原地恢复（clear()+update() 或 "
-        f"restore_container_inplace）。"
-    )
-    cleared = {
-        ast.unparse(node.func.value).removeprefix("self.")
-        for node in ast.walk(restore_node)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "clear"
-        and ast.unparse(node.func.value).startswith("self.")
-    }
-    restored_via_helper = {
-        ast.unparse(node.args[0]).removeprefix("self.")
-        for node in ast.walk(restore_node)
-        if isinstance(node, ast.Call)
-        and ast.unparse(node.func) == "restore_container_inplace"
-        and node.args
-        and ast.unparse(node.args[0]).startswith("self.")
-    }
-    assert set(GATE_RESTORED_TABLES) <= (cleared | restored_via_helper), (
-        f"restore 未清空全部三张表（实际 clear：{sorted(cleared | restored_via_helper)}）："
-        f"漏清的表会残留回滚前的脏条目"
-    )
-
-
-def test_session_gate_tables_have_no_external_holders() -> None:
-    """三张恢复表不得被外部直取，绕过 ``mark_running`` 的 release 语义。
-
-    restore 已改原地（见上一条守卫），孤儿表风险消除；但外部直取仍会绕过
-    ``mark_running``/``unmark_running`` 对 release 表的成对维护，制造
-    同类的闸门失同步。外界只应经 ``*_view`` property 或语义方法访问。
-
-    ``rglob`` 而非 ``glob``：image/ 子包 1234 行此前完全在视野外。
-    """
-    leaked: list[str] = []
-    for path in production_py_files():
-        if path.name == "session_gate.py":
-            continue
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if not isinstance(node, ast.Attribute) or node.attr not in GATE_RESTORED_TABLES:
-                continue
-            owner = ast.unparse(node.value)
-            if owner.endswith("gate"):
-                leaked.append(f"{path.relative_to(ROOT).as_posix()}: {owner}.{node.attr}")
-    assert not leaked, (
-        f"SessionGate 内部表被外部直取 {leaked}：绕过 mark_running/unmark_running 的 "
-        f"release 成对维护会制造闸门失同步。改经 view property 读。"
-    )

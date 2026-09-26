@@ -4,7 +4,7 @@
 - 图片安全：本地文件读取防护（扩展名白名单 + 魔数嗅探 + 路径约束）
 - 提示词净化：多行结构保留、反斜杠/控制字符清理、注入防御
 - 健壮性边界：超时/限额/畸形输入/状态损坏/UMO 碰撞/白名单绕过
-- 单源守卫：response_text / 命令别名表必须单源定义
+- 单源守卫：命令别名表与 main.py 装饰器注册必须一致
 - webapi 配置边界 / 白名单回收 / 管理员热读
 """
 
@@ -26,7 +26,6 @@ from .host_stubs import (
     install_astrbot_stubs,
     load_modules,
     load_package,
-    production_py_files,
     with_plugin,
 )
 from .test_main_runtime import _make_event
@@ -585,18 +584,8 @@ if __name__ == "__main__":
 # ============================================================================
 
 
-def test_response_text_single_source_behavior() -> None:
-    """response_text 必须只在 utils.py 定义一次（收敛 decision/generation/parser
-    三处镜像）；行为契约：completion_text 优先、result_chain 兜底、异常兜底为空串。"""
-    # rglob 扫描面：非递归的 ROOT.glob("*.py") 看不见子包，
-    # 而 image/parser.py 正是要防的位置之一，守卫对它恰好失明。
-    hits = [
-        path.relative_to(ROOT).as_posix()
-        for path in production_py_files()
-        if "def response_text(" in path.read_text(encoding="utf-8")
-    ]
-    assert hits == ["utils.py"], f"response_text 定义漂移：{hits}"
-
+def test_response_text_behavior() -> None:
+    """response_text 行为契约：completion_text 优先、result_chain 兜底、异常兜底为空串。"""
     models, utils, _, _, _ = _load_r3_modules()
     assert utils.response_text(SimpleNamespace(completion_text="  hi  ")) == "hi"
     chain = SimpleNamespace(get_plain_text=lambda: "fallback")

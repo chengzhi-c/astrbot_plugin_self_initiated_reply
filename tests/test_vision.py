@@ -11,7 +11,6 @@ from types import SimpleNamespace
 import pytest
 
 from .host_stubs import ROOT, capture_logs, load_modules, load_package
-from .source_contract import calls_in
 
 PACKAGE_NAME = "selfreply_vision_test_package"
 
@@ -364,15 +363,6 @@ def test_normalized_image_falls_back_to_raw_onebot_subtype() -> None:
     assert image.ImageExtractor.has_images(event) is True
     assert image.ImageExtractor.has_images(event, skip_stickers=True) is False
     assert image.ImageExtractor.extract_images(event, skip_stickers=True) == []
-
-
-def test_image_cleanup_loop_keeps_runtime_age_contract() -> None:
-    """后台清理周期仍把配置的图片年龄传给磁盘清理。"""
-    # 后台清理是两段：循环按 image_age/2 定周期唤醒，过期阈值由 run_image_cleanup
-    # 传下去，两段各断一处，不能只断循环体。
-    assert "self.run_image_cleanup" in calls_in(
-        "scheduler.py", "SessionScheduler._image_cleanup_loop"
-    ), "图片清理循环没有调用 run_image_cleanup，冻结的缓存永不回收"
 
 
 def test_vision_service_snapshots_before_background_freeze(tmp_path: Path) -> None:

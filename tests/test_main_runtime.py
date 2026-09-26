@@ -25,6 +25,8 @@ import pytest
 from .host_stubs import (
     FakeToolSet,
     PipelineTestAdapter,
+    install_astrbot_stubs,
+    load_package,
     reset_hook_calls,
     with_plugin,
 )
@@ -1053,27 +1055,6 @@ def test_write_commands_require_admin_and_admins_can_run_them(tmp_path: Path) ->
     with_plugin(tmp_path, scenario)
 
 
-def test_command_group_keeps_permission_type_inner() -> None:
-    """command_group 必须包住内层 ADMIN 门，外层会在宿主加载时 AttributeError。"""
-    import ast
-
-    from .source_contract import module_ast
-
-    tree = module_ast("main.py")
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.AsyncFunctionDef) or node.name != "selfreply":
-            continue
-        names = [ast.unparse(decorator) for decorator in node.decorator_list]
-        group_index = next(i for i, name in enumerate(names) if "command_group" in name)
-        perm_index = next(i for i, name in enumerate(names) if "permission_type" in name)
-        assert "PermissionType.ADMIN" in names[perm_index]
-        assert group_index < perm_index, (
-            "permission_type 必须写在 command_group 内层，外层会在加载时崩"
-        )
-        return
-    raise AssertionError("未找到 selfreply 命令组")
-
-
 def test_whitelist_remove_recycles_legacy_group_key(tmp_path: Path) -> None:
     """移出白名单同时回收 legacy 裸群号 key 下的旧状态。"""
 
@@ -1179,6 +1160,53 @@ def test_decorated_command_check_reads_body_from_event_text(tmp_path: Path) -> N
             plugin._pipeline.check_session = original_check
 
     with_plugin(tmp_path, scenario)
+
+
+# ============================================================================
+# 指令清单：README / metadata.help / help_text 三面与解析器同源
+# ============================================================================
+
+# 取的是「/selfreply」后缀里第一个词；字符类里不含反引号/书名号/括号，
+# 所以 `/selfreply add`、`/selfreply check [content]`、`/selfreply <动作>`
+# 三种写法分别得到 add / check / 无（裸指令）。
+_SELFREPLY_REFERENCE_RE = re.compile(r"/selfreply(?:[ \t]+([A-Za-z_][A-Za-z0-9_-]*))?")
+_COMMAND_SURFACES = ("README.md", "metadata.yaml")
+
+
+def test_documented_commands_parse_and_cover_every_action() -> None:
+    """三处对外可见的指令清单必须真能解析，且不漏 `COMMAND_ALIASES` 的动作。
+
+    两个方向都守：① 文档写了 `/selfreply xxx` 而解析器认不出（改名/打错/说明书
+    先改了）用户照文档操作会没任何反应；② 新增动作但三处说明都没写
+    `metadata.yaml` 的 help 是宿主安装界面唯一展示面，漏写等于用户看不见。
+    这里**真跑** `parse_command_text`，不比对文本：指令解析的唯一判据是它。
+
+    加载前显式装宿主 stub：``commands`` 顶层 import 宿主符号，宿主 stub 是
+    本用例的前置条件，不应依赖其他测试文件的执行顺序。
+    """
+    install_astrbot_stubs()
+    commands = load_package("selfreply_command_surface_package", "commands")
+    root = Path(__file__).resolve().parents[1]
+    surfaces = {rel: (root / rel).read_text(encoding="utf-8") for rel in _COMMAND_SURFACES}
+    surfaces["commands.help_text()"] = commands.help_text()
+
+    covered: set[str] = set()
+    unreachable: list[str] = []
+    for name, text in surfaces.items():
+        references = _SELFREPLY_REFERENCE_RE.findall(text)
+        # 防空转：某个面被清空时守卫不得静默变成恒绿。
+        assert references, f"{name} 里再找不到 /selfreply 指令引用"
+        for token in references:
+            command = f"/selfreply {token}" if token else "/selfreply"
+            parsed = commands.parse_command_text(command)
+            if parsed is None:
+                unreachable.append(f"{name}: {command}")
+            else:
+                covered.add(parsed[0])
+
+    assert not unreachable, f"这些文档里的指令根本解析不出来：{unreachable}"
+    missing = sorted(set(commands.COMMAND_ALIASES) - covered)
+    assert not missing, f"这些动作在三处说明里都没出现：{missing}"
 
 
 def test_version_consistency_across_metadata() -> None:

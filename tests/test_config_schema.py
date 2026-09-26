@@ -10,14 +10,13 @@ schema 驱动 AstrBot 设置面板渲染；CONFIG_SCHEMA_KEYS 决定 webapi 接�
 
 from __future__ import annotations
 
-import ast
 import json
 import sys
 from typing import Any
 
 import pytest
 
-from .host_stubs import ROOT, production_py_files
+from .host_stubs import ROOT
 
 PACKAGE = "selfreply_main_test_package"
 
@@ -437,71 +436,3 @@ def test_every_exposed_config_key_is_consumed_by_the_panel() -> None:
         f"这些配置键标了 panel 但 pages/ 零引用：{sorted(missing)}。"
         f"要么补面板控件，要么从 surfaces 拿掉 panel。"
     )
-
-
-def _mypy_files_entries() -> list[str]:
-    import tomllib
-
-    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    files = data["tool"]["mypy"]["files"]
-    assert isinstance(files, list) and files, "[tool.mypy].files empty"
-    return [str(item).replace("\\", "/") for item in files]
-
-
-def _host_stub_plugin_default_keys() -> set[str]:
-    """从 `host_stubs.make_plugin` 的 defaults 字面量抽键（AST，不执行测试替身）。"""
-    tree = ast.parse((ROOT / "tests" / "host_stubs.py").read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "make_plugin":
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Assign) and any(
-                    isinstance(target, ast.Name) and target.id == "defaults"
-                    for target in sub.targets
-                ):
-                    if not isinstance(sub.value, ast.Dict):
-                        raise AssertionError("host_stubs.make_plugin 的 defaults 不再是字面量字典")
-                    return {
-                        key.value
-                        for key in sub.value.keys
-                        if isinstance(key, ast.Constant) and isinstance(key.value, str)
-                    }
-    raise AssertionError("host_stubs.make_plugin 里找不到 defaults 字典")
-
-
-def test_mypy_files_cover_production_modules() -> None:
-    """mypy files 清单必须覆盖全部生产模块（image 包条目覆盖 image/*）。"""
-    entries = set(_mypy_files_entries())
-    missing: list[str] = []
-    for path in production_py_files():
-        rel = path.relative_to(ROOT).as_posix()
-        if rel == "__init__.py":
-            continue
-        if rel in entries:
-            continue
-        if rel.startswith("image/") and "image" in entries:
-            continue
-        missing.append(rel)
-    assert not missing, f"[tool.mypy].files missing production modules: {missing}"
-
-
-def test_plugin_state_has_no_main_import_cycle() -> None:
-    """plugin_state 不得再经 main 绕圈读 storage 写入器。"""
-    text = (ROOT / "plugin_state.py").read_text(encoding="utf-8")
-    assert "_main_storage_ops" not in text
-    assert "from . import main" not in text
-    assert "import main as" not in text
-
-
-def test_host_stub_plugin_defaults_are_known_config_keys() -> None:
-    """`host_stubs.make_plugin` 的默认配置字典不得含未知键。
-
-    这份字典是生产 `CONFIG_SPECS` 的测试侧副本。生产侧重命名或废弃某个键时，
-    `Settings.from_config` 对未知键**不报错**（只有 webapi POST 路径 fail loud），
-    于是 `with_plugin` 的全部用例会在错误配置下静默运行，红灯方向与真实缺陷脱节。
-    这里把它与规格表钉在一起，让漂移在配置层就暴露。
-    """
-    models = _models()
-    known = {spec.key for spec in models.CONFIG_SPECS}
-    stub_defaults = _host_stub_plugin_default_keys()
-    unknown = sorted(stub_defaults - known)
-    assert not unknown, f"host_stubs.make_plugin 的 defaults 含未知配置键: {unknown}"

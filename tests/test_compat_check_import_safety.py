@@ -1,7 +1,7 @@
 """compat_check 必须可被 import，且自有的临时目录生命周期必须闭合。
 
 脚本本体在模块级做进程级副作用（sys.path 注入 / chdir 临时目录 / 注册假包），
-而 tests/test_host_contract.py 为取 EXPECTED_HANDLER_COUNT 而 import 它，
+而 tests/test_runtime_adapter.py 为取 EXPECTED_HANDLER_COUNT 而 import 它，
 副作用会改掉 pytest 进程的 cwd、并在宿主真包已装时用假包顶掉 sys.modules 里的
 同名条目。副作用因此收敛进 _bootstrap()，只由 __main__ 入口调用。
 

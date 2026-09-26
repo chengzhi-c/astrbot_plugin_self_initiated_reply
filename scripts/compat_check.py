@@ -60,7 +60,7 @@ def _bootstrap() -> _BootstrapState:
     删除必须发生在 cwd 复原之后（Windows 上反序删正被占为 cwd 的目录会
     PermissionError）。
 
-    import 本模块必须无副作用：tests/test_host_contract.py 只为取
+    import 本模块必须无副作用：tests/test_runtime_adapter.py 只为取
     EXPECTED_HANDLER_COUNT 而 import，模块级 chdir 会把 pytest 进程的工作目录
     切到临时目录、假包注册会顶掉 sys.modules 里的同名真包。
     """
@@ -135,7 +135,7 @@ DANGEROUS_TOOL_MODULES = [
 # 2. 10 个子指令与指令组共用同一个 CommandReply 别名，别名一旦不可解析，
 #    9 个子指令会同时报错。
 #
-# 加指令时同步改这里，tests/test_host_contract.py 经 import 引用本常量（单源）。
+# 加指令时同步改这里，tests/test_runtime_adapter.py 经 import 引用本常量（单源）。
 EXPECTED_HANDLER_COUNT = 10
 
 

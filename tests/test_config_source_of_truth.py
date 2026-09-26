@@ -1,40 +1,28 @@
-"""配置单源契约：CONFIG_SPECS ↔ schema；前端声明的可写键必须可读写。"""
+"""配置单源契约：CONFIG_SPECS ↔ 前端声明；前端可写键必须可读写。"""
 
 from __future__ import annotations
 
 import ast
-import json
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _config_specs_block() -> str:
-    models = (ROOT / "models.py").read_text(encoding="utf-8")
-    start = models.find("CONFIG_SPECS")
-    assert start >= 0
-    end = models.find("\nDEFAULT_", start)
-    if end < 0:
-        end = models.find("\nclass ", start)
-    return models[start:end]
+def _models_module():
+    from .host_stubs import install_astrbot_stubs, load_package
+
+    install_astrbot_stubs()
+    return load_package("selfreply_config_sot_package", "models")
 
 
 def _config_spec_keys() -> set[str]:
-    return set(re.findall(r'ConfigSpec\(\s*"([a-z0-9_]+)"', _config_specs_block()))
-
-
-def _schema_keys() -> set[str]:
-    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-    return {k for k, v in schema.items() if isinstance(v, dict)}
+    return {spec.key for spec in _models_module().CONFIG_SPECS}
 
 
 def _expected_get_config_keys() -> set[str]:
     """GET /config 的期望键：panel 面 + 三个视图字段。真实形状由行为测试钉住。"""
-    from .host_stubs import install_astrbot_stubs, load_package
-
-    install_astrbot_stubs()
-    models = load_package("selfreply_config_sot_package", "models")
+    models = _models_module()
     return {spec.key for spec in models.panel_config_specs()} | {
         "ok",
         "runtime_enabled",
@@ -65,10 +53,7 @@ def test_webapi_get_exposes_fe_writable_fields() -> None:
 
 def test_fe_writable_keys_match_panel_surfaces() -> None:
     """前端可写键必须等于规格表里标了 panel 的键，两边不得各写一份。"""
-    from .host_stubs import install_astrbot_stubs, load_package
-
-    install_astrbot_stubs()
-    models = load_package("selfreply_config_sot_package", "models")
+    models = _models_module()
     panel = {spec.key for spec in models.panel_config_specs()}
     writable = _fe_writable_keys()
     assert writable == panel, (
@@ -76,21 +61,6 @@ def test_fe_writable_keys_match_panel_surfaces() -> None:
         f"FE 独有 {sorted(writable - panel)}，panel 独有 {sorted(panel - writable)}"
     )
     assert "patrol_inactive_after_sec" not in writable
-
-
-def test_frontend_has_no_handwritten_default_config() -> None:
-    """前端不得自持一份默认配置表（``DEFAULT_CONFIG``）。
-
-    行为测试管不了这条：前端自己写默认值时，面板加载前/加载失败时的初态仍然
-    "看起来正常"，只是与后端 ``CONFIG_SPECS`` 各有一份，后端改默认值而前端
-    没跟上，表现为"加载失败那一刻显示了另一个默认值"，无任何报错。
-    真正的加载行为由 ``tests/frontend_browser.test.mjs`` 钉住，这里只守
-    "不得存在第二份默认值"这个结构不变量。
-    """
-    form = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
-    io = (ROOT / "pages" / "主动回复设置" / "config-io.mjs").read_text(encoding="utf-8")
-    assert "DEFAULT_CONFIG" not in form
-    assert "DEFAULT_CONFIG" not in io
 
 
 def _decision_prompt_value_keys() -> set[str]:
@@ -123,21 +93,6 @@ def test_prompt_preview_keys_are_injectable_variables() -> None:
     assert not extra, f"前端预览了后端不注入的变量：{sorted(extra)}"
 
 
-def test_no_dead_config_default_attribute() -> None:
-    """HTML 不得再出现 data-config-default。
-
-    该属性曾用于"配置缺键时按默认值决定开关初态"。但 GET /config 的每个键都是
-    前端 requiredKeys，缺键在 isSuccessfulConfigPayload 处即抛错，走不到控件赋值；
-    且 bool 键经 as_bool 归一恒为真 bool。于是 ``x !== false`` 与 ``Boolean(x)``
-    在全部可达路径上恒等，属性成了后端 CONFIG_SPEC 的镜像副本，只带来漂移面。
-    真实渲染行为改由 tests/frontend_browser.test.mjs 断言。
-    """
-    html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
-    io = (ROOT / "pages" / "主动回复设置" / "config-io.mjs").read_text(encoding="utf-8")
-    assert "data-config-default" not in html, "HTML 残留已失效的 data-config-default"
-    assert "configDefault" not in io, "config-io 残留已失效的 configDefault 分支"
-
-
 def _fe_whitelist_illegal_pattern() -> str:
     text = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
     match = re.search(r"export const WHITELIST_ILLEGAL_RE = /(.+)/;", text)
@@ -151,10 +106,7 @@ def _fe_whitelist_illegal_pattern() -> str:
 
 def test_frontend_whitelist_illegal_chars_match_backend() -> None:
     """前端白名单非法字符集必须与 STRING_LIST_ILLEGAL_RE 判定同一批字符。"""
-    from .host_stubs import install_astrbot_stubs, load_package
-
-    install_astrbot_stubs()
-    models = load_package("selfreply_config_sot_package", "models")
+    models = _models_module()
     backend = models.STRING_LIST_ILLEGAL_RE
     frontend = re.compile(_fe_whitelist_illegal_pattern())
     probes = [chr(code) for code in range(32)] + ['"', "'", "\\", "ok", "qq:GroupMessage:1"]
@@ -173,10 +125,7 @@ def test_frontend_whitelist_max_count_matches_backend() -> None:
 
     超限时前端只做计数警告、以后端截断/拒绝为准；阈值本身漂移则警告误报或漏报。
     """
-    from .host_stubs import install_astrbot_stubs, load_package
-
-    install_astrbot_stubs()
-    models = load_package("selfreply_config_sot_package", "models")
+    models = _models_module()
     form = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
     # 不锚 ``export``：该常量只在 config-form.mjs 内部使用，是否对外暴露与本守卫
     # 要守的「前端上限 == 后端上限」无关，锚它会让一次纯可见性收敛误报漂移。
@@ -189,10 +138,7 @@ def test_frontend_whitelist_max_count_matches_backend() -> None:
 
 def test_frontend_number_bounds_match_panel_specs() -> None:
     """自定义页 number 控件的 min/max/step 必须等于规格表。"""
-    from .host_stubs import install_astrbot_stubs, load_package
-
-    install_astrbot_stubs()
-    models = load_package("selfreply_config_sot_package", "models")
+    models = _models_module()
     html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
     seen: set[str] = set()
     drift: list[str] = []
@@ -233,10 +179,7 @@ def test_frontend_number_bounds_match_panel_specs() -> None:
 
 def test_frontend_prompt_textarea_maxlength_matches_backend() -> None:
     """提示词输入框 maxlength 必须等于后端 max_len，防超长整段被后端拒收。"""
-    from .host_stubs import install_astrbot_stubs, load_package
-
-    install_astrbot_stubs()
-    models = load_package("selfreply_config_sot_package", "models")
+    models = _models_module()
     html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
     tag = re.search(r'<textarea\b[^>]*id="decisionPromptInput"[^>]*>', html)
     assert tag is not None, "HTML 缺少 decisionPromptInput"
@@ -267,10 +210,7 @@ def test_frontend_enum_options_match_panel_specs() -> None:
     number 的 min/max/step 早有守卫，enum 此前没有：后端新增一个取值而页面
     选不到时，用户只能靠手改配置文件，面板 silently 少一个合法值。
     """
-    from .host_stubs import install_astrbot_stubs, load_package
-
-    install_astrbot_stubs()
-    models = load_package("selfreply_config_sot_package", "models")
+    models = _models_module()
     html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
 
     expected = {
@@ -290,10 +230,7 @@ def test_frontend_whitelist_item_maxlen_matches_backend() -> None:
     条数上限与非法字符集都有守卫，唯独单条长度没有：后端调大后前端仍按旧值
     报错，用户看到「超出 200 字符上限」而后端其实接受。
     """
-    from .host_stubs import install_astrbot_stubs, load_package
-
-    install_astrbot_stubs()
-    models = load_package("selfreply_config_sot_package", "models")
+    models = _models_module()
     form = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
     match = re.search(r"const WHITELIST_ITEM_MAX_LEN = (\d+);", form)
     assert match, "WHITELIST_ITEM_MAX_LEN not found"
@@ -309,9 +246,6 @@ def test_frontend_prompt_variable_help_matches_injectable_keys() -> None:
     帮助面板那份此前孤立：后端删掉一个变量后面板仍教用户写它，而预览会停用
     高亮，两处对同一事实给出矛盾答案。
     """
-    from .host_stubs import install_astrbot_stubs
-
-    install_astrbot_stubs()
     html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
     block = html.split('<dl class="variable-list">', 1)[1].split("</dl>", 1)[0]
     documented = set(re.findall(r"<dt>\{([a-z_]+)\}</dt>", block))

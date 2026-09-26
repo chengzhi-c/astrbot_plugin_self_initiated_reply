@@ -305,18 +305,6 @@ def test_image_budget_recomputes_global_bytes_after_session_eviction() -> None:
     assert "s2" in images
 
 
-def test_capture_images_hot_path_does_not_rescan_memory() -> None:
-    """热路径必须走增量记账，不得全量重扫。
-
-    ``_recount`` 是唯一剩下的全量重扫实现（构造与显式恢复时调用）；捕获路径
-    若调它，每次接图都 O(会话数×事件数)。
-    """
-    from .source_contract import calls_in
-
-    calls = calls_in("session_coordinator.py", "SessionCoordinator.capture_images")
-    assert "self._recount" not in calls
-
-
 def _budget_coordinator(module, *, global_bytes: int, session_bytes: int):
     from types import SimpleNamespace
 

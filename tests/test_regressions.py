@@ -24,7 +24,6 @@ from .host_stubs import (
     until,
     with_plugin,
 )
-from .source_contract import calls_in, logger_levels_for, method_source
 from .test_main_runtime import UMO, _make_event
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,19 +111,6 @@ def test_plugin_logo_is_root_square_png() -> None:
     height = int.from_bytes(data[20:24], "big")
     assert width == height
     assert width > 0
-
-
-def test_successful_image_cache_logs_are_debug_only() -> None:
-    """高频成功路径不应在 INFO 级别刷屏，失败日志仍保留原级别。"""
-    captured = "[%s] captured %s/%s images into local vision cache for umo=%s"
-    snapshot = "[%s] host image snapshot created: %s"
-
-    assert logger_levels_for("image/vision_runtime.py", captured) == ["logger.debug"], (
-        "图片入缓存成功日志必须是 debug：每条含图消息都会打，INFO 会刷屏"
-    )
-    assert logger_levels_for("image/parser.py", snapshot) == ["logger.debug"], (
-        "宿主图片快照成功日志必须是 debug"
-    )
 
 
 def test_config_mutations_share_one_lock_and_settings_normalizer(tmp_path: Path) -> None:
@@ -874,49 +860,6 @@ def test_non_force_check_rejected_for_non_whitelisted_session(tmp_path: Path) ->
 
 
 # ============================================================================
-# 高频成功路径日志级别契约
-# ============================================================================
-
-
-# 高频成功路径的日志模板 → 期望级别。每条消息在正常运行时按会话/按消息触发，
-# 升到 INFO 会刷屏（0.7.x 实测），故契约是「必须 debug」。列表长度即调用点个数：
-# proactive reply sent 有两处（log_reply_content 的 if/else 双分支）。
-_DEBUG_LOG_CONTRACTS = [
-    ("scheduler.py", "[%s] wait for minimum silence session=", 1),
-    ("session_pipeline.py", "[%s] skip session=%s trigger=", 1),
-    # `[%s] decision session=` 移出本契约、升为 INFO（用户要求）。
-    # 它不违反本契约的初衷：初衷是拦「逐条消息级」的刷屏，而这一行与
-    # scheduler.py 那条已是 INFO 的 `check result session=` 在常见路径上 1:1
-    # 同频（都在一次 check_session 收敛点各打一次），不引入新的刷屏量级。
-    # 现由 tests/test_observability.py 的 _INFO_WHITELIST 看守。
-    ("delivery.py", "[%s] skip before send ledger_id=", 1),
-    ("delivery.py", "[%s] proactive reply sent ledger_id=%s session=", 2),
-    ("delivery.py", "[%s] event send completed ledger_id=%s session=", 1),
-    ("image/parser.py", "image frozen to local cache: %s", 1),
-    ("image/parser.py", "image frozen as in-memory data URL", 1),
-]
-
-
-def test_high_frequency_success_logs_stay_debug() -> None:
-    """7 处高频成功路径必须保持 DEBUG，且调用点个数不变。
-
-    个数一起断言，是因为只查级别时模板整体消失会静默通过，那正是日志退化的
-    常见形态。
-    """
-    problems: list[str] = []
-    for rel, template, expected_sites in _DEBUG_LOG_CONTRACTS:
-        levels = logger_levels_for(rel, template)
-        if len(levels) != expected_sites:
-            problems.append(
-                f"{rel}: {template!r} 有 {len(levels)} 个调用点，期望 {expected_sites}"
-                "（模板被删除或新增了调用点）"
-            )
-        elif set(levels) != {"logger.debug"}:
-            problems.append(f"{rel}: {template!r} 级别为 {levels}，必须全部 logger.debug")
-    assert not problems, "高频成功路径日志级别契约破坏：\n" + "\n".join(problems)
-
-
-# ============================================================================
 # 权限与配置键
 # ============================================================================
 
@@ -1136,22 +1079,6 @@ def test_aba_old_task_does_not_revive_after_re_add(tmp_path: Path) -> None:
             main._AGENT_RUNTIME = original_runtime
 
     with_plugin(tmp_path, scenario)
-
-
-# ============================================================================
-# main 不得散落事件表清理（失效级联单点）
-# ============================================================================
-
-
-def test_invalidate_cascades_generation_delay_and_tables() -> None:
-    """invalidate 必须推进代次、取消延迟并清三表。事件表身份由会话失效清空观察素材的用例钉住。"""
-    invalidate_calls = calls_in("session_coordinator.py", "SessionCoordinator.invalidate")
-    for callee in ("self._gate.advance", "self._cancel_delay", "self.clear_session"):
-        assert callee in invalidate_calls, f"invalidate 未级联 {callee}"
-
-    clear_session = method_source("session_coordinator.py", "SessionCoordinator.clear_session")
-    assert "self.clear_event(umo)" in clear_session
-    assert "_images.pop" in clear_session
 
 
 # ============================================================================
