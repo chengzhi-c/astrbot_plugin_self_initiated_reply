@@ -161,7 +161,7 @@ async def test_mention_and_quote_together_put_at_before_reply(tmp_path: Path) ->
 
 async def test_mention_skipped_when_generation_changed_before_send(tmp_path: Path) -> None:
     """代次在复核点 2 翻转：整条发送被抑制，@ 与正文都不出去。"""
-    from .test_delivery_blindspots import _FlipGate
+    from .test_delivery_runner import _FlipGate
 
     _mod, models, runner, last_events = _make_runner(tmp_path, config={"mention_mode": "always"})
     runner._gate = _FlipGate(true_times=1)

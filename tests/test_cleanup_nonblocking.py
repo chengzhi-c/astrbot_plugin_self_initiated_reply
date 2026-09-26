@@ -118,7 +118,7 @@ async def test_prepare_materializes_data_url_off_the_event_loop(tmp_path: Path) 
     远程图经 _resolve_image_url 变成 data: 后走这条路径；同步解码+写盘
     会阻塞整 bot，与 cleanup 已钉死的 to_thread 契约同一类问题。
     """
-    from .test_vision_parser_gaps import PNG_DATA_URL, _load_modules, _make_parser
+    from .test_vision import PNG_DATA_URL, _load_modules, _make_parser
 
     _, image, _ = _load_modules()
     parser = _make_parser(image, tmp_path)

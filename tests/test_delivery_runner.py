@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
-from .host_stubs import FakeEvent
+from .host_stubs import FakeEvent, capture_logs
 from .test_vision import PACKAGE_NAME, _load_modules
 
 
@@ -964,3 +966,344 @@ async def test_quote_skipped_without_message_id(tmp_path: Path) -> None:
 
     assert outcome.status is models.SendStatus.DELIVERED
     assert len(chains[0]) == 1
+
+# ============================================================================
+# send_reply 异常与分支路径（代次复核失效点、外发未提交、钩子异常、context 兜底）
+# ============================================================================
+
+class _FlipGate:
+    """前 true_times 次 is_current 返回 True，之后一律 False（代次翻转模拟）。"""
+
+    def __init__(self, true_times: int) -> None:
+        self.remaining = true_times
+
+    def is_current(self, umo: str, generation: object) -> bool:
+        if self.remaining > 0:
+            self.remaining -= 1
+            return True
+        return False
+
+
+class _ClearBoomEvent(FakeEvent):
+    """宿主 clear_result 抛错的事件桩（回收失败不得阻断投递）。"""
+
+    def clear_result(self) -> None:
+        raise RuntimeError("clear_result broken")
+
+
+class _ClearingHook:
+    """装饰钩子：吃掉事件结果（直接置空，模拟钩子消费内容）。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, object]] = []
+
+    async def __call__(self, event: object, event_type: object) -> None:
+        self.calls.append((event, event_type))
+        event._result = None
+
+
+class _BoomHook:
+    """装饰钩子直接抛错（发送尚未开始 → FAILED_BEFORE_SUBMIT）。"""
+
+    async def __call__(self, event: object, event_type: object) -> None:
+        raise RuntimeError("decorating hook broken")
+
+
+class _AfterSendBoomHook(FakeHook):
+    """装饰正常、after-send 抛错（必须 warning 吞掉不影响投递结果）。"""
+
+    async def __call__(self, event: object, event_type: object) -> None:
+        self.calls.append((event, event_type))
+        if len(self.calls) > 1:
+            raise RuntimeError("after-send hook broken")
+
+
+class _FalseSendEvent(FakeEvent):
+    """事件发送明确返回 False（未提交）的事件桩。"""
+
+    async def send(self, message):
+        return False
+
+
+# ============================================================================
+# send_reply：事件路径分支
+# ============================================================================
+
+
+async def test_send_reply_hook_empty_result_and_clear_error(tmp_path: Path) -> None:
+    """装饰钩子清空结果 → FAILED_BEFORE_SUBMIT；clear_result 宿主抛错被吞。"""
+    _, models, runner, last_events = _make_runner(tmp_path, hook=_ClearingHook())
+    last_events["s1"] = _ClearBoomEvent()
+    outcome = await runner.send_reply("s1", "hello", expected_generation=None)
+    assert outcome.status is models.SendStatus.FAILED_BEFORE_SUBMIT
+    assert "no result" in outcome.detail
+
+
+async def test_send_reply_suppressed_after_decorating(tmp_path: Path) -> None:
+    """装饰钩子后代次翻转 → SUPPRESSED（复核点 2）。"""
+    _, models, runner, last_events = _make_runner(tmp_path)
+    runner._gate = _FlipGate(true_times=1)
+    last_events["s1"] = FakeEvent()
+    outcome = await runner.send_reply("s1", "hello", expected_generation=7)
+    assert outcome.status is models.SendStatus.SUPPRESSED
+    assert "after decorating" in outcome.detail
+
+
+async def test_send_reply_suppressed_before_send(tmp_path: Path) -> None:
+    """发送前一刻代次翻转 → SUPPRESSED（复核点 3）。"""
+    _, models, runner, last_events = _make_runner(tmp_path)
+    runner._gate = _FlipGate(true_times=2)
+    last_events["s1"] = FakeEvent()
+    outcome = await runner.send_reply("s1", "hello", expected_generation=7)
+    assert outcome.status is models.SendStatus.SUPPRESSED
+    assert "before send" in outcome.detail
+
+
+async def test_send_reply_outbound_not_submitted(tmp_path: Path) -> None:
+    """事件发送返回 False：未提交，清理结果并原样回传分类。"""
+    _, models, runner, last_events = _make_runner(tmp_path)
+    last_events["s1"] = _FalseSendEvent()
+    outcome = await runner.send_reply("s1", "hello", expected_generation=None)
+    assert outcome.status is models.SendStatus.FAILED_BEFORE_SUBMIT
+
+
+async def test_send_reply_after_send_hook_error_still_delivered(tmp_path: Path) -> None:
+    """after-send 钩子抛错：warning 吞掉，投递结果仍为 DELIVERED。"""
+    _, models, runner, last_events = _make_runner(tmp_path, hook=_AfterSendBoomHook())
+    last_events["s1"] = FakeEvent()
+    outcome = await runner.send_reply("s1", "hello", expected_generation=None)
+    assert outcome.status is models.SendStatus.DELIVERED
+
+
+async def test_send_reply_decorating_hook_error_before_submit(tmp_path: Path) -> None:
+    """装饰钩子抛错（发送未开始）→ FAILED_BEFORE_SUBMIT。"""
+    _, models, runner, last_events = _make_runner(tmp_path, hook=_BoomHook())
+    last_events["s1"] = FakeEvent()
+    outcome = await runner.send_reply("s1", "hello", expected_generation=None)
+    assert outcome.status is models.SendStatus.FAILED_BEFORE_SUBMIT
+
+
+# ============================================================================
+# send_reply：context 兜底路径
+# ============================================================================
+
+
+async def test_send_reply_context_path_stale_gate(tmp_path: Path) -> None:
+    """无缓存事件走 context 兜底前代次翻转 → SUPPRESSED。"""
+    _, models, runner, _ = _make_runner(tmp_path)
+    # 入口复核消耗一次 True，context 兜底前的复核才撞到翻转
+    runner._gate = _FlipGate(true_times=1)
+    outcome = await runner.send_reply("s1", "hello", expected_generation=7)
+    assert outcome.status is models.SendStatus.SUPPRESSED
+    assert "before context send" in outcome.detail
+
+
+async def test_send_reply_context_send_unknown(tmp_path: Path) -> None:
+    """context 发送抛错：可能已提交 → UNKNOWN（不得重试）。"""
+
+    class BoomSend(FakeContextSend):
+        async def __call__(self, umo: str, message: object) -> None:
+            raise RuntimeError("adapter exploded mid-send")
+
+    _, models, runner, _ = _make_runner(tmp_path, context_send=BoomSend())
+    outcome = await runner.send_reply("s1", "hello", expected_generation=None)
+    assert outcome.status is models.SendStatus.UNKNOWN
+
+
+async def test_send_reply_context_send_rejected_false(tmp_path: Path) -> None:
+    """context 发送返回 False：无可达平台 → FAILED_BEFORE_SUBMIT。"""
+
+    class FalseSend(FakeContextSend):
+        async def __call__(self, umo: str, message: object):
+            return False
+
+    _, models, runner, _ = _make_runner(tmp_path, context_send=FalseSend())
+    outcome = await runner.send_reply("s1", "hello", expected_generation=None)
+    assert outcome.status is models.SendStatus.FAILED_BEFORE_SUBMIT
+
+
+async def test_deliver_context_cancellation_records_unknown_state(tmp_path: Path) -> None:
+    """提交中的任务取消时，仍需把可能已送达的尝试记为 UNKNOWN。"""
+
+    class CancelAfterStart(FakeContextSend):
+        async def __call__(self, umo: str, message: object) -> None:
+            self.calls.append((umo, message))
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            await asyncio.sleep(0)
+
+    hook = FakeHook()
+    _, models, runner, _ = _make_runner(
+        tmp_path,
+        context_send=CancelAfterStart(),
+        hook=hook,
+    )
+
+    state = _state(models)
+
+    result = await runner.deliver_reply(
+        "s1",
+        state,
+        "hello",
+        0,
+        ledger=models.AttemptLedger(),
+        expected_generation=1,
+        force=False,
+        trigger="patrol",
+    )
+
+    assert "状态未知" in result
+    assert state.daily_count == 0
+    assert state.last_proactive_at == 0.0
+    assert all(record.role != "assistant" for record in state.recent)
+    assert hook.calls == []
+
+
+async def test_deliver_event_cancellation_records_unknown_state(tmp_path: Path) -> None:
+    """事件发送取消时，仍需清理结果并完成 UNKNOWN 状态记账。"""
+
+    class CancelAfterStart(FakeEvent):
+        async def send(self, message: object) -> None:
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            await asyncio.sleep(0)
+
+    hook = FakeHook()
+    _, models, runner, last_events = _make_runner(tmp_path, hook=hook)
+    last_events["s1"] = CancelAfterStart()
+
+    state = _state(models)
+
+    result = await runner.deliver_reply(
+        "s1",
+        state,
+        "hello",
+        0,
+        ledger=models.AttemptLedger(),
+        expected_generation=1,
+        force=False,
+        trigger="patrol",
+    )
+
+    assert "状态未知" in result
+    assert state.daily_count == 0
+    assert state.last_proactive_at == 0.0
+    assert all(record.role != "assistant" for record in state.recent)
+    assert _hook_names(hook) == ["OnDecoratingResultEvent"]
+
+
+async def test_deliver_cancel_after_send_start_no_retry(tmp_path: Path) -> None:
+    """发送已开始后被 cancel：记 UNKNOWN、sender 只调一次（无重试）。"""
+
+    send_calls = 0
+
+    class CancelAfterStart(FakeEvent):
+        async def send(self, message: object) -> None:
+            nonlocal send_calls
+            send_calls += 1
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            await asyncio.sleep(0)
+
+    _, models, runner, last_events = _make_runner(tmp_path)
+    last_events["s1"] = CancelAfterStart()
+
+    state = _state(models)
+    result = await runner.deliver_reply(
+        "s1",
+        state,
+        "hello",
+        0,
+        ledger=models.AttemptLedger(),
+        expected_generation=1,
+        force=False,
+        trigger="patrol",
+    )
+
+    assert "状态未知" in result
+    assert send_calls == 1
+    assert state.daily_count == 0
+
+
+# ============================================================================
+# deliver_reply：失败混合出口与日志分支
+# ============================================================================
+
+
+async def test_deliver_failure_with_directs_and_gate_flip(tmp_path: Path) -> None:
+    """发送失败后代次已变：返回放弃旧回复，不改成发送失败。"""
+    _, models, runner, _ = _make_runner(tmp_path, sender_status="failed_before_submit")
+    runner._gate = _FlipGate(true_times=1)
+    state = _state(models)
+    result = await runner.deliver_reply(
+        "s1",
+        state,
+        "hello",
+        1,
+        ledger=models.AttemptLedger(),
+        expected_generation=7,
+        force=False,
+        trigger="message_delay",
+    )
+    assert result == "会话已更新，放弃旧回复。"
+
+
+async def test_deliver_log_reply_content_preview(tmp_path: Path, caplog: Any) -> None:
+    """log_reply_content 开启：长短回复预览分支都走 DEBUG 记录。
+
+    变异锚定：把 ``delivery.py`` 的 ``if self.settings.log_reply_content and reply:``
+    改成 ``if False:``，本用例红，只断言返回值是假绿（返回值与预览分支无关），
+    必须断言 DEBUG 记录里的预览文本本身。
+
+    断言内容：长回复截断到 ``_LOG_REPLY_PREVIEW_CHARS`` 并**带省略号**（去掉省略号
+    即红：截断后的长度相等，只有省略号能区分「截断」与「恰好这么长」），短回复
+    原样记录不截断。
+    """
+    delivery_mod, models, runner, _ = _make_runner(
+        tmp_path, save=FakeSave(), config={"log_reply_content": True}
+    )
+    state = _state(models)
+    long_reply = "长" * 100
+    short_reply = "短回复"
+    limit = delivery_mod._LOG_REPLY_PREVIEW_CHARS
+
+    with capture_logs(caplog, delivery_mod.logger, logging.DEBUG):
+        long_result = await runner.deliver_reply(
+            "s1",
+            state,
+            long_reply,
+            0,
+            ledger=models.AttemptLedger(),
+            expected_generation=None,
+            force=False,
+            trigger="message_delay",
+        )
+        short_result = await runner.deliver_reply(
+            "s1",
+            state,
+            short_reply,
+            0,
+            ledger=models.AttemptLedger(),
+            expected_generation=None,
+            force=False,
+            trigger="message_delay",
+        )
+
+    assert long_result == "已主动回复。"
+    assert short_result == "已主动回复。"
+
+    previews = [
+        record.getMessage()
+        for record in caplog.records
+        if "proactive reply sent" in record.getMessage() and "text=" in record.getMessage()
+    ]
+    assert len(previews) == 2, f"预览分支未记录（被改坏即只剩非预览那条）：{caplog.records}"
+    assert f"text={long_reply[:limit]}…" in previews[0], (
+        f"长回复未按 {limit} 字截断并加省略号：{previews[0]}"
+    )
+    assert f"chars={len(long_reply)}" in previews[0]
+    assert f"text={short_reply}" in previews[1], f"短回复未原样记录：{previews[1]}"
+    assert "…" not in previews[1], "短回复不该被截断"

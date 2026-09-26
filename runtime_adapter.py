@@ -83,9 +83,8 @@ _MISSING = object()
 # （final_tool_ids / filter_final_tools）。它留在本清单里是 load-bearing 的，
 # 加载期断言缺失即 raise，使 filter_final_tools 的「缺属性」分支在生产上不可达。
 # 删掉它会让那条分支复活成真实 fail-open，故由
-# tests/test_runtime_adapter_blindspots.py::
-# test_func_tool_stays_in_load_time_contract_assertion 把这层耦合钉死
-# 。
+# tests/test_runtime_adapter.py::test_func_tool_stays_in_load_time_contract_assertion
+# 把这层耦合钉死。
 _PROVIDER_REQUEST_FIELDS = frozenset(
     {
         "prompt",

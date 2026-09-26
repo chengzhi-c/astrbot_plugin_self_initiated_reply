@@ -105,7 +105,7 @@ def test_cq_at_requires_digit_boundary() -> None:
     assert events.is_explicit_direct_call(event, "[At:456123]") is False
 
 
-def test_handle_incoming_message_blindspots(tmp_path) -> None:
+def test_handle_incoming_message_edge_branches(tmp_path) -> None:
     """覆盖 message_ingress: 指令消息直接返回、忽略消息时更新活跃时间/作废旧任务。"""
     from .host_stubs import with_plugin
 

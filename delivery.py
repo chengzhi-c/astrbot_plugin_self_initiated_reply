@@ -440,7 +440,7 @@ class DeliveryRunner:
                     SendStatus.FAILED_BEFORE_SUBMIT, "decorating hook produced no result"
                 )
             # 复核点 3/4（结构防线）：与复核点 2 之间零 await（get_result 同步），
-            # 当前代码下代次不可能在此变化，覆盖靠 test_delivery_blindspots 的
+            # 当前代码下代次不可能在此变化，覆盖靠 test_delivery_runner 的
             # _FlipGate(true_times=2) 按调用次数翻转。保留理由是结构性：
             # test_storage_and_umo 锁「钩子后、send 前必须有复核」（``send_reply``
             # 拆分后该断言指向本方法），此处紧贴 outbound.send；上方一旦插入任何 await，

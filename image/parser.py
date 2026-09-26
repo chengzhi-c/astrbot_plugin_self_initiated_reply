@@ -12,7 +12,7 @@
 后端 / 响应流 / transport）→ ``ImageParser``（冻结 → 来源解析 → 下载 →
 解析 → 清理）。
 
-文件刻意不拆：传输层私有名被 ``tests/test_vision_parser_gaps.py`` 直接引用并
+文件刻意不拆：传输层私有名被 ``tests/test_vision.py`` 直接引用并
 按本模块对象 monkeypatch，而生产侧只有一个调用方；拆出 ``transport.py`` 是纯
 文件搬迁（非新抽象），收益抵不过引用面 churn。理由与 ``models.py`` 同款，
 见 docs/DECISIONS.md。
@@ -79,7 +79,7 @@ _UNABLE_PATTERNS = re.compile(
 )
 # 命中的拒答片段之外，剩余正文短于该值才判为拒答（片段构成整句主体）。
 #
-# 实测标定（tests/test_vision_parser_gaps.py 双向钉住，改坏任一侧即红）：
+# 实测标定（tests/test_vision.py 双向钉住，改坏任一侧即红）：
 # - 真拒答的剩余正文最长 8 字符（"无法识别这张图片的内容。" → 命中"无法识别"）；
 # - 有效描述的剩余正文最短 12 字符（"图片是一张支付失败截图，…"）。
 # 阈值取两者之间并留余量：偏大压不住误杀（有效描述被丢），偏小收不进真拒答。

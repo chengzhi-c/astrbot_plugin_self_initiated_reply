@@ -130,7 +130,7 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 
 不拆的理由与 `models.py` 同款，且多一条测试耦合：传输层私有名
 （`_FixedAddressTransport` / `_FixedAddressBackend` / `_resolve_global_address` /
-`_global_addresses`）被 `tests/test_vision_parser_gaps.py` 直接引用，并按**本模块
+`_global_addresses`）被 `tests/test_vision.py` 直接引用，并按**本模块
 对象** monkeypatch；拆出后这些 patch 目标要逐处改指新模块，等于把"传输层守卫"
 与"解析层守卫"人为分开。而生产侧只有 `ImageParser._download_image_data_url`
 一个调用方——扇入低意味着拆分收益也低。属"高 churn、零行为收益"的纯文件搬迁。
@@ -172,7 +172,7 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
 命令副作用，不是存量问题。只用配置本身跑。
 
 **日志断言一律经 `capture_logs(模块.logger)`，禁用 `caplog.at_level(..., logger="astrbot")`**
-（`tests/test_observability.py`、`tests/test_runtime_adapter_blindspots.py`）：生产代码都
+（`tests/test_observability.py`、`tests/test_runtime_adapter.py`）：生产代码都
 `from astrbot.api import logger`，而测试里桩 logger 的 name 是 `host_stubs.py` 自己起的
 `selfreply-main-test`——传 `"astrbot"` 时级别提升落在一个不相关的 logger 上。现状能过
 纯属巧合（桩 logger `propagate=True`，caplog 的 handler 挂在 root），一旦宿主侧改成
@@ -181,7 +181,7 @@ P0/P1 缺陷的复现形态、关闭某条 fail-closed / 安全边界。**不得
 告警通道」两个方向都不报。实测：把泄漏告警 `logger.warning` 改成 `info` 或 `error`，
 两条方向都能被 `test_leak_warning_task_threshold` 捕获。
 
-**`POST /ui/theme` 关停门有行为断言**（`tests/test_webapi_fixes.py::test_api_post_ui_theme_paths`）：
+**`POST /ui/theme` 关停门有行为断言**（`tests/test_webapi.py::test_api_post_ui_theme_paths`）：
 teardown 之后落盘的偏好会在下次启动被读回，用户看到「已被丢弃」却仍然生效的旧设置。
 该门在生产里是**两层**（锁外预检 + 锁内复查），只删一层另一层兜住，所以变异验证必须
 两处一起删才能证明断言有效——这与本仓库其余端点（config / image-cache）的口径一致，
@@ -293,7 +293,7 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 
 与 `models.py` / `image/parser.py` 同款理由：它并置五类关注点（路由注册与处理器绑定、
 配置读视图、严格校验、应用与回滚、审计 + UI 偏好 + 运维 status），扇入面只有
-`main.py` 的 `bind_api_handlers` / `register_web_apis` 与 `tests/test_webapi_fixes.py`；
+`main.py` 的 `bind_api_handlers` / `register_web_apis` 与 `tests/test_webapi.py`；
 拆文件要同步改这两处引用面，属高 churn、零行为收益的纯搬迁。文件顶部已补齐与其余模块
 同款的「拥有 / 不拥有 + 分区目录」结构说明，阅读定位靠它而不是文件边界。
 
@@ -460,7 +460,7 @@ N = 活跃会话数（白名单上限 MAX_WHITELIST_SIZE = 1000）
 
 - 会话 / 全局 data URL：`tests/test_session_coordinator.py`
 - Vision 描述 LRU：`tests/test_image_cache.py`
-- 单张输入上限：`tests/test_vision_parser_gaps.py`
+- 单张输入上限：`tests/test_vision.py`
 
 描述 LRU 的字节预算只按**值**大小记账，不含 key：`ImageInfo.cache_key()` 对
 超长值（磁盘缓存不可用时的 data URL 回退）做 sha256 摘要化，故 key 长度有上界、

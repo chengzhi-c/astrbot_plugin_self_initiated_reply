@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import os
 import re
+import socket
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1902,7 +1907,7 @@ async def test_vision_service_build_context_attaches_image_descriptions() -> Non
     assert text.index("不可信") < text.index("窗台上的猫")
 
 
-async def test_vision_service_blindspots() -> None:
+async def test_vision_service_edge_branches() -> None:
     """覆盖 vision_runtime: build_context、_freeze_images 与本地快照异常分支。"""
     import asyncio
     from types import SimpleNamespace
@@ -2002,3 +2007,1496 @@ async def test_freeze_images_logs_accepted_count(caplog: object) -> None:
     messages = [record.getMessage() for record in caplog.records]
     assert any("captured 1/2 images" in message for message in messages)
     assert not any("captured 2/2 images" in message for message in messages)
+
+# ============================================================================
+# parser 错误分支与边界行为（DNS 与传输层守卫、物化、快照、清理配额）
+# ============================================================================
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode("ascii")
+PNG_DIGEST = hashlib.sha256(PNG_BYTES).hexdigest()
+
+
+def _parser_module():
+    return sys.modules[f"{PACKAGE_NAME}.image.parser"]
+
+
+def _max_image_bytes() -> int:
+    """从源读单图字节上限：夹具不再复制字面量（阈值单一事实源在 models.py）。"""
+    _load_modules()
+    return _parser_module().MAX_IMAGE_BYTES
+
+
+def _make_parser(image, tmp_path: Path, **kwargs):
+    return image.ImageParser(object(), source_cache_dir=tmp_path / "image_cache", **kwargs)
+
+
+def _png_file(tmp_path: Path, name: str = "photo.png") -> Path:
+    source = tmp_path / name
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(PNG_BYTES)
+    return source
+
+
+def _make_response(status_code: int = 200, headers: dict | None = None, chunks=()):
+    async def aiter_bytes():
+        for chunk in chunks:
+            yield chunk
+
+    return SimpleNamespace(
+        status_code=status_code,
+        headers=headers or {},
+        aiter_bytes=aiter_bytes,
+    )
+
+
+# ============================================================================
+# _resolve_global_address / _FixedAddressTransport（DNS 与传输层守卫）
+# ============================================================================
+
+
+def test_resolver_dns_resolution_branches(monkeypatch) -> None:
+    """解析器把"非全公网"收敛为 None：固定地址传输只允许绑定公网 IP。"""
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+
+    monkeypatch.setattr(
+        parser_mod.socket,
+        "getaddrinfo",
+        lambda *args: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
+    )
+    assert parser_mod._resolve_global_address("public.example") is not None
+
+    monkeypatch.setattr(
+        parser_mod.socket,
+        "getaddrinfo",
+        lambda *args: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 0))],
+    )
+    assert parser_mod._resolve_global_address("private.example") is None
+
+    monkeypatch.setattr(
+        parser_mod.socket,
+        "getaddrinfo",
+        lambda *args: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.1", 0)),
+        ],
+    )
+    assert parser_mod._resolve_global_address("mixed.example") is None
+
+    def raise_oserror(*_args):
+        raise OSError("nxdomain")
+
+    monkeypatch.setattr(parser_mod.socket, "getaddrinfo", raise_oserror)
+    assert parser_mod._resolve_global_address("nx.example") is None
+
+    monkeypatch.setattr(
+        parser_mod.socket,
+        "getaddrinfo",
+        lambda *args: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("not-an-ip", 0))],
+    )
+    assert parser_mod._resolve_global_address("bad-addr.example") is None
+
+
+def test_fixed_transport_rejects_non_global_bound_address() -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    transport = parser_mod._FixedAddressTransport(address="127.0.0.1")
+    request = parser_mod.httpx.Request("GET", "https://cdn.example/x.png")
+
+    with pytest.raises(parser_mod.httpx.ConnectError):
+        asyncio.run(transport.handle_async_request(request))
+
+
+def test_fixed_backend_works_with_real_httpcore_pool() -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    calls: list[tuple[str, int]] = []
+
+    class RecordingBackend(parser_mod.httpcore.AsyncMockBackend):
+        async def connect_tcp(
+            self,
+            host,
+            port,
+            timeout=None,
+            local_address=None,
+            socket_options=None,
+        ):
+            calls.append((host, port))
+            return await super().connect_tcp(
+                host,
+                port,
+                timeout,
+                local_address,
+                socket_options,
+            )
+
+    async def scenario() -> tuple[int, bytes]:
+        wrapped = RecordingBackend([b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"])
+        backend = parser_mod._FixedAddressBackend("93.184.216.34", wrapped)
+        pool = parser_mod.httpcore.AsyncConnectionPool(
+            network_backend=backend,
+            max_connections=1,
+            max_keepalive_connections=0,
+        )
+        try:
+            response = await pool.handle_async_request(
+                parser_mod.httpcore.Request(
+                    "GET",
+                    "http://cdn.example/x",
+                    headers=[(b"host", b"cdn.example")],
+                )
+            )
+            body = await response.aread()
+            await response.aclose()
+            return response.status, body
+        finally:
+            await pool.aclose()
+
+    status, body = asyncio.run(scenario())
+    assert (status, body) == (200, b"OK")
+    assert calls == [("93.184.216.34", 80)]
+
+
+def test_fixed_address_backend_connects_to_checked_ip(monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    calls: list[tuple[str, int]] = []
+
+    class WrappedBackend:
+        async def connect_tcp(self, host, port, **_kwargs):
+            calls.append((host, port))
+            return "stream"
+
+        async def connect_unix_socket(self, *_args, **_kwargs):
+            raise AssertionError("image downloads must not use unix sockets")
+
+        async def sleep(self, _seconds):
+            return None
+
+    backend = parser_mod._FixedAddressBackend("93.184.216.34", WrappedBackend())
+    result = asyncio.run(backend.connect_tcp("cdn.example", 443))
+
+    assert result == "stream"
+    assert calls == [("93.184.216.34", 443)]
+
+
+def test_fetch_uses_direct_fixed_transport_and_disables_env_proxy(monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: "93.184.216.34")
+    captured: dict[str, object] = {}
+    response = _make_response(chunks=[PNG_BYTES])
+
+    class FakeStream:
+        async def __aenter__(self):
+            return response
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        def stream(self, _method, _url):
+            return FakeStream()
+
+    monkeypatch.setattr(parser_mod.httpx, "AsyncClient", FakeClient)
+    parser = image.ImageParser(object())
+
+    assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) == PNG_DATA_URL
+    assert captured["trust_env"] is False
+    assert isinstance(captured["transport"], parser_mod._FixedAddressTransport)
+    # 契约 §8：关闭环境代理、跟随重定向但**最多 3 次**（每次重定向都要重新解析并
+    # 校验地址，否则一次 302 可以把已经校验过的公网地址换成内网地址）。
+    assert captured["follow_redirects"] is True
+    assert captured["max_redirects"] == 3
+    assert captured["timeout"] == parser._timeout_sec
+
+
+def test_fixed_transport_preserves_host_and_default_tls_port(monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    captured: list[object] = []
+
+    class CoreStream:
+        async def __aiter__(self):
+            if False:
+                yield b""
+
+        async def aclose(self):
+            return None
+
+    class FakePool:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def handle_async_request(self, request):
+            captured.append(request)
+            return SimpleNamespace(status=200, headers=[], stream=CoreStream(), extensions={})
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(parser_mod.httpcore, "AsyncConnectionPool", FakePool)
+    transport = parser_mod._FixedAddressTransport(address="93.184.216.34")
+    request = parser_mod.httpx.Request(
+        "GET", "https://cdn.example/path?q=1", headers={"host": "cdn.example"}
+    )
+
+    response = asyncio.run(transport.handle_async_request(request))
+    asyncio.run(response.aclose())
+    core_request = captured[0]
+
+    assert core_request.url.host == b"cdn.example"
+    assert core_request.url.port == 443
+    assert (b"host", b"cdn.example") in core_request.headers
+    assert core_request.url.target == b"/path?q=1"
+
+
+def test_fixed_transport_re_resolves_each_redirect_hop(monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    addresses = iter(["1.1.1.1", "8.8.8.8"])
+    backends: list[object] = []
+
+    class CoreStream:
+        async def aclose(self):
+            return None
+
+    class FakePool:
+        def __init__(self, **kwargs):
+            backends.append(kwargs["network_backend"])
+
+        async def handle_async_request(self, _request):
+            return SimpleNamespace(status=200, headers=[], stream=CoreStream(), extensions={})
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(parser_mod.httpcore, "AsyncConnectionPool", FakePool)
+    transport = parser_mod._FixedAddressTransport(
+        address="93.184.216.34",
+        resolver=lambda _host: next(addresses),
+    )
+    request = parser_mod.httpx.Request("GET", "https://cdn.example/x.png")
+
+    first = asyncio.run(transport.handle_async_request(request))
+    asyncio.run(first.aclose())
+    second = asyncio.run(transport.handle_async_request(request))
+    asyncio.run(second.aclose())
+
+    assert [backend._address for backend in backends] == [
+        "93.184.216.34",
+        "1.1.1.1",
+    ]
+
+
+# ============================================================================
+# prepare()：冻结分支
+# ============================================================================
+
+
+def test_prepare_no_source_is_false(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    assert asyncio.run(parser.prepare(image.ImageInfo())) is False
+
+
+def test_prepare_already_frozen_is_true(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    info = image.ImageInfo(url="https://x/y.png")
+    info.prepared_source = PNG_DATA_URL
+    assert asyncio.run(parser.prepare(info)) is True
+
+
+def test_prepare_unresolvable_source_is_false(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+
+    async def no_source(_info):
+        return ""
+
+    parser._resolve_image_url = no_source
+    info = image.ImageInfo(url="https://x/y.png")
+    assert asyncio.run(parser.prepare(info)) is False
+
+
+def test_prepare_data_url_without_cache_dir_stays_in_memory(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = image.ImageParser(object())
+
+    async def data_url(_info):
+        return PNG_DATA_URL
+
+    parser._resolve_image_url = data_url
+    info = image.ImageInfo(url="https://x/y.png")
+    assert asyncio.run(parser.prepare(info)) is True
+    assert info.prepared_source == PNG_DATA_URL
+
+
+def test_prepare_refuses_unmaterialized_remote_url(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+
+    async def raw_url(_info):
+        return "https://cdn.example/x.png"
+
+    parser._resolve_image_url = raw_url
+    info = image.ImageInfo(url="https://x/y.png")
+    assert asyncio.run(parser.prepare(info)) is False
+    assert not info.prepared_source
+
+
+def test_prepare_surfaces_resolve_exception_as_false(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+
+    async def boom(_info):
+        raise RuntimeError("boom")
+
+    parser._resolve_image_url = boom
+    info = image.ImageInfo(url="https://x/y.png")
+    assert asyncio.run(parser.prepare(info)) is False
+
+
+# ============================================================================
+# _snapshot_local_source()：宿主临时文件快照分支
+# ============================================================================
+
+
+def test_snapshot_skips_prepared_source(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    info = image.ImageInfo(file_path=str(_png_file(tmp_path)), trusted_local_path=True)
+    info.prepared_source = PNG_DATA_URL
+    assert asyncio.run(parser._snapshot_local_source(info)) is True
+
+
+def test_snapshot_requires_trusted_local_path(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    info = image.ImageInfo(file_path=str(_png_file(tmp_path)))
+    assert asyncio.run(parser._snapshot_local_source(info)) is False
+
+
+def test_snapshot_rejects_http_scheme_file_path(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    info = image.ImageInfo(file_path="https://cdn.example/x.png", trusted_local_path=True)
+    assert asyncio.run(parser._snapshot_local_source(info)) is False
+
+
+def test_snapshot_rejects_relative_path(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    info = image.ImageInfo(file_path="relative/photo.png", trusted_local_path=True)
+    assert asyncio.run(parser._snapshot_local_source(info)) is False
+
+
+def test_snapshot_no_data_url_falls_through(tmp_path: Path, monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    info = image.ImageInfo(file_path=str(_png_file(tmp_path)), trusted_local_path=True)
+    monkeypatch.setattr(parser, "_file_to_data_url", lambda path, **kw: None)
+    assert asyncio.run(parser._snapshot_local_source(info)) is False
+
+
+def test_snapshot_materialize_failure_is_false(tmp_path: Path, monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    info = image.ImageInfo(file_path=str(_png_file(tmp_path)), trusted_local_path=True)
+    monkeypatch.setattr(parser, "_file_to_data_url", lambda path, **kw: PNG_DATA_URL)
+    monkeypatch.setattr(parser, "_materialize_data_url", lambda url: None)
+    assert asyncio.run(parser._snapshot_local_source(info)) is False
+
+
+def test_snapshot_exception_is_handled(tmp_path: Path, monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    info = image.ImageInfo(file_path=str(_png_file(tmp_path)), trusted_local_path=True)
+
+    def raise_runtime(path: Path, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(parser, "_file_to_data_url", raise_runtime)
+    assert asyncio.run(parser._snapshot_local_source(info)) is False
+
+
+# ============================================================================
+# prepare_batch() / parse_batch()：并发批处理保序
+# ============================================================================
+
+
+def test_prepare_batch_preserves_input_order(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+
+    async def fake_resolve(_info):
+        return PNG_DATA_URL
+
+    parser._resolve_image_url = fake_resolve
+    infos = [image.ImageInfo(url=f"https://x/{i}.png") for i in range(3)]
+    results = asyncio.run(parser.prepare_batch(infos, max_concurrent=1))
+    assert results == [True, True, True]
+    assert all(info.prepared_source for info in infos)
+
+
+def test_parse_batch_preserves_input_order_and_results() -> None:
+    _, image, _ = _load_modules()
+    payloads = [b"\x89PNG\r\n\x1a\n" + b"\x00" * 32, b"\x89PNG\r\n\x1a\n" + b"\x01" * 32]
+    encoded = [base64.b64encode(payload).decode("ascii") for payload in payloads]
+
+    class Bridge:
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **kwargs):
+            return SimpleNamespace(completion_text="desc:" + kwargs["image_urls"][0][-6:])
+
+    parser = image.ImageParser(Bridge(), provider_id="p")
+
+    async def fake_resolve(info):
+        index = int(info.url[-5])
+        return "data:image/png;base64," + encoded[index]
+
+    parser._resolve_image_url = fake_resolve
+    infos = [image.ImageInfo(url=f"https://x/{i}.png") for i in range(2)]
+    results = asyncio.run(parser.parse_batch(infos, umo="s", max_concurrent=1))
+    assert results == ["desc:" + encoded[0][-6:], "desc:" + encoded[1][-6:]]
+
+
+def test_run_concurrent_isolates_single_image_failures(tmp_path: Path) -> None:
+    """单张图的漏网异常降级为 error_value，不得连带取消同批其余快照。
+
+    旧实现 gather 无 return_exceptions：fn 抛出未捕获异常时整批中断，
+    上层 vision_runtime 只能把整个识图阶段判失败（其余可成功的图全丢）。
+    """
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+
+    async def fn(info):
+        if "bad" in str(info.url):
+            raise TypeError("宿主形态漂移：未预期的属性类型")
+        return True
+
+    infos = [
+        image.ImageInfo(url="https://x/ok1"),
+        image.ImageInfo(url="https://x/bad"),
+        image.ImageInfo(url="https://x/ok2"),
+    ]
+    results = asyncio.run(parser._run_concurrent(infos, fn, max_concurrent=1, error_value=False))
+    assert results == [True, False, True]
+
+
+def test_snapshot_local_source_swallows_unexpected_errors(tmp_path: Path) -> None:
+    """快照单图的捕获面对齐 prepare()：任何异常只让该图不可用。"""
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+
+    def boom(*_args, **_kwargs):
+        raise ZeroDivisionError("非 OSError 族漏网")
+
+    parser._file_to_data_url = boom
+    info = image.ImageInfo(file_path=str(tmp_path / "x.png"), trusted_local_path=True)
+    assert asyncio.run(parser._snapshot_local_source(info)) is False
+
+
+# ============================================================================
+# parse()：降级与截断分支
+# ============================================================================
+
+
+def test_parse_no_source_returns_none(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    assert asyncio.run(parser.parse(image.ImageInfo())) is None
+
+
+def test_parse_no_provider_available_returns_none(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+
+    class Bridge:
+        async def resolve_provider_id(self, _umo, _preferred):
+            return ""
+
+    parser = image.ImageParser(Bridge(), provider_id="")
+    info = image.ImageInfo(url="https://x/y.png")
+    assert asyncio.run(parser.parse(info, umo="s")) is None
+
+
+def _parse_with_bridge(image, bridge, info):
+    parser = image.ImageParser(bridge, provider_id="p")
+
+    async def fake_resolve(_info):
+        return PNG_DATA_URL
+
+    parser._resolve_image_url = fake_resolve
+    return asyncio.run(parser.parse(info, umo="s"))
+
+
+def test_parse_empty_description_not_cached(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+
+    class Bridge:
+        def __init__(self):
+            self.calls = 0
+
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(completion_text="")
+
+    bridge = Bridge()
+    info = image.ImageInfo(url="https://x/y.png")
+    assert _parse_with_bridge(image, bridge, info) is None
+    assert _parse_with_bridge(image, bridge, info) is None
+    assert bridge.calls == 2, "空描述不得写缓存"
+
+
+def test_parse_unable_description_not_cached(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+
+    class Bridge:
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            return SimpleNamespace(completion_text="无法识别这张图片的内容")
+
+    info = image.ImageInfo(url="https://x/y.png")
+    assert _parse_with_bridge(image, Bridge(), info) is None
+
+
+def test_parse_truncates_long_description(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+
+    class Bridge:
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            return SimpleNamespace(completion_text="字" * 350)
+
+    info = image.ImageInfo(url="https://x/y.png")
+    result = _parse_with_bridge(image, Bridge(), info)
+    assert result is not None
+    assert len(result) <= 303 and result.endswith("...")
+
+
+def test_parse_truncation_limit_is_single_sourced(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    support_mod = sys.modules[f"{PACKAGE_NAME}.image._support"]
+    assert parser_mod.MAX_DESCRIPTION_CHARS == support_mod.MAX_DESCRIPTION_CHARS
+
+    class Bridge:
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            return SimpleNamespace(completion_text="字" * (support_mod.MAX_DESCRIPTION_CHARS + 50))
+
+    info = image.ImageInfo(url="https://x/y.png")
+    result = _parse_with_bridge(image, Bridge(), info)
+    assert result is not None
+    assert len(result) == support_mod.MAX_DESCRIPTION_CHARS + 3
+    assert result.endswith("...")
+
+
+def test_parse_timeout_returns_none(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+
+    class Bridge:
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            raise TimeoutError()
+
+    info = image.ImageInfo(url="https://x/y.png")
+    assert _parse_with_bridge(image, Bridge(), info) is None
+
+
+def test_parse_provider_exception_returns_none(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+
+    class Bridge:
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            raise ValueError("provider down")
+
+    info = image.ImageInfo(url="https://x/y.png")
+    assert _parse_with_bridge(image, Bridge(), info) is None
+
+
+def test_parse_falls_back_to_result_chain_plain_text(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+
+    class Bridge:
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            return SimpleNamespace(
+                completion_text="",
+                result_chain=SimpleNamespace(get_plain_text=lambda: " 来自chain "),
+            )
+
+    info = image.ImageInfo(url="https://x/y.png")
+    assert _parse_with_bridge(image, Bridge(), info) == "来自chain"
+
+
+def test_parse_result_chain_getter_failure_returns_none(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+
+    def broken_getter():
+        raise RuntimeError("chain broken")
+
+    class Bridge:
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            return SimpleNamespace(
+                completion_text="",
+                result_chain=SimpleNamespace(get_plain_text=broken_getter),
+            )
+
+    info = image.ImageInfo(url="https://x/y.png")
+    assert _parse_with_bridge(image, Bridge(), info) is None
+
+
+# ============================================================================
+# _is_unable_to_describe()：拒答判定（正文主体 vs 全文任意出现）
+# ============================================================================
+
+
+def test_unable_detection_keeps_descriptions_about_errors_and_failures() -> None:
+    """描述「报错截图／加载失败／纯文本界面」是有效描述，不得被判为拒答。
+
+    原实现「正文任意位置命中 pattern 即拒答」会连带丢弃这类描述：用户侧表现为
+    图片明明识别成功却拿不到描述，且描述不写缓存、每次触发都重复调用 provider。
+    """
+    _load_modules()
+    detect = _parser_module().ImageParser._is_unable_to_describe
+
+    rejections = [
+        "图片中显示上传失败的错误提示，红色文本位于中央。",
+        "这是一张报错截图，提示图片加载失败，请重试。",
+        "这张图里没有图片元素，是纯文本界面。",
+        # 同形态扩展：命中片段之外的正文足以构成描述
+        "截图里没有图片元素，只有一段报错文字。",
+        "图中没有图片，是纯文字的控制台输出。",
+        "图片是一张支付失败截图，提示「余额不足」。",
+    ]
+    for text in rejections:
+        assert detect(text) is False, f"正常描述被判为拒答: {text}"
+
+
+def test_unable_detection_still_matches_bare_refusals() -> None:
+    """只剩拒答话术（去掉命中片段后所剩无几）仍须判为拒答。"""
+    _load_modules()
+    detect = _parser_module().ImageParser._is_unable_to_describe
+
+    refusals = [
+        "无法查看这张图片",
+        "抱歉，我看不到图片内容",
+        "图片加载失败",
+        "无法识别图片中的内容",
+        "抱歉，我无法查看图片。",
+        "图片上传失败，无法识别。",
+        "sorry, I cannot see the image.",
+    ]
+    for text in refusals:
+        assert detect(text) is True, f"真拒答未被识别: {text}"
+
+
+def test_unable_detection_ignores_short_text_without_refusal_phrase() -> None:
+    """短正文本身不构成拒答证据：收紧误杀不得变成放宽。
+
+    ``result_chain`` 回落文本（既有用例 ``test_parse_falls_back_to_result_chain_plain_text``
+    的 "来自chain"）只有 7 个字符；把「短正文」直接当拒答会把它连同一切简短但
+    有效的描述一起丢掉。
+    """
+    _load_modules()
+    detect = _parser_module().ImageParser._is_unable_to_describe
+
+    assert detect("来自chain") is False
+    assert detect("一只猫") is False
+    assert detect("") is False
+
+
+def test_parse_keeps_error_screenshot_description_and_caches_it() -> None:
+    """端到端：报错截图的描述必须返回并写进缓存（改坏实现即红）。"""
+    _, image, _ = _load_modules()
+    description = "图片中显示上传失败的错误提示，红色文本位于中央。"
+
+    class Bridge:
+        def __init__(self):
+            self.calls = 0
+
+        async def resolve_provider_id(self, _umo, preferred):
+            return preferred
+
+        async def llm_generate_direct(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(completion_text=description)
+
+    bridge = Bridge()
+    parser = image.ImageParser(bridge, provider_id="p")
+
+    async def fake_resolve(_info):
+        return PNG_DATA_URL
+
+    parser._resolve_image_url = fake_resolve
+    info = image.ImageInfo(url="https://x/y.png")
+
+    assert asyncio.run(parser.parse(info, umo="s")) == description, "报错截图描述被判为拒答丢弃"
+    assert asyncio.run(parser.parse(info, umo="s")) == description
+    assert bridge.calls == 1, "描述未写缓存，第二次又调用了 provider"
+
+
+# ============================================================================
+# cleanup_source_cache()：清理守卫与异常降级
+# ============================================================================
+
+
+def test_cleanup_none_root_returns_zero() -> None:
+    _, image, _ = _load_modules()
+    assert image.ImageParser.cleanup_source_cache(None) == 0
+
+
+def test_cleanup_missing_root_returns_zero(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    assert image.ImageParser.cleanup_source_cache(tmp_path / "nope") == 0
+
+
+def test_cleanup_invalid_max_age_returns_zero(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    root = tmp_path / "cache"
+    root.mkdir()
+    assert image.ImageParser.cleanup_source_cache(root, max_age_sec="bad") == 0
+
+
+def test_cleanup_ignores_data_url_and_outside_protected(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    root = tmp_path / "cache"
+    root.mkdir()
+    expired = root / "expired.png"
+    expired.write_bytes(b"old")
+    os.utime(expired, (100.0, 100.0))
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside")
+
+    removed = image.ImageParser.cleanup_source_cache(
+        root,
+        protected_sources={"data:image/png;base64,AA==", str(outside)},
+        max_age_sec=60,
+        now=5000.0,
+    )
+    assert removed == 1
+    assert not expired.exists()
+
+
+def test_cleanup_skips_symlinks(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    root = tmp_path / "cache"
+    root.mkdir()
+    target = tmp_path / "real.png"
+    target.write_bytes(b"x")
+    os.utime(target, (100.0, 100.0))
+    link = root / "link.png"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:
+        # Windows 非开发者模式下 symlink_to 恒抛 OSError：必须显式 skip，
+        # 否则该用例静默空转而报告显示 PASSED。
+        pytest.skip(f"symlink not permitted on this platform: {exc}")
+    os.utime(link, (100.0, 100.0))
+
+    removed = image.ImageParser.cleanup_source_cache(root, max_age_sec=60, now=5000.0)
+    assert removed == 0
+    assert target.exists()
+
+
+def test_cleanup_unlink_failure_is_ignored(tmp_path: Path, monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    root = tmp_path / "cache"
+    root.mkdir()
+    expired = root / "expired.png"
+    expired.write_bytes(b"old")
+    os.utime(expired, (100.0, 100.0))
+    original_unlink = Path.unlink
+
+    def blocked_unlink(self, *args, **kwargs):
+        if self.name == "expired.png":
+            raise OSError("permission denied")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", blocked_unlink)
+    assert image.ImageParser.cleanup_source_cache(root, max_age_sec=60, now=5000.0) == 0
+
+
+def test_cleanup_invalid_quota_falls_back_to_age_only(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    root = tmp_path / "cache"
+    root.mkdir()
+    expired = root / "e.png"
+    expired.write_bytes(b"x")
+    os.utime(expired, (100.0, 100.0))
+    fresh = root / "f.png"
+    fresh.write_bytes(b"y")
+    os.utime(fresh, (5000.0, 5000.0))
+    removed = image.ImageParser.cleanup_source_cache(
+        root, max_age_sec=60, max_total_bytes="bad", now=5000.0
+    )
+    assert removed == 1
+    assert not expired.exists()
+    # 若 "bad" 被误当配额 0，配额分支会连新鲜文件一起删 → 断言红
+    assert fresh.exists()
+
+
+def test_cleanup_quota_skips_protected_when_nothing_else_left(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    root = tmp_path / "cache"
+    root.mkdir()
+    protected = root / "p.png"
+    protected.write_bytes(b"1234")
+    os.utime(protected, (100.0, 100.0))
+    removed = image.ImageParser.cleanup_source_cache(
+        root,
+        protected_sources={str(protected)},
+        max_age_sec=100000.0,
+        max_total_bytes=2,
+        now=5000.0,
+    )
+    assert removed == 0
+    assert protected.exists()
+
+
+def test_cleanup_quota_unlink_failure_is_ignored(tmp_path: Path, monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    root = tmp_path / "cache"
+    root.mkdir()
+    old = root / "old.png"
+    old.write_bytes(b"1234")
+    os.utime(old, (100.0, 100.0))
+    original_unlink = Path.unlink
+
+    def blocked_unlink(self, *args, **kwargs):
+        if self.name == "old.png":
+            raise OSError("busy")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", blocked_unlink)
+    removed = image.ImageParser.cleanup_source_cache(
+        root, max_age_sec=100000.0, max_total_bytes=0, now=5000.0
+    )
+    assert removed == 0
+    assert old.exists()
+
+
+def test_cleanup_quota_stat_failure_is_ignored(tmp_path: Path, monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    root = tmp_path / "cache"
+    root.mkdir()
+    old = root / "old.png"
+    old.write_bytes(b"1234")
+    os.utime(old, (100.0, 100.0))
+    original_stat = Path.stat
+
+    def blocked_stat(self, *args, **kwargs):
+        if self.name == "old.png":
+            raise OSError("gone")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", blocked_stat)
+    removed = image.ImageParser.cleanup_source_cache(
+        root, max_age_sec=60, max_total_bytes=0, now=5000.0
+    )
+    assert removed == 0
+
+
+def test_cleanup_expired_files_are_not_counted_against_quota(tmp_path: Path) -> None:
+    """过期阶段已删除的文件不得计入配额总量。
+
+    单遍采集把整棵树读进一张表，过期删除与配额计账都用它。若配额阶段直接拿
+    采集表计账，已被删掉的文件仍占着字节数，配额就会误判超限并继续删本该
+    存活的新鲜文件，用户侧表现为刚发的图片描述缓存被连带清掉。
+    """
+    _, image, _ = _load_modules()
+    root = tmp_path / "cache"
+    root.mkdir()
+    expired = root / "expired.png"
+    expired.write_bytes(b"1234")
+    os.utime(expired, (100.0, 100.0))
+    fresh = root / "fresh.png"
+    fresh.write_bytes(b"5678")
+    os.utime(fresh, (4900.0, 4900.0))
+
+    # 配额恰好等于 fresh 的大小：只有把 expired 从账上剔除才刚好不超限
+    removed = image.ImageParser.cleanup_source_cache(
+        root, max_age_sec=1000.0, max_total_bytes=4, now=5000.0
+    )
+
+    assert removed == 1
+    assert not expired.exists()
+    assert fresh.exists(), "已删除文件仍被计入配额，连带删掉了新鲜文件"
+
+
+def test_cleanup_walks_tree_once(tmp_path: Path, monkeypatch) -> None:
+    """整轮清理只遍历目录一次：三阶段共享同一时刻的目录视图。"""
+    _, image, _ = _load_modules()
+    root = tmp_path / "cache"
+    (root / "aa").mkdir(parents=True)
+    fresh = root / "aa" / "fresh.png"
+    fresh.write_bytes(b"1234")
+    os.utime(fresh, (4900.0, 4900.0))
+
+    rglob_calls: list[str] = []
+    original_rglob = Path.rglob
+
+    def counting_rglob(self, pattern, *args, **kwargs):
+        rglob_calls.append(pattern)
+        return original_rglob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "rglob", counting_rglob)
+    removed = image.ImageParser.cleanup_source_cache(
+        root, max_age_sec=1000.0, max_total_bytes=1024, now=5000.0
+    )
+
+    assert removed == 0
+    assert fresh.exists()
+    assert len(rglob_calls) == 1, f"目录被遍历 {len(rglob_calls)} 遍，单遍契约退化"
+
+
+# ============================================================================
+# _resolve_image_url()：源解析分支
+# ============================================================================
+
+
+def test_resolve_uses_prepared_data_url(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = image.ImageParser(object())
+    info = image.ImageInfo(url="https://x/y.png")
+    info.prepared_source = PNG_DATA_URL
+    assert asyncio.run(parser._resolve_image_url(info)) == PNG_DATA_URL
+
+
+def test_resolve_uses_recorder_local_path(tmp_path: Path) -> None:
+    # 生产装配等价：recorder 的媒体目录在
+    # <data>/plugin_data/astrbot_plugin_message_recorder/ 下，故注入 data_root。
+    # recorder 交回的路径同样要过 allowlist，它的入参 local_path 来自对端可控
+    # 的消息组件，resolver 又是第三方插件函数，不能无条件当可信。
+    _, image, _ = _load_modules()
+    source = _png_file(tmp_path)
+
+    class Recorder:
+        async def get_local_image_path(self, _message_id, _image_url):
+            return source
+
+    parser = image.ImageParser(object(), recorder_bridge=Recorder(), data_root=tmp_path)
+    info = image.ImageInfo(url="https://x/y.png", message_id="m1")
+    assert asyncio.run(parser._resolve_image_url(info)) == PNG_DATA_URL
+
+
+def test_resolve_rejects_recorder_path_outside_data_root(tmp_path: Path) -> None:
+    """recorder 解析出的越界路径必须被拒。
+
+    攻击链：对端把 ``local_path`` 设成 ``../../../secrets/x.png``（相对路径，
+    绕过 ``is_absolute`` 检查）→ 若第三方 recorder 的 resolver 是朴素
+    ``root / value``，就会交回 <data> 之外的绝对路径。修复前该分支直接
+    ``trusted=True`` 全量放行，与要关的攻击面同型。
+    """
+    _, image, _ = _load_modules()
+    data_root = tmp_path / "data"
+    data_root.mkdir(parents=True, exist_ok=True)
+    outside = _png_file(tmp_path / "secrets", "private.png")
+
+    class TraversalRecorder:
+        async def get_local_image_path(self, _message_id, _image_url):
+            return outside
+
+        def resolve_relative_path(self, _value):
+            return outside
+
+    parser = image.ImageParser(object(), recorder_bridge=TraversalRecorder(), data_root=data_root)
+    # 两个 recorder 入口都必须拒：按 message_id 查回的路径……
+    by_id = image.ImageInfo(message_id="m1")
+    assert asyncio.run(parser._resolve_image_url(by_id)) is None
+    # ……以及相对路径解析升级来的路径
+    by_relative = image.ImageInfo(file_path="../../../secrets/private.png")
+    assert asyncio.run(parser._resolve_image_url(by_relative)) is None
+
+
+def test_resolve_recorder_miss_falls_through(tmp_path: Path, monkeypatch) -> None:
+    _, image, _ = _load_modules()
+
+    class Recorder:
+        async def get_local_image_path(self, _message_id, _image_url):
+            return None
+
+    parser = image.ImageParser(object(), recorder_bridge=Recorder())
+
+    async def fake_fetch(_url):
+        return None
+
+    monkeypatch.setattr(parser, "_fetch_image_data_url", fake_fetch)
+    info = image.ImageInfo(url="https://x/y.png", message_id="m1")
+    assert asyncio.run(parser._resolve_image_url(info)) is None
+
+
+def test_resolve_http_file_path_fetches(tmp_path: Path, monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+
+    async def fake_fetch(url):
+        return PNG_DATA_URL if url == "https://x/y.png" else None
+
+    monkeypatch.setattr(parser, "_fetch_image_data_url", fake_fetch)
+    info = image.ImageInfo(file_path="https://x/y.png")
+    assert asyncio.run(parser._resolve_image_url(info)) == PNG_DATA_URL
+
+
+def test_resolve_http_file_path_fetch_failure_returns_none(tmp_path: Path, monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+
+    async def fake_fetch(_url):
+        return None
+
+    monkeypatch.setattr(parser, "_fetch_image_data_url", fake_fetch)
+    info = image.ImageInfo(file_path="https://x/y.png")
+    assert asyncio.run(parser._resolve_image_url(info)) is None
+
+
+def test_resolve_http_file_path_failure_falls_back_to_url(tmp_path: Path, monkeypatch) -> None:
+    """``file_path`` 下载失败后必须继续尝试 ``url``，不得提前终止。
+
+    同函数 docstring 的契约是「任一路仅在成功时提前返回，失败即继续下一路」。
+    原实现在 ``file_path`` 下载失败处直接 ``return None``，于是：
+    1. ``url`` 分支被跳过（与该 docstring 矛盾）；
+    2. ``file`` 是对端可控字段，提前终止等于给对端一个「屏蔽 url 分支」的能力。
+    """
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    attempts: list[str] = []
+
+    async def fake_fetch(url):
+        attempts.append(url)
+        return None if url == "https://file-path.test/a.png" else PNG_DATA_URL
+
+    monkeypatch.setattr(parser, "_fetch_image_data_url", fake_fetch)
+    info = image.ImageInfo(file_path="https://file-path.test/a.png", url="https://url.test/b.png")
+
+    assert asyncio.run(parser._resolve_image_url(info)) == PNG_DATA_URL
+    assert attempts == ["https://file-path.test/a.png", "https://url.test/b.png"], (
+        "url 分支未被尝试（file_path 下载失败即终局）"
+    )
+
+
+def test_resolve_relative_path_via_recorder(tmp_path: Path) -> None:
+    # 同上：合法的 recorder 媒体文件在 <data> 下，注入 data_root 后照常放行。
+    _, image, _ = _load_modules()
+    source = _png_file(tmp_path, "media.png")
+
+    class Recorder:
+        def resolve_relative_path(self, value):
+            return source if value == "media/photo.png" else None
+
+    parser = image.ImageParser(object(), recorder_bridge=Recorder(), data_root=tmp_path)
+    info = image.ImageInfo(file_path="media/photo.png")
+    assert asyncio.run(parser._resolve_image_url(info)) == PNG_DATA_URL
+
+
+def test_recorder_resolved_path_outside_roots_is_rejected(tmp_path: Path) -> None:
+    """录制桥交回的路径也必须过 allowlist。
+
+    ``resolve_relative_path`` 的入参是对端可控的 OneBot ``file`` /
+    ``local_path``，而 resolver 是第三方插件函数（``recorder_bridge.py:86``）。
+    若它做朴素的 ``root / value`` 拼接，``../`` 就能逃出媒体目录并拿到无条件
+    放行，与本地文件读取同一攻击面。
+    """
+    _, image, _ = _load_modules()
+    data_root = tmp_path / "data"
+    (data_root / "plugin_data").mkdir(parents=True, exist_ok=True)
+    # <data> 之外的真实图片（魔数合法，只有 allowlist 能拦）
+    outside = tmp_path / "elsewhere" / "leaked.png"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(PNG_BYTES)
+
+    class NaiveRecorder:
+        """模拟未做路径收敛的第三方 resolver（../ 逃出媒体根）。"""
+
+        def resolve_relative_path(self, value):
+            return outside
+
+        async def get_local_image_path(self, _message_id, _image_url):
+            return outside
+
+    parser = image.ImageParser(object(), recorder_bridge=NaiveRecorder(), data_root=data_root)
+
+    # 相对路径分支
+    relative = image.ImageInfo(file_path="../../elsewhere/leaked.png")
+    assert asyncio.run(parser._resolve_image_url(relative)) is None
+    # message_id 查回分支
+    by_id = image.ImageInfo(url="https://x/y.png", message_id="m1")
+    parser2 = image.ImageParser(object(), recorder_bridge=NaiveRecorder(), data_root=data_root)
+
+    async def no_fetch(_url):
+        return None
+
+    parser2._fetch_image_data_url = no_fetch  # 断掉远程回退，只看本地分支结论
+    assert asyncio.run(parser2._resolve_image_url(by_id)) is None
+
+
+# ============================================================================
+# _materialize_data_url()：内容寻址写入分支
+# ============================================================================
+
+
+def test_materialize_requires_base64_data_url(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    assert parser._materialize_data_url("data:image/png;base64") is None
+
+
+def test_materialize_rejects_unknown_mime(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+    assert parser._materialize_data_url("data:image/svg+xml;base64," + encoded) is None
+
+
+def test_materialize_rejects_bad_base64(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    assert parser._materialize_data_url("data:image/png;base64,!!!") is None
+
+
+def test_materialize_rejects_mismatched_payload(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    encoded = base64.b64encode(b"not an image at all").decode("ascii")
+    assert parser._materialize_data_url("data:image/png;base64," + encoded) is None
+
+
+def test_materialize_requires_cache_root(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = image.ImageParser(object())
+    assert parser._materialize_data_url(PNG_DATA_URL) is None
+
+
+def test_materialize_rejects_existing_non_file_target(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    target = tmp_path / "image_cache" / PNG_DIGEST[:2] / f"{PNG_DIGEST}.png"
+    target.mkdir(parents=True)
+    assert parser._materialize_data_url(PNG_DATA_URL) is None
+
+
+def test_materialize_publishes_with_atomic_replace(tmp_path: Path, monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    parser = _make_parser(image, tmp_path)
+    calls: list[tuple[Path, Path]] = []
+    original_replace = parser_mod.os.replace
+
+    def replace(source, target):
+        calls.append((Path(source), Path(target)))
+        original_replace(source, target)
+
+    monkeypatch.setattr(parser_mod.os, "replace", replace)
+    target = parser._materialize_data_url(PNG_DATA_URL)
+
+    assert target is not None and target.is_file()
+    assert calls and calls[0][1] == target
+    assert not list(target.parent.glob("*.tmp"))
+
+
+# ============================================================================
+# _file_to_data_url()：本地读取 allowlist 与 URL 下载守卫
+# ============================================================================
+
+
+def test_file_to_data_url_rejects_missing_path(tmp_path: Path) -> None:
+    _, image, _ = _load_modules()
+    parser = _make_parser(image, tmp_path)
+    assert parser._file_to_data_url(tmp_path / "missing.png", trusted=True) is None
+
+
+def test_fetch_tolerates_urlparse_failure(monkeypatch) -> None:
+    """畸形 URL 的 urlparse 抛错被下载入口收敛为 None，不向外传播。"""
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+
+    def boom(value):
+        raise ValueError("malformed url")
+
+    monkeypatch.setattr(parser_mod, "urlparse", boom)
+    assert asyncio.run(image.ImageParser(object())._fetch_image_data_url("http://x")) is None
+
+
+# ============================================================================
+# _fetch_image_data_url()：远程下载全分支（不触真实网络）
+# ============================================================================
+
+
+def _make_fetch_env(monkeypatch, response):
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: "93.184.216.34")
+
+    class FakeAsyncHTTPTransport:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def handle_async_request(self, _request):
+            raise AssertionError("fake client 不应走到真实传输")
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(
+        parser_mod.httpx, "AsyncHTTPTransport", lambda **kw: FakeAsyncHTTPTransport()
+    )
+
+    class FakeStream:
+        def __init__(self, resp):
+            self._resp = resp
+
+        async def __aenter__(self):
+            return self._resp
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        def stream(self, method, url):
+            return FakeStream(response)
+
+    monkeypatch.setattr(parser_mod.httpx, "AsyncClient", FakeClient)
+    return image
+
+
+def _fetch_result(image, url: str = "https://cdn.example/x.png"):
+    parser = image.ImageParser(object())
+    return asyncio.run(parser._fetch_image_data_url(url))
+
+
+def test_fetch_http_error_status_returns_none(monkeypatch) -> None:
+    image = _make_fetch_env(monkeypatch, _make_response(status_code=500))
+    assert _fetch_result(image) is None
+
+
+def test_fetch_content_length_too_big_returns_none(monkeypatch) -> None:
+    image = _make_fetch_env(
+        monkeypatch,
+        _make_response(headers={"content-length": str(_max_image_bytes() + 1)}, chunks=[PNG_BYTES]),
+    )
+    assert _fetch_result(image) is None
+
+
+def test_fetch_bad_content_length_header_ignored(monkeypatch) -> None:
+    image = _make_fetch_env(
+        monkeypatch, _make_response(headers={"content-length": "abc"}, chunks=[PNG_BYTES])
+    )
+    result = _fetch_result(image)
+    assert result == PNG_DATA_URL
+
+
+def test_fetch_stream_exceeds_limit_returns_none(monkeypatch) -> None:
+    image = _make_fetch_env(
+        monkeypatch,
+        _make_response(chunks=[b"x" * (_max_image_bytes() + 1)]),
+    )
+    assert _fetch_result(image) is None
+
+
+def test_fetch_empty_payload_returns_none(monkeypatch) -> None:
+    image = _make_fetch_env(monkeypatch, _make_response(chunks=[]))
+    assert _fetch_result(image) is None
+
+
+def test_fetch_unrecognized_mime_returns_none(monkeypatch) -> None:
+    image = _make_fetch_env(monkeypatch, _make_response(chunks=[b"hello world"]))
+    assert _fetch_result(image) is None
+
+
+def test_fetch_success_returns_data_url(monkeypatch) -> None:
+    image = _make_fetch_env(monkeypatch, _make_response(chunks=[PNG_BYTES]))
+    assert _fetch_result(image) == PNG_DATA_URL
+
+
+def test_fetch_client_exception_returns_none(monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: "93.184.216.34")
+
+    class ExplodingClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        def stream(self, _method, _url):
+            raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(parser_mod.httpx, "AsyncClient", ExplodingClient)
+    parser = image.ImageParser(object())
+    assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) is None
+
+
+def test_global_addresses_prefer_ipv4(monkeypatch) -> None:
+    """双栈域名必须 IPv4 优先。
+
+    纯字符串排序把 IPv6 顶到首位，而调用方只连第一个地址：本机 v6 无路由
+    （Docker 常态）时该站下载恒失败。
+    """
+    _load_modules()  # -k 筛选单跑时也要先装桩，不能依赖文件内顺序
+    parser_mod = _parser_module()
+    monkeypatch.setattr(
+        parser_mod.socket,
+        "getaddrinfo",
+        lambda *args: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2400:4000::1", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+        ],
+    )
+    assert parser_mod._global_addresses("dual.example") == ["93.184.216.34", "2400:4000::1"]
+    assert parser_mod._resolve_global_address("dual.example") == "93.184.216.34"
+
+
+def test_global_addresses_literal_unaffected(monkeypatch) -> None:
+    """字面 IP 直连路径不经过排序，v6 字面量仍可用。"""
+    _load_modules()  # 同上：字面 IP 路径同样要先注册包
+    parser_mod = _parser_module()
+    assert parser_mod._global_addresses("2400:4000::1") == ["2400:4000::1"]
+    assert parser_mod._global_addresses("93.184.216.34") == ["93.184.216.34"]
+
+
+def test_download_client_timeout_follows_budget(monkeypatch) -> None:
+    """httpx client 超时与整体预算同源（vision_timeout_sec），不再硬编码 15s。"""
+    captured: dict[str, object] = {}
+    response = _make_response(chunks=[PNG_BYTES])
+    image = _make_fetch_env(monkeypatch, response)
+    parser_mod = _parser_module()
+
+    class RecordingClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        def stream(self, _method, _url):
+            class _Ctx:
+                async def __aenter__(_inner):
+                    return response
+
+                async def __aexit__(_inner, *_exc):
+                    return False
+
+            return _Ctx()
+
+    monkeypatch.setattr(parser_mod.httpx, "AsyncClient", RecordingClient)
+    parser = image.ImageParser(object(), timeout_sec=42.0)
+    assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) == PNG_DATA_URL
+    assert captured["timeout"] == 42.0
+
+
+def test_fetch_unsafe_url_returns_none(monkeypatch) -> None:
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: None)
+    parser = image.ImageParser(object())
+    assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) is None
+
+
+def _stalling_response():
+    """响应体永不结束：首块之后一直等待（慢速滴流的极端形态）。"""
+
+    async def aiter_bytes():
+        yield PNG_BYTES[:8]
+        await asyncio.sleep(3600)
+
+    return SimpleNamespace(status_code=200, headers={}, aiter_bytes=aiter_bytes)
+
+
+def test_fetch_stalled_stream_times_out(monkeypatch) -> None:
+    """挂起的响应体不得无限拖住下载：整体超时兜底必须生效。
+
+    裸 httpx 的 timeout 只覆盖单次操作；慢速滴流每块都"按时"到达时读取
+    可以永远进行。本用例借测试侧 wait_for 兜底：内部若没有超时，这里会以
+    TimeoutError 失败，而不是等到 elapse 断言。
+    """
+    image = _make_fetch_env(monkeypatch, _stalling_response())
+    parser = image.ImageParser(object(), timeout_sec=1.0)
+    start = time.monotonic()
+    result = asyncio.run(
+        asyncio.wait_for(parser._fetch_image_data_url("https://cdn.example/x.png"), timeout=3.0)
+    )
+    elapsed = time.monotonic() - start
+    assert result is None
+    assert elapsed < 2.5
+
+
+def test_fetch_slow_dns_times_out(monkeypatch) -> None:
+    """DNS 解析卡住（线程内阻塞）同样要被整体超时覆盖。
+
+    getaddrinfo 在线程里跑，不受事件循环超时约束；没有整体预算时解析协程
+    会一直等线程。release 事件让线程随用例立即退出，避免 loop 关闭时 join。
+    """
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    release = threading.Event()
+
+    def slow_resolve(_host: str) -> str:
+        release.wait(5.0)
+        return "93.184.216.34"
+
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", slow_resolve)
+    parser = image.ImageParser(object(), timeout_sec=1.0)
+
+    async def scenario() -> tuple[str | None, float]:
+        try:
+            start = time.monotonic()
+            result = await asyncio.wait_for(
+                parser._fetch_image_data_url("https://cdn.example/x.png"), timeout=3.0
+            )
+            return result, time.monotonic() - start
+        finally:
+            release.set()
+
+    result, elapsed = asyncio.run(scenario())
+    assert result is None
+    assert elapsed < 2.5
