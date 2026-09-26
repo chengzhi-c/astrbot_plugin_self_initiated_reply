@@ -1,5 +1,5 @@
 repos:
-  # lint/type 检查不在 pre-commit 里重复：本地走 `uvx ruff` / `python scripts/gates.py`，
+  # lint/type 检查不在 pre-commit 里重复：本地直接跑 `uvx ruff` / `mypy` / `pytest`，
   # CI（唯一权威）钉版见 ci.yml lint 作业与 pyproject [dev]。
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
