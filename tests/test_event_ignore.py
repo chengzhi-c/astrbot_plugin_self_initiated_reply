@@ -175,7 +175,7 @@ def test_image_capture_failure_does_not_break_the_scheduling_chain(tmp_path, cap
 
     ``handle_incoming_message`` 把 ``_capture_images`` 包在 try/except 里，失败
     只记 WARNING，之后仍要走事件回收与延迟检查。该不变量此前只由代码结构成立、
-    无用例锚定——重构掉 try/except 或把调度挪进 try 之前都不会有测试变红。
+    无用例锚定，重构掉 try/except 或把调度挪进 try 之前都不会有测试变红。
     """
     from .host_stubs import capture_logs, messages_at_least, with_plugin
 
@@ -249,7 +249,7 @@ def test_bare_selfreply_word_is_ordinary_chat_not_a_command(tmp_path) -> None:
     """裸词 ``selfreply ...``（无 / 无 @）必须当普通聊天，不得被当指令吞掉。
 
     ``_is_command_entry`` 是入口安全闸门：它恒真时任何群成员发一句
-    “selfreply add” 就会收到指令回显并且消息被 ``stop_event`` 吞掉——不进观察窗口，
+    “selfreply add” 就会收到指令回显并且消息被 ``stop_event`` 吞掉，不进观察窗口，
     其他插件也拿不到。对照组：带前导斜杠的真指令仍必须被消费。
     """
     from .host_stubs import with_plugin
@@ -284,7 +284,7 @@ def test_direct_call_defers_same_batch_proactive_reply(tmp_path) -> None:
     """被 @Bot/唤醒后，同一批消息不再触发主动回复（``skip_after_direct_call``）。
 
     背景（实测口径）：@Bot 的消息由 AstrBot 正常回复、不经过本插件；若只更新
-    活跃时间而不记「已回应」，静默时间一到就会再主动接一句——表现为「刚被点名
+    活跃时间而不记「已回应」，静默时间一到就会再主动接一句，表现为「刚被点名
     答过又自己插话」，且判断模型看不到那轮 @Bot 对话，无从自制。
     """
     from .host_stubs import with_plugin

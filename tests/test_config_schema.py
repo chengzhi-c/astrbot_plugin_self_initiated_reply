@@ -147,7 +147,7 @@ def test_schema_defaults_match_python_defaults() -> None:
     """schema 的 default 必须等于 Python 侧空配置解析结果。
 
     只断言键集合相等时，默认值漂移无人守。漂移后果是面板
-    显示值与实际生效值不一致——用户看到 A、跑的是 B，且不报错。
+    显示值与实际生效值不一致，用户看到 A、跑的是 B，且不报错。
     """
     schema = _schema()
     models = _models()
@@ -226,7 +226,7 @@ def test_schema_options_match_python_choices() -> None:
 
 
 def test_spec_table_covers_schema_keys_in_order() -> None:
-    """规格表键集合与顺序必须等于 schema——顺序即面板呈现顺序。"""
+    """规格表键集合与顺序必须等于 schema，顺序即面板呈现顺序。"""
     models = _models()
     spec_keys = [spec.key for spec in models.CONFIG_SPECS]
     schema_keys = list(_schema().keys())
@@ -241,7 +241,7 @@ def test_spec_table_expresses_every_schema_field() -> None:
 
     覆盖 type / default / slider(min,max,step) / options / _special /
     editor_mode / editor_language。文案字段（description/hint）有意不进表，
-    因此不比对——它们是纯 UI 拷贝，进表只会变成 schema 的第二份副本。
+    因此不比对，它们是纯 UI 拷贝，进表只会变成 schema 的第二份副本。
     """
     models = _models()
     schema = _schema()
@@ -290,7 +290,7 @@ def test_spec_table_expresses_every_schema_field() -> None:
 
 
 def test_every_schema_ui_field_is_known_to_the_spec_table() -> None:
-    """schema 里不得出现规格表不认识的字段——否则表驱动会静默丢掉它。
+    """schema 里不得出现规格表不认识的字段，否则表驱动会静默丢掉它。
 
     这条是防「未来给某个键加了新 UI 属性，表没跟上」：新属性要么进表，
     要么显式记入已知文案字段白名单，不允许无声漂移。
@@ -348,7 +348,7 @@ def test_spec_table_reproduces_python_defaults() -> None:
     """规格表逐键驱动的解析结果必须等于 Settings.from_config({})。
 
     覆盖范围（如实说明，勿高估）：from_config 已表驱动化，两侧共用
-    ``coerce_config_value``，因此这条**不覆盖 coerce 本身**的正确性——那由
+    ``coerce_config_value``，因此这条**不覆盖 coerce 本身**的正确性，那由
     ``test_schema_defaults_match_python_defaults``（对照 _conf_schema.json）
     兜住。本条能抓的是 ``attr``/``container`` 写错，即「表里声明的字段名或
     容器类型与 Settings 实际不符」，那会让 from_config 构造出错或类型走形。
@@ -366,7 +366,7 @@ def test_spec_table_reproduces_python_defaults() -> None:
 
 # 注：曾有一条 test_spec_table_clamps_match_from_config_clamps（比较「表驱动夹取」
 # 与「from_config 夹取」）。from_config 表驱动化之后两侧走的是同一条
-# coerce_config_value，该断言退化为同义反复——实测把 int 分支的夹取整段删掉，
+# coerce_config_value，该断言退化为同义反复，实测把 int 分支的夹取整段删掉，
 # 它仍然绿，只有下方对照 _conf_schema.json 的
 # test_schema_slider_bounds_match_python_clamps 变红。故删除而非保留：
 # 夹取行为的真锚点是 schema 声明，不是另一条同源调用。
@@ -379,7 +379,7 @@ def test_spec_table_legacy_fallback_matches_from_config() -> None:
     ``legacy_keys`` 声明与 ``attr``/``container`` 的一致性。回退算法的真实
     锚点是 ``test_config_hot_reload.py::test_from_config_migrates_legacy_alias_keys``
     与 ``test_vision.py::test_legacy_vision_enabled_migrates_to_both_toggles``
-    ——它们用存量配置的真实键名断言迁移结果。
+    它们用存量配置的真实键名断言迁移结果。
     """
     models = _models()
     drift: list[str] = []

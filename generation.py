@@ -79,7 +79,7 @@ _TOOL_HINT_RESTRICTED = (
 )
 
 # 信封标签名只在这里出现一次：中和用的正则由它拼出，
-# 信封本身也由它拼出。若只改一处、另一处仍写死旧名，中和会静默失效——
+# 信封本身也由它拼出。若只改一处、另一处仍写死旧名，中和会静默失效，
 # 这是本类修复最典型的腐化方式，故从源头上让二者不可能不一致。
 _ENVELOPE_TAG = "recent_chat"
 
@@ -97,7 +97,7 @@ def neutralize_envelope_tags(text: str) -> str:
     **之外**、与插件自己的尾部指令同层级（tests/test_generation_runner.py 钉住）。
 
     不复用 ``sanitize_prompt_variable``：它只改写引号与控制字符，信封标签原样
-    穿透；且按 ``max_length`` 截断，会吃掉聊天记录——长度另由
+    穿透；且按 ``max_length`` 截断，会吃掉聊天记录，长度另由
     ``recent_message_limit`` 约束。改用全角而非删除：保留攻击痕迹可读，等长、
     不影响长度预算。
 
@@ -122,7 +122,7 @@ def build_proactive_prompt(
     1. ``recent_chat`` 必须被显式声明为不可信内容，且声明在聊天记录**之前**出现；
     2. 工具边界措辞必须随 ``inherit_tools`` 切换，继承态也要点明宿主级危险能力不可用；
     3. 无可用工具时要求直接输出文本，避免模型臆造工具调用；
-    4. 信封必须不可被内容闭合——``context_text`` 一律先过
+    4. 信封必须不可被内容闭合，``context_text`` 一律先过
        ``neutralize_envelope_tags``。中和放在本函数内而非调用方，
        是为了让"信封闭合不了"成为本函数的内在性质：任何新调用方都自动获得该保证，
        不依赖各自记得先净化。
@@ -615,12 +615,12 @@ class GenerationRunner:
         - history 解析失败（``TypeError`` / ``ValueError``）：warning 级。宿主写库走
           ``json.dumps(content or [])``（``conversation_mgr.py:70``），空会话也是
           ``"[]"`` 能解析成功，所以这条为真即真的数据损坏。此时 ``req.contexts``
-          静默留默认值，机器人带着空上下文接话——用户看到的是「失忆式」答复而非
+          静默留默认值，机器人带着空上下文接话，用户看到的是「失忆式」答复而非
           功能缺失，无日志则无从定位。
         - conversation 结构异常（缺 ``history`` 属性等）：warning 级但换文案，别贴
           「损坏」标签误导排障。
 
-        本方法把 ``Exception`` 全部降级消化——历史读不到不该让这一轮回复消失，而调用方
+        本方法把 ``Exception`` 全部降级消化，历史读不到不该让这一轮回复消失，而调用方
         ``generate`` 的外层 ``except`` 会把抛出来的东西判为整轮失败。两类仍会穿透：
         ``BaseException`` 子类（``CancelledError`` / ``KeyboardInterrupt``）是刻意的，
         取消必须能中断这一轮；``logger`` 自身抛异常则会被外层兜住并判整轮失败，属已知
@@ -660,13 +660,13 @@ class GenerationRunner:
 
         - ``show_tool_use=False``：宿主在它为真时会 ``await event.send(工具状态消息)``。
           那条消息的 type 是 ``"tool_call"``，不匹配 ``tracked_send`` 只认的
-          ``"tool_direct_result"``，于是被透传给原始 ``send``——绕过预算与代次闸门直接
+          ``"tool_direct_result"``，于是被透传给原始 ``send``，绕过预算与代次闸门直接
           进会话。``show_tool_call_result`` 单独打开无此效果：宿主要求它与
           ``show_tool_use`` 同时为真才发。
         - ``stream_to_general=False`` 配 ``buffer_intermediate_messages=True``：这对组合
           让宿主 ``_should_buffer_llm_result`` 成立，中间 ``llm_result`` 缓冲到结束才合并
           成一条。任一项反向改动都会让每个中间步骤各自 ``set_result``，中间产物经宿主管线
-          发出——本方法只丢弃 ``yield`` 出来的 chain，拦不住已经落在事件结果上的内容。
+          发出，本方法只丢弃 ``yield`` 出来的 chain，拦不住已经落在事件结果上的内容。
 
         ``show_reasoning`` 只在流式分支生效，主动回复是非流式，改它无影响；``max_step``
         是步数上限，不是开关。
@@ -693,7 +693,7 @@ class GenerationRunner:
         """
         if inherit_tools:
             # 继承模式：放行宿主/插件工具链，但宿主级危险能力（cron、浏览器/
-            # 电脑使用、文件提取、知识库 agentic）仍永远拒绝——build config 的
+            # 电脑使用、文件提取、知识库 agentic）仍永远拒绝，build config 的
             # 硬关闭之外，这里是拦截 hook 在 build 后注入危险工具的最终防线。
             if self._runtime().filter_final_tools(req, drop=HOST_DANGEROUS_TOOL_IDS):
                 return True

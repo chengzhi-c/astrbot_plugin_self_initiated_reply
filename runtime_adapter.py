@@ -1,13 +1,13 @@
 """宿主私有层（``astrbot.core.*``）的隔离墙。
 
 拥有：``_HOST_CONTRACT`` 单源符号表、加载期一次性探测与契约校验、以及一组
-窄方法——事件结果、provider 请求、事件类型、钩子、路径全经这里出去。
+窄方法，事件结果、provider 请求、事件类型、钩子、路径全经这里出去。
 
 隔离的价值在于宿主升级时的失败位置：符号缺失在加载期即报（core 组缺失拒绝
 加载，probe 组缺失降级为 None），而不是在某次发送的半路。增删宿主符号只改
 ``_HOST_CONTRACT``，``compat_check`` 与 ``host_contract()`` 都从它取清单。
 
-不含业务逻辑，也不管公开层——``astrbot.api.*`` 由各模块直接 import。
+不含业务逻辑，也不管公开层，``astrbot.api.*`` 由各模块直接 import。
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ _MISSING = object()
 # ProviderRequest 实例在 generation 中实际赋值的字段：缺失即红
 #
 # func_tool 是本清单里唯一承担安全职责的字段：它是工具边界的唯一读写点
-# （final_tool_ids / filter_final_tools）。它留在本清单里是 load-bearing 的——
+# （final_tool_ids / filter_final_tools）。它留在本清单里是 load-bearing 的，
 # 加载期断言缺失即 raise，使 filter_final_tools 的「缺属性」分支在生产上不可达。
 # 删掉它会让那条分支复活成真实 fail-open，故由
 # tests/test_runtime_adapter_blindspots.py::
@@ -142,7 +142,7 @@ def _import_symbols(entry: _HostEntry) -> dict[str, Any]:
 class AstrBotRuntimeAdapter:
     """Keep private AstrBot Agent imports and compatibility checks in one place.
 
-    宿主私有符号（astrbot.core.*）全量收敛于此——探测、调用与
+    宿主私有符号（astrbot.core.*）全量收敛于此，探测、调用与
     契约断言都只经本类发生；delivery/generation/main 不得再直接 import。
     """
 
@@ -370,13 +370,13 @@ class AstrBotRuntimeAdapter:
 
     # 路径函数（config_path_fn / plugin_data_path_fn）不经本类方法出口：main.py 在
     # import 期把 capabilities 里的两个函数绑成模块级名字（供 resolve_paths 使用，
-    # 也是测试替换点），路径解析失败由 resolve_paths 让异常传播、加载期即崩——
+    # 也是测试替换点），路径解析失败由 resolve_paths 让异常传播、加载期即崩，
     # 吞异常静默回退会让状态写到错误路径后无声丢失。结构决策见 docs/DECISIONS.md。
 
     def _tool_list(self, req: Any) -> list[str] | None:
         """共享工具枚举前奏：哨兵/None/tools 三段判定。
 
-        枚举失败统一 DEBUG——决策与告警归调用方（``filter_final_tools`` 升
+        枚举失败统一 DEBUG，决策与告警归调用方（``filter_final_tools`` 升
         WARNING 并中止，``final_tool_ids`` 保持 ``None`` 语义），否则单次失败
         会产生重复告警（实测 2 条）。返回 ``None`` 表示无法枚举，调用方必须
         各自 fail closed；``[]`` 与 ``None`` 的区分见 ``final_tool_ids``。
@@ -454,7 +454,7 @@ class AstrBotRuntimeAdapter:
         dataclass 实例 ``del`` 字段后仍回落类默认 ``None``；前提一旦失效（字段被
         移出清单）分支即恢复可达，由
         ``test_func_tool_stays_in_load_time_contract_assertion`` 守护。
-        保留分支是纵深防御——本方法是公共接缝，接受任意 ``req``。
+        保留分支是纵深防御，本方法是公共接缝，接受任意 ``req``。
         """
         # 显式 ``Any``：三参 getattr 的类型是 ``Any | _T``，
         # 默认值换成哨兵后 ``_T`` 是 ``object``，联合坍缩成 ``object``，下面的
@@ -465,7 +465,7 @@ class AstrBotRuntimeAdapter:
         # 缺属性/无 tools 的形状细节由 _tool_list 的 DEBUG 承载。
         tool_ids = self._tool_list(req)
         if tool_ids is None:
-            # 契约钉住：fail-closed 恰好一条 WARNING 且须点名原因——缺属性点
+            # 契约钉住：fail-closed 恰好一条 WARNING 且须点名原因，缺属性点
             # func_tool、无 tools 点 tools（test_missing_func_tool_attribute_
             # fails_closed_not_open / test_fail_closed_warning_names_the_reason）。
             # 枚举期异常的形状细节由 _tool_list 的 DEBUG 承载，此处仍归入

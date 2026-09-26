@@ -67,10 +67,10 @@ def safe_exc_text(exc: BaseException) -> str:
 
     ``str(exc)`` 不是安全的：异常对象的 ``__str__`` 可以抛（第三方 SDK 的
     自定义异常、携带惰性格式化的异常都发生过）。实测后果不是"日志少一行"
-    ——它让异常**从投递路径逃出**：``delivery.send_reply`` / ``gateway.send``
+    它让异常**从投递路径逃出**：``delivery.send_reply`` / ``gateway.send``
     在 ``except`` 块里构造 ``SendOutcome(status, str(exc))``，二次抛出会跳过
     ledger 的 ``mark_recorded``，于是账本停在 sealed、``has_submission=False``
-    分支不消耗冷却与配额——消息若其实已提交，下一轮会重复发送。
+    分支不消耗冷却与配额，消息若其实已提交，下一轮会重复发送。
 
     故取异常文本必须防二次异常，且只在这里做：调用方不得直接 ``str(exc)``。
     """
@@ -94,7 +94,7 @@ def redact_url(value: str) -> str:
     # netloc 含 user:password@ 形态的 userinfo，原样输出会把 basic-auth 凭证
     # 写进日志与 GET /status（与 query 里的签名 token 同类，必须一并去掉）。
     # 从 netloc 尾部截取而非拼 hostname+port：后者要处理 IPv6 方括号，且
-    # `parsed.port` 对越界/非数字端口抛 ValueError——而本函数跑在异常处理
+    # `parsed.port` 对越界/非数字端口抛 ValueError，而本函数跑在异常处理
     # 路径上，对端可控文本即可让它成为新的异常源。
     netloc = parsed.netloc.rsplit("@", 1)[-1]
     suffix = _REDACTED_QUERY_MARK if (parsed.query or parsed.fragment) else ""
@@ -193,7 +193,7 @@ def parse_decision_json(text: str) -> dict[str, Any] | None:
 
     # 引用决定（可选字段）：只在模型显式给出可辨识的布尔时才采纳，其余一律
     # None =「模型没说」，交由投递侧按 quote_mode 兜底。刻意不像 should_reply
-    # 那样把无法解析判为整条无效——一个坏字段不该废掉整次判断。
+    # 那样把无法解析判为整条无效，一个坏字段不该废掉整次判断。
     raw_quote = parsed.get("quote")
     quote: bool | None
     if isinstance(raw_quote, bool):
@@ -290,7 +290,7 @@ def is_full_umo(value: str) -> bool:
 
     判据是段数（``_UMO_PARTS``），与 :func:`session_group_id` 同源但不等价：
     后者按 ``split(":", 2)`` 取第三段，所以会话 ID 自身含冒号（``qq:GroupMessage:x:y``）
-    时两者结论相反——本函数判 False，:func:`session_group_id` 仍返回 ``"x:y"``。
+    时两者结论相反，本函数判 False，:func:`session_group_id` 仍返回 ``"x:y"``。
     该分歧是良性的：入口按白名单项**逐字**登记 ``_whitelist_runtime_umos``（完整 UMO
     一条、群号再补一条），所以走裸号分支照样能查到它（见 tests/test_storage_and_umo.py
     的分歧守卫用例）。不要"顺手统一"成 ``>=``：那会把两段畸形条当成可直接巡检的 UMO。
@@ -321,7 +321,7 @@ def session_whitelisted(umo: str, whitelist: set[str]) -> bool:
 
 
 def whitelist_storage_key(umo: str) -> str:
-    """状态键就是完整 UMO 本身——本函数刻意是个恒等式（仅去空白）。
+    """状态键就是完整 UMO 本身，本函数刻意是个恒等式（仅去空白）。
 
     它的价值不在做了什么，而在作为**唯一命名接缝**存在：所有调用点经它取
     状态键，「状态键 = 完整 UMO」这个决定只有一处可改。绝不能把它退化成裸
@@ -351,7 +351,7 @@ def event_message_id(event: Any) -> str:
 
     三层回退：事件自身字段 → ``message_obj`` 字段 → ``get_message_id()``。宿主
     各适配器把 ID 放在不同位置（部分平台只挂 message_obj），取不到就返回空串走
-    「无 ID」路径——ID 只用于去重与引用，取不到不该中断调用方。
+    「无 ID」路径，ID 只用于去重与引用，取不到不该中断调用方。
     """
     for owner in (event, getattr(event, "message_obj", None)):
         if owner is None:
@@ -382,7 +382,7 @@ def event_extra(event: AstrMessageEvent, key: str, default: Any = None) -> Any:
 
     与本模块其余 ``event_*`` 同属宿主字段兼容探测。
     本函数在消息热路径（每条进入 on_message 的事件都调一次），故不用
-    ``first_bindable_args`` 的 ``inspect.signature`` 预检——那要把签名解析
+    ``first_bindable_args`` 的 ``inspect.signature`` 预检，那要把签名解析
     开销花在每条消息上。``get_extra`` 是纯读：先按双参调用，签名不兼容
     （旧宿主单参形态）抛 TypeError 时退一次单参调用，重复读取无害。有
     副作用风险的宿主调用（LLM、落盘）仍走 ``first_bindable_args``，那边
@@ -469,7 +469,7 @@ def is_explicit_direct_call(event: AstrMessageEvent, text: str) -> bool:
         if re.search(
             rf"\[CQ:at,[^\]]*(?:qq=)?(?<!\d){re.escape(self_id)}(?:\D|$)", text, re.IGNORECASE
         ):
-            # (?<!\d)：数字边界不可省——省略时 [^\]]* 可吃掉 qq=456 的尾段，
+            # (?<!\d)：数字边界不可省，省略时 [^\]]* 可吃掉 qq=456 的尾段，
             # 让 self_id=123 误命中 [CQ:at,qq=456123]（他人 QQ 号以 self_id
             # 结尾即被误判点名，消息被 should_ignore_event 静默丢弃）。
             return True
@@ -533,7 +533,7 @@ def cap_context_text(text: str, max_chars: int, *, marker: str) -> str:
 
     两个预算下限例外（test_generation_runner 的极小预算用例逐条钉住）：
     ``max_chars <= 0`` 表示关闭裁剪、逐字返回；预算装不下 marker 本身
-    （``max_chars <= len(marker)``）时返回 marker、总长略超预算——空串会让调用方
+    （``max_chars <= len(marker)``）时返回 marker、总长略超预算，空串会让调用方
     以为没有历史，提示「内容被省略」比静默丢内容更接近事实。
     """
     if max_chars <= 0 or len(text) <= max_chars:

@@ -117,7 +117,7 @@ class SessionCoordinator:
         返回 ``(freed_bytes, evicted_key)``；``evicted_key is None`` 表示无可
         弹出条目。**驱逐 0 字节条目是合法进展**：冻结到磁盘的图与刻意入队的
         空占位事件都记 0 字节，调用方必须以 key 为 None 判停，而不是 freed 为
-        0——否则队首一个 0 字节条目就会掩盖其后仍可回收的 data URL。
+        0，否则队首一个 0 字节条目就会掩盖其后仍可回收的 data URL。
         """
         candidates = []
         events = self._images.items() if umo is None else [(umo, self._images.get(umo))]

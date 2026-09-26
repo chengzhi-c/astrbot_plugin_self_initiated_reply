@@ -82,7 +82,7 @@ def test_frontend_has_no_handwritten_default_config() -> None:
     """前端不得自持一份默认配置表（``DEFAULT_CONFIG``）。
 
     行为测试管不了这条：前端自己写默认值时，面板加载前/加载失败时的初态仍然
-    "看起来正常"，只是与后端 ``CONFIG_SPECS`` 各有一份——后端改默认值而前端
+    "看起来正常"，只是与后端 ``CONFIG_SPECS`` 各有一份，后端改默认值而前端
     没跟上，表现为"加载失败那一刻显示了另一个默认值"，无任何报错。
     真正的加载行为由 ``tests/frontend_browser.test.mjs`` 钉住，这里只守
     "不得存在第二份默认值"这个结构不变量。
@@ -111,7 +111,7 @@ def test_prompt_preview_keys_are_injectable_variables() -> None:
     """前端预览示例的每个变量名都必须是后端真会注入的键。
 
     后端把 {latest_message} 改名而前端预览仍高亮旧名，用户看到的预览就与实际
-    发给模型的内容不符——这条把该漂移变红灯。方向是子集：后端新增键而前端暂不
+    发给模型的内容不符，这条把该漂移变红灯。方向是子集：后端新增键而前端暂不
     预览只是不高亮（无害），前端多出后端没有的键才是误导。
     """
     form = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
@@ -129,7 +129,7 @@ def test_no_dead_config_default_attribute() -> None:
     该属性曾用于"配置缺键时按默认值决定开关初态"。但 GET /config 的每个键都是
     前端 requiredKeys，缺键在 isSuccessfulConfigPayload 处即抛错，走不到控件赋值；
     且 bool 键经 as_bool 归一恒为真 bool。于是 ``x !== false`` 与 ``Boolean(x)``
-    在全部可达路径上恒等——属性成了后端 CONFIG_SPEC 的镜像副本，只带来漂移面。
+    在全部可达路径上恒等，属性成了后端 CONFIG_SPEC 的镜像副本，只带来漂移面。
     真实渲染行为改由 tests/frontend_browser.test.mjs 断言。
     """
     html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
@@ -246,3 +246,77 @@ def test_frontend_prompt_textarea_maxlength_matches_backend() -> None:
     assert int(maxlength.group(1)) == spec.max_len, (
         f"textarea maxlength={maxlength.group(1)} spec={spec.max_len}"
     )
+
+
+def _html_enum_options(html: str) -> dict[str, set[str]]:
+    """取 HTML 里每个 enum 控件的 option 值集合（按 data-config-key 归组）。"""
+    options: dict[str, set[str]] = {}
+    for select in re.findall(r"<select\b[^>]*>[\s\S]*?</select>", html):
+        key_match = re.search(r'data-config-key="([a-z0-9_]+)"', select)
+        if not key_match:
+            continue
+        options[key_match.group(1)] = {
+            value for value in re.findall(r'<option value="([^"]*)"', select)
+        }
+    return options
+
+
+def test_frontend_enum_options_match_panel_specs() -> None:
+    """enum 控件的 option 集合必须等于规格表 options（逐项，不多不少）。
+
+    number 的 min/max/step 早有守卫，enum 此前没有：后端新增一个取值而页面
+    选不到时，用户只能靠手改配置文件，面板 silently 少一个合法值。
+    """
+    from .host_stubs import install_astrbot_stubs, load_package
+
+    install_astrbot_stubs()
+    models = load_package("selfreply_config_sot_package", "models")
+    html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
+
+    expected = {
+        spec.key: set(spec.options) for spec in models.panel_config_specs() if spec.kind == "enum"
+    }
+    actual = _html_enum_options(html)
+    assert actual == expected, (
+        f"HTML enum 选项与规格表漂移：页面独有 {sorted(set(actual) - set(expected))}，"
+        f"规格表独有 {sorted(set(expected) - set(actual))}；"
+        f"值差异 {sorted((k, v, actual.get(k)) for k, v in expected.items() if actual.get(k) != v)}"
+    )
+
+
+def test_frontend_whitelist_item_maxlen_matches_backend() -> None:
+    """前端白名单单条长度上限必须等于后端 MAX_STRING_LIST_ITEM_LEN。
+
+    条数上限与非法字符集都有守卫，唯独单条长度没有：后端调大后前端仍按旧值
+    报错，用户看到「超出 200 字符上限」而后端其实接受。
+    """
+    from .host_stubs import install_astrbot_stubs, load_package
+
+    install_astrbot_stubs()
+    models = load_package("selfreply_config_sot_package", "models")
+    form = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
+    match = re.search(r"const WHITELIST_ITEM_MAX_LEN = (\d+);", form)
+    assert match, "WHITELIST_ITEM_MAX_LEN not found"
+    assert int(match.group(1)) == models.MAX_STRING_LIST_ITEM_LEN, (
+        f"前后端白名单单条长度漂移：前端 {match.group(1)}，后端 {models.MAX_STRING_LIST_ITEM_LEN}"
+    )
+
+
+def test_frontend_prompt_variable_help_matches_injectable_keys() -> None:
+    """HTML 帮助面板列出的变量名必须都是后端真会注入的键。
+
+    预览示例那份已有守卫（``test_prompt_preview_keys_are_injectable_variables``），
+    帮助面板那份此前孤立：后端删掉一个变量后面板仍教用户写它，而预览会停用
+    高亮，两处对同一事实给出矛盾答案。
+    """
+    from .host_stubs import install_astrbot_stubs
+
+    install_astrbot_stubs()
+    html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
+    block = html.split('<dl class="variable-list">', 1)[1].split("</dl>", 1)[0]
+    documented = set(re.findall(r"<dt>\{([a-z_]+)\}</dt>", block))
+    assert documented, "variable-list 里解析不到变量名"
+
+    injectable = _decision_prompt_value_keys()
+    extra = documented - injectable
+    assert not extra, f"帮助面板列出了后端不注入的变量：{sorted(extra)}"

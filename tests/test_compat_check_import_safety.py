@@ -1,7 +1,7 @@
 """compat_check 必须可被 import，且自有的临时目录生命周期必须闭合。
 
 脚本本体在模块级做进程级副作用（sys.path 注入 / chdir 临时目录 / 注册假包），
-而 tests/test_host_contract.py 为取 EXPECTED_HANDLER_COUNT 而 import 它——
+而 tests/test_host_contract.py 为取 EXPECTED_HANDLER_COUNT 而 import 它，
 副作用会改掉 pytest 进程的 cwd、并在宿主真包已装时用假包顶掉 sys.modules 里的
 同名条目。副作用因此收敛进 _bootstrap()，只由 __main__ 入口调用。
 
@@ -86,7 +86,7 @@ def compat(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
 class _RecordingTempfile:
     """真建目录的 tempfile 替身：记录每次 ``mkdtemp`` 的产物路径。
 
-    不伪造返回值——目录必须真实存在，``shutil.rmtree`` 才有可删的东西，
+    不伪造返回值，目录必须真实存在，``shutil.rmtree`` 才有可删的东西，
     Windows 上「cwd 已切走」也才有可验证的语义。
     """
 
@@ -113,7 +113,7 @@ def test_bootstrap_failure_restores_cwd_and_removes_temp_dir(
     """_bootstrap 准备步骤失败：cwd 复原、目录删掉、sys.path 不留副作用。
 
     以假包注册那步（最后一步）失败为例：目录已建、cwd 已切、sys.path 已注入，
-    三项都必须回滚——否则异常会把 pytest 进程留在临时目录里，后续测试写文件
+    三项都必须回滚，否则异常会把 pytest 进程留在临时目录里，后续测试写文件
     全落到 /tmp，且真实宿主机上真包被假包顶掉。
     """
     _no_plugin_package(monkeypatch)
@@ -145,7 +145,7 @@ def test_bootstrap_creates_real_directory_and_chdirs(
 ) -> None:
     """反向守卫：bootstrap 真的建了目录并切进去（否则上面的删除断言是空转）。
 
-    替身不得伪造返回值——目录必须真实存在于磁盘上，Windows 上「cwd 在临时
+    替身不得伪造返回值，目录必须真实存在于磁盘上，Windows 上「cwd 在临时
     目录里」才有可验证的语义。
     """
     _no_plugin_package(monkeypatch)

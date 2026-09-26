@@ -170,7 +170,7 @@ ADMIN_REFRESH_WINDOW_SEC = 30.0
 #   且巡检的 now - last_active_at 为负，永不大于 patrol_inactive_after_sec，
 #   巡检每轮都白跑一次这个已锁死的会话。
 # - 负值：单独毒 last_active_at 会被「这条消息之后已经主动回复过」拦住，但把
-#   last_proactive_observed_at 一并毒成更负即可放行——全新会话被拦、毒过的放行，
+# last_proactive_observed_at 一并毒成更负即可放行，全新会话被拦、毒过的放行，
 #   是真实的能力提升。
 #
 # 取 300 秒：足够覆盖 NTP 校正与容器宿主间的正常漂移，又把投毒的可利用窗口
@@ -327,7 +327,7 @@ def first_bindable_args(
     """返回首个可绑定到 ``func`` 签名的候选实参；都不匹配返回 None。
 
     签名不可检查时返回首个候选（与各调用点原有回退一致）。只做 ``bind``
-    预检、绝不调用——函数体内的 TypeError 必须由调用方处理，在此重试意味
+    预检、绝不调用，函数体内的 TypeError 必须由调用方处理，在此重试意味
     同一宿主调用可能执行两次（对落盘/LLM 即重复副作用）。
     """
     if not candidates:
@@ -369,7 +369,7 @@ def sanitize_prompt_variable(
     Args:
         text: 原始文本
         max_length: 最大长度限制；``None`` 表示不截断（调用方自带保尾预算时用，
-            例如多行聊天记录——那种场景截头会先丢掉最新的消息）
+            例如多行聊天记录，那种场景截头会先丢掉最新的消息）
         allow_newlines: 是否保留换行。多行聊天记录必须保留行结构，
             否则判断模型无法区分发言人和轮次；单字段变量保持单行。
 
@@ -484,7 +484,7 @@ class SendStatus(StrEnum):
 class SuppressCode(StrEnum):
     """SUPPRESSED 的机器可判成因。
 
-    ``detail`` 是给人看的自由文本，不能拿它做分支——``"stopping" in detail``
+    ``detail`` 是给人看的自由文本，不能拿它做分支，``"stopping" in detail``
     这类判定会在措辞调整时静默失效（改文案不该改变控制流）。调用方要区分的
     成因放这里，``detail`` 只进日志。
 
@@ -524,8 +524,8 @@ class SendAttempt:
     """One outbound call tracked by a pipeline-owned ledger.
 
     ``eq=False``：账本按**身份**判定成员（``attempt not in self._attempts`` 走
-    ``==``）。值相等会让另一账本里同号同文的 attempt 冒充本账本成员——
-    ``attempt_id`` 每账本从 1 起，两个账本各发一条同样文本时字段全等——
+    ``==``）。值相等会让另一账本里同号同文的 attempt 冒充本账本成员，
+    ``attempt_id`` 每账本从 1 起，两个账本各发一条同样文本时字段全等，
     于是 resolve/mark_in_flight 会把状态写到别的账本的 attempt 上。
     """
 
@@ -759,7 +759,7 @@ class SessionState:
 
         先 ``refresh_day`` 再自增：调用方（``SessionPipeline.check_session_locked``）的跨天
         刷新发生在判断+生成之前，二者相隔可达数十秒（判断超时 20s + 生成
-        超时 60s）。跨零点时增量会记到昨日键上，随下一次刷新归零 —— 等于
+        超时 60s）。跨零点时增量会记到昨日键上，随下一次刷新归零， 等于
         今日配额白送一次。本方法自带刷新后不再依赖调用方的时序。
         """
         self.refresh_day()
@@ -1191,7 +1191,7 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
     """按规格把一个原始配置值强制成目标类型并夹取边界。
 
     ``fallback`` 与 ``raw`` 分开传：旧键回退时 ``raw`` 取自旧键，而强制失败
-    （None / 不可解析）时要落回同一个旧键的值，而非静态默认——这正是
+    （None / 不可解析）时要落回同一个旧键的值，而非静态默认，这正是
     ``vision_enabled`` 迁移到两个新开关的语义。
 
     截断（提示词长度 / 白名单条目数）是防 OOM 与 token 滥用的硬边界，静默
@@ -1210,7 +1210,7 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
     if spec.kind == "enum":
         return choice(raw, set(spec.options), str(fallback))
     if spec.kind == "text":
-        # 空值回落默认模板（面板留空即复位）：这条语义的唯一实现点在读侧——
+        # 空值回落默认模板（面板留空即复位）：这条语义的唯一实现点在读侧，
         # 写侧 webapi._strict_value 只规范化空白，复位值单源于规格表 reset_default。
         text = str(raw or "").strip() or spec.reset_value
         return _truncate_text(spec, text)

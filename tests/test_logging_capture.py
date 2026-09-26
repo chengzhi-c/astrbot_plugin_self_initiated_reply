@@ -40,7 +40,7 @@ def bridged_host_logger():
 
     ``LogManager.GetLogger`` 会把 root 的 handler 全量桥到具名 logger 上并关掉
     propagate。于是该 logger 一放行传播，同一条记录就从"目标 logger 自带的同一
-    handler"与"root 上的同一个 handler"两条路各入账一次——这正是真实宿主下
+    handler"与"root 上的同一个 handler"两条路各入账一次，这正是真实宿主下
     ``caplog.records`` 翻倍的机制。
     """
     logger = logging.getLogger("capture-contract-bridged-host")

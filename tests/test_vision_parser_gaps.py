@@ -972,7 +972,7 @@ def test_cleanup_expired_files_are_not_counted_against_quota(tmp_path: Path) -> 
 
     单遍采集把整棵树读进一张表，过期删除与配额计账都用它。若配额阶段直接拿
     采集表计账，已被删掉的文件仍占着字节数，配额就会误判超限并继续删本该
-    存活的新鲜文件——用户侧表现为刚发的图片描述缓存被连带清掉。
+    存活的新鲜文件，用户侧表现为刚发的图片描述缓存被连带清掉。
     """
     _, image, _ = _load_modules()
     root = tmp_path / "cache"
@@ -1036,7 +1036,7 @@ def test_resolve_uses_prepared_data_url(tmp_path: Path) -> None:
 def test_resolve_uses_recorder_local_path(tmp_path: Path) -> None:
     # 生产装配等价：recorder 的媒体目录在
     # <data>/plugin_data/astrbot_plugin_message_recorder/ 下，故注入 data_root。
-    # recorder 交回的路径同样要过 allowlist——它的入参 local_path 来自对端可控
+    # recorder 交回的路径同样要过 allowlist，它的入参 local_path 来自对端可控
     # 的消息组件，resolver 又是第三方插件函数，不能无条件当可信。
     _, image, _ = _load_modules()
     source = _png_file(tmp_path)
@@ -1165,7 +1165,7 @@ def test_recorder_resolved_path_outside_roots_is_rejected(tmp_path: Path) -> Non
     ``resolve_relative_path`` 的入参是对端可控的 OneBot ``file`` /
     ``local_path``，而 resolver 是第三方插件函数（``recorder_bridge.py:86``）。
     若它做朴素的 ``root / value`` 拼接，``../`` 就能逃出媒体目录并拿到无条件
-    放行——与本地文件读取同一攻击面。
+    放行，与本地文件读取同一攻击面。
     """
     _, image, _ = _load_modules()
     data_root = tmp_path / "data"

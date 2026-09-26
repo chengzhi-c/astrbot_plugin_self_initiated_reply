@@ -94,7 +94,7 @@ def test_parse_decision_json_rejects_missing_or_invalid_should_reply() -> None:
 def test_parse_decision_json_quote_is_optional_and_never_fatal() -> None:
     """``quote`` 是可选字段：无法辨认归 None，绝不像 should_reply 那样废掉整条。
 
-    None 的语义是「模型没说」——投递侧据此走概率兜底；若把它也判成无效，用户
+    None 的语义是「模型没说」投递侧据此走概率兜底；若把它也判成无效，用户
     只要换个模型就可能整条判断失败。
     """
     _, utils, _ = _load_modules()
@@ -140,7 +140,7 @@ def test_is_full_umo_divergence_for_colon_bearing_session_ids_is_benign() -> Non
     """段数判据与会话 ID 含冒号的 UMO 分歧：已实测良性，不得"顺手统一"。
 
     ``is_full_umo`` 数冒号（恰好 2 个），``session_group_id`` 按 split(":", 2) 取段：
-    ``qq:GroupMessage:x:y`` 上前者 False、后者 ``"x:y"``。分歧本身无害——入口把
+    ``qq:GroupMessage:x:y`` 上前者 False、后者 ``"x:y"``。分歧本身无害，入口把
     完整 UMO 逐字登记进 ``_whitelist_runtime_umos``，所以巡检侧把该白名单项当裸号
     查表时照样能解析到它自己（event_umo 对该形状原样返回，登记键 === 白名单项）。
     把这层关系钉住：后人把判据改成 ``>=`` 时会被上面的 not 断言拦住。
@@ -226,7 +226,7 @@ def test_event_extra_returns_default_for_incompatible_host_getter() -> None:
     """不兼容的宿主 getter（双参与单参都无法接受）返回默认值。
 
     语义变更说明：旧实现用 ``first_bindable_args`` 预检（不兼容则零调用），
-    新实现改为直接调用 + TypeError 两级回退——``get_extra`` 是纯读，重复
+    新实现改为直接调用 + TypeError 两级回退，``get_extra`` 是纯读，重复
     调用无害，而签名预检的 ``inspect.signature`` 要花在每条消息的热路径上。
     “预检绝不调用”的契约仍由 adapters/storage 里有副作用风险的调用点维持。
     """
@@ -311,7 +311,7 @@ def test_retired_session_field_in_old_payload_is_ignored_on_load(tmp_path: Path)
 def test_as_timestamp_clamps_both_directions() -> None:
     """``as_timestamp`` 的纯函数语义：负值归 0，远未来钳到 now+skew，NaN/inf 归 0。
 
-    注入 ``now`` 而非取真实时钟——上界是动态的，用真实时钟断言会因毫秒级漂移偶发
+    注入 ``now`` 而非取真实时钟，上界是动态的，用真实时钟断言会因毫秒级漂移偶发
     flaky（实测漂移 4.2ms 就足以让「等于上界」的断言翻面）。
     """
     models, _, _ = _load_modules()
@@ -366,7 +366,7 @@ def test_negative_timestamps_cannot_bypass_proactive_gate(tmp_path: Path) -> Non
     """负值时间戳不得成为「已回复过」判据的旁路。
 
     修复前实测：只毒 ``last_active_at`` 会被「这条消息之后已经主动回复过」拦住，
-    但把 ``last_proactive_observed_at`` 一并毒成更负（-1e10 < -1e9）即可放行——
+    但把 ``last_proactive_observed_at`` 一并毒成更负（-1e10 < -1e9）即可放行，
     全新会话被拦、投毒会话放行，是真实的能力提升。钳位后两者同归 0.0，
     与全新会话完全同构，能力提升消失。
     """
@@ -440,7 +440,7 @@ def test_corrupt_state_file_is_backed_up_and_load_continues(tmp_path: Path) -> N
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == "{not valid json"
     # 裸群号只是白名单通配写法，非状态键（whitelist_storage_key 契约），
-    # 不再为其预填空壳 SessionState——空壳无人读写却每轮落盘。
+    # 不再为其预填空壳 SessionState，空壳无人读写却每轮落盘。
     assert sessions == {}
 
 
@@ -469,7 +469,7 @@ def test_version_mismatch_state_file_is_backed_up_and_best_effort_loaded(tmp_pat
 def test_legacy_bare_group_key_inherits_state_from_target_free_whitelist(tmp_path: Path) -> None:
     """裸键在盘、目标键尚无记录：并入白名单里唯一匹配的完整 UMO。
 
-    迁移此前藏在 `state_for` 的 read-path pop 里——多平台同群号时首个访问者
+    迁移此前藏在 `state_for` 的 read-path pop 里，多平台同群号时首个访问者
     继承整份历史，其余平台永远拿不到，而且那是在只读函数里做写操作。
     """
     _, _, storage = _load_modules()
@@ -487,7 +487,7 @@ def test_legacy_bare_group_key_inherits_state_from_target_free_whitelist(tmp_pat
 
 
 def test_legacy_bare_group_key_is_dropped_when_target_has_its_own_state(tmp_path: Path) -> None:
-    """目标键已有记录时只淘汰裸键，不覆盖——legacy 的当日配额不得顶掉新键计数。"""
+    """目标键已有记录时只淘汰裸键，不覆盖，legacy 的当日配额不得顶掉新键计数。"""
     _, _, storage = _load_modules()
     path = tmp_path / "state.json"
     path.write_text(
@@ -588,7 +588,7 @@ def test_record_proactive_attempt_refreshes_day_before_counting() -> None:
 
     调用方 `SessionPipeline.check_session_locked` 的跨天刷新发生在判断+生成之前，二者相隔
     可达数十秒（判断超时 20s + 生成超时 60s）。若本方法不自带刷新，跨零点的
-    自增会记到昨日键，随下一次 refresh_day 归零 —— 日配额闸门被绕过一次。
+    自增会记到昨日键，随下一次 refresh_day 归零， 日配额闸门被绕过一次。
     """
     models, _, _ = _load_modules()
 
@@ -622,7 +622,7 @@ def test_event_umo_rewrites_group_session_to_group_id() -> None:
     """群聊 UMO 的第三段必须改写为 group_id，否则同群不同发言者被算作不同会话。
 
     宿主给出的 session_id 在部分适配器上是「发言者」而非「群」。不改写会让
-    白名单按人生效、每人各自计一份日配额——主动回复的会话粒度直接失效。
+    白名单按人生效、每人各自计一份日配额，主动回复的会话粒度直接失效。
     """
     _, utils, _ = _load_modules()
 
@@ -641,7 +641,7 @@ def test_event_umo_rewrites_group_session_to_group_id() -> None:
 
 
 def test_event_umo_passes_through_non_triplet_shapes() -> None:
-    """段数不足 3 的 UMO 原样返回；空值返回空串——不得拼出畸形键。
+    """段数不足 3 的 UMO 原样返回；空值返回空串，不得拼出畸形键。
 
     畸形键会成为 state.json 里永不回收的孤儿记录（白名单永不匹配它）。
     """
@@ -731,7 +731,7 @@ def test_history_display_name_assistant_is_bot() -> None:
 
 
 def test_parse_decision_json_truncates_overlong_reason() -> None:
-    """裁决理由超长必须截断——它会进日志与 /status 面板，不设上限即放大攻击面。
+    """裁决理由超长必须截断，它会进日志与 /status 面板，不设上限即放大攻击面。
 
     理由文本来自判断模型，而模型输入含不可信的群聊内容。不截断的话，
     一条超长理由会淹没日志（可用于掩盖其他审计记录）。
@@ -753,7 +753,7 @@ def test_parse_decision_json_truncates_overlong_reason() -> None:
 def test_content_to_text_handles_all_host_content_shapes() -> None:
     """宿主消息 content 有四种形态，任一形态取不到文本即丢失该条历史。
 
-    形态来源：不同 Provider 对 message.content 的建模不同——纯字符串、
+    形态来源：不同 Provider 对 message.content 的建模不同，纯字符串、
     多模态分片列表（dict 或对象）、单个 dict、单个对象。这里逐形态锁定，
     因为漏掉任一种不会报错，只会让历史记录静默变空，判断模型据此误判。
     """
@@ -834,7 +834,7 @@ def test_config_file_matches_disk_semantics(tmp_path: Path) -> None:
     """启动跳写盘的判据：磁盘已解析内容 == Settings 序列化结果才返回 True。
 
     文件缺失/损坏/非对象一律 False（必须写），确保首启创建与旧形状迁移不受跳写
-    影响；唯一 True 的形态是逐字等价——此时重写只产生相同字节与一次无谓 fsync。
+    影响；唯一 True 的形态是逐字等价，此时重写只产生相同字节与一次无谓 fsync。
     """
     models, _, storage = _load_modules()
     settings = models.Settings.from_config({"cooldown_sec": 123})

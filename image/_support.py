@@ -75,7 +75,7 @@ class ImageInfo:
         （extractor 跳过双空组件，parse 入口拒无源），故没有兜底键可言。
 
         值超长时换成 sha256 摘要：磁盘缓存不可用时 ``prepared_source`` 是完整
-        data URL，一次内存回退可让键达到 MB 级——而 ``ImageCache`` 的字节预算
+        data URL，一次内存回退可让键达到 MB 级，而 ``ImageCache`` 的字节预算
         只按**值**记账，key 的开销完全在预算外（见 docs/DECISIONS.md「每会话
         内存基准」）。摘要保留前缀与「同内容同键」语义：内容相同则摘要相同，
         去重与 LRU 命中不受影响；真实路径/URL 远短于阈值，走原形不变。

@@ -182,7 +182,7 @@ async def _await_previous_check_release(plugin: SelfInitiatedReplyPlugin, umo: s
     """有界等待该会话上一轮检查让出运行标记（最多等 ``_MANUAL_CHECK_RELEASE_WAIT_SEC``）。
 
     背景：``/selfreply check`` 会先 ``invalidate(force_cancel=True)`` 取消在途
-    检查，但取消是异步投递的——旧任务要到下一个 await 点才真正退出并
+    检查，但取消是异步投递的，旧任务要到下一个 await 点才真正退出并
     ``unmark_running``。立即进 pipeline 会撞上 ``is_running`` 检查而返回
     「已有判断任务在运行」：旧检查被静默掐掉、本次也没执行，用户得重发。
     预算耗尽仍被占用时照旧返回，由 pipeline 给出既有文案（不无限挂住指令回执）。
@@ -274,7 +274,7 @@ async def dispatch_command_action(
             return _lifecycle_reject_text(plugin, "手动检查")
         generation = plugin._coordinator.invalidate(umo)
         # 旧检查被 force-cancel 后不会立即让出运行标记（取消是异步投递的），
-        # 直接进 pipeline 会撞上「已有判断任务在运行」——净效果是旧检查被静默
+        # 直接进 pipeline 会撞上「已有判断任务在运行」净效果是旧检查被静默
         # 掐掉、新的也没执行，用户必须重发一次。故有界等待其释放。
         await _await_previous_check_release(plugin, umo)
         plugin._coordinator.record_event(umo, event, now_ts())

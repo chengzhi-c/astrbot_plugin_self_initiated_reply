@@ -43,11 +43,11 @@ from .session_gate import SessionGate
 # eval 一遍，于是 TYPE_CHECKING-only 的名字在那一步 NameError，整个插件拒绝加载。
 # 宿主里没有 get_type_hints（故不是「等价于 get_type_hints」）。
 # 守卫：scripts/compat_check.py::_handler_signature_gaps 照抄这一步，两个宿主版本上
-# 都会红（4.23.3 上宿主自己不会失败，但那不是可依赖的事实——它已经变过一次）。
+# 都会红（4.23.3 上宿主自己不会失败，但那不是可依赖的事实，它已经变过一次）。
 #
 # 这里刻意不写成 AsyncGenerator[MessageEventResult, None]：那需要运行时 import 宿主
 # 符号（多一条加载期硬依赖，且测试替身未导出该名字）。参数化成 Any 不损失任何检查力
-# ——astrbot.* 在 mypy 眼里本就全是 Any，精确写法只有文档价值，
+# ，astrbot.* 在 mypy 眼里本就全是 Any，精确写法只有文档价值，
 # 该价值由本注释承载。
 CommandReply = AsyncGenerator[Any, None]
 
@@ -280,7 +280,7 @@ class SelfInitiatedReplyPlugin(Star):
             if self._pending_normalize_config:
                 await self._normalize_config_off_loop()
             try:
-                # 走 sync 版（含跳写判据）：本任务已在事件循环之外的目的地——
+                # 走 sync 版（含跳写判据）：本任务已在事件循环之外的目的地，
                 # to_thread 内执行，既不阻塞循环也不失去"内容一致即跳过"的语义。
                 await asyncio.to_thread(self._save_storage_sync)
             except Exception as exc:
@@ -710,7 +710,7 @@ class SelfInitiatedReplyPlugin(Star):
             event.set_extra(COMMAND_HANDLED_KEY, True)
         except Exception:
             # 老宿主可能未实现 set_extra。标记丢失只会让同一事件在后续 on_message
-            # 少一层去重保护——兜底是事件自身的 stop_event/is_stopped（指令分流
+            # 少一层去重保护，兜底是事件自身的 stop_event/is_stopped（指令分流
             # 出口会 stop，重入时按 is_stopped 拦下），不是指令前缀判定：
             # 前缀判定恰恰会让同一指令再次通过。
             pass
@@ -749,7 +749,7 @@ class SelfInitiatedReplyPlugin(Star):
         _, pending = await asyncio.wait(tasks, timeout=TERMINATE_TASK_TIMEOUT_SEC)
         for task in pending:
             task.cancel()
-            # 超时即取消并隔离：不再有第二次等待窗口——硬窗口语义（契约 §5）
+            # 超时即取消并隔离：不再有第二次等待窗口，硬窗口语义（契约 §5）
             # 要求 terminate 有界，取消后的清理只由任务自身的 done 回调收尾。
             self._quarantine_task(task, "shutdown deadline exceeded")
         self._background_tasks.difference_update(task for task in tasks if task.done())

@@ -55,7 +55,7 @@ from .models import (
 )
 from .storage import write_json_atomic
 
-# 配置 schema 全键：从 models.CONFIG_SPECS 派生（fail loud——此名单之外的
+# 配置 schema 全键：从 models.CONFIG_SPECS 派生（fail loud，此名单之外的
 # 提交键一律 400 拒绝，防止前端/未来代码提交新字段时被静默吞掉）。
 # 历史兼容别名由 Settings.from_config 的 legacy_keys 回退读取，不入本名单。
 CONFIG_SCHEMA_KEYS = frozenset(spec.key for spec in CONFIG_SPECS)
@@ -280,9 +280,9 @@ async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]
     # 读-改-写整块进 _config_lock（与 POST /config 同一把，锁序仍恒为
     # _config_lock → _save_lock）：写盘含 fsync 必须进线程，同步 fsync 会阻塞
     # 所有会话（同 storage.apersist_settings_config 口径）；而未提交字段的
-    # 基准值又快不得在锁外读——两个并发 POST 各改一个字段时，锁外取基准值再
+    # 基准值又快不得在锁外读，两个并发 POST 各改一个字段时，锁外取基准值再
     # 进锁落盘会拿旧值覆盖对方的字段。锁内复查 _stopping：无锁时写入紧接在
-    # 检查后发生，等锁后不再成立——teardown 可能已跑完，此时落盘正是上面那条
+    # 检查后发生，等锁后不再成立，teardown 可能已跑完，此时落盘正是上面那条
     # 检查要挡的写入。
     async with plugin._config_lock:
         if plugin._stopping:
@@ -301,7 +301,7 @@ async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]
 
 def _strict_int(value: Any, field: str) -> int:
     # 只接受真 int（bool 是 int 子类须显式排除）：int(1.5) 与 int("5") 会静默
-    # 截断/解析，前端无从得知值被改写——与同文件布尔/枚举/列表的严格 400
+    # 截断/解析，前端无从得知值被改写，与同文件布尔/枚举/列表的严格 400
     # 口径对齐。API 客户端只有本插件设置页，表单数字字段不产生浮点/数字字符串。
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(f"{field} 必须是整数")
@@ -315,7 +315,7 @@ def _string_list(data: dict[str, Any], key: str) -> list[str]:
 
 def _strict_float(value: Any, field: str) -> float:
     # 与 _strict_int 的口径差：JSON 数字无 int/float 之分（"9" 解析为 int），
-    # 故 int 与 float 都接受（bool 是 int 子类，显式排除）；字符串拒绝——
+    # 故 int 与 float 都接受（bool 是 int 子类，显式排除）；字符串拒绝，
     # float() 会静默解析数字字符串，让「前端只发 number」的约定在 API
     # 直调场景静默失效，fail loud 优于静默纠偏。
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -391,7 +391,7 @@ async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str,
 def _parse_config_updates(data: Any) -> dict[str, Any]:
     """从请求体提取合法配置变更并做严格类型校验；非法字段抛 ValueError。
 
-    表驱动：真正的风险不是长度，而是「新增键要记得同时改这里」——漏一处该键
+    表驱动：真正的风险不是长度，而是「新增键要记得同时改这里」漏一处该键
     就被静默丢弃：面板上能改、保存返回成功、值不生效。
 
     与 ``Settings.from_config`` 的关键差异（不可统一，故意分开）：这里对非法
@@ -442,7 +442,7 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
     # kind == "str"：拒绝 bool/dict/list（str(True)="True"、str({'a':1})="{'a': 1}"
     # 落盘后永远匹配不到任何 provider，故障静默且不自愈）。int/float 沿用 falsy 规范化
     # （0→""、42→"42"，与历史面板行为一致，见 test_parse_config_updates_formal_defaults）。
-    # 长度上限由 coerce 读侧按 spec.max_len 统一截断。空值保持空串——
+    # 长度上限由 coerce 读侧按 spec.max_len 统一截断。空值保持空串，
     # coerce 的 str 分支同样不做默认回落，两侧口径一致。
     if isinstance(raw, (bool, dict, list)):
         raise ValueError(f"{spec.key} 必须是字符串")
@@ -486,7 +486,7 @@ def _snapshot_plugin_state(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     ``sessions`` 只深保护 ``recent`` 列表：它是唯一会被窗口内消息入口
     （``plugin_state.state_for`` 按新 ``recent_message_limit`` 惰性重建）
     **不可逆裁剪**的字段，共享引用会让回滚恢复一个已被裁小的 deque。
-    其余标量字段的窗口内变更按现行语义保留——那是对真实事件的记录，
+    其余标量字段的窗口内变更按现行语义保留，那是对真实事件的记录，
     回滚不应抹掉。
 
     本快照**不足以**独立完成 §11 B2 的回滚：被白名单变更 ``pop`` 掉的会话状态
@@ -513,7 +513,7 @@ def _restore_session_history(plugin: SelfInitiatedReplyPlugin, saved: dict[str, 
     身份契约（B1 的对象版）：在途检查任务持有 ``SessionState`` 引用，
     整表换对象会让它们写孤儿状态。故存活键**原地**重绑 ``recent``
     （deque 的生产持有均为瞬时读取，重绑安全），新增键才插入新对象，
-    窗口内新增的键删除。``maxlen`` 用回滚后的 settings——快照时刻的
+    窗口内新增的键删除。``maxlen`` 用回滚后的 settings，快照时刻的
     上限可能已被本次（失败的）应用改小。
     """
     limit = plugin.settings.recent_message_limit
@@ -540,7 +540,7 @@ async def _restore_plugin_state(
     必须在 ``_restore_session_history`` **之前**回填（契约 §11 B2）：
 
     - 不填的话，这些键在 ``snapshot["sessions"]`` 里有、在 ``plugin.sessions``
-      里没有，会走「新建 SessionState」分支——键回来了、日配额与冷却却清零，
+      里没有，会走「新建 SessionState」分支，键回来了、日配额与冷却却清零，
       且对象身份丢失（在途检查持旧引用，写回落在孤儿对象上，与 B1 同源）。
     - 顺序不可反：``_restore_session_history`` 会删掉 ``saved`` 之外的键，
       回填放在它之后就等于白填。``replace`` 全程同步且紧跟快照，故
@@ -552,7 +552,7 @@ async def _restore_plugin_state(
     plugin.runtime_enabled = snapshot["runtime_enabled"]
     # 容器也必须原地恢复（B1）：scheduler/coordinator/whitelist 构造时
     # 捕获的是这些 dict 对象本身的引用（main.py 装配段），属性重绑定会让
-    # 它们继续写孤儿容器——回滚后 main 从新 dict 读、协作对象写旧 dict，
+    # 它们继续写孤儿容器，回滚后 main 从新 dict 读、协作对象写旧 dict，
     # 该会话主动回复静默停止直到重启。clear+update 保持容器身份不变。
     plugin._coordinator.restore_inplace(snapshot)
     restore_container_inplace(plugin._whitelist_runtime_umos, snapshot["whitelist_runtime_umos"])

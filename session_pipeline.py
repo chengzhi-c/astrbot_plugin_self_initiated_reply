@@ -87,7 +87,7 @@ async def decide_session_reply(
     )
     if not result.get("should_reply"):
         # 契约（decide 侧）：should_reply=False 时已转成字符串返回，文案单源在
-        # decision。走到这里说明该契约被破坏——静默放行会造成"判断不该回复
+        # decision。走到这里说明该契约被破坏，静默放行会造成"判断不该回复
         # 却仍然生成并发送"。
         raise RuntimeError("decide() must convert should_reply=False into a string")
     return result
@@ -252,7 +252,7 @@ class SessionPipeline:
                 except RuntimeError as exc:
                     # 任务注册被拒（停止中 / 降级 / 隔离任务超限）：协程已被
                     # _create_critical_task 关闭，账本停在 sealed、配额不记
-                    # （test_attempt_ledger 锚定）。只留日志——若让它从 finally
+                    # （test_attempt_ledger 锚定）。只留日志，若让它从 finally
                     # 传出，会改写主链已得出的结果或在途异常。
                     logger.error(
                         "[%s] proactive ledger finalizer registration rejected session=%s error=%s",

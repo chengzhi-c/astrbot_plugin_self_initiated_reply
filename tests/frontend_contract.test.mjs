@@ -25,6 +25,29 @@ import {
 } from "../pages/主动回复设置/config-form.mjs";
 import { THEME_KEY } from "../pages/主动回复设置/theme.mjs";
 import { configPayload } from "./fixtures/config-payload.mjs";
+// 表单控件工厂：四个 helper 被多个用例复用，提到模块作用域只留一份实现。
+// 新增配置键时只改各用例的 fields 数组，不必再同步四份 helper 副本。
+const field = (key, value = "", dataset = {}) => ({
+  dataset: { configKey: key, ...dataset },
+  type: "text",
+  value,
+});
+const number = (key, value) => ({ dataset: { configKey: key }, type: "number", value });
+const checkbox = (key, checked = false) => ({
+  dataset: { configKey: key },
+  type: "checkbox",
+  checked,
+});
+const providerField = (key, control) => ({
+  dataset: { configKey: key, configControl: control },
+});
+// createConfigIo 的 Provider 控件 stub：三个字段成组出现且形状固定，单独一份
+// 避免 13 处各写一遍。需要特定值（如拼错 ID 的场景）的用例仍可就地覆盖。
+const providerControls = (value = "") => ({
+  judge: { value: () => value, sync() {} },
+  vision: { value: () => value, sync() {} },
+  visionJudge: { value: () => value, sync() {} },
+});
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pageDir = join(root, "pages", "主动回复设置");
@@ -229,7 +252,7 @@ test("config payload requires ok true and write-critical fields", () => {
 test("config payload rejects a malformed config_revision", () => {
   // config_revision 是保存时的 CAS 期望值（POST body 的 base_revision）：形状不对
   // 时必须判加载失败。放宽成「只要是个字符串」会让 revision 退化为常量，乐观并发
-  // 控制在最上层静默失效（两次并发保存都「成功」，后者覆盖前者）——而页面其余
+  // 控制在最上层静默失效（两次并发保存都「成功」，后者覆盖前者）而页面其余
   // 逻辑全部照常工作，只有这个函数变红能发现。
   const rejected = ["", "sha256:", "sha256:short", `sha256:${"A".repeat(64)}`, 123, null];
   for (const revision of rejected) {
@@ -276,9 +299,9 @@ test("config load failure names the missing fields", async () => {
     showToast() {},
     setStatState() {},
     renderPromptPreview() {},
-    judgeProviderControl: { value: () => "", sync() {} },
-    visionProviderControl: { value: () => "", sync() {} },
-    visionJudgeProviderControl: { value: () => "", sync() {} },
+    judgeProviderControl: providerControls().judge,
+    visionProviderControl: providerControls().vision,
+    visionJudgeProviderControl: providerControls().visionJudge,
     fmtBool: String,
   });
   await assert.rejects(() => io.loadConfig(), /缺少字段 min_silence_sec/);
@@ -385,7 +408,7 @@ test("browser config fixture covers every form-declared key", async () => {
   assert.deepEqual(missing, [], `config-payload.mjs 缺少表单键：${missing}`);
 
   // 反向：夹具里的每个键都必须被页面消费（表单控件或 JS 读取），否则是
-  // 夹具里的孤儿键（后端已无此键）——浏览器测试用这份夹具当桩，
+  // 夹具里的孤儿键（后端已无此键）浏览器测试用这份夹具当桩，
   // 残留键永远绿，漂移只有这一侧能抓。同 Python 侧
   // test_every_exposed_config_key_is_consumed_by_the_panel 的口径。
   const names = (await readdir(pageDir)).filter((name) => /\.(js|mjs)$/.test(name));
@@ -421,7 +444,7 @@ test("theme localStorage key stays single-sourced with the HTML bootstrap", asyn
 test("mobile tab groups stay in sync with the page section anchors", async () => {
   // TAB_GROUPS 把侧栏分区 id 映射到移动端 tabbar 分组。分区改名或新增而漏改
   // 映射表时，chrome.mjs 的 `TAB_GROUPS[target] || target` 兜底会静默降级为
-  // "不高亮任何 tab"——不抛异常、无日志，只有窄屏肉眼可能看出。
+  // "不高亮任何 tab"，不抛异常、无日志，只有窄屏肉眼可能看出。
   // 与 theme key / 主题标签同性质：跨源清单，靠这条钉在一起。
   const [html, chrome] = await Promise.all([
     readFile(join(pageDir, "index.html"), "utf8"),
@@ -534,20 +557,20 @@ test("styles do not target element ids", async () => {
   //
   // 判据取"选择器区域"（`{` 之前的部分）而不是"全文找 # 再剔除颜色"。
   // 简单正则 `(^|[\s,{])(#[\w-]+)` 有三类漏检，均已实测：
-  //   - 无空格组合符：`.a>#id`、`.a~#id`、`*#id`（`#` 前既非空白也非 `,{`）；
-  //   - 属性选择器相连：`[attr]#id`；
-  //   - 3–8 位纯十六进制字形 ID（如 `#abc123`）：被 `#[0-9a-fA-F]{3,8}\b`
-  //     当颜色剔除。注意 9 位以上反而漏不进颜色正则（`\b` 不满足），
-  //     所以区分力只在这个区间。
+  // - 无空格组合符：`.a>#id`、`.a~#id`、`*#id`（`#` 前既非空白也非 `,{`）；
+  // - 属性选择器相连：`[attr]#id`；
+  // - 3–8 位纯十六进制字形 ID（如 `#abc123`）：被 `#[0-9a-fA-F]{3,8}\b`
+  // 当颜色剔除。注意 9 位以上反而漏不进颜色正则（`\b` 不满足），
+  // 所以区分力只在这个区间。
   // 旧判据另有一处真误报：`content: "#hash #id"` 里的 `#id` 会被当成选择器。
   // 新判据把这三点都修掉了（声明区天然落在 `{` 之后）。
   //
-  // 判据仍是文本级，两处刻意写法会成为已知边界（本仓不出现，不加固——
+  // 判据仍是文本级，两处刻意写法会成为已知边界（本仓不出现，不加固，
   // 上 CSS 解析器换取这点收益不划算）：
-  //   - 假阳性：选择器区的属性选择器字符串含 #，如 `[data-icon="#x"]`；
-  //     同一规则内声明字符串含 `}` 且其后再有 `url(#…)`（`}` 使切分错位）。
-  //   - 假阴性：`content:"/*"` 与后续 `content:"*/"` 之间的选择器会被注释
-  //     剔除整体吞掉；`\23 ` 转义写法新旧判据都看不见。
+  // - 假阳性：选择器区的属性选择器字符串含 #，如 `[data-icon="#x"]`；
+  // 同一规则内声明字符串含 `}` 且其后再有 `url(#…)`（`}` 使切分错位）。
+  // - 假阴性：`content:"/*"` 与后续 `content:"*/"` 之间的选择器会被注释
+  // 剔除整体吞掉；`\23 ` 转义写法新旧判据都看不见。
   const css = await readFile(join(pageDir, "style.css"), "utf8");
   const selectorArea = css
     .replace(/\/\*[\s\S]*?\*\//g, "") // 注释整体排除
@@ -587,7 +610,7 @@ test("the two dark token blocks stay token-identical", async () => {
 
 test("page wires the manual image cache cleanup control to the API", async () => {
   // 清理按钮必须接入页面与 API，而不是只能重载插件。这条断言读前端源码，
-  // 必须与前端改动同处——放在识图测试里会因前端改名变红，与识图无关。
+  // 必须与前端改动同处，放在识图测试里会因前端改名变红，与识图无关。
   const [html, configIo] = await Promise.all([
     readFile(join(pageDir, "index.html"), "utf8"),
     readFile(join(pageDir, "config-io.mjs"), "utf8"),
@@ -825,20 +848,6 @@ test("config save path follows the form-declared writable keys", async () => {
   const htmlKeys = [...html.matchAll(/data-config-key="([a-z0-9_]+)"/g)].map((match) => match[1]);
   assert.deepEqual(htmlKeys.sort(), expectedKeys);
 
-  const field = (key, value = "", dataset = {}) => ({
-    dataset: { configKey: key, ...dataset },
-    type: "text",
-    value,
-  });
-  const number = (key, value) => ({ dataset: { configKey: key }, type: "number", value });
-  const checkbox = (key, checked = false) => ({
-    dataset: { configKey: key },
-    type: "checkbox",
-    checked,
-  });
-  const providerField = (key, control) => ({
-    dataset: { configKey: key, configControl: control },
-  });
   const classList = { add() {}, remove() {}, toggle() {} };
   const fields = [
     checkbox("enabled", true),
@@ -849,7 +858,7 @@ test("config save path follows the form-declared writable keys", async () => {
     providerField("judge_provider_id", "judge"),
     number("decision_temperature", "0.3"),
     number("decision_timeout_sec", "21"),
-    field("decision_prompt_template", "  prompt  ", { configTransform: "trim" }),
+    field("decision_prompt_template", " prompt ", { configTransform: "trim" }),
     field("quote_mode", "random"),
     number("quote_probability", "60"),
     field("mention_mode", "always"),
@@ -942,20 +951,6 @@ test("config save path follows the form-declared writable keys", async () => {
 });
 
 test("successful save applies the returned config and clears dirty state", async () => {
-  const field = (key, value = "", dataset = {}) => ({
-    dataset: { configKey: key, ...dataset },
-    type: "text",
-    value,
-  });
-  const number = (key, value) => ({ dataset: { configKey: key }, type: "number", value });
-  const checkbox = (key, checked = false) => ({
-    dataset: { configKey: key },
-    type: "checkbox",
-    checked,
-  });
-  const providerField = (key, control) => ({
-    dataset: { configKey: key, configControl: control },
-  });
   const classList = { add() {}, remove() {}, toggle() {} };
   const fields = [
     checkbox("enabled", true),
@@ -1055,20 +1050,6 @@ test("saved whitelist count reflects the server-normalized payload", async () =>
   // 归一化白名单刷新过计数，保存分支若再用提交时的 body 长度覆盖，会展示
   // 与实际生效不一致的数字。
   const classList = { add() {}, remove() {}, toggle() {} };
-  const field = (key, value = "", dataset = {}) => ({
-    dataset: { configKey: key, ...dataset },
-    type: "text",
-    value,
-  });
-  const number = (key, value) => ({ dataset: { configKey: key }, type: "number", value });
-  const checkbox = (key, checked = false) => ({
-    dataset: { configKey: key },
-    type: "checkbox",
-    checked,
-  });
-  const providerField = (key, control) => ({
-    dataset: { configKey: key, configControl: control },
-  });
   const fields = [
     checkbox("enabled", true),
     checkbox("enabled_private_sessions", true),
@@ -1164,7 +1145,7 @@ test("save validation guards on whitelist before the numeric scan", async () => 
   // 断言落在行为上（保存不得发请求、焦点只归白名单），不比对源码书写顺序：
   // 换一种等价写法（例如 validateWhitelist({ focus: true })）不该让本用例变红。
   //
-  // 定位说明：本用例守的是「保存路径仍然聚焦白名单、且不跑数值校验」——
+  // 定位说明：本用例守的是「保存路径仍然聚焦白名单、且不跑数值校验」
   // 即 R2 修复后没有被削弱的那一半。R2 缺陷本身（input/blur 抢焦点把用户
   // 困在字段里）由浏览器用例 invalid whitelist never steals focus on input
   // or blur 捕获，那里才有真实的键盘/鼠标路径。
@@ -1247,14 +1228,14 @@ test("save validation guards on whitelist before the numeric scan", async () => 
     showToast: (msg) => toasts.push(msg),
     setStatState() {},
     renderPromptPreview() {},
-    judgeProviderControl: { value: () => "", sync() {} },
-    visionProviderControl: { value: () => "", sync() {} },
-    visionJudgeProviderControl: { value: () => "", sync() {} },
+    judgeProviderControl: providerControls().judge,
+    visionProviderControl: providerControls().vision,
+    visionJudgeProviderControl: providerControls().visionJudge,
     fmtBool: String,
   });
   // 不调 setupValidation()：那会 document.createElement（本用例无 DOM）。
   // numberFields 为空时 validateAll() 必定返回 true，于是唯一能让保存短路的
-  // 就是白名单那一关——这正是要断言的归属。
+  // 就是白名单那一关，这正是要断言的归属。
 
   await io.saveConfig({ preventDefault() {} });
 
@@ -1318,9 +1299,9 @@ test("non-whitelist illegal-char save errors do not paint the whitelist field", 
     showToast: (msg) => toasts.push(msg),
     setStatState() {},
     renderPromptPreview() {},
-    judgeProviderControl: { value: () => "", sync() {} },
-    visionProviderControl: { value: () => "", sync() {} },
-    visionJudgeProviderControl: { value: () => "", sync() {} },
+    judgeProviderControl: providerControls().judge,
+    visionProviderControl: providerControls().vision,
+    visionJudgeProviderControl: providerControls().visionJudge,
     fmtBool: String,
   });
 
@@ -1394,9 +1375,9 @@ test("whitelist illegal-char save errors still paint the whitelist field", async
     showToast() {},
     setStatState() {},
     renderPromptPreview() {},
-    judgeProviderControl: { value: () => "", sync() {} },
-    visionProviderControl: { value: () => "", sync() {} },
-    visionJudgeProviderControl: { value: () => "", sync() {} },
+    judgeProviderControl: providerControls().judge,
+    visionProviderControl: providerControls().vision,
+    visionJudgeProviderControl: providerControls().visionJudge,
     fmtBool: String,
   });
 
@@ -1447,9 +1428,9 @@ test("unknown provider id warns but does not block save", async () => {
     showToast: (msg) => toasts.push(msg),
     setStatState() {},
     renderPromptPreview() {},
-    judgeProviderControl: { value: () => "typo-id", sync() {} },
-    visionProviderControl: { value: () => "", sync() {} },
-    visionJudgeProviderControl: { value: () => "", sync() {} },
+    judgeProviderControl: providerControls("typo-id").judge,
+    visionProviderControl: providerControls().vision,
+    visionJudgeProviderControl: providerControls().visionJudge,
     fmtBool: String,
     getProviderOptions: () => [{ id: "real-id", label: "real" }],
     isProviderListAvailable: () => true,
@@ -1497,9 +1478,9 @@ test("an empty provider field never raises the off-list warning", async () => {
     renderPromptPreview() {},
     // 列表不可用 + 两个 Provider 都留空：这正是 providerNeedsManualInput
     // 会误判的组合。
-    judgeProviderControl: { value: () => "", sync() {} },
-    visionProviderControl: { value: () => "", sync() {} },
-    visionJudgeProviderControl: { value: () => "", sync() {} },
+    judgeProviderControl: providerControls().judge,
+    visionProviderControl: providerControls().vision,
+    visionJudgeProviderControl: providerControls().visionJudge,
     fmtBool: String,
     getProviderOptions: () => [],
     isProviderListAvailable: () => false,
@@ -1528,9 +1509,9 @@ test("an empty provider field never raises the off-list warning", async () => {
     showToast: (message) => offListToasts.push(message),
     setStatState() {},
     renderPromptPreview() {},
-    judgeProviderControl: { value: () => "typo-id", sync() {} },
-    visionProviderControl: { value: () => "", sync() {} },
-    visionJudgeProviderControl: { value: () => "", sync() {} },
+    judgeProviderControl: providerControls("typo-id").judge,
+    visionProviderControl: providerControls().vision,
+    visionJudgeProviderControl: providerControls().visionJudge,
     fmtBool: String,
     getProviderOptions: () => [{ id: "real-id" }],
     isProviderListAvailable: () => true,
@@ -1687,9 +1668,9 @@ test("a failed POST leaves the page requiring a refresh before the next save", a
     showToast: (message) => toasts.push(message),
     setStatState() {},
     renderPromptPreview() {},
-    judgeProviderControl: { value: () => "", sync() {} },
-    visionProviderControl: { value: () => "", sync() {} },
-    visionJudgeProviderControl: { value: () => "", sync() {} },
+    judgeProviderControl: providerControls().judge,
+    visionProviderControl: providerControls().vision,
+    visionJudgeProviderControl: providerControls().visionJudge,
     fmtBool: String,
   });
 
@@ -1749,9 +1730,9 @@ test("a STALE_WRITE response adopts the server revision and requires a refresh",
     showToast: (message) => toasts.push(message),
     setStatState() {},
     renderPromptPreview() {},
-    judgeProviderControl: { value: () => "", sync() {} },
-    visionProviderControl: { value: () => "", sync() {} },
-    visionJudgeProviderControl: { value: () => "", sync() {} },
+    judgeProviderControl: providerControls().judge,
+    visionProviderControl: providerControls().vision,
+    visionJudgeProviderControl: providerControls().visionJudge,
     fmtBool: String,
   });
 
@@ -1768,13 +1749,8 @@ test("a STALE_WRITE response adopts the server revision and requires a refresh",
 
 test("save is rejected while the initial config load has not completed", async () => {
   // 配置未加载完时保存会把空表单当成用户的真实选择写盘：每个字段都回落默认值，
-  // 用户的既有配置被静默覆盖。这条同时是 app.js 重置提示词按钮的前置契约——
+  // 用户的既有配置被静默覆盖。这条同时是 app.js 重置提示词按钮的前置契约，
   // 两处共用同一判据，改判据必须两处一起改（否则一处放开、一处仍拦）。
-  const field = (key, value = "", dataset = {}) => ({
-    dataset: { configKey: key, ...dataset },
-    type: "text",
-    value,
-  });
   const form = {
     classList: { add() {}, remove() {}, toggle() {} },
     inert: false,
@@ -1802,9 +1778,9 @@ test("save is rejected while the initial config load has not completed", async (
     showToast: (message) => toasts.push(message),
     setStatState() {},
     renderPromptPreview() {},
-    judgeProviderControl: { value: () => "", sync() {} },
-    visionProviderControl: { value: () => "", sync() {} },
-    visionJudgeProviderControl: { value: () => "", sync() {} },
+    judgeProviderControl: providerControls().judge,
+    visionProviderControl: providerControls().vision,
+    visionJudgeProviderControl: providerControls().visionJudge,
     fmtBool: String,
   });
 

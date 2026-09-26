@@ -589,7 +589,7 @@ def test_response_text_single_source_behavior() -> None:
     """response_text 必须只在 utils.py 定义一次（收敛 decision/generation/parser
     三处镜像）；行为契约：completion_text 优先、result_chain 兜底、异常兜底为空串。"""
     # rglob 扫描面：非递归的 ROOT.glob("*.py") 看不见子包，
-    # 而 image/parser.py 正是要防的位置之一——守卫对它恰好失明。
+    # 而 image/parser.py 正是要防的位置之一，守卫对它恰好失明。
     hits = [
         path.relative_to(ROOT).as_posix()
         for path in production_py_files()
@@ -660,13 +660,13 @@ def test_command_aliases_single_source() -> None:
     漂移的真实后果（不是洁癖）：给 ``/off`` 的装饰器加一个 ``halt`` 而忘了同步
     ``commands.py``，宿主会注册 ``/selfreply halt``，但 ``parse_command_text``
     对它返回 ``None``。于是指令处理器执行了、而依赖 ``parse_command_text`` 的
-    内联路径认不出它——两条路径对「这是不是命令」给出相反答案。在会主动发言的
+    内联路径认不出它，两条路径对「这是不是命令」给出相反答案。在会主动发言的
     插件里，这类分歧意味着它可能把一条命令当普通消息去接话。
 
     改为语义断言而非单源化生产代码：装饰器的 ``alias=`` 与调度表语义不同
     （前者不含 canonical 名），合成一处要么多存一份字段、要么在装饰器处做集合
     减法；且把同一个 ``set`` 对象交给宿主装饰器，宿主若原地修改就会污染共享表
-    ——那属于未经验证的宿主行为。两侧各自保留、由本用例钉住等价，成本更低。
+    那属于未经验证的宿主行为。两侧各自保留、由本用例钉住等价，成本更低。
 
     变异验证：给 ``main.py`` 的 ``/off`` 装饰器加一个 ``"halt"`` 而不改
     commands.py，本用例即红并指名 off 组的差集。
@@ -806,13 +806,13 @@ def test_clean_reply_returns_empty_when_filtering_consumes_everything() -> None:
     """过滤后只剩空白时必须返回空串，且不得进入截断分支。
 
     工具标记清理是逐处替换：整条回复由行内标记与空白组成时，替换完就只剩空白。
-    这一行早退未被执行时，空串会带着 ``max_chars`` 走进截断与正则分支——下游据
+    这一行早退未被执行时，空串会带着 ``max_chars`` 走进截断与正则分支，下游据
     ``if not cleaned`` 判断是否放弃发送，返回形状必须是干净的空串而非空白串。
     """
     _, utils, _ = _load_sec_modules()
 
     # 空白变体标记：LEAK 要求 "tool call" 单空格，行内模式容忍 \s+，
-    # 于是 "[tool  call]" 绕过整条早退、只被行内清理吃掉 —— 清完就只剩空白
+    # 于是 "[tool call]" 绕过整条早退、只被行内清理吃掉， 清完就只剩空白
     single = utils.clean_reply("[tool  call] leaked", allow_multiline=False, max_chars=100)
     assert single == ""
 
@@ -838,7 +838,7 @@ def test_is_admin_event_trusts_host_api_success_path() -> None:
 
     这条正路此前从未被执行：``host_stubs.FakeEvent.is_admin()`` 恒返回 False，
     于是实际生效的只有 role / admin_ids 两级回退。异常方向（宿主未实现或抛错时
-    收紧权限）已有覆盖，缺的恰是「宿主说是管理员，就认」——若宿主改了该 API 的
+    收紧权限）已有覆盖，缺的恰是「宿主说是管理员，就认」若宿主改了该 API 的
     语义，回退链会把变化掩盖成「照样能判对」，没有任何用例会红。
 
     ``SimpleNamespace`` 不带 ``get_sender_id``，``event_sender_id`` 因此返回空串；
@@ -941,7 +941,7 @@ def test_provider_change_emits_audit_log(tmp_path: Path, caplog: object) -> None
 
 
 # ============================================================================
-# 异常回显收口——内部细节只进服务端日志，不回客户端
+# 异常回显收口，内部细节只进服务端日志，不回客户端
 # ============================================================================
 
 
@@ -977,7 +977,7 @@ def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplo
             f"底层异常原文回显给了客户端: {echoed}"
         )
         assert secret in " ".join(r.getMessage() for r in caplog.records), (
-            "内部细节既没回显也没进日志——排障线索被一起丢掉了"
+            "内部细节既没回显也没进日志，排障线索被一起丢掉了"
         )
 
         # 2) 校验失败仍须回显字段级文案（前端表单靠它定位出错字段）
@@ -1009,7 +1009,7 @@ def test_host_dangerous_tool_denylist_exact_membership() -> None:
     """denylist 逐条钉住：删除或改名任一条都必须在此变红。
 
     旧守卫是自参照的（拿集合自己的元素去测一个名字启发式），删项只会让循环更短、
-    必然继续通过——15 条里只有 3 条被其它用例顺带覆盖（实测删 ``astrbot_grep_tool``
+    必然继续通过，15 条里只有 3 条被其它用例顺带覆盖（实测删 ``astrbot_grep_tool``
     后全量 pytest 仍全绿）。宿主漂移（宿主新增/改名危险工具）由
     ``scripts/compat_check.py`` 枚举真实宿主模块判定（CI compat 作业，三个宿主
     版本），本地不镜像宿主清单，只钉住仓库自己的这一份。

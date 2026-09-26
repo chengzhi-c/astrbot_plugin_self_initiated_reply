@@ -8,7 +8,7 @@ pytest 随后只会退化成 warning 继续跑，一键门禁看起来"过了"�
 
 1. env 里 ``TEMP``/``TMP`` 指向同一专属根，``--basetemp`` 是其下唯一子目录
    且在子进程启动前就已 ``mkdir``（不是靠 pytest 的 rootdir 清理 warning）；
-2. 外部遗留的 ``PYTEST_ADDOPTS`` / ``PYTEST_DEBUG_TEMPROOT`` 不得继承——
+2. 外部遗留的 ``PYTEST_ADDOPTS`` / ``PYTEST_DEBUG_TEMPROOT`` 不得继承，
    它们会让显式 basetemp 与“保留临时根便于排查”的行为互相打架；
 3. 整轮临时根在成功、pytest 失败、预清理抛 ``OSError``（fail closed，直接
    不启动）时都不得泄漏；清理失败也不得把原异常掩盖掉。
@@ -139,7 +139,7 @@ def test_pre_clean_failure_blocks_startup(monkeypatch, tmp_path) -> None:
 
     Windows 上删不掉 basetemp 通常是残留句柄（查看器、索引器、杀软扫描）。
     此时若照常启动，pytest 只会 warning 后继续用别人留下的数据，等于把
-    「不知道」当通过——必须先清干净或明确失败。
+    「不知道」当通过，必须先清干净或明确失败。
     """
     gate = _gate()
     scratch = tmp_path / "scratch-root"
@@ -164,7 +164,7 @@ def test_pre_clean_failure_reports_real_reason(monkeypatch, tmp_path) -> None:
     """预清理失败必须是真实的 PermissionError，不得被吞成无害的 FileExistsError。
 
     ``shutil.rmtree(..., ignore_errors=True)`` 会把删不掉的原因吞掉，让后面的
-    ``mkdir`` 抛 ``FileExistsError``——读起来像"目录已存在"这种无害事，实际是
+    ``mkdir`` 抛 ``FileExistsError``，读起来像"目录已存在"这种无害事，实际是
     本轮临时数据不干净。判据必须是**异常类型**，不能只看"抛了没有"。这里让
     ``os.unlink`` 报 PermissionError（等价于 Windows 上目录被占用）。
     """
@@ -270,7 +270,7 @@ def test_real_pytest_child_gets_clean_env(monkeypatch, tmp_path):
     assert Path(env["TEMP"]).is_relative_to(scratch), "TEMP/TMP 不得沿用外部临时根"
     assert "PYTEST_ADDOPTS" not in env and "PYTEST_DEBUG_TEMPROOT" not in env
     assert seen[0].kwargs.get("cwd") == ROOT
-    # 子进程侧的事实：给 tmp_path 建的 numbered 目录必须落在显式 basetemp 下——
+    # 子进程侧的事实：给 tmp_path 建的 numbered 目录必须落在显式 basetemp 下，
     # 外部写脏的 TEMP/TMP 与 PYTEST_ADDOPTS 都没有把它掰走。
     assert observed["after"].is_relative_to(observed["during"]), (
         f"pytest 未把本轮 rootdir 建在专属 basetemp 下：{observed}"

@@ -19,19 +19,6 @@ const MIME = {
   ".mjs": "text/javascript; charset=utf-8",
   ".png": "image/png",
 };
-// 源码里的字面量要当成正则用时逐字符转义；不用 String.replace 的替换模式
-// （"$&" 会被解释为匹配内容），逐个字符拼以免踩替换语义。
-const REGEXP_SPECIALS = new Set('.^$*+?()[]{}|\\'.split(""));
-const escapeRegExp = (text) =>
-  text
-    .split("")
-    .map((ch) => (REGEXP_SPECIALS.has(ch) ? "\\" + ch : ch))
-    .join("");
-// 可访问名里的行内元素边界可能带空格（"判断超时 秒" vs textContent 的
-// "判断超时秒"），故逐字符放宽空白而不是直接比较字面串。
-const looseText = (text) =>
-  text.split("").map(escapeRegExp).join("\\s*");
-
 let server;
 let baseUrl;
 let activeScenario = "";
@@ -121,7 +108,7 @@ async function installBridge(page, options = {}) {
             state.configCalls += 1;
             if (state.refreshConfigPending && state.configCalls > 1) {
               // 冻结请求发出那一刻的快照：后端与前端是两个进程，迟到 GET 读出
-              // 的可能是保存之前的旧值——正是迟到响应覆盖已保存编辑的场景。
+              // 的可能是保存之前的旧值，正是迟到响应覆盖已保存编辑的场景。
               const snapshot = { ...state.config };
               return new Promise((resolve) => {
                 window.__resolveRefreshConfig = () => resolve(snapshot);
@@ -159,7 +146,7 @@ async function installBridge(page, options = {}) {
             // config 是 Settings.to_config_dict() 的输出，**不含**面板视图键
             // decision_prompt_default（只存在于 GET，见 webapi._api_get_config）。
             // 桩比真实后端"更完整"会让「恢复默认提示词」这类缺陷在所有用例中
-            // 不可见——所以这里显式剔除，让 POST 后的 config 与磁盘内容同形。
+            // 不可见，所以这里显式剔除，让 POST 后的 config 与磁盘内容同形。
             const { base_revision: _ignoredRevision, ...persisted } = body;
             state.config = {
               ...state.config,
@@ -213,7 +200,7 @@ async function openPage(page, query = "") {
   // 默认 5s（playwright.config 的 expect.timeout）是**断言**预算，不是加载预算：
   // 本套件 49 条共用本 helper，负载高时偶发首屏超过 5s，失败点随机落在当时那条
   // 用例上（实测 12 轮全量里 2 次，分别报在 893 与 1412 两条互不相干的用例上）。
-  // 这不放松任何断言——页面真加载失败时看门狗仍会隐藏 boot，随后各用例自己的
+  // 这不放松任何断言，页面真加载失败时看门狗仍会隐藏 boot，随后各用例自己的
   // 读值/toast/errors 断言照旧失败。
   await expect(page.locator("#boot")).toHaveClass(/is-hidden/, {
     timeout: BOOT_WAIT_MS,
@@ -393,7 +380,7 @@ test("a late refresh does not overwrite an edit that was saved meanwhile", async
 
 test("a late refresh on a form edited after the save names the pending edits", async ({ page }) => {
   // 上一条守"保存后表单已干净"的中性口径，这一条守它的另一半：保存成功后用户
-  // 又改了字段。此时迟到响应携带的快照早于本次保存，必须仍被协调器作废——
+  // 又改了字段。此时迟到响应携带的快照早于本次保存，必须仍被协调器作废，
   // 应用它会把用户保存过的那一版连同他的新编辑一起退回旧值。
   // toast 必须落到脏表单那句：只说"已保留当前内容"也能满足上面那条干净用例，
   // 于是"响应未应用、请保存后再刷新"这句可操作的指引在产品里彻底消失。
@@ -451,7 +438,7 @@ test("provider failure enables manual input for all provider controls", async ({
 
 test("a provider list failure keeps the provider already chosen in the form", async ({ page }) => {
   // 刷新时 providers 失败：catch 分支先调 render()，而 render() 是
-  // `innerHTML = ""` 后 `select.value = current`——列表为空时写回即归零。
+  // `innerHTML = ""` 后 `select.value = current`，列表为空时写回即归零。
   // 已选 Provider 就此丢失，之后（配置响应到达前）的保存会把空值提交回服务端，
   // 而用户看到的只是「已保存」。取值必须发生在 render() 之前，取到后写进手动
   // 输入框：列表不可用时这就是该控件唯一的展示与提交来源。
@@ -494,7 +481,7 @@ test("a provider list failure keeps the provider already chosen in the form", as
 
 test("theme clicks never submit untouched dim/bold preferences", async ({ page }) => {
   // 回归守卫：GET ui/theme 在途时点主题，曾把服务端已存的 dim/bold 一并提交为
-  // 当前渲染态（此刻恒为 false）——后端语义是「未提交的键保持原值」，但前端每次
+  // 当前渲染态（此刻恒为 false）后端语义是「未提交的键保持原值」，但前端每次
   // 都提交两者，于是服务端的压暗/粗体被静默抹掉。未触碰过的键不得出现在请求体里，
   // 与 theme 字段同一条规则。
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -554,7 +541,7 @@ test("topbar height token follows the measured topbar height across breakpoints"
   // 静态令牌（88/64/62）与实际顶栏高度一直对不上：1024px 断点内实测 83px、
   // 换行断点实测 115px。令牌被 .sidenav 的 sticky top 与 scroll-margin-top
   // 消费，脱节即侧栏被顶栏盖住、锚点标题被遮。修法是运行时把实测高度写回令牌，
-  // 并在断点/换行变化后重测——只写一次的实现在窄屏仍是错的。
+  // 并在断点/换行变化后重测，只写一次的实现在窄屏仍是错的。
   await page.setViewportSize({ width: 900, height: 800 });
   await installBridge(page);
   const errors = await openPage(page);
@@ -704,23 +691,33 @@ test("a switched-off readout stops its pulse animation", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+test("switching the master switch moves both the status text and the state class", async ({ page }) => {
+  // enabledInput 的 change 必须同时改文案与状态类。只改文案时，关掉总开关后
+  // `.master.is-off` 不生效（stat-dot 继续脉冲、卡片背景不变），视觉仍显示为启用，
+  // 直到保存后 applyConfigPayload 才自愈。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { config: { enabled: true } });
+  const errors = await openPage(page);
+  await expect(page.locator("#selfStat")).toHaveClass(/is-on/);
+  await expect(page.locator("#selfStatus")).toHaveText("启用");
+
+  // 总开关是 label 包裹的自定义控件，视觉层 .master-track 覆盖在 input 上，
+  // 直接点 input 会被它拦截；点 label 文本与真实用户操作一致。
+  await page.locator("label.master-switch").click();
+  await expect(page.locator("#selfStatus")).toHaveText("关闭（未保存）");
+  await expect(page.locator("#selfStat")).toHaveClass(/is-off/);
+
+  await page.locator("label.master-switch").click();
+  await expect(page.locator("#selfStatus")).toHaveText("启用（未保存）");
+  await expect(page.locator("#selfStat")).toHaveClass(/is-on/);
+  expect(errors).toEqual([]);
+});
+
 test("dark theme keyboard focus stays visible on the toggle, the text action and summaries", async ({ page }) => {
   // 深色下三处元素沿用浏览器默认 outline（深色底上对比度约 1.03，等于看不见）。
   await page.setViewportSize({ width: 1440, height: 1000 });
   await installBridge(page, { theme: "dark" });
   const errors = await openPage(page);
-  const probe = (selector) => {
-    const el = document.querySelector(selector);
-    el.focus();
-    const style = getComputedStyle(el);
-    return {
-      focused: document.activeElement === el,
-      outlineStyle: style.outlineStyle,
-      outlineWidth: style.outlineWidth,
-      outlineColor: style.outlineColor,
-      boxShadow: style.boxShadow,
-    };
-  };
   const inspect = await page.evaluate(() => {
     const read = (selector) => {
       const el = document.querySelector(selector);
@@ -890,7 +887,7 @@ test("vision provider fields lay out on one row like the judge field", async ({ 
 
   // 手动态的列宽：三个 Provider 控件必须同源。只让 judge 挂 manual 类时，
   // vision 两个字段的容器类恒为空，.vision-provider-field 的两列定义继续生效，
-  // 按钮被拉成整行宽——实测 373px vs judge 78px。
+  // 按钮被拉成整行宽，实测 373px vs judge 78px。
   // 阈值取 100px 而非精确 78px：字体栈在不同平台有毫米级差异，这里只要量级判据。
   await page.locator("#visionJudgeProviderManualBtn").click();
   const manual = await page.evaluate(() => {
@@ -1484,7 +1481,7 @@ test("image cache cleanup reports the count and surfaces failures", async ({ pag
 
 test("faint hint token clears WCAG AA on both themes and both surfaces", async ({ page }) => {
   // style.css 的 --faint 注释手算了四组对比度（浅色 5.11/4.77，深色 5.39/4.97），
-  // 但没有任何断言：把令牌改浅（或改暗）一档就跌破 AA，而全套用例照绿——11–12px
+  // 但没有任何断言：把令牌改浅（或改暗）一档就跌破 AA，而全套用例照绿，11–12px
   // 小字号提示文字最先不可读。这里取实际计算值复算，不信任注释里的数字。
   await openPage(page);
   const measured = await page.evaluate(() => {
@@ -1555,7 +1552,7 @@ test("topbar must not change its height when the stuck class toggles", async ({ 
 
   // is-stuck 曾在粘附时把 padding 从 --sp-7 收到 --sp-5，令占位高度变化约 16px。
   // topbar 是首位 sticky 元素，占位高度变化会触发浏览器滚动锚定补偿、反过来改写
-  // scrollY；scrollY 又决定 is-stuck 是否保留——只要高度差超过 sticky 阈值
+  // scrollY；scrollY 又决定 is-stuck 是否保留，只要高度差超过 sticky 阈值
   // （y > 8）就会自激，表现为页面在接近最上方时疯狂抖动。
   const flipReport = await page.evaluate(async () => {
     const bar = document.querySelector(".topbar");
@@ -1591,7 +1588,7 @@ test("whitelist count and summary agree on the same deduplicated input", async (
   // 顶栏读数的标签是「生效会话」，与下方摘要的「已识别 N 个有效会话」是同一事实
   // 的两种呈现：后端把裸群号与其群 UMO 视为同一会话（utils.session_whitelisted）。
   // 计数若用未去重的 parseWhitelist().length，`12347` + 对应 UMO 会让顶栏读 2、
-  // 摘要读 1——两条读数都是 aria-live="polite"，读屏连续播报两个互相抵消的数字。
+  // 摘要读 1，两条读数都是 aria-live="polite"，读屏连续播报两个互相抵消的数字。
   await installBridge(page);
   const errors = await openPage(page);
   const read = () =>

@@ -114,7 +114,7 @@ def test_recent_message_limit_hot_reload_rebuilds_existing_deques(tmp_path) -> N
     """recent_message_limit 热更新必须对存量会话生效。
 
     缺陷：deque 的 maxlen 是构造期常量，`apply()` 只改 Settings 字段，
-    存量会话的 deque 仍持旧上限——调大后新上限永不兑现，且设置页保存
+    存量会话的 deque 仍持旧上限，调大后新上限永不兑现，且设置页保存
     不触发插件重载，用户看到的值与实际生效值长期不一致且不报错。
     修复后契约：读取路径（_state_for）惰性重建，调大调小都即时兑现。
     """
@@ -152,7 +152,7 @@ def test_rollback_restores_session_history_trimmed_during_apply_window(tmp_path)
 
     缺陷：快照对 sessions 只做浅拷贝（dict(plugin.sessions)），SessionState
     是共享引用。应用失败回滚恢复的是同一个已被新 recent_message_limit
-    裁小的 deque——历史消息永久丢失，与 `_apply_config_updates` 自称的
+    裁小的 deque，历史消息永久丢失，与 `_apply_config_updates` 自称的
     "任何失败回滚全部运行态"不符。
     """
 
@@ -262,7 +262,7 @@ CONTAINER_HOLDERS: tuple[tuple[str, str, str], ...] = (
     ("_recent_image_events", "_coordinator", "_images"),
     ("_whitelist_runtime_umos", "_scheduler", "_whitelist_runtime_umos"),
     # 第 11 个绑定：由 test_container_holder_table_is_complete 从源码枚举出来，
-    # 手写表原先漏了。它不是只读——whitelist.py:97/99 会写回 self._runtime_umos，
+    # 手写表原先漏了。它不是只读，whitelist.py:97/99 会写回 self._runtime_umos，
     # 正是 B1 的失效形态（回滚后写孤儿表 → 裸群号映射丢失）。
     ("_whitelist_runtime_umos", "_whitelist", "_runtime_umos"),
     ("sessions", "_whitelist", "_sessions"),
@@ -272,7 +272,7 @@ CONTAINER_HOLDERS: tuple[tuple[str, str, str], ...] = (
 def test_config_rollback_preserves_every_container_holder(tmp_path) -> None:
     """回滚后**每一个**持有者都必须仍指向 main 侧的同一容器对象。
 
-    按 ``CONTAINER_HOLDERS`` 表枚举全部 11 个绑定。缺陷模式同 B1——
+    按 ``CONTAINER_HOLDERS`` 表枚举全部 11 个绑定。缺陷模式同 B1，
     ``_restore_plugin_state`` 里任何一行退回 ``plugin.X = snapshot[...]``，
     该容器的所有持有者都会继续读写孤儿对象，主动回复静默停止直到重启。
     """
@@ -374,7 +374,7 @@ def test_session_gate_restore_is_in_place_only() -> None:
 
     历史形态是三次属性重绑定（``self._session_generation = snap[...]``），与 B1
     的缺陷写法同构；当时"安全"的唯一理由是"没有外部持有者"这个易失前提，且该
-    前提对 release 表根本不成立——等待者持有具体 Event 对象。
+    前提对 release 表根本不成立，等待者持有具体 Event 对象。
     改为原地恢复后 B1 合规由**结构**保证，本守卫钉死这一点。
     """
     restore_node = _gate_restore_node()
@@ -414,7 +414,7 @@ def test_session_gate_restore_is_in_place_only() -> None:
 
 
 def test_session_gate_tables_have_no_external_holders() -> None:
-    """三张恢复表不得被外部直取——绕过 ``mark_running`` 的 release 语义。
+    """三张恢复表不得被外部直取，绕过 ``mark_running`` 的 release 语义。
 
     restore 已改原地（见上一条守卫），孤儿表风险消除；但外部直取仍会绕过
     ``mark_running``/``unmark_running`` 对 release 表的成对维护，制造

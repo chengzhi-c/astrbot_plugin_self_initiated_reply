@@ -251,14 +251,14 @@ def test_missing_func_tool_attribute_fails_closed_not_open(caplog: object) -> No
     """``func_tool`` 属性缺失必须 fail closed，不能与显式 ``None`` 同一出口。
 
     修复前实测：``getattr(req, "func_tool", None)`` 把两种情形压成一个出口，
-    「缺属性」与「显式 None」都返回 ``True``——白名单模式下等于整次放行，
+    「缺属性」与「显式 None」都返回 ``True``，白名单模式下等于整次放行，
     而白名单模式的默认白名单是空集（本该移除全部工具）。
 
     两者语义相反：显式 ``None`` 是宿主声明本次无工具（放行正确）；属性缺失是
     读不到工具边界本身，无法枚举、无法移除、无法核验，只能中止。
 
     末段一并锁住低噪音约定：本出口同样只许一条 WARNING。它现在天然满足
-    （直接 return，不经 ``final_tool_ids``），但这是实现细节——若日后把它改成
+    （直接 return，不经 ``final_tool_ids``），但这是实现细节，若日后把它改成
     先枚举再判定，就会与 ``test_fail_closed_emits_exactly_one_warning`` 记录的
     历史缺陷同形（同源告警打两条），故在此就地钉住。
     """
@@ -319,7 +319,7 @@ def test_func_tool_stays_in_load_time_contract_assertion() -> None:
     """
     runtime = _load_adapter()
     assert "func_tool" in runtime._PROVIDER_REQUEST_FIELDS, (
-        "func_tool 已从加载期断言清单移除——filter_final_tools 的缺属性分支"
+        "func_tool 已从加载期断言清单移除，filter_final_tools 的缺属性分支"
         "将从『不可达的纵深防御』变成『可达的 fail-open』，请先读该分支的 docstring"
     )
 

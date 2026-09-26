@@ -76,7 +76,7 @@ class OutboundGateway:
         if not self._ledger.accepts_attempts:
             # 账本已封（生成已结束/被隔离、或在记 RECORDED）：迟到的工具直发是
             # 可预期的时序，不是编程错误。`reserve` 的 RuntimeError 语义留给
-            # 真正的调用点错误，这里降级为闸门拒绝——被隔离的运行保留了 tracker
+            # 真正的调用点错误，这里降级为闸门拒绝，被隔离的运行保留了 tracker
             # （generation._cleanup_generation_state 的刻意取舍），其内的工具直发
             # 必然走到这里；抛异常会让该次直发的记账整条丢失，与"继续受预算与
             # 代次约束"的意图相反。

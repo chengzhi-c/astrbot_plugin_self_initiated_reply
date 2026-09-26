@@ -514,7 +514,7 @@ def test_gate_restore_clears_stale_release_for_still_running(tmp_path: Path) -> 
 
     ``unmark_running`` 只 set 不 pop，所以回滚把运行标记恢复成快照态后，表里
     那个事件仍是已 set 的。此时 scheduler 的 ``while is_running: await
-    release_event(umo).wait()`` 每轮立即返回——紧密空转独占事件循环，整个 bot
+    release_event(umo).wait()`` 每轮立即返回，紧密空转独占事件循环，整个 bot
     卡死。
 
     变异锚定：删除 ``restore`` 中的 ``release.clear()`` 分支后本测试必须变红。

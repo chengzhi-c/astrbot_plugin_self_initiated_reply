@@ -285,6 +285,33 @@ MUTATIONS: tuple[Mutation, ...] = (
         note="宿主符号缺失不再 fail closed：None 漏进宿主调用，在更深处以难诊断的形态崩溃",
         targets=("tests/test_runtime_adapter_blindspots.py",),
     ),
+    Mutation(
+        key="source_contract_ambiguous_lookup_silent",
+        rel="tests/source_contract.py",
+        anchor="    raise AssertionError(\n"
+        '        f"{rel} 中 {qualname!r} 有多处同名定义，请写限定名：'
+        '{sorted(tail_matches)}"\n'
+        "    )\n",
+        replacement="    return scopes[tail_matches[0]]\n",
+        contract="元设施",
+        note="同名歧义不再 raise：单源守卫可能断言到另一处同名定义上，收敛点唯一变恒真",
+        targets=("tests/test_source_contract_self_guard.py",),
+    ),
+    Mutation(
+        key="name_references_name_only",
+        rel="tests/test_single_source_anchors.py",
+        anchor="        elif isinstance(node, ast.Attribute) and node.attr == target:\n"
+        '            hits.append(f"line {node.lineno}: {ast.unparse(node)[:60]}")\n'
+        "        elif isinstance(node, ast.alias) and node.name == target:\n"
+        '            hits.append(f"line {node.lineno}: import {node.name}")\n',
+        replacement='        elif node.__class__.__name__ == "_NeverMatchAttribute":\n'
+        '            hits.append(f"line {node.lineno}: unreachable")\n'
+        '        elif node.__class__.__name__ == "_NeverMatchAlias":\n'
+        '            hits.append(f"line {node.lineno}: unreachable")\n',
+        contract="元设施",
+        note="_name_references 退化为只匹配 ast.Name：属性/getattr/import 别名三种绕过写法全部失效",
+        targets=("tests/test_source_contract_self_guard.py",),
+    ),
 )
 
 

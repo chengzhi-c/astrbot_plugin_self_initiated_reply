@@ -41,14 +41,14 @@ from .utils import (
 
 # 放弃 provider 任务后给它的收敛宽限：与生成路径同值同语义（宿主 SDK 吞掉
 # CancelledError 时留下的才是孤儿）。刻意本地重声明而非引用 models 的
-# GRACEFUL_STOP_GRACE_SEC——那是生成路径的行为调参，两者可独立调整。
+# GRACEFUL_STOP_GRACE_SEC，那是生成路径的行为调参，两者可独立调整。
 DECISION_CONVERGE_GRACE_SEC = 3.0
 
 DECISION_SYSTEM_PROMPT = "你是群聊主动回复时机判断器。只输出严格 JSON，不要输出解释。"
 # 裁决只输出短 JSON，120 token 足够且把判断调用成本封顶。
 DECISION_MAX_TOKENS = 120
 # 判断上下文（多行聊天记录）的字符预算：与生成路径的 MAX_GENERATION_CONTEXT_CHARS
-# 同口径但更小——判断只需回答"此刻该不该接"，输入越短越省越快。
+# 同口径但更小，判断只需回答"此刻该不该接"，输入越短越省越快。
 # 超预算时**保尾**：越新的消息越重要（默认模板明示「优先参考最近至少 8 条」），
 # 截头会先丢掉最新几条，与提示词要求相反。
 MAX_DECISION_CONTEXT_CHARS = 2000
@@ -106,7 +106,7 @@ class DecisionMaker:
         """收敛一个超时/被取消的 provider 任务：取消 → 宽限 → 未退才隔离登记。
 
         ``asyncio.wait`` 不传播调用方取消、也不在内层未结束时清除它，故放弃
-        路径必须显式取消，且**不能**取消完就立即判定为孤儿——``cancel()`` 是
+        路径必须显式取消，且**不能**取消完就立即判定为孤儿，``cancel()`` 是
         异步投递的，刚调用时 ``task.done()`` 必然为 False。故照
         ``generation._graceful_stop`` 的形状给一个宽限窗口，只有宽限耗尽仍未
         收敛（宿主 provider 吞掉 CancelledError）才交隔离登记：那才是真正的
@@ -149,7 +149,7 @@ class DecisionMaker:
         )
         if not active_for_silence:
             # 从未活跃与"静默中"是两回事：静默不足有明确的等待时长可展示，
-            # 无活动记录连判定基线都没有——沿用"静默时间不足"文案会让运营
+            # 无活动记录连判定基线都没有，沿用"静默时间不足"文案会让运营
             # 误以为配置没生效而不是会话太冷清。
             return "会话暂无活动记录，无法判断静默。"
         silence_left = state.remaining_silence_sec(
@@ -157,7 +157,7 @@ class DecisionMaker:
         )
         if silence_left > 0:
             # max(0, ...)：silence_left 可以大于 min_silence_sec
-            # ——载入时时间戳被钳到 now + MAX_CLOCK_SKEW_SEC，最多仍能超出一个偏移量，
+            # ，载入时时间戳被钳到 now + MAX_CLOCK_SKEW_SEC，最多仍能超出一个偏移量，
             # 差值为负会向运营者显示「静默时间不足：-300s / 45s」这种自相矛盾的文案。
             elapsed = max(0, int(self.settings.min_silence_sec - silence_left))
             return f"静默时间不足：{elapsed}s / {self.settings.min_silence_sec}s。"
@@ -370,7 +370,7 @@ class DecisionMaker:
             "latest_message": sanitize_prompt_variable(latest, max_length=500),
             # recent_messages 是多行聊天记录：保留换行才能让模型区分发言人与轮次；
             # 超预算时保尾（越新越重要），与生成路径 cap_context_text 同口径。
-            # 不能用 sanitize_prompt_variable 自带的截断——那是保头，会先丢掉最新
+            # 不能用 sanitize_prompt_variable 自带的截断，那是保头，会先丢掉最新
             # 几条，恰好与模板里「优先参考最近至少 8 条」的要求相反。
             "recent_messages": cap_context_text(
                 sanitize_prompt_variable(recent, max_length=None, allow_newlines=True),

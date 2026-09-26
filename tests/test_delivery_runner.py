@@ -280,7 +280,7 @@ async def test_record_unconfirmed_stale_generation_skips_observation_advance(
 ) -> None:
     """UNKNOWN 也受代次门约束：代次已变时同样不得推进观察窗口（契约 §2）。
 
-    与上一条配对——上一条走 ``confirmed=True`` 的 ``elif`` 分支，这条走
+    与上一条配对，上一条走 ``confirmed=True`` 的 ``elif`` 分支，这条走
     ``confirmed=False`` 的内层代次判据。删掉内层判据时，一次「提交状态未知」的
     旧事件会在新会话上把观察窗口推到旧事件时间，静默掩盖新消息。
     """
@@ -515,7 +515,7 @@ async def test_deliver_reply_reports_stopping_when_lifecycle_stopped(tmp_path: P
 async def test_deliver_stopping_suppression_is_read_from_code_not_detail(tmp_path: Path) -> None:
     """判定取 ``code``：detail 措辞变化不得改变回显文案。
 
-    与上一条配对——上一条走生产构造路径（detail 与 code 一致），这一条把
+    与上一条配对，上一条走生产构造路径（detail 与 code 一致），这一条把
     detail 换成不含 "stopping" 字样的措辞、code 仍为 STOPPING：靠文案判定的
     实现会在这里退回 STALE_REPLY_MESSAGE，把停止期间的抑制误报成会话更新。
     """
@@ -715,7 +715,7 @@ async def test_context_send_post_submit_failure_stays_unknown(tmp_path: Path, mo
 
     这条守的是上一条修复的反向风险。``_context_send`` 抛异常时 gateway 已调过
     adapter，结果不可知（可能已达），此时若日志分支再抛，外层 except 必须保持
-    UNKNOWN —— 降级成 FAILED_BEFORE_SUBMIT 会让插件不消耗冷却而重发，制造重复
+    UNKNOWN，降级成 FAILED_BEFORE_SUBMIT 会让插件不消耗冷却而重发，制造重复
     消息。故修复必须是条件式的，不能把末尾 except 整体改成提交前失败。
     """
     delivery, models, runner, _ = _make_runner(tmp_path)
@@ -762,11 +762,11 @@ async def test_send_escaping_from_gateway_after_adapter_call_stays_unknown(
 
     gateway 内部虽把 adapter 异常转成 UNKNOWN，但它自身的 except 块或后续记账
     仍可能抛（历史形态：``str(exc)`` 二次抛出，已由 ``safe_exc_text`` 堵住；
-    但"gateway 可能抛"这一通道本身是结构性的——任何新增的记账/日志分支都可能
+    但"gateway 可能抛"这一通道本身是结构性的，任何新增的记账/日志分支都可能
     再引入）。此时 adapter 早已调用过，真实状态是「可能已提交」。
 
     若按「gateway 之后才算已提交」的直觉去写标志位，这里会翻转成
-    FAILED_BEFORE_SUBMIT —— 不消耗冷却 → 后续触发重发 → 重复消息。
+    FAILED_BEFORE_SUBMIT， 不消耗冷却 → 后续触发重发 → 重复消息。
 
     故标志位必须在 ``await outbound.send`` **之前**置位：语义是「adapter 调用
     即将开始」，而非「gateway 已返回」。
@@ -783,7 +783,7 @@ async def test_send_escaping_from_gateway_after_adapter_call_stays_unknown(
     runner._context_send = boom_context_send
 
     # 让 gateway 在 adapter 之后、返回之前抛：真实 gateway 先完成 send 调用，
-    # 再抛——等价于「adapter 已调用过」这一前提成立时的逃出。
+    # 再抛，等价于「adapter 已调用过」这一前提成立时的逃出。
     real_gateway = delivery_mod.OutboundGateway
 
     class EscapingGateway(real_gateway):  # type: ignore[misc, valid-type]
@@ -807,7 +807,7 @@ async def test_event_send_escaping_from_gateway_stays_unknown(tmp_path: Path) ->
     """护栏：事件路径的异常逃出 gateway 时必须仍记 UNKNOWN。
 
     与上一条同源缺陷，只是发生在事件路径（``last_event.send``）。两条路径各自
-    有独立的标志位与 ``except``，改一处不会连带另一处——本条测试专门守事件侧，
+    有独立的标志位与 ``except``，改一处不会连带另一处，本条测试专门守事件侧，
     否则事件路径的悲观默认会成为无回归网的裸改动（实测：删掉它，全量测试仍全绿）。
     """
     _, models, runner, last_events = _make_runner(tmp_path)
@@ -854,7 +854,7 @@ def _capture_sent_chains(event) -> list[list]:
     """抓发送瞬间的消息链。
 
     投递完成后 ``_clear_result`` 会把事件结果回收，事后取不到链，故在 ``send``
-    入口处快照——这也正是宿主适配器实际拿到的对象。
+    入口处快照，这也正是宿主适配器实际拿到的对象。
     """
     chains: list[list] = []
     original = event.send
@@ -912,7 +912,7 @@ async def test_quote_random_mode_quotes_at_probability_extremes(tmp_path: Path) 
 
 
 async def test_quote_model_mode_obeys_the_judge(tmp_path: Path) -> None:
-    """model 模式：模型说引用就引用、说不引用就不引用——概率无权覆盖模型。"""
+    """model 模式：模型说引用就引用、说不引用就不引用，概率无权覆盖模型。"""
     for decision, expected_quote in ((True, True), (False, False)):
         _, _, runner, last_events = _make_runner(
             tmp_path, config={"quote_mode": "model", "quote_probability": 100}

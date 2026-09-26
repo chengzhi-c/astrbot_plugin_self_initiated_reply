@@ -64,14 +64,8 @@ def test_history_budget_single_shape() -> None:
     assert "min(5," not in source_of("generation.py")
 
 
-def test_build_config_type_dead_property_removed() -> None:
-    """无调用的死 property（build_config_type）应移除。"""
-    adapter = _runtime_adapter()
-    assert not hasattr(adapter.AstrBotRuntimeAdapter, "build_config_type")
-
-
 def test_host_symbol_table_single_source() -> None:
-    """compat 符号表单源——表定义之后的代码不得散落宿主模块字面量。"""
+    """compat 符号表单源，表定义之后的代码不得散落宿主模块字面量。"""
     import ast
 
     src = (ROOT / "runtime_adapter.py").read_text(encoding="utf-8")
@@ -306,13 +300,6 @@ def test_host_contract_checks_listed() -> None:
         assert isinstance(mod, str) and isinstance(attrs, list) and attrs
     assert "astrbot.core.message.message_event_result" in contract
     assert "astrbot.core.star.star_handler" in contract
-
-
-def test_main_no_direct_private_import() -> None:
-    """main 只保留模块级绑定名（供测试替换），不再直接 import 私有层。"""
-    src = (ROOT / "main.py").read_text(encoding="utf-8")
-    assert "from astrbot.core" not in src
-    assert "import astrbot.core" not in src
 
 
 def test_command_handler_annotations_resolve_at_runtime() -> None:

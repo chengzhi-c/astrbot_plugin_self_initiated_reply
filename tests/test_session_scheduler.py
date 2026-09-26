@@ -266,7 +266,7 @@ async def test_silence_interrupted_aborts_when_session_invalidated(
     """静默等待被新消息打断：会话已失效（代次推进）时任务必须立即退出。
 
     不产生检查（旧任务不得复活）；通知丢失或未事件化时任务要睡满旧周期，
-    1s 断言窗口内不会结束——捕获"唤醒后必复查代次"语义。
+    1s 断言窗口内不会结束，捕获"唤醒后必复查代次"语义。
     """
     _, models, scheduler, state_map, checks = _make_scheduler(
         tmp_path, {"min_silence_sec": 5, "message_delay_sec": 0}
@@ -282,7 +282,7 @@ async def test_silence_interrupted_aborts_when_session_invalidated(
     task = scheduler._delay_tasks.get(umo)
     assert task is not None
     # 不用 wait_for 收尾：其超时取消会被任务吸收（3.14 下 cancelled() 失真），
-    # 掩盖"任务未被唤醒"——纯轮询观测任务是否主动退出。
+    # 掩盖"任务未被唤醒"，纯轮询观测任务是否主动退出。
     deadline = asyncio.get_event_loop().time() + 1.0
     while not task.done() and asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(0.02)

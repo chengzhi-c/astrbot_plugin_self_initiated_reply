@@ -166,7 +166,7 @@ export function updateTopbarStuck(els) {
   const y = window.scrollY || document.documentElement.scrollTop || 0;
   els.topbar.classList.toggle("is-stuck", y > 8);
 }
-/* 顶栏实际高度写回 --topbar-h：静态令牌（88/64/62）与实测值对不上——1024px
+/* 顶栏实际高度写回 --topbar-h：静态令牌（88/64/62）与实测值对不上，1024px
    断点内实测 83px，换行断点实测 115px。该令牌只被 .sidenav 的 sticky top 与
    scroll-margin-top 消费，与 .topbar 自身高度完全独立（实测把变量设成
    200px/20px，顶栏高度恒为 83px），因此不存在「高度→变量→布局→高度」的

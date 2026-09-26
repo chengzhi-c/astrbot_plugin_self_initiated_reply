@@ -165,7 +165,7 @@ def _field_value(source: Any, name: str) -> Any:
         except Exception:
             # 消息段结构不可信：不同宿主/协议端的段对象可能提供签名不兼容的 get
             # （如要求两个参数、或对未知键抛错）。此处静默是为了让下方 getattr
-            # 兜底路径继续生效——字段取不到应回退为 None，而不是让整条图片
+            # 兜底路径继续生效，字段取不到应回退为 None，而不是让整条图片
             # 提取链失败。
             pass
     return getattr(source, name, None)
@@ -211,7 +211,7 @@ def _eligible_image_entries(event: Any, *, skip_stickers: bool) -> Iterator[tupl
     贴纸判据**只在 ``skip_stickers`` 为真时计算**：该判据要读组件字段，
     而 ``has_images`` 把任何异常都当"没有图片"（``except Exception: False``），
     无条件计算等于给纯图片消息新开一条被整条丢弃的路径（组件字段抛非
-    AttributeError 时）。``extract_images`` 另算一份是刻意的——它需要该值写
+    AttributeError 时）。``extract_images`` 另算一份是刻意的，它需要该值写
     进 ``ImageInfo.is_sticker``，且自身有 try 兜底。
     """
     for component, raw_component in _image_entries(event):
@@ -255,12 +255,12 @@ class ImageExtractor:
 
         ``trusted_local_path`` 只在**非 Mapping** 的归一化组件且来源是绝对本地
         路径时为真：它只作宿主临时图的**快照分流提示**（``snapshot_local_sources``
-        据此决定是否抢在事件回收前落一份副本）。本地读取的放行判据与之无关——
+        据此决定是否抢在事件回收前落一份副本）。本地读取的放行判据与之无关，
         唯一判据是路径落在允许根内（契约 §7.1，``_file_to_data_url`` 的 allowlist），
         宿主 aiocqhttp 通用分支的 ``file`` 是对端可控值，恰好也能满足本标记。
 
         失败时：整体 try 包裹，任何宿主结构异常只记 debug 并返回**已抽到的部分**
-        （宁少不炸——图片是增强信息，缺失只降级为纯文本主动回复）。
+        （宁少不炸，图片是增强信息，缺失只降级为纯文本主动回复）。
         """
         images: list[ImageInfo] = []
         try:

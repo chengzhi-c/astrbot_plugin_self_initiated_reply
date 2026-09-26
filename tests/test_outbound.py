@@ -49,7 +49,7 @@ def test_tool_direct_false_refunds_budget_and_keeps_count_in_sync() -> None:
     并回报"已通过工具主动回复。"，而群里一个字都没收到**。
 
     变异锚定：删掉 ``outbound.py`` 里 ``self._direct_send_count -= 1`` 这一行，
-    本用例红——断言的是**内部计数**与「一次失败后仍能用满 ``max_direct_sends`` 次」
+    本用例红，断言的是**内部计数**与「一次失败后仍能用满 ``max_direct_sends`` 次」
     这一行为，两者都随退还与否变化。
 
     注意不能只断言 ``ledger.direct_send_count``：它是按 attempt 终态派生的视图
@@ -254,7 +254,7 @@ def test_unstringable_adapter_exception_still_classifies_and_records() -> None:
 
     # 路径锚定：detail 必须来自安全取文本的退化值，证明走的是 safe_exc_text
     assert result.outcome.detail == "UnstringableError", (
-        f"detail={result.outcome.detail!r}，未经 safe_exc_text 退化——"
+        f"detail={result.outcome.detail!r}，未经 safe_exc_text 退化，"
         "重新引入二次抛出后异常会逃出 gateway"
     )
     assert result.outcome.status is models.SendStatus.UNKNOWN, (

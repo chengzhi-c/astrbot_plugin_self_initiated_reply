@@ -299,7 +299,7 @@ def test_api_status_contains_failure_and_hides_details(tmp_path) -> None:
     """状态端点失败时返回结构化错误，且不回显异常细节。
 
     补这条 except 前，本端点是唯一没有兜底的 ``_api_*`` 处理器。补的当时并无
-    可达异常（见该函数 docstring），故这里用删属性人工制造失败——不是模拟宿主
+    可达异常（见该函数 docstring），故这里用删属性人工制造失败，不是模拟宿主
     API 异常，而是验证兜底本身：返回 ``ok=False``、给出中文文案、且异常原文
     （这里是属性名）不出现在响应里。
     """
@@ -326,11 +326,11 @@ def test_bound_api_handlers_match_class_declarations() -> None:
     这些名字。两侧各自手工维护，漂移方向决定后果：
 
     - 绑了没声明：读者在类里搜不到，声明白写；
-    - 声明了没绑：注解承诺了一个运行时不存在的属性，比没有注解更误导——读者会以为
+    - 声明了没绑：注解承诺了一个运行时不存在的属性，比没有注解更误导，读者会以为
       ``plugin._api_xxx`` 可调用，实际 ``AttributeError``。
 
     刻意用 AST 读两侧源码而非运行时 ``dir(plugin)``：裸注解**不创建**类属性（这正是
-    选它的原因——不遮蔽 partial 绑定），运行时反射看不到它，只有读源码才能比对。
+    选它的原因，不遮蔽 partial 绑定），运行时反射看不到它，只有读源码才能比对。
     """
     import ast
     from pathlib import Path
@@ -796,7 +796,7 @@ def test_rollback_drops_unknown_delay_umo(tmp_path) -> None:
 def test_rollback_reschedule_failure_is_logged(tmp_path) -> None:
     """回滚重调度抛异常时只记录 debug 日志，不中断回滚。
 
-    变异锚定：本用例同时钉住「回滚的后续步骤真的被执行」——只断言
+    变异锚定：本用例同时钉住「回滚的后续步骤真的被执行」只断言
     ``ok is False`` 是假绿（重调度异常被 re-raise 中断回滚时，外层同样返回
     False），而 ``_restore_plugin_state`` 里 ``clear_parsers`` 之后的
     ``ensure_patrol`` / ``ensure_image_cleanup`` 全部被跳过。故这里加 spy，
@@ -859,7 +859,7 @@ def test_cancelled_config_apply_rolls_back(tmp_path) -> None:
     """配置应用被取消时必须回滚，不得留下半应用态（白名单已清空 / 磁盘已改）。
 
     缺陷形态：``_apply_config_updates`` 只有 ``except Exception``，而
-    ``CancelledError`` 继承 ``BaseException``——在 ``_persist_config`` 或
+    ``CancelledError`` 继承 ``BaseException``，在 ``_persist_config`` 或
     ``_save_storage`` 处被取消时，此前步骤（settings.apply、
     whitelist.replace 的 prune）已经生效，回滚却不会执行：内存里白名单被清空、
     会话状态被回收，磁盘配置可能已写新值，重启后同样错。

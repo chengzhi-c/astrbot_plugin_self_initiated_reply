@@ -86,7 +86,7 @@ def _bytes_for(module, images: dict, umo: str | None = None) -> int:
     """测试侧独立重算，与被测的增量记账对读提供独立预言。
 
     索引形状是 ``{umo: deque[(timestamp, [image, ...])]}``；这里全程重扫，
-    与生产热路径的增量记账互为对照。生产类不再带这条读侧——其唯一消费者
+    与生产热路径的增量记账互为对照。生产类不再带这条读侧，其唯一消费者
     就是本文件。
     """
     events = images.items() if umo is None else [(umo, images.get(umo))]
@@ -356,7 +356,7 @@ def test_zero_byte_frozen_event_at_queue_head_does_not_stall_global_eviction() -
     assert coordinator.capture_images("s1", 1.0, []) == []
     assert len(coordinator.capture_images("s1", 2.0, [_PreparedImage(b"123")])) == 1
     assert len(coordinator.capture_images("s2", 3.0, [_PreparedImage(b"456")])) == 1
-    # 全局 6 已满：s2 追加 3 字节需要驱逐全局最旧——先弹 0 字节占位再继续。
+    # 全局 6 已满：s2 追加 3 字节需要驱逐全局最旧，先弹 0 字节占位再继续。
     accepted = coordinator.capture_images("s2", 4.0, [_PreparedImage(b"abc")])
     assert len(accepted) == 1
 

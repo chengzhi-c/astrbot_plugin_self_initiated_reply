@@ -114,7 +114,7 @@ async def test_add_failure_rollback_leaves_no_session_residue(tmp_path: Path) ->
     该不变量由**间接机制**维持：``_ensure_state`` 在 commit 前执行，回滚
     路径 ``replace(old_whitelist)`` 的 prune 级联恰好把它回收。若未来有人
     改动 replace 的回滚（如 B2 修复把 prune 状态改为仅快照复活），这条
-    级联断裂即静默残留——此用例锁住该关系。
+    级联断裂即静默残留，此用例锁住该关系。
     """
     _, _, models = _load_modules()
     umo = _umo_with_group()

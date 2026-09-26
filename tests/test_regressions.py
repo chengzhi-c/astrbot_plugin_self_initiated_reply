@@ -62,7 +62,7 @@ def test_bare_command_word_is_parsed_as_command() -> None:
 
 
 # RL-5（Web 配置读取失败返回 None）的守卫已迁至
-# test_webapi_fixes.py::test_api_get_config_error_path —— 那里是真调 API 断言
+# test_webapi_fixes.py::test_api_get_config_error_path， 那里是真调 API 断言
 # 载荷形状，比在 except 尾段里搜 "return" 更直接，也不会因重排 except 而误红。
 
 
@@ -352,7 +352,7 @@ def test_config_rollback_restores_sessions_and_locks(tmp_path: Path) -> None:
         assert umo in plugin.sessions
         assert umo in plugin._session_locks
 
-        # §11 B2：原对象复活（身份即正确性——在途任务持的是它）
+        # §11 B2：原对象复活（身份即正确性，在途任务持的是它）
         restored = plugin.sessions[umo]
         assert restored is original_state, "回滚未保住 SessionState 对象身份"
         assert restored.daily_count == 5, f"日配额被清零：{restored.daily_count}"
@@ -900,7 +900,7 @@ _DEBUG_LOG_CONTRACTS = [
 def test_high_frequency_success_logs_stay_debug() -> None:
     """7 处高频成功路径必须保持 DEBUG，且调用点个数不变。
 
-    个数一起断言，是因为只查级别时模板整体消失会静默通过——那正是日志退化的
+    个数一起断言，是因为只查级别时模板整体消失会静默通过，那正是日志退化的
     常见形态。
     """
     problems: list[str] = []
@@ -1034,7 +1034,7 @@ def test_new_config_keys_take_effect(tmp_path: Path) -> None:
         assert s.enabled_patrol_trigger is True
         assert s.generation_timeout_sec == 90
         assert s.decision_history_min_messages == 8
-        # 拓扑同步：只写 settings 不够——「保存成功、状态显示开启、实际巡检
+        # 拓扑同步：只写 settings 不够，「保存成功、状态显示开启、实际巡检
         # 不跑」会持续到下次重启，且无任何日志。POST /config 是运行期改这些
         # 键的唯一入口（官方 Dashboard 走整插件 reload）。
         await asyncio.sleep(0)
@@ -1163,7 +1163,7 @@ def test_invalidate_clears_observation_material(tmp_path: Path) -> None:
     """记录事件后会话持有观察素材；invalidate 必须清空事件表并推进代次。
 
     「持有观察素材」以事件表为准（_last_events/_last_event_at），不经任何
-    阶段投影——残留一条就足以让下一轮决策拿到已失效会话的旧消息。
+    阶段投影，残留一条就足以让下一轮决策拿到已失效会话的旧消息。
     """
 
     async def scenario(plugin, main):
@@ -1196,7 +1196,7 @@ def test_on_command_is_rejected_when_degraded(tmp_path: Path) -> None:
     """降级态下 ``/selfreply on`` 不得谎报"已启用"。
 
     缺陷形态：check 分支有精准文案（"插件已降级…需重启插件恢复"），而 on 分支
-    完全没有生命周期门——降级态下回"主动回复插件已启用（重启后保持）"，同时把
+    完全没有生命周期门，降级态下回"主动回复插件已启用（重启后保持）"，同时把
     ``settings.enabled`` 写成 True。用户以为已恢复，实际该实例仍拒绝一切新任务
     （含 force check），巡检也不会重启，恢复只能靠重载插件。
     """
@@ -1218,7 +1218,7 @@ def test_check_command_waits_for_previous_run_release(tmp_path: Path) -> None:
 
     缺陷形态：check 先 ``invalidate(force_cancel=True)`` 取消旧检查，再立即进
     pipeline；取消是异步投递的，旧任务尚未 ``unmark_running``，于是撞上
-    「已有判断任务在运行」——净效果是旧检查被静默掐掉、本次也没执行，用户必须
+    「已有判断任务在运行」净效果是旧检查被静默掐掉、本次也没执行，用户必须
     重发一次。
     """
 
@@ -1241,6 +1241,6 @@ def test_check_command_waits_for_previous_run_release(tmp_path: Path) -> None:
         asyncio.ensure_future(release_soon())
 
         text = await commands.dispatch_command_action(plugin, event, "check")
-        assert "已有判断任务在运行" not in text, f"check 自拒了——旧检查被取消而本次未执行：{text}"
+        assert "已有判断任务在运行" not in text, f"check 自拒了，旧检查被取消而本次未执行：{text}"
 
     with_plugin(tmp_path, scenario)

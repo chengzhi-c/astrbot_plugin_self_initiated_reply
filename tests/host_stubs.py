@@ -317,7 +317,7 @@ def capture_logs(caplog: Any, logger: Any, level: int = logging.DEBUG) -> Any:
     """在 ``caplog`` 中捕获插件日志，无论拿到的是桩 logger 还是宿主 logger。
 
     宿主的 ``astrbot`` logger 带 loguru 拦截器且 ``propagate=False``，记录不流向
-    caplog 挂在 root 的处理器——``caplog.at_level`` 无论带不带 ``logger=`` 参数都
+    caplog 挂在 root 的处理器，``caplog.at_level`` 无论带不带 ``logger=`` 参数都
     只调级别、不改传播，于是 ``caplog.records`` 恒空，日志断言变成假绿灯。本辅助
     在块内临时放行传播并复原。
 
@@ -325,7 +325,7 @@ def capture_logs(caplog: Any, logger: Any, level: int = logging.DEBUG) -> Any:
     （``LogManager`` 把 root 的 handler 桥接到具名 logger）。放行传播后同一条
     记录经目标 logger 与 root 各进该处理器一次，``caplog.records`` 出现两份相同
     正文，计数型断言（"只许一条告警"）被打红。故块内先把这份重复的处理器临时
-    摘除，退出后连同 ``propagate`` 一起精确复原——只摘重复的那一份，loguru 转发
+    摘除，退出后连同 ``propagate`` 一起精确复原，只摘重复的那一份，loguru 转发
     与 WebUI 日志流所在的宿主持处理器原样留在目标 logger 上。
 
     ``logger`` 传被测模块的 ``logger`` 对象（如 ``storage.logger``），不要传名字：

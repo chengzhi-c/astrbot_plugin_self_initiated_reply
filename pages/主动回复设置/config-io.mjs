@@ -190,7 +190,7 @@ export function createConfigIo(deps) {
 		// 计数取**去重后**的长度：这个读数的标签是「生效会话」，而后端把裸群号与
 		// 其群 UMO 视为同一会话（utils.session_whitelisted）。用未去重的 parsed.length
 		// 时，`12347` + `qq:GroupMessage:12347` 会让顶栏读 2 而下方的摘要读
-		// 「已识别 1 个有效会话」——两条都是 aria-live="polite"，读屏连续播报
+		// 「已识别 1 个有效会话」两条都是 aria-live="polite"，读屏连续播报
 		// 两个互相抵消的数字。
 		const unique = uniqueWhitelistItems(text, parsed);
 		if (e.whitelistCount) e.whitelistCount.textContent = String(unique.length);
@@ -587,7 +587,7 @@ export function createConfigIo(deps) {
 
 // 配置未加载完时禁止写操作（保存、重置提示词）的统一判据与文案。
 // 两处调用点共用：提示文案分叉会让同一个前置条件对用户呈现两种说法，
-// 而判据分叉更危险——一处放开、一处仍拦时，被放开的那处会把空表单写成盘。
+// 而判据分叉更危险，一处放开、一处仍拦时，被放开的那处会把空表单写成盘。
 export function configNotLoadedMessage() {
 	return "配置尚未成功加载，请先刷新页面";
 }

@@ -177,7 +177,7 @@ def test_enforce_final_tool_policy_inherit_mode_fails_closed(tmp_path: Path) -> 
     """继承模式（inherit_tools=True）下 denylist 无法执行时同样必须中止运行。
 
     继承模式放行宿主工具链，但宿主级危险工具（cron、浏览器、电脑使用等）
-    仍永远拒绝——enforce_final_tool_policy 是拦截 hook 在 build 后注入危险
+    仍永远拒绝，enforce_final_tool_policy 是拦截 hook 在 build 后注入危险
     工具的最终防线（fail-closed）。此前只有非继承模式的失败路径有断言，
     继承分支的失败路径零覆盖：把 drop 分支的 return False 改成 return True
     不会红。
@@ -356,7 +356,7 @@ def test_off_persists_enabled_across_restart(tmp_path: Path) -> None:
     """``/off`` 必须落盘，重启后仍是关闭。
 
     改持久前 ``/off`` 只改内存 ``runtime_enabled``，宿主一重启就回落到持久
-    ``enabled=True``——用户打完 ``/off`` 以为「别再主动说话了」，重启后插件又
+    ``enabled=True``，用户打完 ``/off`` 以为「别再主动说话了」，重启后插件又
     开始发言，而用户不会知道要再打一次。这是静默违背用户意图。
 
     变异锚定：把 ``_persist_enabled`` 里的 ``self.settings.enabled = enabled``
@@ -394,7 +394,7 @@ def test_off_rolls_back_memory_when_config_write_fails(tmp_path: Path) -> None:
     """落盘失败必须内存回滚，不留「内存已关、磁盘仍开」的中间态（§6 同一纪律）。
 
     不回滚的话：磁盘写失败但内存已关，插件当场静默，重启后又按磁盘的 True
-    复活——用户看到的是「关了一会儿自己又开了」，且没有任何错误抵达用户。
+    复活，用户看到的是「关了一会儿自己又开了」，且没有任何错误抵达用户。
     这里断言异常上抛 + 两个内存字段都回到原值。
     """
 
@@ -509,7 +509,7 @@ def test_degraded_state_rejects_new_spawn_and_force_check(tmp_path: Path) -> Non
 
         # add/remove 与 check 同口径。此前它们直接调用白名单写入，
         # 降级态下由 `_add_whitelist_session` 抛 RuntimeError，用户看到的是
-        # 宿主报错文案（含内部异常原文），而 `/on` 又谎报「已启用」——三条
+        # 宿主报错文案（含内部异常原文），而 `/on` 又谎报「已启用」三条
         # 写指令三种表现。这里断言两条指令都返回精准文案且**不抛异常**。
         before_add = set(plugin.settings.whitelist)
         assert await plugin._command_text(event, "add") == (
@@ -546,7 +546,7 @@ def _decorated_command_handlers() -> dict[str, str]:
 
     从源码取而不是猜 ``selfreply_<动作>`` 命名约定、也不是硬编码 9 个名字：
     注册表是事实，重命名后本表自动跟上。指令组本体（``selfreply``）不在表内
-    也不可驱动——宿主装饰器已把该属性换成 RegisteringCommandable，真实宿主与
+    也不可驱动，宿主装饰器已把该属性换成 RegisteringCommandable，真实宿主与
     host_stubs 都是如此（见 compat_check 的 EXPECTED_HANDLER_COUNT）。
     """
     root = Path(__file__).resolve().parents[1]
@@ -608,7 +608,7 @@ def test_decorated_readonly_commands_match_inline_dispatch_text(tmp_path: Path) 
 
     help/status/list/debug 不改状态，故同一状态下两侧文本应当逐字相等：任一侧
     少传一个参数（lifecycle / last_decision / ignored_sender）都会分叉。
-    写动作（add/remove/on/off/check）不做等价断言——它们有副作用，第二次调用的
+    写动作（add/remove/on/off/check）不做等价断言，它们有副作用，第二次调用的
     文案必然不同（如 add 第二次说"已在白名单中"），那样的断言会因状态耦合而假绿。
     """
     handlers = _decorated_command_handlers()
@@ -777,7 +777,7 @@ def test_quarantine_capacity_closes_spawn_barrier(tmp_path: Path) -> None:
     """首例隔离即关闭 spawn 屏障（capacity 条件已删除，见 §5）。
 
     历史实现有 ``len(quarantined) < MAX_QUARANTINED_TASKS`` 容量条件，但首例隔离
-    就经 ``_mark_degraded`` 把 lifecycle 切到 DEGRADED 且永不回退——容量条件被短路，
+    就经 ``_mark_degraded`` 把 lifecycle 切到 DEGRADED 且永不回退，容量条件被短路，
     从未起过决定作用。契约：拒绝来自 lifecycle，`MAX_QUARANTINED_TASKS` 只是注册表
     容量上限。故本用例直接给表填满也不再是"容量拒绝"的证明，改为断言真实语义。
     """
@@ -788,7 +788,7 @@ def test_quarantine_capacity_closes_spawn_barrier(tmp_path: Path) -> None:
         ]
         plugin._quarantined_tasks.update({task: "test capacity" for task in tasks})
         try:
-            # 仅填表（不置 DEGRADED）不再是拒绝理由——这正是要钉住的语义。
+            # 仅填表（不置 DEGRADED）不再是拒绝理由，这正是要钉住的语义。
             assert plugin._can_start_tasks() is True, (
                 "capacity 条件仍在对 lifecycle 之外起决定作用（与 §5 契约不符）"
             )
@@ -879,7 +879,7 @@ def test_abandoned_final_save_does_not_overwrite_newer_state(tmp_path: Path) -> 
 
     缺陷形态：宿主 reload 时不等隔离任务（``star_manager`` 未等待 quarantine
     任务就构造下一个实例），旧实例的慢写若在 ``os.replace`` 之前落地，会用
-    陈旧快照覆盖新实例刚写出的状态——reload 后配额少计、白名单变更回退。
+    陈旧快照覆盖新实例刚写出的状态，reload 后配额少计、白名单变更回退。
     契约：终止超时置位放弃标志，仍在跑的写盘在替换前自我放弃（只删自己的
     临时文件，不碰目标文件）。
     """
@@ -906,7 +906,7 @@ def test_abandoned_final_save_does_not_overwrite_newer_state(tmp_path: Path) -> 
         plugin._abandon_disk_writes = True
         state_path.unlink()  # 抹掉文件，任何人再写都会"产生"它
         await plugin._save_storage()
-        assert not state_path.exists(), "被放弃的写盘仍然发布了文件——它会覆盖新实例写出的更新状态"
+        assert not state_path.exists(), "被放弃的写盘仍然发布了文件，它会覆盖新实例写出的更新状态"
         # 等可能仍在跑的写线程收敛后再查临时文件（放弃是并发决策，
         # 置位瞬间可能有写线程正处于"已建临时文件、尚未 replace"之间）
         leftovers: list = []
@@ -934,7 +934,7 @@ def test_whitelist_remove_recycles_gate_state(tmp_path: Path) -> None:
 
 
 def test_gate_views_are_read_only_and_live(tmp_path: Path) -> None:
-    """SessionGate 只读视图——写抛错、读实时、语义不被绕过。"""
+    """SessionGate 只读视图，写抛错、读实时、语义不被绕过。"""
 
     async def scenario(plugin, main):
         # 写操作必须抛错（MappingProxyType / frozenset）
@@ -1205,13 +1205,13 @@ def test_version_consistency_across_metadata() -> None:
 
     # pyproject 不再写死版本号，改由 hatchling 从 models.py 读取。
     # 故这里不再比对两处字面量（已无第二处），改为核验**取值机制真的能取到值**：
-    # 若 path 指错文件或 pattern 与常量名不再匹配，hatchling 构建期会失败——
+    # 若 path 指错文件或 pattern 与常量名不再匹配，hatchling 构建期会失败，
     # 但那要等到 CI 的 build 作业，而本用例让它在 test 作业就红。
     assert "version" in pyproject["project"].get("dynamic", []), (
         "pyproject 未声明 dynamic = ['version']：若同时也没有静态 version，构建会失败"
     )
     assert "version" not in pyproject["project"], (
-        "pyproject 同时存在静态 version 与 dynamic 声明——版本号又出现第二处字面量"
+        "pyproject 同时存在静态 version 与 dynamic 声明，版本号又出现第二处字面量"
     )
     hatch_version = pyproject["tool"]["hatch"]["version"]
     source_file = root / hatch_version["path"]
@@ -1224,7 +1224,7 @@ def test_version_consistency_across_metadata() -> None:
         f"hatchling 构建会失败（pattern={hatch_version['pattern']!r}）"
     )
     assert extracted.group("version") == version, (
-        f"hatchling 会取到 {extracted.group('version')!r}，而 PLUGIN_VERSION={version!r}——"
+        f"hatchling 会取到 {extracted.group('version')!r}，而 PLUGIN_VERSION={version!r}，"
         f"pattern 命中了错误的位置"
     )
     # README 版本号由 shields 徽章承载。
@@ -1659,7 +1659,7 @@ def test_startup_writes_skipped_when_disk_already_current(tmp_path: Path) -> Non
 
     首启落盘后，绝大多数 reload 中两份文件零变化：无条件重写只产生相同字节、
     两次 fsync 与宿主 save_config 副作用，还扰动 mtime。契约：内容一致 → 跳过。
-    断言在 scenario 内（构造后、terminate 前）——terminate 的兑底落盘是
+    断言在 scenario 内（构造后、terminate 前）terminate 的兑底落盘是
     独立路径，不属于“启动写盘”。跳过不碰失败可见性（那由
     test_startup_persist_failure_is_logged 钉在“真的写了”的路径上）。
     """
@@ -1677,8 +1677,8 @@ def test_startup_writes_skipped_when_disk_already_current(tmp_path: Path) -> Non
     state_path = tmp_path / "data" / "astrbot_plugin_self_initiated_reply" / "state.json"
     # 首启：文件不存在 → 必写
     with_plugin(tmp_path, first_load)
-    assert config_path.exists(), "首启没有创建配置文件——本用例前提失效"
-    assert state_path.exists(), "首启没有创建状态文件——本用例前提失效"
+    assert config_path.exists(), "首启没有创建配置文件，本用例前提失效"
+    assert state_path.exists(), "首启没有创建状态文件，本用例前提失效"
 
     main = load_main()
     plugin_state = sys.modules[f"{MAIN_PACKAGE_NAME}.plugin_state"]
@@ -1698,7 +1698,7 @@ def test_startup_writes_skipped_when_disk_already_current(tmp_path: Path) -> Non
     async def second_load(plugin, _main):
         # 打桩必须发生在构造之前（启动写盘在 __init__ 里），断言发生在
         # scenario 内（terminate 兑底落盘之前）。启动写盘已后台化，先等后台
-        # 任务跑完——不等的话"没写"与"还没写"不可区分，断言会变成恒绿假契约。
+        # 任务跑完，不等的话"没写"与"还没写"不可区分，断言会变成恒绿假契约。
         await asyncio.sleep(0.05)
         assert config_writes == [], (
             "磁盘未变化时仍重写了配置（无谓 fsync + 宿主 save_config 副作用）"
@@ -1748,7 +1748,7 @@ def test_startup_still_writes_when_disk_shape_differs(tmp_path: Path) -> None:
         from .host_stubs import until
 
         await until(lambda: bool(config_writes))
-        assert config_writes, "磁盘为旧形状时启动没有重写配置——迁移落盘被误跳"
+        assert config_writes, "磁盘为旧形状时启动没有重写配置，迁移落盘被误跳"
         migrated = json.loads(config_path.read_text(encoding="utf-8"))
         assert "cooldown_sec" in migrated, "重写后磁盘仍是旧形状"
 

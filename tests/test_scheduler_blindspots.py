@@ -142,7 +142,7 @@ async def test_delayed_check_error_logs_traceback(tmp_path: Path, caplog: object
     """主触发链的 delayed_check 异常必须带 traceback。
 
     巡检路径（:557/:595）用 exc_info=True，而 delayed_check 此前只记一行
-    warning 无栈——主触发链反而比后台链更难排障。这条钉住两者对齐。
+    warning 无栈，主触发链反而比后台链更难排障。这条钉住两者对齐。
     """
     scheduler_mod, _, scheduler, _, _ = _make_scheduler(tmp_path)
     umo = "s1"
@@ -171,7 +171,7 @@ async def test_patrol_loop_outer_backoff_on_cleanup_error(tmp_path: Path, monkey
     变异锚定：删掉 ``scheduler.py`` 外层 except 里的退避 ``sleep``，本用例红。
 
     只断言「≥2 次失败」是假绿：``check_interval_sec=0`` 时退避实参
-    ``min(60, 0) == 0``，与循环顶部的实参同为 0——**有没有那行都能立刻重试**。
+    ``min(60, 0) == 0``，与循环顶部的实参同为 0，**有没有那行都能立刻重试**。
     这里把 ``check_interval_sec`` 设为 300（> ``PATROL_BACKOFF_DELAY_SEC``），
     使顶部长睡与退避长睡**取值可分辨**（300 vs 60），再把 ``asyncio.sleep`` 换
     成只记录、不真等的替身，于是「出现过一次 60 秒的 sleep」就是退避行存在的
@@ -210,8 +210,7 @@ async def test_patrol_loop_outer_backoff_on_cleanup_error(tmp_path: Path, monkey
         "夹具要求退避与巡检间隔可分辨，否则本用例退化为『有无 sleep』的空断言"
     )
     assert expected_backoff in sleeps, (
-        f"重试之间没有 {expected_backoff}s 的退避 sleep —— 外层退避已被删除（假绿）"
-        f"sleeps={sleeps!r}"
+        f"重试之间没有 {expected_backoff}s 的退避 sleep，外层退避已被删除（假绿）sleeps={sleeps!r}"
     )
 
 

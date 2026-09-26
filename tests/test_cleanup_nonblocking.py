@@ -9,7 +9,7 @@
 断言基于"遍历发生在哪个线程"这一可观测事实，而非实现细节。
 
 同一断言形状后来扩到其它磁盘 IO（data URL 物化、配置写盘、webapi 端点写盘）：
-它们共享同一条契约——fsync/遍历不得跑在事件循环线程上。
+它们共享同一条契约，fsync/遍历不得跑在事件循环线程上。
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ async def test_run_image_cleanup_offloads_disk_walk_to_thread(tmp_path: Path) ->
         loop_thread = threading.get_ident()
         await scheduler.run_image_cleanup()
         assert threads, "磁盘清理未被调用"
-        assert threads[0] != loop_thread, "磁盘遍历在事件循环线程内执行——rglob+stat 会阻塞所有会话"
+        assert threads[0] != loop_thread, "磁盘遍历在事件循环线程内执行，rglob+stat 会阻塞所有会话"
     finally:
         scheduler_mod.ImageParser.cleanup_source_cache = original
 
@@ -62,7 +62,7 @@ async def test_cleanup_events_does_not_touch_disk(tmp_path: Path) -> None:
         scheduler._last_cleanup = models.now_ts() - 4000.0  # 跨过 1h 节流门槛
         scheduler.cleanup_events_if_needed()
         assert not threads, (
-            "事件清理路径触发了磁盘遍历——该方法由 on_message 同步调用，会阻塞消息热路径"
+            "事件清理路径触发了磁盘遍历，该方法由 on_message 同步调用，会阻塞消息热路径"
         )
     finally:
         scheduler_mod.ImageParser.cleanup_source_cache = original
@@ -106,7 +106,7 @@ async def test_image_cleanup_serialized_under_concurrency(tmp_path: Path) -> Non
     try:
         await asyncio.gather(scheduler.run_image_cleanup(), scheduler.run_image_cleanup())
         assert concurrent["max"] == 1, (
-            f"清理并发重叠 {concurrent['max']} 次——并发 unlink 同一文件会互相报错"
+            f"清理并发重叠 {concurrent['max']} 次，并发 unlink 同一文件会互相报错"
         )
     finally:
         scheduler_mod.ImageParser.cleanup_source_cache = original
@@ -139,7 +139,7 @@ async def test_prepare_materializes_data_url_off_the_event_loop(tmp_path: Path) 
     assert await parser.prepare(info) is True
     assert threads, "prepare() 未物化 data URL"
     assert threads[0] != loop_thread, (
-        "prepare() 在事件循环线程内物化 data URL——base64 解码+写盘会阻塞所有会话"
+        "prepare() 在事件循环线程内物化 data URL 到 base64 解码+写盘会阻塞所有会话"
     )
     assert info.prepared_source
 
@@ -168,7 +168,7 @@ async def test_settings_config_write_offloads_file_io_to_thread(tmp_path: Path) 
         assert ok is True
         assert threads, "配置写盘未发生"
         assert threads[0] != threading.get_ident(), (
-            "配置写盘在事件循环线程内执行——fsync 会阻塞所有会话"
+            "配置写盘在事件循环线程内执行，fsync 会阻塞所有会话"
         )
     finally:
         storage.write_json_atomic = original
@@ -262,9 +262,9 @@ def test_mutating_webapi_endpoints_write_off_the_event_loop(tmp_path: Path) -> N
                 web.request.payload = payload
                 result = await drive()
                 assert result["ok"] is True, f"{label} 未成功：{result}"
-                assert len(threads) > before, f"{label} 没有发生写盘——用例已失去覆盖对象"
+                assert len(threads) > before, f"{label} 没有发生写盘，用例已失去覆盖对象"
                 assert all(thread != loop_thread for thread in threads[before:]), (
-                    f"{label} 的写盘在事件循环线程内执行——fsync 会阻塞所有会话"
+                    f"{label} 的写盘在事件循环线程内执行，fsync 会阻塞所有会话"
                 )
         finally:
             for module, original in originals.items():
@@ -282,7 +282,7 @@ def test_plugin_construction_writes_off_the_event_loop(tmp_path: Path) -> None:
     或 ``state.json`` 大就会阻塞该进程内所有会话与 Web 面板。同文件里
     ``rglob`` 那半已钉住同一契约（见本模块 docstring），本用例锚定 fsync 这半。
 
-    构造期无 loop 分支（同步加载的宿主）不适用——那里没有事件循环可阻塞，
+    构造期无 loop 分支（同步加载的宿主）不适用，那里没有事件循环可阻塞，
     故只断言「有循环时写盘不在循环线程」。
     """
     from .host_stubs import load_main, with_plugin
@@ -312,7 +312,7 @@ def test_plugin_construction_writes_off_the_event_loop(tmp_path: Path) -> None:
     storage.write_json_atomic = probe
     try:
         # 第二次构造（同一 tmp_path）：上一次已在磁盘留下正式形状，故规范化
-        # 落盘会被跳过——先删掉两个文件，逼出「首次规范化落盘」这条路径。
+        # 落盘会被跳过，先删掉两个文件，逼出「首次规范化落盘」这条路径。
         for name in ("config.json", "state.json"):
             for path in tmp_path.rglob(name):
                 path.unlink()
@@ -329,9 +329,9 @@ def test_plugin_construction_writes_off_the_event_loop(tmp_path: Path) -> None:
             seen.extend(threads)
 
         with_plugin(tmp_path, second)
-        assert seen, "构造期未发生写盘——用例已失去覆盖对象"
+        assert seen, "构造期未发生写盘，用例已失去覆盖对象"
         assert all(thread != threading.get_ident() for thread in seen), (
-            "构造期写盘在事件循环线程内执行——fsync 会阻塞所有会话"
+            "构造期写盘在事件循环线程内执行，fsync 会阻塞所有会话"
         )
     finally:
         storage.write_json_atomic = original

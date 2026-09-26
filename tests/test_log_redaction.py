@@ -230,7 +230,7 @@ def test_exception_text_extraction_survives_broken_str() -> None:
 
 
 def test_redacted_length_never_exceeds_budget() -> None:
-    """输出长度恒 <= LOG_URL_MAX_CHARS——标记必须计入截断预算。
+    """输出长度恒 <= LOG_URL_MAX_CHARS，标记必须计入截断预算。
 
     缺陷形态：写成 clean[:80] + "?<redacted>" 时超长 path 会产出 91 字符，
     比被替换的 url[:80] 更宽，日志行反而变长。
@@ -299,14 +299,14 @@ def test_vision_provider_exception_log_drops_credentials() -> None:
 
     缺陷形态：``image/parser.py`` 的 ``except Exception`` 直接记 ``exc``，而
     provider SDK 的异常串常把请求 URL 整段带出来（含 api_key/Signature 等
-    query 凭证）——实测会把签名原样写进日志。
+    query 凭证）实测会把签名原样写进日志。
 
     变异锚定：把该处 ``redact_exc_text(exc)`` 换回裸 ``exc``，本用例红。
     """
     parser_mod = _load_parser()
     exc = RuntimeError(f"Client error '401' for url '{SIGNED_URL}'")
     line = _capture_vision_parse_failure_log(parser_mod, exc)
-    assert line, "未捕获 vision 解析失败日志——用例已失去覆盖对象"
+    assert line, "未捕获 vision 解析失败日志，用例已失去覆盖对象"
     for secret in SECRETS:
         assert secret not in line, f"vision 异常日志泄漏凭证 {secret}：{line}"
     assert "<redacted>" in line, f"未标记 query 已被剥离：{line}"

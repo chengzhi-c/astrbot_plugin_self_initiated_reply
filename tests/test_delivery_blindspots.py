@@ -306,7 +306,7 @@ async def test_deliver_log_reply_content_preview(tmp_path: Path, caplog: Any) ->
     """log_reply_content 开启：长短回复预览分支都走 DEBUG 记录。
 
     变异锚定：把 ``delivery.py`` 的 ``if self.settings.log_reply_content and reply:``
-    改成 ``if False:``，本用例红——只断言返回值是假绿（返回值与预览分支无关），
+    改成 ``if False:``，本用例红，只断言返回值是假绿（返回值与预览分支无关），
     必须断言 DEBUG 记录里的预览文本本身。
 
     断言内容：长回复截断到 ``_LOG_REPLY_PREVIEW_CHARS`` 并**带省略号**（去掉省略号

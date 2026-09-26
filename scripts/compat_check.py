@@ -6,10 +6,10 @@
 
 三类检查的性质不同：前两类只问「宿主有没有这个符号」，第三类
 （``_handler_signature_gaps``）**真的走一遍宿主加载期的动作**：符号存在性检查走不到加载路径，
-插件装不上时它仍报 OK——见该函数的 docstring。
+插件装不上时它仍报 OK，见该函数的 docstring。
 
 存在性清单与契约断言单源：符号清单来自 runtime_adapter.host_contract()，
-参数契约来自 AstrBotRuntimeAdapter.validate()——增删符号只需改适配层一处。
+参数契约来自 AstrBotRuntimeAdapter.validate()，增删符号只需改适配层一处。
 """
 
 from __future__ import annotations
@@ -109,7 +109,7 @@ def _discard_workdir(workdir: Path) -> None:
 
 
 # 宿主危险内置工具模块：这些模块内所有 FunctionTool 子类的 name 必须全部被
-# models.HOST_DANGEROUS_TOOL_IDS 覆盖——宿主新增/改名危险工具时缺失即报错，
+# models.HOST_DANGEROUS_TOOL_IDS 覆盖，宿主新增/改名危险工具时缺失即报错，
 # 防止 denylist（"最终防线"）静默失效。与 models.py 的清单同步维护。
 DANGEROUS_TOOL_MODULES = [
     "astrbot.core.tools.cron_tools",
@@ -130,12 +130,12 @@ DANGEROUS_TOOL_MODULES = [
 # 这不构成盲区，两条实测理由：
 # 1. 宿主只对 CommandFilter 做注解解析（command.py:66 init_handler_md）。
 #    CommandGroupFilter 与 EventMessageTypeFilter 都没有这个方法，也没有
-#    eval_str 命中——即宿主本身就不解析指令组与 on_message 的注解。本检查扫
+# eval_str 命中，即宿主本身就不解析指令组与 on_message 的注解。本检查扫
 #    10 个是宿主那 9 个的**超集**，严于宿主而非松于宿主。
 # 2. 10 个子指令与指令组共用同一个 CommandReply 别名，别名一旦不可解析，
 #    9 个子指令会同时报错。
 #
-# 加指令时同步改这里——tests/test_host_contract.py 经 import 引用本常量（单源）。
+# 加指令时同步改这里，tests/test_host_contract.py 经 import 引用本常量（单源）。
 EXPECTED_HANDLER_COUNT = 10
 
 
@@ -147,7 +147,7 @@ def _handler_signature_gaps() -> list[str]:
     ``host compat OK``。根因已在真机确证：宿主
     ``core/star/filter/command.py::CommandFilter.init_handler_md`` 在 4.23.3 是
     ``inspect.signature(handler)``，4.27.2 起变成 ``inspect.signature(handler,
-    eval_str=True)``——一个参数之差，让 ``from __future__ import annotations``
+    eval_str=True)``，一个参数之差，让 ``from __future__ import annotations``
     产出的字符串注解在加载期真的被 eval，于是 TYPE_CHECKING-only 的名字 NameError。
 
     这里照抄那一步（``eval_str=True``），因此任何「注解里出现运行时不存在的名字」
@@ -155,7 +155,7 @@ def _handler_signature_gaps() -> list[str]:
     要在锁定版与最新版两种宿主上都成立，直接用 inspect 才不受宿主内部重构影响。
 
     **不允许静默空转**：处理器是按名字前缀筛的，改名或重构后前缀不再命中时，
-    循环会一个都扫不到而本函数照旧返回空列表——那是假绿，正是本函数要消灭的
+    循环会一个都扫不到而本函数照旧返回空列表，那是假绿，正是本函数要消灭的
     失败模式的翻版。故先断言扫到的数量等于 ``EXPECTED_HANDLER_COUNT``
     （见该常量上方对「为什么是 10 而不是 11」的实测说明）。
     """
@@ -282,13 +282,13 @@ def run_contract_checks() -> int:
         mod = importlib.import_module(mod_name)
         for attr in attrs:
             if not hasattr(mod, attr):
-                failures.append(f"{mod_name}.{attr} 缺失——宿主私有 API 漂移")
+                failures.append(f"{mod_name}.{attr} 缺失，宿主私有 API 漂移")
 
     event_type_members = runtime_adapter.EVENT_TYPE_MEMBERS
     star_handler = importlib.import_module("astrbot.core.star.star_handler")
     for member in event_type_members:
         if not hasattr(star_handler.EventType, member):
-            failures.append(f"EventType.{member} 缺失——宿主私有 API 漂移")
+            failures.append(f"EventType.{member} 缺失，宿主私有 API 漂移")
 
     adapter = runtime_adapter.AstrBotRuntimeAdapter.from_host()
     problems = adapter.validate(soft=True)

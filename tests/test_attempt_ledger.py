@@ -204,7 +204,7 @@ class _ContractDelivery:
     """把 ``confirmed`` 原样交给真实 ``SessionState`` 的记账桩。
 
     其余桩写死 ``confirmed=True``（只为走通持久化循环），于是「未确认投递」在桩里被
-    当作「已确认」——历史里凭空多一条 assistant，而测试照样全绿。
+    当作「已确认」历史里凭空多一条 assistant，而测试照样全绿。
     """
 
     def __init__(self) -> None:

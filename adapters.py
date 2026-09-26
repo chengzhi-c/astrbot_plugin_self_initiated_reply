@@ -99,7 +99,7 @@ class AstrBotBridge:
         signature = AstrBotBridge._signature_or_none(func)
         # 预校验参数绑定：只有签名可检查（无 **kwargs）且绑定失败才回退 minimal；
         if signature is not None:
-            # 函数体内部抛出的 TypeError 直接上抛，绝不重试——重试意味着
+            # 函数体内部抛出的 TypeError 直接上抛，绝不重试，重试意味着
             # 同一函数可能执行两次（对 LLM 调用即重复计费）。
             try:
                 signature.bind(**call_kwargs)

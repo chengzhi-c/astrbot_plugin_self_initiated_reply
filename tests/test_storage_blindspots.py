@@ -139,7 +139,7 @@ def test_write_json_atomic_unexpected_error(tmp_path: Path) -> None:
 def test_load_config_data_unexpected_error(caplog: object) -> None:
     """读取配置抛未预期异常：error 留痕后回退宿主传入值。
 
-    回退是静默降级——用户配置读不出来却照常启动。若不记 error，线上表现为
+    回退是静默降级，用户配置读不出来却照常启动。若不记 error，线上表现为
     「设置改了不生效」且无任何线索可归因。
     """
     storage = _storage_module()

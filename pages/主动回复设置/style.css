@@ -88,6 +88,7 @@
 	--radius-sm: 12px;
 	--radius-xs: 8px;
 	--radius-btn: 10px;
+	--font-mono: "JetBrains Mono", Consolas, "Cascadia Mono", ui-monospace, monospace;
 	--control-h: 42px;
 	--tap: 44px;
 	--shell-pad: 28px;
@@ -306,8 +307,7 @@ code {
 	border-radius: 5px;
 	background: var(--surface-3);
 	color: var(--accent-text);
-	font-family:
-		"JetBrains Mono", Consolas, "Cascadia Mono", ui-monospace, monospace;
+	font-family: var(--font-mono);
 	font-size: var(--fs-200);
 }
 .skip-link {
@@ -1095,8 +1095,7 @@ select option {
 textarea {
 	resize: vertical;
 	padding: var(--sp-5) var(--sp-5);
-	font-family:
-		"JetBrains Mono", Consolas, "Cascadia Mono", ui-monospace, monospace;
+	font-family: var(--font-mono);
 	font-size: var(--fs-300);
 	line-height: 1.65;
 }
@@ -1229,7 +1228,7 @@ textarea {
 .vision-provider-field .provider-control {
 	/* vision 的两个 Provider 字段与 judge 统一为横排（select 占主列 + 按钮
 	   固定宽），列定义因此与 .provider-control 基类同值。保留独立规则是给
-	   vision 留一个只影响自己的列宽落点——直接改基类会同时波及 judge。 */
+	   vision 留一个只影响自己的列宽落点，直接改基类会同时波及 judge。 */
 	grid-template-columns: minmax(0, 1fr) auto;
 }
 .field-grid > .provider-cell {
@@ -1306,8 +1305,7 @@ textarea {
 	border-radius: var(--radius-xs);
 	background: var(--surface-3);
 	color: var(--text-soft);
-	font-family:
-		"JetBrains Mono", Consolas, "Cascadia Mono", ui-monospace, monospace;
+	font-family: var(--font-mono);
 	font-size: var(--fs-200);
 	line-height: 1.7;
 	white-space: pre-wrap;
@@ -1378,8 +1376,7 @@ textarea {
 .variable-list dt {
 	margin-bottom: 3px;
 	color: var(--accent-text);
-	font-family:
-		"JetBrains Mono", Consolas, "Cascadia Mono", ui-monospace, monospace;
+	font-family: var(--font-mono);
 	font-size: var(--fs-200);
 	font-weight: 700;
 	overflow-wrap: anywhere;

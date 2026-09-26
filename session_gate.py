@@ -105,7 +105,7 @@ class SessionGate:
         release 表**不做整表恢复**：等待者持有的是具体 Event 对象，替换
         即制造孤儿（与锁对象同一约束）。改为从恢复后的运行集反推应有状态：
         回滚会把运行标记恢复成快照态，而支撑它的检查任务可能已经在
-        ``_save_storage()`` 的 await 窗口内结束并 ``set()`` 过事件——此时
+        ``_save_storage()`` 的 await 窗口内结束并 ``set()`` 过事件，此时
         若保留已 set 状态，``scheduler`` 的 ``while is_running`` 循环每轮
         立即返回，紧密空转独占事件循环（整个 bot 卡死）。
         """

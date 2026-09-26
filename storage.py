@@ -3,7 +3,7 @@
 拥有：状态文件的原子写入（临时文件 + fsync + ``os.replace``）、版本不符时
 先备份再降级、宿主配置对象的读取与回写、白名单在配置与状态间的同步。
 
-不解释状态的语义——字段含义由 ``models`` 定义，何时落盘由调用方决定。
+不解释状态的语义，字段含义由 ``models`` 定义，何时落盘由调用方决定。
 本模块只保证「写下去的不会写坏，读上来的形状可信」。
 """
 
@@ -47,7 +47,7 @@ def _config_to_dict(config_obj: Any) -> dict[str, Any]:
         except Exception:
             # 宿主配置对象的形状不受本插件约束：items() 可能不是 Mapping 协议
             # （惰性代理、属性代理等）。此处静默是为了继续走下方 dict() 兜底，
-            # 两条路都失败才返回空字典——不能在第一条失败时就中断。
+            # 两条路都失败才返回空字典，不能在第一条失败时就中断。
             pass
     try:
         return dict(config_obj)
@@ -261,10 +261,10 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
     ``recent`` 用 ``maxlen=recent_limit`` 的 deque 承载，配置调小后自动裁剪。
 
     失败时分三层，全部不阻断插件加载（宁可丢历史，不可起不来）：
-    1. 文件损坏 / 编码错误 / 版本号不符 —— 先备份原文件再继续（``_backup_state_file``），
+    1. 文件损坏 / 编码错误 / 版本号不符， 先备份原文件再继续（``_backup_state_file``），
        不静默覆盖用户数据；版本不符仍尽力按当前结构解析，避免丢弃仍兼容的部分。
-    2. 单个会话条目畸形 —— 记 warning 后跳过该条，其余会话正常载入。
-    3. 字段级异常值（NaN/负数/远未来/未知 role）—— 由 ``as_timestamp`` /
+    2. 单个会话条目畸形， 记 warning 后跳过该条，其余会话正常载入。
+    3. 字段级异常值（NaN/负数/远未来/未知 role） 由 ``as_timestamp`` /
        ``as_int`` 归一，不让脏值进入运行期计算。时间戳钳到
        ``[0, now + MAX_CLOCK_SKEW_SEC]``：状态文件可被手工编辑，远未来值会让
        ``remaining_silence_sec`` 变成数十年、该会话永久锁死（
@@ -309,12 +309,12 @@ def _migrate_legacy_group_keys(sessions: dict[str, SessionState], whitelist: set
     函数里做写操作，与 ``read_session_state`` 自陈的「不创建、不迁移」相矛盾。
 
     能在本函数看到的裸群号键，必然同时还在白名单里（``session_whitelisted``
-    按群号通配放行）——白名单若已改写成完整 UMO，裸键在载入过滤时就已被丢弃，
+    按群号通配放行）白名单若已改写成完整 UMO，裸键在载入过滤时就已被丢弃，
     本函数无从施救。所以候选来源取「载入的会话键 ∪ 白名单里的完整 UMO」：
     后者接住"裸键在盘、目标键尚无记录"这一形态（此时目标键只存在于白名单）。
 
     判据：候选必须**恰好一个**才迁移。多平台同群号时保持原样，绝不猜平台。
-    目标键已有记录时只淘汰裸键、不覆盖——否则 legacy 的每日配额记账会顶掉
+    目标键已有记录时只淘汰裸键、不覆盖，否则 legacy 的每日配额记账会顶掉
     新键当日的计数。
     """
     candidates: set[str] = set()

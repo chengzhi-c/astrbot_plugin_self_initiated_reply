@@ -159,7 +159,7 @@ class DeliveryRunner:
         （随机值域为 [0, 1)）。
 
         与 ``_should_quote`` 的关键差异：**没有 model 模式**。是否 @ 不该由判断模型
-        决定——那是投递形态，不是"该不该接话"的判断内容；把塞进裁决 JSON 会让模型
+        决定，那是投递形态，不是"该不该接话"的判断内容；把塞进裁决 JSON 会让模型
         多背一个与判断无关的输出字段（quote 的 model 模式是历史兼容，不扩展到这里）。
         ``off``/``always`` 下不调用 ``_random_value()``：不消耗随机序列，
         同批测试的随机数轨迹才可复现。
@@ -262,14 +262,14 @@ class DeliveryRunner:
                 if sent.status is SendStatus.UNKNOWN:
                     # 可能已经提交：不自动重试；消耗冷却与日配额并推进观察窗口
                     # （视为已尝试），防止巡检或新消息立刻对同一事件重复处理。
-                    # 注意：即使工具已直发也必须记录——否则观察窗口不推进，
+                    # 注意：即使工具已直发也必须记录，否则观察窗口不推进，
                     # 同一事件会被再次处理并可能再次直发。
                     return "主动发送状态未知，未自动重试。"
                 if not self._gate.is_current(umo, expected_generation):
                     return STALE_REPLY_MESSAGE
                 if sent.status is SendStatus.SUPPRESSED:
                     # SUPPRESSED 有两类成因：代次已变与插件停止。停止成因回显
-                    # 停止文案——统一报「会话已更新」会把关停期间的抑制误导向
+                    # 停止文案，统一报「会话已更新」会把关停期间的抑制误导向
                     # 排查会话代次。两类成因都不计失败、不重试。
                     # 判据取 code 而非 detail 文案：detail 是日志文本，改措辞
                     # 不该改变控制流（此处曾靠 "stopping" 子串判定）。
@@ -280,7 +280,7 @@ class DeliveryRunner:
         # reply 为空（仅剩工具直发）时无需再发文本。真正的把关在 OutboundGateway：
         # 确定未提交会退还 direct_send_count，于是 session_pipeline 的
         # `not reply and not direct_send_count` 会先行短路，空 reply 到不了发送失败
-        # 分支。能到这里说明至少有一条直发是 DELIVERED/UNKNOWN——UNKNOWN 可能
+        # 分支。能到这里说明至少有一条直发是 DELIVERED/UNKNOWN到UNKNOWN 可能
         # 已达，扣配额是正确的兜底。
         if self.settings.log_reply_content and reply:
             preview = (
@@ -357,7 +357,7 @@ class DeliveryRunner:
         # @ 与引用同源取目标，且同样无条件解析：``_resolve_mention_id`` 在
         # ``last_event`` 为 None 时返回空串并记一条 "mention skipped" DEBUG
         # （契约 §14：context 兜底路径不 @，没有 sender_id 可用）。短路掉它会
-        # 让「mention_mode=always 但事件已被回收」静默失效且无迹可查——与 quote
+        # 让「mention_mode=always 但事件已被回收」静默失效且无迹可查，与 quote
         # 侧已有的 DEBUG 不对称。行为完全不变，只是补上可定位性。
         mention_id = self._resolve_mention_id(umo)
         if last_event:
@@ -465,8 +465,8 @@ class DeliveryRunner:
             if mention_id:
                 # @ 组件同样插在装饰钩子之后。**必须插在 quote 之后**：
                 # ``insert(0)`` 让后插者位于更前，故先 Reply 后 At 才能得到
-                # [At, Reply, ...正文]——与 QuestQQ/OneBot 的 CQ 码约定一致
-                # （先点名后引用）。两步都是同步的，不新增 await 点——
+                # [At, Reply, ...正文]，与 QuestQQ/OneBot 的 CQ 码约定一致
+                # （先点名后引用）。两步都是同步的，不新增 await 点，
                 # 「复核点 3 与 send 零 await」的结构性防线性质不变。
                 self._attach_mention(result, mention_id)
             logger.debug(
@@ -481,7 +481,7 @@ class DeliveryRunner:
             # 悲观默认：send 调用一旦开始，消息就可能已提交。gateway 内部虽把
             # adapter 异常转成 UNKNOWN，但其 except 块自身仍可能抛（异常对象的
             # ``__str__`` 坏掉时 ``str(exc)`` 二次抛），此时异常逃出 gateway 而
-            # adapter 早已调用过——下方 except 必须仍归 UNKNOWN，归
+            # adapter 早已调用过，下方 except 必须仍归 UNKNOWN，归
             # FAILED_BEFORE_SUBMIT 会不消耗冷却而重发。send 正常返回后再用
             # submitted 精确化（gateway 明确说未提交时才降为提交前失败）。
             send_started = True
@@ -544,11 +544,11 @@ class DeliveryRunner:
         """context 兜底投递：事件已不在手边时经宿主 ``Context.send_message`` 发送。
 
         仅由 ``send_reply`` 在 ``last_event`` 为假时调用。本路径不 ``set_result``、
-        不触发装饰与发送后钩子，故无 ``_clear_result`` 义务；也不支持引用——引用需要
+        不触发装饰与发送后钩子，故无 ``_clear_result`` 义务；也不支持引用，引用需要
         被引消息的 ID，而它只存在于事件上（``_last_events`` 为空正是走本路径的条件）。
         """
         ledger_id = ledger.ledger_id
-        # 复核点 4/4（结构防线）：与复核点 1 之间没有真实挂起点——
+        # 复核点 4/4（结构防线）：与复核点 1 之间没有真实挂起点，
         # ``await self._send_via_context(...)`` 只是进入协程，不向事件循环让出，
         # 故 ``send_reply`` 的拆分没有新开竞态窗口。性质同复核点 3：
         # 为日后此路径插入异步查询预留拦截位。此路径未 set_result，无需 _clear_result。
@@ -566,7 +566,7 @@ class DeliveryRunner:
             )
         # send_started 取自 ``OutboundResult.submitted``（DELIVERED/UNKNOWN 为真），
         # 与事件路径上方那处同源：是否已提交由 gateway 的分类结果决定，不靠此处
-        # 枚举失败场景。下方 ``except`` 必须条件式归类，两个方向的代价不对称——
+        # 枚举失败场景。下方 ``except`` 必须条件式归类，两个方向的代价不对称，
         # 提交前误记 UNKNOWN 会经 apply_proactive_state(confirmed=False) 白吃冷却
         # 与日配额；已提交记 FAILED_BEFORE_SUBMIT 会不消耗冷却而重发，制造重复
         # 消息。三条测试各钉一侧：提交前失败、提交后失败、异常逃出 gateway。

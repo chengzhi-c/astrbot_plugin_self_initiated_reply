@@ -486,7 +486,7 @@ async def test_resolve_provider_id_ignores_get_using_provider_id(bridge) -> None
     """``get_using_provider_id`` 不再被探测。
 
     宿主 4.23.3 Context 无此方法。若未来某个第三方 Context 提供它，本插件
-    也不再调用它——落到 ``get_using_provider`` 兜底或返回空串。
+    也不再调用它，落到 ``get_using_provider`` 兜底或返回空串。
     """
     from types import SimpleNamespace
 

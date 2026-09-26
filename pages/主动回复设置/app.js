@@ -115,7 +115,7 @@ function showToast(message, isError = false) {
 	if (!toast) return;
 	toast.textContent = message;
 	// role 恒为 status + aria-live="polite"（静态声明在 index.html）：紧急通道由
-	// 带 role="alert" 的字段级错误承担，toast 不切 role——role="alert" 与显式
+	// 带 role="alert" 的字段级错误承担，toast 不切 role 到 role="alert"，与显式
 	// aria-live="polite" 是互相矛盾的组合（显式值优先，alert 的紧急语义被中和）。
 	// 错误态只用 is-error 表达视觉差异，不改变朗读优先级。
 	toast.classList.toggle("is-error", Boolean(isError));
@@ -182,7 +182,7 @@ const providerDeps = {
 };
 
 /* 三个 Provider 控件同构。差异只在占位文案，以及 judge 要切换 hint 文案。
-   容器类（manual）由 createProviderControl.setManual 统一挂载——三个控件都必须
+   容器类（manual）由 createProviderControl.setManual 统一挂载，三个控件都必须
    传 field，否则该类只会挂到 judge 上，vision 两个字段切手动后会落回基类列定义、
    按钮被拉成整行宽。元素在此直接取：它们不参与其余逻辑，不必再进 getEls。 */
 const PROVIDER_CONTROLS = [
@@ -268,7 +268,7 @@ async function loadProviders() {
 		providerListAvailable = false;
 		// 顺序是硬约束：control.render() 会先 innerHTML="" 再写回旧值，列表为空时
 		// 写回即归零（实测 beforeRender="provider-a" → afterRender=""）。故当前值
-		// 必须在 renderAll() **之前**取；render 之后同步交给 sync()——此时
+		// 必须在 renderAll() **之前**取；render 之后同步交给 sync()，此时
 		// isListAvailable() 为 false，它必然落到手动分支，把值写进输入框（该输入框
 		// 此后既是显示来源也是 buildConfigSaveBody 的取值来源）。反过来写等于没改。
 		const preserved = providerControlList.map((control) => control.value());
@@ -375,9 +375,11 @@ if (els.decisionPromptInput) {
 
 if (els.enabledInput) {
 	els.enabledInput.addEventListener("change", () => {
-		els.selfStatus.textContent = els.enabledInput.checked
-			? "启用（未保存）"
-			: "关闭（未保存）";
+		const on = els.enabledInput.checked;
+		els.selfStatus.textContent = on ? "启用（未保存）" : "关闭（未保存）";
+		// 状态类必须与文案同步：`.master.is-off` 停掉 stat-dot 脉冲、换背景，
+		// 只改文案会让开关在视觉上仍显示为启用，直到保存后才自愈。
+		setStatState(els.selfStat, on ? "is-on" : "is-off");
 		configIo.setDirty(true);
 	});
 }
@@ -475,6 +477,11 @@ loadAll()
 		state.configLoaded = false;
 		configIo.setSaving(false);
 		hideBoot(els);
+		// 首屏读数从「加载中 / -」改写为「不可用」：否则用户看到三处加载态与一个
+		// 错误 toast 并存，分不清是还没加载完还是已经失败。
+		if (els.selfStatus) els.selfStatus.textContent = "加载失败";
+		if (els.decisionModelStatus) els.decisionModelStatus.textContent = "加载失败";
+		if (els.whitelistCount) els.whitelistCount.textContent = "-";
 		showToast(err.message || "加载失败");
 	});
 

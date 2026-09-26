@@ -443,7 +443,7 @@ class ImageParser:
         #
         # <data> 根必须在表内：宿主合法生产者写的裸绝对路径都在它下面
         # （wecom `<data>/temp`、webchat `<data>/webchat`），只留 image_cache
-        # 会 100% 拒掉这些真图片。image_cache 本身就在 <data> 下，但仍单列——
+        # 会 100% 拒掉这些真图片。image_cache 本身就在 <data> 下，但仍单列，
         # 未注入 data_root 的调用方（含既有测试）不能因此丢掉缓存根。
         roots: set[Path] = set()
         for candidate in (self._source_cache_dir, Path(data_root) if data_root else None):
@@ -500,7 +500,7 @@ class ImageParser:
 
         ``return_exceptions`` 隔离单图异常：一张图的漏网异常不得取消同批
         其余快照，那会让上层把整个识图阶段判为失败。取消（CancelledError）
-        例外——它是控制流，必须原样上抛。
+        例外，它是控制流，必须原样上抛。
         """
         semaphore = asyncio.Semaphore(max(1, int(max_concurrent)))
 
@@ -703,13 +703,13 @@ class ImageParser:
         顺序即优先级，越靠前越可信：
         1. ``prepared_source``（本插件已快照/下载的副本，trusted）；
         2. 录制桥按 message_id 找到的宿主本地文件（trusted）；
-        3. ``file_path``——http(s) 走下载；**绝对本地路径一律走 allowlist**，
+        3. ``file_path``，http(s) 走下载；**绝对本地路径一律走 allowlist**，
            相对路径经录制桥解析成功后才升为 trusted；
         4. ``url`` 远程下载。
 
         ``trusted`` 只对「来源不由消息内容决定」的路径置 True（本插件缓存副本、
         录制桥按 message_id 交回的宿主文件）。消息里带来的绝对路径一律交给
-        ``_allowed_local_roots`` 判定，不再采信提取层的可信推断——见 ``__init__``
+        ``_allowed_local_roots`` 判定，不再采信提取层的可信推断，见 ``__init__``
         里的可达性说明（防任意本地文件读取外传）。
 
         失败时：任一路仅在成功时提前返回，失败即继续下一路；全部失败返回
@@ -734,7 +734,7 @@ class ImageParser:
                 # get_local_image_path 取的是记录里的 local_path，最终交给第三方
                 # recorder 插件的 get_media_absolute_path 解析（recorder_bridge.py:74,86），
                 # 而 local_path 源头是对端可控的 OneBot 字段。若 resolver 是朴素
-                # 拼接，`../../..` 可逃出媒体目录——与本地文件读取同一攻击面。
+                # 拼接，`../../..` 可逃出媒体目录，与本地文件读取同一攻击面。
                 # recorder 媒体目录在 <data>/plugin_data/ 下，已被 data_root 覆盖，
                 # 合法文件不受影响。
                 data_url = await asyncio.to_thread(
@@ -759,7 +759,7 @@ class ImageParser:
             # 由提取层从「组件不是 Mapping」推断，而对端可控的 OneBot file 值
             # 恰好装配成非 Mapping 的 pydantic Image，该推断可被伪造。
             # 相对路径经录制桥解析后同样不升 trusted：resolver 的入参
-            # 就是这里的 file_value —— 对端可控，`../../..` 不受 is_absolute 检查
+            # 就是这里的 file_value， 对端可控，`../../..` 不受 is_absolute 检查
             # 拦截，朴素拼接的 resolver 会交出媒体目录之外的路径。
             if not path.is_absolute() and self._recorder_bridge:
                 resolved = self._recorder_bridge.resolve_relative_path(file_value)
@@ -842,7 +842,7 @@ class ImageParser:
         """下载远程图片；整个下载（DNS+连接+读取）受单图超时约束，超限返回 None。
 
         没有这层预算时：DNS 在线程里不受事件循环超时约束、httpx 的 timeout
-        只作用于单次操作，慢速滴流式响应体可让读取无限拖延——解析路径会一直
+        只作用于单次操作，慢速滴流式响应体可让读取无限拖延，解析路径会一直
         占着主动检查协程，而不是降级为"本次不带图"。取消只作用于协程：卡在
         getaddrinfo 的线程会自然结束。
         """

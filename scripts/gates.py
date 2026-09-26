@@ -16,7 +16,7 @@ CI 把它限制为 nightly / 手动触发（见 ``.github/workflows/ci.yml`` 的
 - ``frontend-browser`` 需要本机已 ``npm ci`` 且装过 Chromium；缺少时明确 SKIP
   而非静默跳过（``npx playwright test`` 自带失败退出）。
 - ``compat`` 需要真实 ``astrbot`` 宿主包。CI 装 4.23.3 / 4.27.2 / latest 三条腿，
-  本地通常只有一条，故这里是「装了就跑」；未装时打印 SKIP 原因——本地缺宿主
+  本地通常只有一条，故这里是「装了就跑」；未装时打印 SKIP 原因，本地缺宿主
   不是插件缺陷，但也不代表该项已验。
 - CI 的 ``test`` 矩阵跨 Python 3.12/3.14 两版，本地只跑当前解释器。
 
@@ -50,7 +50,7 @@ PAGE = ROOT / "pages" / "主动回复设置"
 PYTEST_ENV_INHERIT_DENY = ("PYTEST_ADDOPTS", "PYTEST_DEBUG_TEMPROOT")
 
 PYTEST_ARGS = [
-    # 覆盖率用路径方式（.）追踪——动态加载使模块名 cov 失效（实测）。
+    # 覆盖率用路径方式（.）追踪，动态加载使模块名 cov 失效（实测）。
     "-q",
     "--cov=.",
     "--cov-report=term-missing",
@@ -111,12 +111,12 @@ def _prepare_basetemp(scratch: Path) -> Path:
     """建本轮唯一的 pytest 临时目录；删不干净就抛，不启动 pytest。
 
     Windows 上删不掉通常是残留句柄（查看器、索引器、杀软扫描）。此时若照常启动，
-    pytest 只留 warning 后继续从别人的临时目录取数——把「不知道」当通过。
+    pytest 只留 warning 后继续从别人的临时目录取数，把「不知道」当通过。
     """
     basetemp = scratch / "basetemp"
     if basetemp.is_dir():
         # 不用 ignore_errors：删不干净时报的是真实 PermissionError，而不是被吞成
-        # 后面 mkdir 的 FileExistsError——后者读起来像"目录已存在"这种无害事。
+        # 后面 mkdir 的 FileExistsError，后者读起来像"目录已存在"这种无害事。
         shutil.rmtree(basetemp)
     elif basetemp.exists():
         basetemp.unlink()
@@ -181,7 +181,7 @@ def main() -> int:
 
     _run_pytest()
     # 放在 pytest 之后：变异门禁会临时改写源码并逐字节恢复，此时全量用例已跑完，
-    # 两者不共享同一轮工作树状态。默认不跑——它锚定的缺陷只在改动那些测试或锚点时
+    # 两者不共享同一轮工作树状态。默认不跑，它锚定的缺陷只在改动那些测试或锚点时
     # 才可能回归，逐次跑是纯浪费（CI 的 mutation 作业同理只在 nightly/手动触发）。
     if args.with_mutation:
         _run("mutation gate", [sys.executable, "scripts/mutation_gate.py"])

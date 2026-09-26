@@ -230,7 +230,7 @@ async def test_timeout_returns_even_when_provider_swallows_cancellation(tmp_path
 
     修法：``asyncio.wait`` 只等待、不含取消语义，超时即返回，未收敛的任务
     在宽限窗口后交隔离登记。宽限窗口是刻意的（``DECISION_CONVERGE_GRACE_SEC``）：
-    它把"响应取消"与"吞掉取消"分开——后者要触发插件降级，不能误判。
+    它把"响应取消"与"吞掉取消"分开，后者要触发插件降级，不能误判。
     故本用例的耗时上界是「超时 + 宽限 + 余量」，而**不是**「超时」。
     """
     quarantined: list = []
@@ -423,7 +423,7 @@ async def test_local_gate_silence_never_reports_negative_elapsed(tmp_path: Path)
     """静默不足文案里的已过秒数不得为负。
 
     钳位把外部时间戳压到 ``now + MAX_CLOCK_SKEW_SEC``，但**恰在上界**时
-    ``silence_left = min_silence + skew``，仍大于 ``min_silence``，差值为负——
+    ``silence_left = min_silence + skew``，仍大于 ``min_silence``，差值为负，
     修复前会向运营者显示「静默时间不足：-300s / 60s。」这种自相矛盾的文案。
     所以钳位之外还需要这一处 ``max(0, ...)``：两者缺一不可，本用例锁的是后者。
     """
@@ -449,7 +449,7 @@ async def test_local_gate_cooldown_over_an_hour_keeps_seconds(tmp_path: Path) ->
     """冷却跨过 1 小时边界时文案不得丢秒：剩余 3650s 应显示 1h0m50s。
 
     分钟以下两档（秒档、"4m0s"）都有断言钉住，唯独小时档的格式串只到分钟，
-    秒数被静默吞掉——三档口径不一致。cooldown_sec 上限 86400（24h），故用
+    秒数被静默吞掉，三档口径不一致。cooldown_sec 上限 86400（24h），故用
     86400 冷却 + 已过 82750s 构造跨小时边界。
     """
     _, models, maker, clock_value, _ = _make_decision(tmp_path, {"cooldown_sec": 86400})
@@ -614,7 +614,7 @@ async def test_build_recent_messages_history_error_is_silent(tmp_path: Path) -> 
 async def test_decision_prompt_keeps_newest_history_when_over_budget(tmp_path: Path) -> None:
     """上下文超预算时必须保尾。
 
-    曾经的写法是 ``sanitize_prompt_variable(recent, max_length=2000)``——截头，
+    曾经的写法是 ``sanitize_prompt_variable(recent, max_length=2000)``，截头，
     会把最新的几条丢掉，与默认模板里「优先参考最近至少 8 条」的要求相反：模型
     拿到的恰好是最不相关的老消息。
     """

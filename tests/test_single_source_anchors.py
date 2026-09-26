@@ -1,7 +1,7 @@
 """单源锚定断言：每个被消除的镜像配一条结构断言。
 
 消除同一判断/同一表达式的多份实现（镜像）后，行为测试管的是"结果对不对"，
-管不住"是不是又抄了一份"——同一份口径在两个文件里各写一遍，行为测试照样
+管不住"是不是又抄了一份"，同一份口径在两个文件里各写一遍，行为测试照样
 全绿，直到某天只改一边。本文件的断言落在**实现点数量**上：用 AST 数调用者、
 看常量的引用者，而不是比对字面量文本。
 
@@ -43,7 +43,7 @@ def _production_modules() -> list[str]:
 def _name_references(rel: str, target: str) -> list[str]:
     """模块内对该标识符的**任意**引用（AST 级，注释与文档串不计）。
 
-    覆盖 ``Name``/属性访问/导入别名/``getattr`` 的字符串实参四种引入方式——
+    覆盖 ``Name``/属性访问/导入别名/``getattr`` 的字符串实参四种引入方式，
     只匹配 ``ast.Name`` 时，``_u.whitelist_storage_key`` 与
     ``getattr(_u, "whitelist_storage_key")`` 这两类写法都能溜过去。
     """
@@ -149,7 +149,7 @@ def test_sticker_filtering_has_one_traversal() -> None:
 
     # 贴纸判据只在 skip_stickers 为真时计算：无条件计算会给 has_images 新开一条
     # "读组件字段抛非 AttributeError → 判为无图片 → 纯图片消息被丢弃"的路径
-    # （has_images 用 except Exception 兜底）。守卫分两层——源码层禁掉无条件形态，
+    # （has_images 用 except Exception 兜底）。守卫分两层，源码层禁掉无条件形态，
     # 行为层由 tests/test_vision.py 的 subType 抛错用例钉住。
     body = method_source("image/extractor.py", "_eligible_image_entries")
     assert "if skip_stickers and _component_is_sticker(" in body, (
@@ -212,7 +212,7 @@ def test_legacy_state_migration_is_not_on_the_read_path() -> None:
     """``state_for`` 不得再改写 ``sessions``；迁移是 ``load_sessions`` 的唯一调用。
 
     用调用者清单而不是子串匹配：子串断言里在 ``load_sessions`` 留一句带该名的
-    注释就能通过，而"谁在调用"才是这条契约本身。且清单要扫**全仓**——只看
+    注释就能通过，而"谁在调用"才是这条契约本身。且清单要扫**全仓**，只看
     storage.py 时，在别处新加一个调用点不会被发现。
 
     ``state_for`` 一侧禁的是整类写旁路：``del``/``pop``/``popitem``/``clear``/
@@ -298,7 +298,7 @@ def test_storage_key_is_derived_in_plugin_state_only() -> None:
 
     判据用标识符级扫描而非 ``ast.Name`` 匹配：``_u.whitelist_storage_key``、
     ``getattr(_u, "whitelist_storage_key")`` 与导入别名都是同一契约的绕过写法。
-    扫描面覆盖**全部**生产模块（排除持有实现的三处），不再限定 5 个文件——
+    扫描面覆盖**全部**生产模块（排除持有实现的三处），不再限定 5 个文件，
     限定清单时，往任何未列出的模块里加调用点都不会被发现。
     """
     allowed = {"utils.py", "storage.py", "plugin_state.py"}
@@ -324,7 +324,7 @@ def test_startup_persist_failure_is_not_swallowed() -> None:
 
     "被消费"的**行为**断言在 ``tests/test_main_runtime.py``
     （``test_startup_persist_failure_is_logged``，注入返回 False 的实现后要求
-    出现 ERROR 日志）——本文件只补源码层的裸调用守卫：``if False and not
+    出现 ERROR 日志）本文件只补源码层的裸调用守卫：``if False and not
     persist(...)`` 这类"保留了分支却不再执行"的写法行为测试能抓，而裸调用
     与"只赋值不使用"只有这里能一眼看全。
     """
@@ -337,7 +337,7 @@ def test_startup_persist_failure_is_not_swallowed() -> None:
     ]
     assert not bare_calls, f"启动路径又吞掉了 persist_settings_config 的返回值：{bare_calls}"
     # 返回值必须被消费：落盘失败要在启动路径上留下 ERROR。判定按**实现点**统计，
-    # 不锚 `__init__` 本体——规范化落盘已移出事件循环，其消费者是
+    # 不锚 `__init__` 本体，规范化落盘已移出事件循环，其消费者是
     # `_normalize_config_sync`（由构造期的后台任务调用）；锚死 `__init__` 等于
     # 锁死实现位置，后续任何"把 IO 挪出循环"的改动都会被这条守卫误伤。
     normalize_sync = "SelfInitiatedReplyPlugin._normalize_config_sync"
@@ -374,7 +374,7 @@ def test_default_prompt_is_consumed_through_the_spec() -> None:
     带首尾空白，四副面孔就会漂移成「恢复默认 → 保存被误报改过字段」与"喂给模型的
     默认值不等于面板显示的默认值"。本断言钉住消费面：除 models.py（定义与
     ``reset_default`` 声明）外，全仓生产模块都不得再出现模板常量名；三个消费点
-    必须写规格表取值这一条表达式——均按 AST 判，注释与文档串不算数。
+    必须写规格表取值这一条表达式，均按 AST 判，注释与文档串不算数。
     """
     offenders = {
         rel: hits
@@ -411,12 +411,12 @@ def test_documented_commands_parse_and_cover_every_action() -> None:
     """三处对外可见的指令清单必须真能解析，且不漏 `COMMAND_ALIASES` 的动作。
 
     两个方向都守：① 文档写了 `/selfreply xxx` 而解析器认不出（改名/打错/说明书
-    先改了）——用户照文档操作会没任何反应；② 新增动作但三处说明都没写
-    ——`metadata.yaml` 的 help 是宿主安装界面唯一展示面，漏写等于用户看不见。
+    先改了）用户照文档操作会没任何反应；② 新增动作但三处说明都没写
+    `metadata.yaml` 的 help 是宿主安装界面唯一展示面，漏写等于用户看不见。
     这里**真跑** `parse_command_text`，不比对文本：指令解析的唯一判据是它。
 
     加载前必须显式装宿主 stub：``commands`` 顶层 import 宿主符号，本文件此前
-    靠其它测试文件先装好 stub 的全局副作用才通过——单独跑本文件即
+    靠其它测试文件先装好 stub 的全局副作用才通过，单独跑本文件即
     ``ModuleNotFoundError``（实测）。宿主 stub 是本用例的前置条件，不应依赖
     执行顺序。
     """

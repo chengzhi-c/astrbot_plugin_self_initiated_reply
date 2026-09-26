@@ -6,7 +6,7 @@
 代次已变时不插、以及 off/always 模式不消耗随机数。
 
 @ 组件能否被断言取决于 ``host_stubs`` 的 ``At`` 桩（空壳 type 会让 ``At(qq=...)``
-抛 TypeError，全部断言退化成假绿）——``test_mention_host_at_stub_accepts_qq`` 就是
+抛 TypeError，全部断言退化成假绿）``test_mention_host_at_stub_accepts_qq`` 就是
 这条前提自身的守卫。
 """
 
@@ -200,7 +200,7 @@ def test_mention_host_at_stub_accepts_qq(tmp_path: Path) -> None:
     """守卫：``At`` 桩必须接受 ``qq=`` 关键字，否则上面全部用例都是假绿。
 
     空壳 ``type("At", (), {})`` 会让 ``At(qq=...)`` 抛 TypeError，被
-    ``_attach_mention`` 的 except 吞掉——所有"已插入 @"断言会静默通过。
+    ``_attach_mention`` 的 except 吞掉，所有"已插入 @"断言会静默通过。
     """
     from . import host_stubs
 

@@ -2,7 +2,7 @@
 
 判据从「只看退出码」升级为「看报告实体」。原实现的漏洞（实测过的）：
 - ``node --test`` 对「文件加载失败」「after hook 失败」都返回 1，旧门禁把 rc==1
-  一律记 CAUGHT——目标测试被语法错误/import 崩掉也算「捕获」；
+  一律记 CAUGHT，目标测试被语法错误/import 崩掉也算「捕获」；
 - 没有注入前基线：目标测试本来就挂时，任何变异都会被记成 CAUGHT；
 - 没要求 ``failures=0, errors=0``：teardown error 的 JUnit 形态是
   ``errors=1, failures=0``（实测），旧门禁只看 rc!=0 也算捕获。

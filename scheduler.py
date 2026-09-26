@@ -179,7 +179,7 @@ class SessionScheduler:
             running_task.cancel()
 
     def _discard_delay_task(self, umo: str, task: asyncio.Future[Any]) -> None:
-        """``add_done_callback`` 回调：形参收 ``Future``——``add_done_callback`` 声明
+        """``add_done_callback`` 回调：形参收 ``Future``，``add_done_callback`` 声明
         传入的就是 ``Future``，写窄成 ``Task`` 只能靠 ignore 绕过类型检查。"""
         if self._delay_tasks.get(umo) is task:
             self._delay_tasks.pop(umo, None)
@@ -188,7 +188,7 @@ class SessionScheduler:
         """会话活动（新消息等）：置位当前静默事件，唤醒正在静默等待的延迟检查。
 
         等待者每次醒来都以实际会话状态复查（通知只是加速，状态才是权威）；
-        事件被消费后从表内移除，下次等待重建——无通知时由超时兜底照常推进。
+        事件被消费后从表内移除，下次等待重建，无通知时由超时兜底照常推进。
         """
         event = self._silence_events.pop(umo, None)
         if event is not None:
@@ -295,12 +295,12 @@ class SessionScheduler:
     ) -> None:
         """延迟后对会话跑一次检查。
 
-        每道等待闸门后都重验 ``_should_run`` 与代次，任一失效即放弃——白名单移除
+        每道等待闸门后都重验 ``_should_run`` 与代次，任一失效即放弃，白名单移除
         或会话重加（ABA）后的旧任务不得复活发送。``force=True`` 跳过静默期，但
         不跳过代次校验与运行互斥。
 
         失败时：``CancelledError`` 静默返回（停止/失效路径的正常收敛）；其余异常
-        记 warning 后吞掉，不向调用方冒泡——它由 ``asyncio.Task`` 驱动，抛出只会
+        记 warning 后吞掉，不向调用方冒泡，它由 ``asyncio.Task`` 驱动，抛出只会
         变成无人接管的任务异常。静默等待步骤的 ``finally`` 必定回收本任务创建的
         事件，且仅在表中仍是自己时才删（交错重建时误删会让新任务丢失通知）。
         """
