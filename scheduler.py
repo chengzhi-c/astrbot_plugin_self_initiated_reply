@@ -45,6 +45,17 @@ class CheckSessionCallback(Protocol):
     ) -> Awaitable[str]: ...
 
 
+def _log_removed_images(removed_images: int) -> int:
+    """两条清理路径共用的收尾：有清理数才记 INFO，原样透传数量。"""
+    if removed_images:
+        logger.info(
+            "[%s] cleaned up %d expired frozen images",
+            PLUGIN_ID,
+            removed_images,
+        )
+    return removed_images
+
+
 class SessionScheduler:
     """每会话延迟检查、后台巡检与周期清理的时序实现。"""
 
@@ -348,16 +359,6 @@ class SessionScheduler:
         }
         return image_age, protected_sources
 
-    @staticmethod
-    def _log_removed_images(removed_images: int) -> int:
-        if removed_images:
-            logger.info(
-                "[%s] cleaned up %d expired frozen images",
-                PLUGIN_ID,
-                removed_images,
-            )
-        return removed_images
-
     def cleanup_image_sources(self, *, now: float | None = None) -> int:
         """同步清理过期图片索引与磁盘缓存。
 
@@ -366,7 +367,7 @@ class SessionScheduler:
         """
         current = now_ts() if now is None else float(now)
         image_age, protected_sources = self._prune_image_index(current)
-        return self._log_removed_images(
+        return _log_removed_images(
             ImageParser.cleanup_source_cache(
                 self._image_cache_dir,
                 protected_sources=protected_sources,
@@ -392,7 +393,7 @@ class SessionScheduler:
                 max_age_sec=image_age,
                 now=current,
             )
-            return self._log_removed_images(removed_images)
+            return _log_removed_images(removed_images)
 
     def cleanup_events_if_needed(self) -> None:
         """定期清理没有任务或运行中的陈旧事件。"""
@@ -501,7 +502,7 @@ class SessionScheduler:
         while self._should_run():
             try:
                 image_age = max(60.0, float(self.settings.vision_image_age_sec))
-                # 清理周期取图片保留窗口的一半（60s–1h 夹取）：磁盘上限可控，又不至于频繁 rglob。
+                # 清理周期取图片保留窗口的一半（60s-1h 夹取）：磁盘上限可控，又不至于频繁 rglob。
                 await asyncio.sleep(min(3600.0, max(60.0, image_age / 2.0)))
                 if not self._should_run():
                     return

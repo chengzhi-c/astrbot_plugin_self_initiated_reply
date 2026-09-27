@@ -51,11 +51,6 @@ from .session_gate import SessionGate
 # 该价值由本注释承载。
 CommandReply = AsyncGenerator[Any, None]
 
-# 隔离任务注册表的容量参照（不是"还能再接受几个任务"的配额）：首例隔离即经
-# _mark_degraded 关闭 spawn，此后不再有新任务，表规模自然受限。本常量供运维
-# 判读告警与测试模拟规模用，不参与任何门禁判定。
-MAX_QUARANTINED_TASKS = 8
-
 _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
 
 # 宿主私有符号收敛：值全部来自适配层探测，本文件不再直接
@@ -476,11 +471,9 @@ class SelfInitiatedReplyPlugin(Star):
     def _can_start_tasks(self) -> bool:
         """Return whether new plugin-owned work may be scheduled.
 
-        容量条件（``len(quarantined) < MAX_QUARANTINED_TASKS``）已删除：首例隔离
-        即经 ``_mark_degraded`` 把 lifecycle 切到 DEGRADED 且永不回退，该条件被
-        先行短路、从未起过决定作用；留着它会让读者误以为"还能再接受几个任务"。
-        ``MAX_QUARANTINED_TASKS`` 仅是隔离注册表的规模参照（供运维判读与测试模拟用，
-        见定义处注释），``_quarantine_task`` 不做容量判定。
+        不做隔离注册表的容量判定：首例隔离即经 ``_mark_degraded`` 把 lifecycle
+        切到 DEGRADED 且永不回退，任何"还能再接受几个任务"的容量条件都会被
+        先行短路、从未起过决定作用；留着只会让读者误以为它参与门禁。
         """
         return self._lifecycle_state is PluginLifecycle.RUNNING and not self._stopping
 

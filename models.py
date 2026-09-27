@@ -233,7 +233,7 @@ def fmt_ts(ts: float | None) -> str:
 
 _MINUTE_SECONDS = 60
 _HOUR_SECONDS = 3600
-# 可打印字符的 Unicode 码点下界：控制字符（0x00–0x1F）一律从提示词变量里剔除。
+# 可打印字符的 Unicode 码点下界：控制字符（0x00-0x1F）一律从提示词变量里剔除。
 _PRINTABLE_CHAR_MIN = 32
 
 # 文本空白归一的正则常量住在 models：utils 依赖 models（依赖图叶子），反向会成环。

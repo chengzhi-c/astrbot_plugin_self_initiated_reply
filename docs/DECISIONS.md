@@ -11,8 +11,8 @@
 不采用「hatch 构建 wheel → `check_wheel`/`check_sdist` 内容断言 → 从 wheel
 派生部署 zip」的理由：那套三层互锁（pyproject exclude 列表 ↔ 检查脚本禁运名单 ↔
 pathspec 交叉核验）曾漂移过两次，而分发主路径不产生 wheel，其全部维护成本只服务
-于次要路径；而 `git archive` + `export-ignore` 把同一保证变成单点声明
-——“缓存泄漏进包”这类问题在结构上不再存在。pyproject 的 wheel/sdist 配置保留
+于次要路径；而 `git archive` + `export-ignore` 把同一保证变成单点声明，
+“缓存泄漏进包”这类问题在结构上不再存在。pyproject 的 wheel/sdist 配置保留
 （本地构建仍干净），但不再有发布链依赖它。
 
 ## 双面板
@@ -60,7 +60,7 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 
 ## 非协作任务隔离
 
-生命周期由插件 owner 持有 `RUNNING`、`STOPPING`、`DEGRADED` 三态。停止等待使用硬时间边界；仍吞取消的生成、patrol 或最终状态保存 task 进入 quarantine 并触发 `DEGRADED`，后续 spawn、巡检、force check、工具直发和最终回复全部拒绝。`MAX_QUARANTINED_TASKS` 是代码容量上限，不提供在线恢复命令；任务结束后仅从注册表移除，恢复仍依赖插件重载或宿主重启。
+生命周期由插件 owner 持有 `RUNNING`、`STOPPING`、`DEGRADED` 三态。停止等待使用硬时间边界；仍吞取消的生成、patrol 或最终状态保存 task 进入 quarantine 并触发 `DEGRADED`，后续 spawn、巡检、force check、工具直发和最终回复全部拒绝。隔离即进入 `DEGRADED` 且不可逆，不提供在线恢复命令；任务结束后仅从注册表移除，恢复仍依赖插件重载或宿主重启。
 
 ## 轻量化冻结
 
@@ -129,7 +129,7 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 `_global_addresses`）被 `tests/test_vision.py` 直接引用，并按**本模块
 对象** monkeypatch；拆出后这些 patch 目标要逐处改指新模块，等于把"传输层守卫"
 与"解析层守卫"人为分开。而生产侧只有 `ImageParser._download_image_data_url`
-一个调用方——扇入低意味着拆分收益也低。属"高 churn、零行为收益"的纯文件搬迁。
+一个调用方，扇入低意味着拆分收益也低。属"高 churn、零行为收益"的纯文件搬迁。
 
 替代做法是文件顶部补齐与其余模块同款的结构说明（拥有 / 不拥有 + 分区目录）：
 让读者拿到定位索引，不复用文件边界。`webapi.py` 同理，一并补齐。将来若测试改为
@@ -141,7 +141,7 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 各自的准入证据。
 
 **设置页字面量 id 契约**（`tests/frontend_contract.test.mjs`）：`app.js` 的 `$("id")` 与
-`chrome.mjs` 的 `getElementById("id")` 拼错、或页面删掉对应元素，都不抛异常——调用点
+`chrome.mjs` 的 `getElementById("id")` 拼错、或页面删掉对应元素，都不抛异常：调用点
 普遍有 `if (el)` 守卫，用户只是静默少一块功能。把 `whitelistSummary` 拼成
 `whitelistSummaryTYPO` 时，其余全部用例（含浏览器用例）仍然全绿。
 只做单向 JS ⊆ HTML：反向的孤儿 id 是无害死标记，且会在 `<svg><use href="#…">` 与
@@ -151,13 +151,13 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 没有。实测存量里确有此类指令（`tests/test_adapters.py` 的 `N802`：`__signature__`
 是 dunder，`--select N802` 对该文件也是 All checks passed）。
 注意别用 `ruff check --select RUF100` 去复核存量：`--select` 会整体**替换**配置里的
-选择集，`F401` 随之不在启用之列，两条 `# noqa: F401` 会被连带报成「未启用」——那是
+选择集，`F401` 随之不在启用之列，两条 `# noqa: F401` 会被连带报成「未启用」，那是
 命令副作用，不是存量问题。只用配置本身跑。
 
 **日志断言一律经 `capture_logs(模块.logger)`，禁用 `caplog.at_level(..., logger="astrbot")`**
 （`tests/test_observability.py`、`tests/test_runtime_adapter.py`）：生产代码都
 `from astrbot.api import logger`，而测试里桩 logger 的 name 是 `host_stubs.py` 自己起的
-`selfreply-main-test`——传 `"astrbot"` 时级别提升落在一个不相关的 logger 上。现状能过
+`selfreply-main-test`，传 `"astrbot"` 时级别提升落在一个不相关的 logger 上。现状能过
 纯属巧合（桩 logger `propagate=True`，caplog 的 handler 挂在 root），一旦宿主侧改成
 `propagate=False`，所有日志断言恒空且无人会发现。配套地，承重日志在被测文档里承诺了
 级别时，断言必须钉 `record.levelno`：否则「降到 INFO 被噪音淹没」「升到 ERROR 触发无关
@@ -188,7 +188,7 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 - **理由型注释的体量**：`docs` 另计，生产代码里的注释主体是**理由型**注释（为何不
   那样写、哪条边界是刻意的）；它们是该仓库可评审性的来源，收敛它只会让下一个读者
   重新推导一遍。变更史、评审轮次与外部条目号不属此类，不该保留。
-- **双层防护中的冗余层**：例如图片端口白名单与传输层地址校验重叠——去掉任一层
+- **双层防护中的冗余层**：例如图片端口白名单与传输层地址校验重叠：去掉任一层
   都有另一层兜住，行为等价；这是刻意的纵深，不是重复实现。
 - **`compat_check._runtime_api_gaps` 不改成行为冒烟**：曾试过把 52 行签名枚举换成
   「对 `http://127.0.0.1/x.png` 跑一次 `_fetch_image_data_url` 断言返回 None」。
@@ -199,11 +199,11 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
   大版本，挡不住小版本的签名变化。
 - **扩充 ruff 规则集**：逐条实测后只加了 `RUF100`。`S110`+`SIM105`（吞异常）里
   `S110` 默认只报裸 `except: pass` 与 `except Exception: pass`（16 条），开
-  `check-typed-exception` 后涨到 39 条，而 `SIM105` 只有 18 条——差集全是**多 except
+  `check-typed-exception` 后涨到 39 条，而 `SIM105` 只有 18 条，差集全是**多 except
   子句**（既有取消/超时处理又有日志，`contextlib.suppress` 表达不了），要为一条零事故
-  记录的门禁动 18–39 处并加一批 `noqa`，破坏运行时模块零 `noqa` 这个更有价值的现状。
+  记录的门禁动 18-39 处并加一批 `noqa`，破坏运行时模块零 `noqa` 这个更有价值的现状。
   `ASYNC` 全仓 9 条全是误报（4 条是 httpcore `connect_tcp(timeout=)` 的必需签名、5 条
-  是测试轮询），且它只认固定列表的阻塞调用——本仓两次真实的阻塞缺陷（`rglob` 遍历、
+  是测试轮询），且它只认固定列表的阻塞调用，本仓两次真实的阻塞缺陷（`rglob` 遍历、
   `write_json_atomic`）它都抓不到。`BLE`(88) / `TRY`(73) / `PL`(65) / `EM`(54) /
   `SLF`(114) / `RUF`全量(2563) 是刻意写法与中文标点的 ambiguous-unicode 误报；
   `PTH` 会改行为（`image/extractor` 刻意用 `os.path.isabs or ntpath.isabs` 兼容异风格
@@ -219,7 +219,7 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
   1. **防御分支（约 49%）**：异常兜底、`not x` 早退、`return ""/None/False` 降级。
      例：`delivery.py` 的 quote/mention 组件构造失败静默降级（L146-148、L209-211）、
      `generation.py` 的任务结果回收（L58-60）、`storage.py` 的原子写失败路径
-     （L148-149、L160-161）。这些分支的价值在于**存在**而非被执行——它们对应的
+     （L148-149、L160-161）。这些分支的价值在于**存在**而非被执行：它们对应的
      是“宿主/磁盘/平台出错时不要崩”，触发条件是外部故障，不是代码路径。
   2. **宿主能力分支（约 47%）**：宿主配置对象签名差异、`save_config` 缺失、
      `get_messages`/`message_obj`/`raw_message` 形态差异、`set_extra` 老宿主未实现。
@@ -239,7 +239,7 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
   按第 4 类剔除后的**可驱动口径覆盖率为 93.21%**（3843 条可驱动语句、261 行未覆盖），
   与 `fail_under = 89` 之间有 4.21 点缓冲。缓冲偏大意味着门槛对「新增未覆盖代码」
   不敏感：一次改动覆盖不到十行也不会把总覆盖率拉下 0.2 点。要收紧应先改这里的分母
-  口径（例如把第 4 类从 `[tool.coverage.run] omit` 表达出去），而不是直接抬数字——
+  口径（例如把第 4 类从 `[tool.coverage.run] omit` 表达出去），而不是直接抬数字：
   `omit` 只按文件路径匹配，而指令组函数必须在 `Star` 子类内（宿主
   `selfreply.command` 装饰器依赖类属性），移不出去。
 
@@ -272,7 +272,7 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 
 ## 前端契约的已知无守卫面
 
-前端 4.8k 行、9 个文件、27 个配置键，契约覆盖面见两个测试文件的用例清单（不在此复述条数——数字会随用例增删而腐烂）。以下几类**刻意**不守，
+前端 4.8k 行、9 个文件、27 个配置键，契约覆盖面见两个测试文件的用例清单（不在此复述条数，数字会随用例增删而腐烂）。以下几类**刻意**不守，
 改动前请自行评估后果，不要误以为有网兜住：
 
 - **类选择器**（`.topbar` / `.sidenav-list` / `.sidenav-fade-*` / `.mtab` /
@@ -284,7 +284,7 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
   分散三处且语义不同（前者是脚本加载失败，后两者是配置加载 deadline 与单次 API 上限），
   不收敛。
 - **源码文本断言**（`assert.match(源码)` / `.includes`）：那批是**防删除锚**，不是行为
-  契约——改写法即红，与真实行为无关。要守行为请补浏览器/契约行为用例（参照
+  契约，改写法即红，与真实行为无关。要守行为请补浏览器/契约行为用例（参照
   `save validation guards on whitelist before the numeric scan` 由源码顺序改为行为断言）。
 
 ## Provider 手动态：容器类由控件自己挂，不靠 per-spec 回调
@@ -317,7 +317,7 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 
 原因：粘附阈值在 `chrome.mjs` 是 `window.scrollY > 8`。曾用 `padding: 20px → 12px`
 表达"变矮"，实测占位高度随之变化约 16px；浏览器滚动锚定为保持视觉锚点会补偿
-`scrollY`，而 `scrollY` 又决定 `is-stuck` 是否保留——高度差一旦超过阈值就自激，
+`scrollY`，而 `scrollY` 又决定 `is-stuck` 是否保留，高度差一旦超过阈值就自激，
 表现为页面接近最顶部时疯狂抖动（实测 1.2s 内 class 翻转 129 次）。
 
 - 守卫：`tests/frontend_browser.test.mjs`
@@ -350,7 +350,7 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 原因：5s 是**断言**预算，不是**加载**预算。页面自身给首屏的是 12s 看门狗 +
 每次抓取 15s 硬上限，即页面允许自己慢到 12s 才判定失败；测试用 5s 截断它，
 在机器负载高时就会偶发超时。这类超时的特征是**失败点随负载漂移**（报在哪条
-用例上不固定），与用例自身逻辑无关——排查时先看失败是否总落在同一用例，
+用例上不固定），与用例自身逻辑无关：排查时先看失败是否总落在同一用例，
 再看它是否总落在首屏等待上。
 
 这不放松任何断言：页面真加载失败时看门狗仍会隐藏 boot，各用例自己的
@@ -445,8 +445,8 @@ N = 活跃会话数（白名单上限 MAX_WHITELIST_SIZE = 1000）
 
 `whitelist.commit_change` 的双写失败回滚只恢复**它自己拥有的状态**：白名单集合、
 `sessions`（含 `pruned` 快照）、`_runtime_umos`。调度器侧由引用持有的三张表
-（`main._last_events` / `main._delay_tasks` / `running_sessions` 相关集合）不在其中
-——它们由 `scheduler` 通过构造期注入的引用直接操作，`whitelist.py` 拿不到，也不该
+（`main._last_events` / `main._delay_tasks` / `running_sessions` 相关集合）不在其中：
+它们由 `scheduler` 通过构造期注入的引用直接操作，`whitelist.py` 拿不到，也不该
 反向依赖。
 
 后果：`/selfreply remove` 遇到「内存剪枝成功、磁盘双写失败」时，该会话在
@@ -456,7 +456,7 @@ N = 活跃会话数（白名单上限 MAX_WHITELIST_SIZE = 1000）
 **为什么不在 `whitelist.commit_change` 里补**：那要求把三张表的回滚钩子注入
 白名单层，形成「存储层反向编排调度层」的耦合，而收益只是消掉一次**有自愈路径**的
 静默期。webapi 路径（配置保存）不受影响：它走的是 `plugin_state` 侧的快照-回滚，
-不经过 `_prune`。**这是刻意的取舍，不是遗漏**——若将来调度器改为事件驱动重建在途
+不经过 `_prune`。**这是刻意的取舍，不是遗漏**：若将来调度器改为事件驱动重建在途
 状态，此处可一并消除。
 
 

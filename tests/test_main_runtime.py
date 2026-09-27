@@ -788,16 +788,16 @@ def test_terminate_quarantines_noncooperative_runner(tmp_path: Path) -> None:
 def test_quarantine_capacity_closes_spawn_barrier(tmp_path: Path) -> None:
     """首例隔离即关闭 spawn 屏障（capacity 条件已删除，见 §5）。
 
-    历史实现有 ``len(quarantined) < MAX_QUARANTINED_TASKS`` 容量条件，但首例隔离
-    就经 ``_mark_degraded`` 把 lifecycle 切到 DEGRADED 且永不回退，容量条件被短路，
-    从未起过决定作用。契约：拒绝来自 lifecycle，`MAX_QUARANTINED_TASKS` 只是注册表
-    容量上限。故本用例直接给表填满也不再是"容量拒绝"的证明，改为断言真实语义。
+    历史实现有隔离注册表的容量条件，但首例隔离就经 ``_mark_degraded`` 把
+    lifecycle 切到 DEGRADED 且永不回退，容量条件被短路，从未起过决定作用。
+    契约：拒绝来自 lifecycle，注册表本身不做容量判定。故本用例直接给表填满
+    也不再是"容量拒绝"的证明，改为断言真实语义；填表规模取测试自有常量，
+    与生产代码无耦合。
     """
 
     async def scenario(plugin, main):
-        tasks = [
-            asyncio.create_task(asyncio.sleep(3600)) for _ in range(main.MAX_QUARANTINED_TASKS)
-        ]
+        quarantine_scale = 8
+        tasks = [asyncio.create_task(asyncio.sleep(3600)) for _ in range(quarantine_scale)]
         plugin._quarantined_tasks.update({task: "test capacity" for task in tasks})
         try:
             # 仅填表（不置 DEGRADED）不再是拒绝理由，这正是要钉住的语义。

@@ -282,31 +282,25 @@ class DeliveryRunner:
         # `not reply and not direct_send_count` 会先行短路，空 reply 到不了发送失败
         # 分支。能到这里说明：reply 为空但至少有一条工具直发已提交（DELIVERED 或
         # 状态未知），或本次文本发送已成功投递。
+        # 预览段单点拼参：开关开启且有正文才带 " text=..."，单次调用两个出口
+        # 共用同一格式串，不再各自维护一份只差 preview 参数的镜像。
+        preview = ""
         if self.settings.log_reply_content and reply:
-            preview = (
+            truncated = (
                 reply
                 if len(reply) <= _LOG_REPLY_PREVIEW_CHARS
                 else reply[:_LOG_REPLY_PREVIEW_CHARS] + "…"
             )
-            logger.debug(
-                "[%s] proactive reply sent ledger_id=%s session=%s chars=%d "
-                "direct_tools=%d text=%s",
-                PLUGIN_ID,
-                ledger_id,
-                umo,
-                len(reply),
-                direct_send_count,
-                preview,
-            )
-        else:
-            logger.debug(
-                "[%s] proactive reply sent ledger_id=%s session=%s chars=%d direct_tools=%d",
-                PLUGIN_ID,
-                ledger_id,
-                umo,
-                len(reply),
-                direct_send_count,
-            )
+            preview = f" text={truncated}"
+        logger.debug(
+            "[%s] proactive reply sent ledger_id=%s session=%s chars=%d direct_tools=%d%s",
+            PLUGIN_ID,
+            ledger_id,
+            umo,
+            len(reply),
+            direct_send_count,
+            preview,
+        )
 
         return "已通过工具主动回复。" if direct_send_count and not reply else "已主动回复。"
 

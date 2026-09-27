@@ -6,14 +6,14 @@
 同名条目。副作用因此收敛进 _bootstrap()，只由 __main__ 入口调用。
 
 自有临时目录（``_bootstrap`` 的 chdir 目标）同样由入口拥有：异常路径上
-**先恢复 cwd 再 rmtree**（Windows 上顺序反了会 PermissionError），三条路径
-（成功 / run_contract_checks 抛错 / _bootstrap 自身抛错）都实测。
+**先恢复 cwd 再 rmtree**（Windows 上顺序反了会 PermissionError）。检查失败
+（抛错或非零退出码）与 _bootstrap 自身抛错的路径在此实测；成功路径的清理
+由 ``test_main_preserves_preexisting_*`` 两条用例顺带覆盖，不单独设例。
 """
 
 from __future__ import annotations
 
 import importlib
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -205,89 +205,39 @@ def test_main_preserves_preexisting_repo_path(
     assert sys.path == before_path, "入口删除了调用前已经存在的仓库路径"
 
 
-def test_main_cleans_up_when_run_contract_checks_raises(
+@pytest.mark.parametrize(
+    "stub_kind",
+    ["raises", "exit_code_1"],
+    ids=["contract-check-raises", "contract-check-exit-1"],
+)
+def test_main_cleans_up_when_checks_do_not_succeed(
     monkeypatch: pytest.MonkeyPatch,
     compat: ModuleType,
+    stub_kind: str,
 ) -> None:
-    """run_contract_checks 抛错：cwd 先复原再删目录，异常照原样抛出。"""
-    _no_plugin_package(monkeypatch)
-    created = _instrumented_tempfile(monkeypatch, compat)
-    before_cwd = Path.cwd()
-    before_path = list(sys.path)
+    """run_contract_checks 抛错或返回非零：清理照常，异常与退出码不被吞。
 
-    def _boom() -> int:
-        raise ValueError("simulated contract check failure")
-
-    monkeypatch.setattr(compat, "run_contract_checks", _boom)
-    with pytest.raises(ValueError, match="simulated contract check failure"):
-        compat.main()
-
-    assert len(created) == 1, f"预期自建一个临时目录，实际：{created}"
-    workdir = created[0]
-    assert not workdir.exists(), "检查异常后自有临时目录未删除"
-    assert Path.cwd() == before_cwd, f"cwd 未复原：{Path.cwd()} != {before_cwd}"
-    assert sys.path == before_path, "异常路径后 sys.path 未复原"
-
-
-def test_main_cleans_up_on_success(
-    monkeypatch: pytest.MonkeyPatch,
-    compat: ModuleType,
-) -> None:
-    """正常路径：main 返回检查的退出码，且删掉自有目录、复原 cwd / sys.path。
-
-    真实 host 未必装（.venv 里没有 astrbot），故 stub 掉 run_contract_checks：
-    被测的是清理生命周期，不是宿主契约本身（那是 CI compat 作业的事）。
+    两条失败路径触发的是同一段收尾代码，参数化钉住「不能只在成功路径收尾」。
     """
     _no_plugin_package(monkeypatch)
     created = _instrumented_tempfile(monkeypatch, compat)
     before_cwd = Path.cwd()
     before_path = list(sys.path)
-    monkeypatch.setattr(compat, "run_contract_checks", lambda: 0)
 
-    exit_code = compat.main()
+    if stub_kind == "raises":
 
-    assert exit_code == 0
+        def _boom() -> int:
+            raise ValueError("simulated contract check failure")
+
+        monkeypatch.setattr(compat, "run_contract_checks", _boom)
+        with pytest.raises(ValueError, match="simulated contract check failure"):
+            compat.main()
+    else:
+        monkeypatch.setattr(compat, "run_contract_checks", lambda: 1)
+        assert compat.main() == 1
+
     assert len(created) == 1, f"预期自建一个临时目录，实际：{created}"
-    assert not created[0].exists(), "成功路径未删除自有临时目录"
+    workdir = created[0]
+    assert not workdir.exists(), "检查失败路径未删除自有临时目录"
     assert Path.cwd() == before_cwd, f"cwd 未复原：{Path.cwd()} != {before_cwd}"
-    assert sys.path == before_path, "成功路径后 sys.path 未复原"
-
-
-def test_main_cleans_up_when_contract_checks_fail(
-    monkeypatch: pytest.MonkeyPatch,
-    compat: ModuleType,
-) -> None:
-    """退出码 1（契约缺口）同样走清理：不能只在成功/异常两条路上收尾。"""
-    _no_plugin_package(monkeypatch)
-    created = _instrumented_tempfile(monkeypatch, compat)
-    before_cwd = Path.cwd()
-
-    def _one() -> int:
-        return 1
-
-    monkeypatch.setattr(compat, "run_contract_checks", _one)
-    assert compat.main() == 1
-    assert len(created) == 1
-    assert not created[0].exists(), "退出码 1 路径未删除自有临时目录"
-    assert Path.cwd() == before_cwd
-
-
-def test_main_does_not_swallow_cleanup_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    compat: ModuleType,
-) -> None:
-    """清理失败必须显式失败：rmtree 抛错时 main 不能静默返回 0。"""
-    _no_plugin_package(monkeypatch)
-    created = _instrumented_tempfile(monkeypatch, compat)
-
-    def _boom(*_args: object, **_kwargs: object) -> None:
-        raise OSError("simulated cleanup failure")
-
-    monkeypatch.setattr(shutil, "rmtree", _boom)
-    with pytest.raises(OSError, match="simulated cleanup failure"):
-        compat.main()
-    assert len(created) == 1
-    # 复原 monkeypatch 前手动收尾：替身目录仍留在系统 temp
-    monkeypatch.undo()
-    if created[0].is_dir():
-        shutil.rmtree(created[0], ignore_errors=True)
+    assert sys.path == before_path, "失败路径后 sys.path 未复原"

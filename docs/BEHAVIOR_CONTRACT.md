@@ -16,7 +16,7 @@
 - 发送成功（DELIVERED）后，若代次未变，观察窗口（`last_proactive_observed_at`）
   必须推进到该事件时间；代次已变则不推进且有日志。
 - 代次已变的旧任务：不得**发起**发送，不得推进观察窗口。但**已提交**的发送
-  必须照常走 `record_proactive_attempt`——消耗冷却与日配额，且 DELIVERED 时
+  必须照常走 `record_proactive_attempt`：消耗冷却与日配额，且 DELIVERED 时
   同样写入 `last_proactive_text` 与 assistant 历史条目。因为提交是已发生的
   外部副作用：消息已经出现在群里，不记录会让下一次触发立刻重发同一会话，
   历史也会与平台实况不符。即：代次门拦的是"还没发出去的"，不是"已经发出去
@@ -34,7 +34,7 @@
 
 - UNKNOWN（提交状态未知）不得自动重试、不得触发 after-send 钩子，但必须
   消耗冷却与日配额（防止同一事件被重复处理/重复直发），且不写入 assistant
-  历史条目。观察窗口**仅在代次未变时**推进——代次已变说明该事件已被新消息
+  历史条目。观察窗口**仅在代次未变时**推进：代次已变说明该事件已被新消息
   取代，推进旧事件的窗口会掩盖新事件（与 §1 的代次门同源）。
 - `False` = 确定未提交（如无可达平台目标）：不消耗任何额度、不推进观察窗口。
 - 每次 logical attempt 由 pipeline 创建一个 `AttemptLedger`，ledger 带独立的 `ledger_id`（UUID4 hex）；生成、投递和唯一 record task 只传递同一 ledger 引用。`ledger_id` 只用于日志、任务关联和一次性记账诊断，不参与配置 revision，也不依赖进程级计数器。
@@ -65,7 +65,7 @@
 
 ## 5. 终止与任务生命周期
 
-- 插件生命周期由单一 owner 持有：`RUNNING` 允许新任务；`STOPPING` 阻止 spawn 并等待收敛；`DEGRADED` 表示存在超出硬停止窗口的 quarantine task，拒绝所有新检查（包括 `force=True`）并要求重载插件或重启宿主恢复。**首例隔离即进入 DEGRADED**——`_can_start_tasks` 里的 `len(quarantined) < MAX_QUARANTINED_TASKS` 由 lifecycle 状态先行短路，故 `MAX_QUARANTINED_TASKS` 实际是注册表容量上限（防表无界增长），不是"还能再接受几个任务"的配额。
+- 插件生命周期由单一 owner 持有：`RUNNING` 允许新任务；`STOPPING` 阻止 spawn 并等待收敛；`DEGRADED` 表示存在超出硬停止窗口的 quarantine task，拒绝所有新检查（包括 `force=True`）并要求重载插件或重启宿主恢复。**首例隔离即进入 DEGRADED**：`_can_start_tasks` 只看 lifecycle 状态，任何“还能再接受几个任务”的容量条件都被先行短路、从未起过决定作用；隔离注册表只在任务退出前暂存句柄、退出即移除，没有配额语义。
 - `terminate()` 开始后 spawn barrier 生效：不再启动任何新后台任务。
 - 生成超时不硬取消 run_agent：先 `request_stop` 优雅收敛，宽限
   `GRACEFUL_STOP_GRACE_SEC` 后仍不退才兜底取消；调用方取消时同样收敛，
@@ -88,7 +88,7 @@
 
 - `/off` 与 `/on` **跨宿主重启保持**：双写 `settings.enabled` 与配置文件，
   失败按 §6 同一套纪律回滚（内存回滚 → 重写 → 仍失败告警并上抛）。
-  若只改内存 `runtime_enabled`，重启即回落到持久 `enabled`——用户打完
+  若只改内存 `runtime_enabled`，重启即回落到持久 `enabled`：用户打完
   `/off` 以为已经关停，重启后插件继续发言且无从得知要再打一次。
 - `runtime_enabled` 仍是独立字段：webapi 的 GET config 要能把它与持久
   `enabled` 分开暴露，前端全量保存才不会把临时态固化成持久配置。
@@ -180,18 +180,18 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
 （scheduler / session_coordinator / whitelist / gate）。这些对象在构造时捕获的是
 容器对象本身，不是 main 的属性名。由此产生三条承重契约：
 
-- **B1 — 容器只能原地改，绝不属性重绑定。** 任何恢复/重置路径（`webapi._restore_plugin_state`
+- **B1：容器只能原地改，绝不属性重绑定。** 任何恢复/重置路径（`webapi._restore_plugin_state`
   与 `SessionGate.restore`）必须用 `clear()` + 原地写入
   （`update` / `setdefault` / 下标赋值）保持容器身份，禁止
   `plugin._x = {...}`。违反后果是静默的：回滚后 main 从新 dict 读、协作对象继续
   写旧 dict，该会话主动回复停止直到重启，且不抛异常、无日志。
   失效形态不止「忘了 clear」，也包括「换成新对象再赋值」。
-- **B2 — 白名单变更的双写回滚必须把 prune 掉的会话状态放回原容器。**
+- **B2：白名单变更的双写回滚必须把 prune 掉的会话状态放回原容器。**
   `whitelist.commit_change` 持久化失败时，除恢复白名单集合外，还必须
   `self._sessions.update(pruned)` 把移出时摘下的会话状态还原（配额、冷却、
   观察窗口）。少这一步会让"操作已失败"的会话丢掉历史，等价于配额被清零。
   回滚本身再失败时记 `logger.error` 并上抛（见 §6）。
-- **B3 — release 表不快照，按恢复后的运行集反推。** 它与 B1 的三张表相反，**不**参与
+- **B3：release 表不快照，按恢复后的运行集反推。** 它与 B1 的三张表相反，**不**参与
   快照/整表恢复：等待者持有的是具体 `Event` 对象，按值恢复制造孤儿事件（永久挂起），
   按身份恢复则带回陈旧的 `set` 状态（`while is_running` 每轮立即返回，紧密空转独占
   事件循环）。正确来源是恢复后的运行集：仍在运行的 `clear()`（等待者重新挂起），
@@ -204,7 +204,7 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
 不在其中（release 表按 B3 不参与恢复，混进来会诱导"整对象恢复"这种错误写法）。
 
 守卫方式：`tests/test_config_hot_reload.py` 从源码反推持有者绑定并逐个断言容器
-身份不变（`is` 比较），另有一条完整性守卫防止新增绑定漏登记——手写清单不会自动
+身份不变（`is` 比较），另有一条完整性守卫防止新增绑定漏登记：手写清单不会自动
 跟上代码，漏登记的绑定就是下一个无人看守的 B1。绑定数量以该文件的
 `CONTAINER_HOLDERS` 与源码反推结果为准，此处不复述具体条数（会腐烂）。
 
@@ -213,7 +213,7 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
 
 手工部署包由 `git archive --format=zip` 导出，排除规则单点声明在仓库根
 `.gitattributes` 的 `export-ignore`；未跟踪与被 `.gitignore` 排除的开发物（覆盖率、
-缓存、虚拟环境、`output/`、`dist/`、`data/`）在结构上不可能进包——
+缓存、虚拟环境、`output/`、`dist/`、`data/`）在结构上不可能进包：
 `git archive` 只导出 tracked 文件，不存在“漏排除”这一失败模式。理由见
 `docs/DECISIONS.md` 的「发布产物」一节。
 
@@ -237,7 +237,7 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
     来归 None（=「模型没说」），不得因此废掉整条裁决。
   - `random`：全部按 `quote_probability`（0 从不引用、100 每次引用）。
   - 引用组件在装饰钩子**之后**插入链首；取不到消息 ID 或组件构造失败一律降级为
-    普通发送——装饰性组件不得影响投递结果与记账。
+    普通发送：装饰性组件不得影响投递结果与记账。
   - context 兜底路径不引用：该路径的前提就是事件已不在手边，没有消息 ID 可用。
 
 ### 14.2 @ 对方（`mention_mode`）
@@ -259,7 +259,7 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
   ledger 记账。
 - **context 兜底路径不 @**：该路径的前提就是事件已不在手边，没有 sender_id 可用。
 - 插在装饰钩子**之后**、复核点 3/4 通过的同一位置：两步插入都是同步的，
-  **不得新增 await 点**——「复核点 3 与 send 零 await」的结构性防线性质不变。
+  **不得新增 await 点**：「复核点 3 与 send 零 await」的结构性防线性质不变。
 
 ### 14.3 其他
 

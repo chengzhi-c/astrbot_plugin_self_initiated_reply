@@ -587,7 +587,7 @@ test("styles do not target element ids", async () => {
   // 简单正则 `(^|[\s,{])(#[\w-]+)` 有三类漏检，均已实测：
   // - 无空格组合符：`.a>#id`、`.a~#id`、`*#id`（`#` 前既非空白也非 `,{`）；
   // - 属性选择器相连：`[attr]#id`；
-  // - 3–8 位纯十六进制字形 ID（如 `#abc123`）：被 `#[0-9a-fA-F]{3,8}\b`
+  // - 3-8 位纯十六进制字形 ID（如 `#abc123`）：被 `#[0-9a-fA-F]{3,8}\b`
   // 当颜色剔除。注意 9 位以上反而漏不进颜色正则（`\b` 不满足），
   // 所以区分力只在这个区间。
   // 旧判据另有一处真误报：`content: "#hash #id"` 里的 `#id` 会被当成选择器。
@@ -648,7 +648,7 @@ test("page wires the manual image cache cleanup control to the API", async () =>
 });
 
 test("number inputs keep their hint in aria-describedby", async () => {
-  // 校验错误若独占 aria-describedby，读屏用户聚焦输入框时听不到"建议 30–120
+  // 校验错误若独占 aria-describedby，读屏用户聚焦输入框时听不到"建议 30-120
   // 秒"这类操作必需提示。这条守两件事：HTML 里 hint 有 id 且被 input 引用；
   // config-io 合并而非覆盖 aria-describedby。
   const [html, configIo] = await Promise.all([
