@@ -565,8 +565,9 @@ class DeliveryRunner:
         # 与日配额；已提交记 FAILED_BEFORE_SUBMIT 会不消耗冷却而重发，制造重复
         # 消息。三条测试各钉一侧：提交前失败、提交后失败、异常逃出 gateway。
         # OutboundGateway 会把 adapter 调用期间的 CancelledError 归类为 UNKNOWN，
-        # 让 deliver_reply 继续按不重试语义记录状态；本处单独 raise 只保留给
-        # gateway 之外的取消点。
+        # 让 deliver_reply 继续按不重试语义记录状态；gateway 之外的取消点无需
+        # 单独子句，CancelledError 属 BaseException，下方 except Exception 抓不到，
+        # 它自然上抛。
         send_started = False
         try:
             outbound = OutboundGateway(
@@ -602,8 +603,6 @@ class DeliveryRunner:
                     send_result.outcome.detail,
                 )
             return send_result.outcome
-        except asyncio.CancelledError:
-            raise
         except Exception as exc:
             safe_detail = safe_exc_text(exc)
             logger.warning(
@@ -632,27 +631,25 @@ class DeliveryRunner:
         at = now_ts()
         text = reply.strip() or f"[工具主动发送 x{direct_send_count}]"
         state.record_proactive_attempt(confirmed=confirmed, text=text, at=at)
+        # 推进观察窗口当且仅当本次仍属当前代，与 confirmed 无关：UNKNOWN 也可能
+        # 已送达，推进才能让后续巡检不为同一事件再生成一条回复。is_current 是纯读
+        # （session_gate.SessionGate），取一次存局部量不改变任何时序。
+        current = self._gate.is_current(umo, expected_generation)
+        if current:
+            state.last_proactive_observed_at = (
+                state.last_active_at if observed_active_at is None else observed_active_at
+            )
         if not confirmed:
-            # UNKNOWN may have been delivered: advance the observed window so a
-            # later patrol does not regenerate a reply for the same event.
-            if self._gate.is_current(umo, expected_generation):
-                state.last_proactive_observed_at = (
-                    state.last_active_at if observed_active_at is None else observed_active_at
-                )
             logger.info(
                 "[%s] record unconfirmed proactive send session=%s (submission status unknown)",
                 PLUGIN_ID,
                 umo,
             )
-        elif not self._gate.is_current(umo, expected_generation):
+        elif not current:
             logger.info(
                 "[%s] record delivered stale generation without advancing observation session=%s",
                 PLUGIN_ID,
                 umo,
-            )
-        else:
-            state.last_proactive_observed_at = (
-                state.last_active_at if observed_active_at is None else observed_active_at
             )
 
     async def persist_proactive_state(self) -> bool:

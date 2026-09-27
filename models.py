@@ -59,6 +59,7 @@ MAX_RECENT_MESSAGE_LIMIT = 100  # 历史消息最大缓存数
 MAX_GENERATION_CONTEXT_CHARS = 6000
 MAX_DAILY_REPLIES_LIMIT = 1000  # 每日回复次数上限
 MAX_VISION_IMAGES = 5  # 单次主动回复最多解析的图片数
+MIN_VISION_IMAGE_AGE_SEC = 60  # 图片上下文最短保留时间（短于此清理会退化成抖动）
 MAX_VISION_IMAGE_AGE_SEC = 86400  # 图片上下文最长保留时间
 MAX_VISION_TIMEOUT_SEC = 120  # 单张图片解析超时上限
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 单张图片字节上限（远程下载与本地读取共用）
@@ -1069,7 +1070,7 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         "vision_image_age_sec",
         "int",
         300,
-        60,
+        MIN_VISION_IMAGE_AGE_SEC,
         MAX_VISION_IMAGE_AGE_SEC,
         step=60,
         surfaces=_PANEL,

@@ -135,8 +135,6 @@ class VisionService:
                 len(images),
                 umo,
             )
-        except asyncio.CancelledError:
-            raise
         except TimeoutError:
             logger.warning("[%s] image capture timed out for umo=%s", PLUGIN_ID, umo)
         except Exception as exc:

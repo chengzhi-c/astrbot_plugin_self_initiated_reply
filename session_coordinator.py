@@ -305,15 +305,14 @@ class SessionCoordinator:
 
         candidates: list[Any] = []
         seen: set[str] = set()
-        for _event_at, images in reversed(events):
-            for image in reversed(images):
-                if vision_skip_stickers and getattr(image, "is_sticker", False):
-                    continue
-                key = image.cache_key()
-                if key in seen:
-                    continue
-                seen.add(key)
-                candidates.append(image)
-                if len(candidates) >= vision_max_images:
-                    return list(reversed(candidates))
+        for image in (img for _event_at, images in reversed(events) for img in reversed(images)):
+            if vision_skip_stickers and getattr(image, "is_sticker", False):
+                continue
+            key = image.cache_key()
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(image)
+            if len(candidates) >= vision_max_images:
+                break
         return list(reversed(candidates))

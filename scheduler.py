@@ -23,6 +23,7 @@ from .models import (
     LEAK_WARN_TASK_THRESHOLD,
     MAX_CACHED_EVENTS,
     MAX_RELEASE_WAIT_ROUNDS,
+    MIN_VISION_IMAGE_AGE_SEC,
     PATROL_BACKOFF_DELAY_SEC,
     PLUGIN_ID,
     RELEASE_WAIT_TIMEOUT_SEC,
@@ -339,9 +340,13 @@ class SessionScheduler:
     # 图片与事件清理
     # ------------------------------------------------------------------
 
+    def _image_age_sec(self) -> float:
+        """图片保留窗口；规格表已按同一下限夹取，这里兜住直写 ``settings`` 的路径。"""
+        return max(MIN_VISION_IMAGE_AGE_SEC, float(self.settings.vision_image_age_sec))
+
     def _prune_image_index(self, current: float) -> tuple[float, set[str]]:
         """回收过期图片索引（纯内存，无磁盘 IO），返回 (保留窗口, 受保护源)。"""
-        image_age = max(60.0, float(self.settings.vision_image_age_sec))
+        image_age = self._image_age_sec()
         self._drop_older_images(current - image_age)
 
         protected_sources = {
@@ -439,12 +444,11 @@ class SessionScheduler:
 
         # 回收长期无活动的运行时 UMO 映射，避免对白名单内会话只增不减
         # （巡检对无事件会话会自然跳过，移除安全）。
-        active_umos = set(self._gate.running_sessions_view)
+        # 起点直接复用 live_sessions：本方法是同步的（无 await），且 _clear_event
+        # 只动 _events/_event_at，故到这里的运行中会话与在途延迟任务与上方同一份。
+        active_umos = set(live_sessions)
         active_umos.update(
             umo for umo, at in self._last_event_at.items() if now - at < EVENT_CLEANUP_INTERVAL_SEC
-        )
-        active_umos.update(
-            umo for umo, task in self._delay_tasks.items() if task and not task.done()
         )
         for key, values in list(self._whitelist_runtime_umos.items()):
             kept = values & active_umos
@@ -495,14 +499,12 @@ class SessionScheduler:
     async def _image_cleanup_loop(self) -> None:
         while self._should_run():
             try:
-                image_age = max(60.0, float(self.settings.vision_image_age_sec))
+                image_age = self._image_age_sec()
                 # 清理周期取图片保留窗口的一半（60s-1h 夹取）：磁盘上限可控，又不至于频繁 rglob。
                 await asyncio.sleep(min(3600.0, max(60.0, image_age / 2.0)))
                 if not self._should_run():
                     return
                 await self.run_image_cleanup()
-            except asyncio.CancelledError:
-                raise
             except Exception as exc:
                 logger.warning("[%s] image cleanup loop failed: %s", PLUGIN_ID, exc)
                 # 清理失败 60s 后重试：与巡检退避同量级，不空转也不久拖。
@@ -548,8 +550,6 @@ class SessionScheduler:
                             continue
                         seen_patrol_umos.add(umo)
                         await self._patrol_one_session(umo, now)
-            except asyncio.CancelledError:
-                raise
             except Exception as exc:
                 logger.warning("[%s] patrol loop failed error=%s", PLUGIN_ID, exc, exc_info=True)
                 # 添加退避延迟，避免错误循环

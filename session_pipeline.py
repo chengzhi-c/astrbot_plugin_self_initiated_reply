@@ -377,16 +377,18 @@ class SessionPipeline:
         *,
         expected_generation: int | None,
         observed_active_at: float | None,
-    ) -> bool:
-        """Seal one run and await its single record task, including cancellation."""
+    ) -> None:
+        """Seal one run and await its single record task, including cancellation.
+
+        结论只写进账本，不返回 bool：调用方与测试都从 ``ledger.phase`` 读，
+        理由同 ``_record_ledger`` 的 docstring。
+        """
         ledger.seal()
         # seal() 只把 open→sealed，recorded / record_failed 只能从 recording 经
-        # mark_* 到达。这两支是重入终态（由 test_attempt_ledger 锚定）：二次进入
+        # mark_* 到达。这支是重入终态（由 test_attempt_ledger 锚定）：二次进入
         # 直接返回既有结论，不再挂第二条 record task。
-        if ledger.phase == LedgerPhase.RECORDED:
-            return True
-        if ledger.phase == LedgerPhase.RECORD_FAILED:
-            return False
+        if ledger.phase in {LedgerPhase.RECORDED, LedgerPhase.RECORD_FAILED}:
+            return
         task = cast(asyncio.Task[Any] | None, ledger.record_task)
         if task is None:
             task = self._create_critical_task(
@@ -401,16 +403,12 @@ class SessionPipeline:
             )
             if not ledger.start_recording(task):
                 task.cancel()
-                return ledger.phase == LedgerPhase.RECORDED
+                return
         try:
             await asyncio.shield(cast(asyncio.Future[Any], task))
         except asyncio.CancelledError:
             await asyncio.shield(cast(asyncio.Future[Any], task))
             raise
-        # 结论只从账本状态读：``_record_ledger`` 不返回 bool（见其 docstring），
-        # 失败路径由 ``mark_record_failed`` 落进账本，故看 phase 即等价且单源；
-        # 两侧各判一次会让"成功"出现两个真相源。
-        return ledger.phase == LedgerPhase.RECORDED
 
     def session_check_guard(
         self, umo: str, *, force: bool, expected_generation: int | None

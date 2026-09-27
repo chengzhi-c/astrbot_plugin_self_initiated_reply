@@ -107,8 +107,9 @@ def list_text(settings: Settings) -> str:
     return "主动回复白名单：\n" + "\n".join(f"- {item}" for item in sorted(settings.whitelist))
 
 
-# 最近裁决一行的原因截断长度：reason 会引用 40 字用户原文或脱敏后的
-# 异常文本（模型异常），不截断会把一整段塞进指令回显。
+# 最近裁决一行的原因截断长度：reason 已按 utils.DECISION_REASON_MAX_CHARS 截过，
+# 但仍会引用用户原文或脱敏后的异常文本（模型异常），不在指令回显里再截一次
+# 会把一整段塞进单行状态。
 _RECENT_DECISION_REASON_MAX = 60
 
 

@@ -193,8 +193,6 @@ async def _api_cleanup_image_cache(plugin: SelfInitiatedReplyPlugin) -> dict[str
             "removed": removed,
             "max_age_sec": int(plugin.settings.vision_image_age_sec),
         }
-    except asyncio.CancelledError:
-        raise
     except Exception as exc:
         logger.warning("[%s] manual image cache cleanup failed: %s", PLUGIN_ID, exc)
         return {"ok": False, "error": "图片缓存清理失败"}
@@ -434,20 +432,14 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
         if value not in spec.options:
             raise ValueError(f"{spec.key} 必须是 {'/'.join(sorted(spec.options))}")
         return value
-    if spec.kind == "text":
-        # 只做类型与空白规范化。空提交 = 恢复内置默认（面板留空即复位，见
-        # test_config_schema 的 _INTENTIONAL_EMPTY_DEFAULT）由读侧
-        # models.coerce_config_value 单点实现，写侧再回落一次就是第二份口径。
-        # 容器类型与 str 分支同口径拒绝：str({'a':1}) 落盘的是 Python repr，
-        # 既不是用户输入也不匹配任何模板，属静默损坏。
-        if isinstance(raw, (bool, dict, list)):
-            raise ValueError(f"{spec.key} 必须是字符串")
-        return str(raw or "").strip()
-    # kind == "str"：拒绝 bool/dict/list（str(True)="True"、str({'a':1})="{'a': 1}"
-    # 落盘后永远匹配不到任何 provider，故障静默且不自愈）。int/float 沿用 falsy 规范化
-    # （0→""、42→"42"，与历史面板行为一致，见 test_parse_config_updates_formal_defaults）。
-    # 长度上限由 coerce 读侧按 spec.max_len 统一截断。空值保持空串，
-    # coerce 的 str 分支同样不做默认回落，两侧口径一致。
+    # kind == "text" / "str" 的兜底：只做类型与空白规范化。
+    # 拒绝 bool/dict/list：str(True)="True"、str({'a':1})="{'a': 1}" 落盘后既不是
+    # 用户输入，也永远匹配不到任何 provider 或模板，故障静默且不自愈。
+    # int/float 沿用 falsy 规范化（0→""、42→"42"，与历史面板行为一致，见
+    # test_parse_config_updates_formal_defaults）。
+    # 空提交 = 恢复内置默认（面板留空即复位，见 test_config_schema 的
+    # _INTENTIONAL_EMPTY_DEFAULT），复位与 max_len 截断都只由读侧
+    # models.coerce_config_value 单点实现，写侧再回落一次就是第二份口径。
     if isinstance(raw, (bool, dict, list)):
         raise ValueError(f"{spec.key} 必须是字符串")
     return str(raw or "").strip()
