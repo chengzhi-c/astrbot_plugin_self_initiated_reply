@@ -1404,6 +1404,7 @@ test("the off-list warning requires a loaded list and a non-empty id", async () 
   const fields = [
     { dataset: { configKey: "judge_provider_id", configControl: "judge" } },
     { dataset: { configKey: "vision_provider_id", configControl: "vision" } },
+    { dataset: { configKey: "vision_judge_provider_id", configControl: "visionJudge" } },
   ];
   const form = {
     classList,

@@ -1007,10 +1007,11 @@ test("arming the compact refresh confirm keeps the menu open for the second clic
   page,
 }) => {
   // #refreshBtn 在 #moreActionsMenu 内，而 chrome.mjs 给菜单里每个 button 都挂了
-  // closeMenu。窄屏下脏表单的第一次点击只负责「武装」，提示语是「3 秒内再点一次」，
+  // closeMenu。窄屏下脏表单的第一次点击只负责「武装」，提示语要求再点一次，
   // 但紧随其后的 closeMenu 会把菜单隐藏，第二下点不到（要先重新展开菜单），
   // 提示与可达行为矛盾。断言菜单仍可见、按钮带 is-armed，且第二下真的发出刷新。
-  await page.setViewportSize({ width: 460, height: 800 });
+  // 视口与其他 compact 用例同取 360，不去钉 MORE_ACTIONS_MEDIA 的断点值。
+  await page.setViewportSize({ width: 360, height: 800 });
   await installBridge(page);
   const errors = await openPage(page);
   await page.locator("#messageDelayInput").fill("75");

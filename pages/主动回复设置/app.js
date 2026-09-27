@@ -330,11 +330,14 @@ if (els.refreshBtn) {
 		if (state.isDirty && !refreshArmed) {
 			refreshArmed = true;
 			els.refreshBtn.classList.add("is-armed");
-			showToast("有未保存改动，3 秒内再点一次刷新将丢弃改动");
+			showToast(
+				`有未保存改动，${REFRESH_ARM_MS / 1000} 秒内再点一次刷新将丢弃改动`,
+			);
 			// 本按钮同时在 #moreActionsMenu 内，chrome.mjs 给菜单里每个 button 挂了
 			// closeMenu。窄屏下它会在武装之后立刻隐藏菜单，「再点一次」就点不到了。
 			// 两个监听器同目标同类型、按注册序触发，而 setupMoreActionsMenu 晚于此处
-			// 注册，故 stopImmediatePropagation 只挡 closeMenu 一个，不需要跨模块约定。
+			// 注册，故停掉传播要挡的就是它。冒泡也一并停了，但 document 级那个监听
+			// 只在点击落到 #moreActions 之外时关菜单，对本目标本来就是空操作。
 			event.stopImmediatePropagation();
 			window.clearTimeout(refreshArmTimer);
 			refreshArmTimer = window.setTimeout(() => {

@@ -432,8 +432,9 @@ export function createConfigIo(deps) {
 			);
 			let result;
 			// 「不在列表中」是一个关于列表的断言，只有列表真的加载成功时才作得
-			// 出来；不可用时无从比对，成因由 loadProviders 另行告知。留空表示
-			// 「用当前会话默认模型」，由 providerNeedsManualInput 的空串分支放行。
+			// 出来；不可用时无从比对，成因由 loadProviders 另行告知。留空是各控件
+			// 自己声明的默认语义（见 app.js PROVIDER_CONTROLS 的 placeholder），
+			// 由 providerNeedsManualInput 的空串分支放行。
 			const listAvailable = isProviderListAvailable();
 			const offList =
 				listAvailable &&
