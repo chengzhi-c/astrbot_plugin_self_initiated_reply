@@ -444,8 +444,9 @@ class SessionScheduler:
 
         # 回收长期无活动的运行时 UMO 映射，避免对白名单内会话只增不减
         # （巡检对无事件会话会自然跳过，移除安全）。
-        # 起点直接复用 live_sessions：本方法是同步的（无 await），且 _clear_event
-        # 只动 _events/_event_at，故到这里的运行中会话与在途延迟任务与上方同一份。
+        # 起点直接复用 live_sessions：本方法是同步的（无 await），中间只调
+        # _clear_event（动 _events/_event_at）与 _prune_image_index（动图片表），
+        # 都不碰运行中会话与延迟任务表，故这里与上方是同一份集合。
         active_umos = set(live_sessions)
         active_umos.update(
             umo for umo, at in self._last_event_at.items() if now - at < EVENT_CLEANUP_INTERVAL_SEC

@@ -107,9 +107,10 @@ def list_text(settings: Settings) -> str:
     return "主动回复白名单：\n" + "\n".join(f"- {item}" for item in sorted(settings.whitelist))
 
 
-# 最近裁决一行的原因截断长度：reason 已按 utils.DECISION_REASON_MAX_CHARS 截过，
-# 但仍会引用用户原文或脱敏后的异常文本（模型异常），不在指令回显里再截一次
-# 会把一整段塞进单行状态。
+# 最近裁决一行的原因截断长度。reason 的长度不因单点上界而可依赖：模型 JSON 路径
+# 按 utils.DECISION_REASON_MAX_CHARS 截过，模型异常路径是「判断模型异常：」拼脱敏
+# 原文（redact_exc_text 只钳 URL 片段，不限总长），且都会引用用户原文。
+# 单行回显必须自带上限，否则一整段会塞进指令状态。
 _RECENT_DECISION_REASON_MAX = 60
 
 
