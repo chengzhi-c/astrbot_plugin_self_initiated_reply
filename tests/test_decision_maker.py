@@ -43,7 +43,7 @@ def _make_decision(
     decision_mod = _decision_module()
     settings = models.Settings.from_config(config or {})
     clock_value = [float(clock[0]) if clock else 1000.0]
-    calls = {"model": 0, "provider": 0, "history": 0, "image": 0}
+    calls = {"model": 0, "provider": 0, "history": 0, "image": 0, "image_args": None}
 
     async def resolve_provider(umo):
         calls["provider"] += 1
@@ -77,6 +77,7 @@ def _make_decision(
 
     async def build_image_context(umo, enabled, provider_id):
         calls["image"] += 1
+        calls["image_args"] = (enabled, provider_id)
         return image_context
 
     maker = decision_mod.DecisionMaker(
@@ -552,6 +553,26 @@ async def test_prompt_sanitizes_user_input_and_appends_json_contract(tmp_path: P
     assert "should_reply" in prompt
     assert "reason" in prompt
     assert "[图片描述]" in prompt
+
+
+async def test_prompt_image_context_uses_judge_vision_settings(tmp_path: Path) -> None:
+    """判断侧识图只取 judge 的开关与解析后的 provider。
+
+    与生成侧对调不会抛异常，只是把群聊图片发到另一个模型的端点（计费与外泄
+    面）；两侧配置刻意取镜像值，任何一侧串线都会变红。
+    """
+    _, models, maker, _, calls = _make_decision(
+        tmp_path,
+        {
+            "vision_judge_enabled": True,
+            "vision_judge_provider_id": "judge-vision",
+            "vision_main_enabled": False,
+            "vision_provider_id": "main-vision",
+        },
+    )
+    state = _state(models, active_at=900.0, recent=[("user", "今天好热", 990.0)])
+    await maker.build_decision_prompt("s1", state, "message_delay")
+    assert calls["image_args"] == (True, "judge-vision")
 
 
 async def test_prompt_recent_messages_keep_line_structure(tmp_path: Path) -> None:

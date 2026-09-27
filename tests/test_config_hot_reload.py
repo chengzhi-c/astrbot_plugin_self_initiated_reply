@@ -262,9 +262,8 @@ CONTAINER_HOLDERS: tuple[tuple[str, str, str], ...] = (
     ("_recent_image_events", "_scheduler", "_recent_image_events"),
     ("_recent_image_events", "_coordinator", "_images"),
     ("_whitelist_runtime_umos", "_scheduler", "_whitelist_runtime_umos"),
-    # 第 11 个绑定：由 test_container_holder_table_is_complete 从源码枚举出来，
-    # 手写表原先漏了。它不是只读，whitelist.py:97/99 会写回 self._runtime_umos，
-    # 正是 B1 的失效形态（回滚后写孤儿表 → 裸群号映射丢失）。
+    # 它不是只读，whitelist.py 会写回 self._runtime_umos，正是 B1 的失效形态
+    # （回滚后继续写孤儿表 → 裸群号到 UMO 的映射丢失）。
     ("_whitelist_runtime_umos", "_whitelist", "_runtime_umos"),
     ("sessions", "_whitelist", "_sessions"),
 )
@@ -273,7 +272,7 @@ CONTAINER_HOLDERS: tuple[tuple[str, str, str], ...] = (
 def test_config_rollback_preserves_every_container_holder(tmp_path) -> None:
     """回滚后**每一个**持有者都必须仍指向 main 侧的同一容器对象。
 
-    按 ``CONTAINER_HOLDERS`` 表枚举全部 11 个绑定。缺陷模式同 B1，
+    按 ``CONTAINER_HOLDERS`` 表枚举全部绑定（条数以表为准，不在此复述）。缺陷模式同 B1，
     ``_restore_plugin_state`` 里任何一行退回 ``plugin.X = snapshot[...]``，
     该容器的所有持有者都会继续读写孤儿对象，主动回复静默停止直到重启。
     """

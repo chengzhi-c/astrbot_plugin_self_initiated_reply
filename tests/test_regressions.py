@@ -14,7 +14,6 @@ import hashlib
 import importlib
 import os
 import sys
-import types
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +21,9 @@ import pytest
 
 from .host_stubs import (
     PipelineTestAdapter,
+    install_astrbot_stubs,
     load_modules,
+    load_package,
     until,
     webapi_module,
     with_plugin,
@@ -43,6 +44,18 @@ def _load_r3_modules():
     return load_modules(
         PACKAGE_NAME_R3, "models", "utils", "commands", "image", "image.recorder_bridge"
     )
+
+
+def _load_plugin_module(module: str):
+    """在 test_vision 的动态包名下加载插件模块。
+
+    复用其包名以共享 sys.modules 隔离；stub 安装不能依赖 test_vision 先跑
+    （本文件可独立运行），加载前显式安装，幂等。
+    """
+    import tests.test_vision as vision
+
+    install_astrbot_stubs()
+    return load_package(vision.PACKAGE_NAME, module)
 
 
 # ============================================================================
@@ -168,17 +181,6 @@ def test_config_mutations_share_one_lock_and_settings_normalizer(tmp_path: Path)
 # ============================================================================
 
 
-def _load_vision_image():
-    """复用 test_vision 的动态包加载模式。"""
-    import tests.test_vision as vision
-
-    root = Path(vision.ROOT)
-    package = types.ModuleType(vision.PACKAGE_NAME)
-    package.__path__ = [str(root)]
-    sys.modules[vision.PACKAGE_NAME] = package
-    return importlib.import_module(f"{vision.PACKAGE_NAME}.image")
-
-
 def _install_tool_injecting_pipeline(plugin, main, *, event):
     """固定形态：3 标准工具 + hook 注入 + reset/prompts 双快照。
 
@@ -292,7 +294,7 @@ def test_system_hint_matches_tool_policy(tmp_path: Path) -> None:
 def test_cache_hit_does_not_rewrite_file(tmp_path: Path) -> None:
     """内容寻址命中且未篡改时不得重写文件（digest 比较修复）。"""
 
-    image = _load_vision_image()
+    image = _load_plugin_module("image")
     parser = image.ImageParser(object(), source_cache_dir=tmp_path / "image_cache")
     payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
     encoded = base64.b64encode(payload).decode()
@@ -367,21 +369,6 @@ def test_config_rollback_restores_sessions_and_locks(tmp_path: Path) -> None:
         assert restored.last_proactive_text == "上次回复", "上次回复文本丢失"
 
     with_plugin(tmp_path, scenario)
-
-
-# ============================================================================
-# 工具策略 / UNKNOWN / 并发
-# ============================================================================
-
-
-def _load_vision_main():
-    import tests.test_vision as vision
-
-    root = Path(vision.ROOT)
-    package = types.ModuleType(vision.PACKAGE_NAME)
-    package.__path__ = [str(root)]
-    sys.modules[vision.PACKAGE_NAME] = package
-    return importlib.import_module(f"{vision.PACKAGE_NAME}.main")
 
 
 # ============================================================================
@@ -1194,28 +1181,6 @@ def test_check_command_waits_for_previous_run_release(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# Agent 管线装配与宿主交互路径（build/run 效应、闸门恢复、_call_compat）
-# ============================================================================
-
-
-def _load_main():
-    import tests.test_vision as vision
-
-    from .host_stubs import install_astrbot_stubs
-
-    # 本文件可独立运行：stub 安装不能依赖 test_vision 先跑（排序依赖），
-    # 加载前显式安装，幂等，重复调用无副作用。
-    install_astrbot_stubs()
-    root = Path(vision.ROOT)
-    package = vision.PACKAGE_NAME
-    if package not in sys.modules:
-        module = __import__("types").ModuleType(package)
-        module.__path__ = [str(root)]
-        sys.modules[package] = module
-    return importlib.import_module(f"{package}.main")
-
-
-# ============================================================================
 # 0.1 P0：run_task 孤儿泄漏
 # ============================================================================
 
@@ -1746,7 +1711,7 @@ def test_gate_restore_wakes_waiter_for_no_longer_running(tmp_path: Path) -> None
 def test_call_compat_does_not_retry_body_type_error() -> None:
     """函数体内部抛 TypeError（与签名无关）：只调用一次，不触发 minimal 重试。"""
 
-    main = _load_main()
+    main = _load_plugin_module("main")
     adapters = importlib.import_module(f"{main.__package__}.adapters")
     calls: list[str] = []
 

@@ -217,7 +217,7 @@ def _make_runner(
     settings = models.Settings.from_config(config or {})
     fake_runtime = runtime if runtime is not None else FakeRuntime()
     gate = SimpleNamespace(is_current=lambda umo, generation: True)
-    calls = {"hook": 0, "history": 0, "image": 0}
+    calls = {"hook": 0, "history": 0, "image": 0, "image_args": None}
 
     if hook is None:
 
@@ -231,6 +231,7 @@ def _make_runner(
 
     async def build_image_context(umo, enabled, provider_id):
         calls["image"] += 1
+        calls["image_args"] = (enabled, provider_id)
         return image_context
 
     background_tasks: set[asyncio.Task] = set()
@@ -1065,6 +1066,26 @@ async def test_build_context_text_merges_history_and_image(tmp_path: Path) -> No
     assert "[图片描述]" in text
     # 短历史必须逐字不变：预算只裁病态长史，不触碰正常路径。
     assert "省略" not in text
+
+
+async def test_build_context_text_uses_main_vision_settings(tmp_path: Path) -> None:
+    """生成侧识图只取主识图的开关与 provider。
+
+    与判断侧对调不会抛异常，只是把会话图片与上下文发到另一个模型的端点（计费
+    与外泄面）；两侧配置刻意取镜像值，任何一侧串线都会变红。
+    """
+    _, models, runner, _, calls, _ = _make_runner(
+        tmp_path,
+        {
+            "vision_main_enabled": True,
+            "vision_provider_id": "main-vision",
+            "vision_judge_enabled": False,
+            "vision_judge_provider_id": "judge-vision",
+        },
+    )
+    state = _state(models, recent=[("user", "新消息", 990.0)])
+    await runner.build_context_text("s1", state)
+    assert calls["image_args"] == (True, "main-vision")
 
 
 async def test_build_context_text_caps_history_at_budget(tmp_path: Path) -> None:

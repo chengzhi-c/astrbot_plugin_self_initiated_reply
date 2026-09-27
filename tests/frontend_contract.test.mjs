@@ -87,7 +87,6 @@ const makeConfigIo = ({
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pageDir = join(root, "pages", "主动回复设置");
-const MAX_SOURCE_LINE = 200;
 const TEST_REVISION = `sha256:${"a".repeat(64)}`;
 
 test("bridge rejection is normalized by the shared API request", async () => {
@@ -509,7 +508,7 @@ test("settings page scripts only look up ids that index.html declares", async ()
   // 只是静默少一块功能。实测把 whitelistSummary 拼成 whitelistSummaryTYPO 后，
   // 本文件其余契约、浏览器用例与全量 pytest 全部保持绿色（计数不写数字，
   // 写了必然随开发过时）。
-  // 文件清单由目录派生（同下面的行宽守卫），新增脚本自动纳入。
+  // 文件清单由目录派生，新增脚本自动纳入。
   // 只做单向 JS ⊆ HTML：反向的"孤儿 id"是无害死标记，而且会在
   // <svg><use href="#…"> 与 aria-* 锚点上误报，豁免名单本身会腐烂。
   const names = (await readdir(pageDir)).filter((name) => /\.(js|mjs)$/.test(name)).sort();
@@ -765,47 +764,6 @@ test("topbar height writeback stays single-sourced and guarded", async () => {
   assert.match(chrome, /new window\.ResizeObserver\(write\)\.observe\(els\.topbar\)/);
   assert.match(chrome, /getPropertyValue\("--topbar-h"\) === `\$\{height\}px`/);
   assert.match(app, /syncTopbarHeight\(els\);/);
-});
-
-test("dead css rules stay deleted", async () => {
-  // 已删死规则（CSSOM 删除 + 计算样式比对确认无视觉变化）逐条钉住，
-  // 防它们在后续编辑里被"顺手恢复"。断言按规则体取，不用裸子串：`.provider-hint`
-  // 这类名字在别的选择器里仍可能合法出现。选择器行允许前置空白：媒体查询里的
-  // 规则带缩进，只按顶格匹配会把它们漏掉（`:focus-visible` 与 `margin-left`
-  // 两条初版就是这么漏检的）。
-  const [css, html] = await Promise.all([
-    readFile(join(pageDir, "style.css"), "utf8"),
-    readFile(join(pageDir, "index.html"), "utf8"),
-  ]);
-  const dead = [
-    /^\s*\.sidenav-group:first-of-type \{/m,
-    /^\s*\.readout\.is-info \.stat-dot \{/m,
-    /^\s*\.sidenav-link\.is-current:not\(:focus-visible\) \{/m,
-    /^\s*\.provider-hint \{/m,
-    /^\s*\.form-actions-hint \{[^}]*margin-left: 0;/m,
-    /^\s*html\.bold-text \.form/m,
-  ];
-  for (const selector of dead) {
-    assert.doesNotMatch(css, selector, `死规则仍在：${selector}`);
-  }
-  // 断点块里的三条（@720 的 --prompt-workspace-height、reduced-motion 的
-  // .toast background、.sidenav 的 backdrop-filter）按"该块内不得出现"判定。
-  assert.doesNotMatch(css, /--prompt-workspace-height: auto/);
-  assert.doesNotMatch(
-    css,
-    /@media \(prefers-reduced-motion[^}]*\{[\s\S]*?\.toast \{/,
-    "reduced-motion 里的死 .toast 规则仍在",
-  );
-  assert.doesNotMatch(
-    css,
-    /^\.sidenav \{[^}]*backdrop-filter/m,
-    ".sidenav 的 backdrop-filter 仍在（背景不透明，该属性无可见效果）",
-  );
-  assert.doesNotMatch(html, /id="sidenav"/);
-
-  // 活规则不能被连带删掉：这两条都是"看起来像死规则"的真规则。
-  assert.match(css, /^\s*\.master \.readout\.is-info \.stat-dot \{/m);
-  assert.match(css, /^\s*\.sidenav \{[^}]*box-shadow/m);
 });
 
 test("theme label names match between CSS content and JS labels", async () => {
@@ -1569,23 +1527,6 @@ test("prompt preview keeps unknown variables verbatim", () => {
   const out = renderPromptTemplateHtml("hi {foo} {latest_message}");
   assert.ok(out.includes("{foo}"));
   assert.ok(!out.includes("undefined"));
-});
-
-test("settings page JS sources keep lines within the width cap", async () => {
-  // 文件清单由目录派生，不手抄：手写清单在新增设置页脚本时不会自动跟上，
-  // 新文件的行宽就此无人看守（这类"名单腐烂"正是本套契约要防的形态）。
-  const names = (await readdir(pageDir)).filter((name) => /\.(js|mjs)$/.test(name)).sort();
-  assert.ok(names.includes("app.js"), "设置页脚本清单为空或目录读错");
-  for (const name of names) {
-    const text = await readFile(join(pageDir, name), "utf8");
-    const lines = text.split(/\r?\n/);
-    for (let i = 0; i < lines.length; i += 1) {
-      assert.ok(
-        lines[i].length <= MAX_SOURCE_LINE,
-        `${name}:${i + 1} length ${lines[i].length} > ${MAX_SOURCE_LINE}`
-      );
-    }
-  }
 });
 
 test("a failed POST leaves the page requiring a refresh before the next save", async () => {

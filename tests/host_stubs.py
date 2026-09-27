@@ -24,16 +24,6 @@ ROOT = Path(__file__).resolve().parents[1]
 MAIN_PACKAGE_NAME = "selfreply_main_test_package"
 
 
-def arg_value(argv: list[str], flag: str) -> str:
-    """取 ``--flag=value`` / ``--flag value`` 两种写法里的值。"""
-    for index, arg in enumerate(argv):
-        if arg == flag:
-            return argv[index + 1]
-        if arg.startswith(f"{flag}="):
-            return arg.split("=", 1)[1]
-    raise AssertionError(f"{flag} 不在 argv 中: {argv}")
-
-
 # 单源守卫的扫描面：用 rglob 并在此单点声明排除目录，避免各守卫各写一套。
 # 非递归的 ROOT.glob("*.py") 会把 image/ 子包漏在视野外。
 _NON_PRODUCTION_DIRS = frozenset(

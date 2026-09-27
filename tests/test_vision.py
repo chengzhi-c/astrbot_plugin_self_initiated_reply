@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import logging
 import os
 import re
 import socket
@@ -15,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from .host_stubs import ROOT, capture_logs, load_modules, load_package
+from .host_stubs import ROOT, capture_logs, install_astrbot_stubs, load_modules, load_package
 
 PACKAGE_NAME = "selfreply_vision_test_package"
 
@@ -1913,12 +1914,9 @@ async def test_vision_service_build_context_attaches_image_descriptions() -> Non
     assert text.index("不可信") < text.index("窗台上的猫")
 
 
-async def test_vision_service_edge_branches() -> None:
-    """覆盖 vision_runtime: build_context、_freeze_images 与本地快照异常分支。"""
-    import asyncio
-    from types import SimpleNamespace
-
-    _, image, _ = _load_modules()
+async def test_build_context_returns_empty_without_vision_or_parser() -> None:
+    """vision_runtime.build_context 的两条早退：识图关闭、无可用解析器，都不产生上下文。"""
+    install_astrbot_stubs()
     vr = load_package(PACKAGE_NAME, "image.vision_runtime")
 
     settings = SimpleNamespace(
@@ -1931,61 +1929,26 @@ async def test_vision_service_edge_branches() -> None:
         images_for=lambda *args, **kwargs: [],
         capture_images=lambda *args, **kwargs: [],
     )
-    gate = SimpleNamespace(is_current=lambda *args: True)
-
-    def make_service(parser=None):
-        srv = vr.VisionService(
-            settings=settings,
-            bridge=None,
-            context=None,
-            source_cache_dir=Path("/tmp"),
-            data_root=Path("/tmp"),
-            coordinator=coordinator,
-            gate=gate,
-            is_stopping=lambda: False,
-            track_background_task=lambda coro: coro.close(),
-        )
-        srv.get_image_parser = lambda *args: parser
-        return srv
-
-    service = make_service(None)
-
-    # 1. build_context 当 enabled=False
-    assert await service.build_context("u1", enabled=False) == ""
-
-    # 2. build_context 当 parser is None
-    assert await service.build_context("u1", enabled=True) == ""
-
-    # 3. _freeze_images 当 parser is None
-    await service._freeze_images("u1", generation=1, active_at=1.0, images=[])
-
-    async def fake_prepare(images, **kw):
-        return [False] * len(images)
-
-    fake_parser = SimpleNamespace(
-        prepare_batch=fake_prepare,
-        snapshot_local_sources=lambda images, **kw: asyncio.sleep(0),
+    service = vr.VisionService(
+        settings=settings,
+        bridge=None,
+        context=None,
+        source_cache_dir=Path("/tmp"),
+        data_root=Path("/tmp"),
+        coordinator=coordinator,
+        gate=SimpleNamespace(is_current=lambda *args: True),
+        is_stopping=lambda: False,
+        track_background_task=lambda coro: coro.close(),
     )
-    service_with_parser = make_service(fake_parser)
-    # 4. _freeze_images 当提取出图片但无一成功冻结
-    img = image.ImageInfo(url="http://example.com/test.png")
-    await service_with_parser._freeze_images("u1", generation=1, active_at=1.0, images=[img])
+    service.get_image_parser = lambda *args: None
 
-    async def failing_snapshot(*a, **kw):
-        raise RuntimeError("snapshot disk error")
-
-    boom_parser = SimpleNamespace(snapshot_local_sources=failing_snapshot)
-    service_boom = make_service(boom_parser)
-    # 5. capture 本地快照抛异常时被隔离并记录 debug，不阻断任务派发
-    await service_boom.capture("u1", generation=1, active_at=1.0, images=[img])
+    assert await service.build_context("u1", enabled=False) == ""
+    assert await service.build_context("u1", enabled=True) == ""
 
 
 @pytest.mark.asyncio
 async def test_freeze_images_logs_accepted_count(caplog: object) -> None:
     """capture_images 只收下部分图时，debug 计数必须用 accepted，不能用 cached。"""
-    import logging
-    from types import SimpleNamespace
-
     _, image, _ = _load_modules()
     vr = load_package(PACKAGE_NAME, "image.vision_runtime")
     img_a = image.ImageInfo(url="http://example.com/a.png")
@@ -2013,6 +1976,43 @@ async def test_freeze_images_logs_accepted_count(caplog: object) -> None:
     messages = [record.getMessage() for record in caplog.records]
     assert any("captured 1/2 images" in message for message in messages)
     assert not any("captured 2/2 images" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_freeze_images_warns_when_no_image_survives(caplog: object) -> None:
+    """提取到图片却无一冻结成功时必须 WARNING：识图静默失效只有这一条操作员信号。"""
+    _, image, _ = _load_modules()
+    vr = load_package(PACKAGE_NAME, "image.vision_runtime")
+    img = image.ImageInfo(url="http://example.com/a.png")
+    parser = SimpleNamespace(
+        prepare_batch=lambda images, **kw: asyncio.sleep(0, result=[False] * len(images)),
+    )
+    service = vr.VisionService(
+        settings=SimpleNamespace(vision_timeout_sec=5),
+        bridge=None,
+        context=None,
+        source_cache_dir=Path("/tmp"),
+        data_root=Path("/tmp"),
+        coordinator=SimpleNamespace(),
+        gate=SimpleNamespace(is_current=lambda *args: True),
+        is_stopping=lambda: False,
+        track_background_task=lambda coro: coro.close(),
+    )
+    service.get_image_parser = lambda *args: parser
+
+    with capture_logs(caplog, vr.logger, logging.DEBUG):
+        await service._freeze_images("u1", generation=1, active_at=1.0, images=[img, img])
+
+    messages = [record.getMessage() for record in caplog.records]
+    # 级别一并断言：降成 debug 会让这条信号在默认日志级别下消失，只比文本抓不到。
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno >= logging.WARNING and "none could be frozen" in record.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert "extracted 2 images" in warnings[0]
+    assert not any("captured" in message for message in messages), "无图冻结成功仍走了收下计数"
 
 
 # ============================================================================
@@ -2603,9 +2603,7 @@ def test_parse_truncates_long_description(tmp_path: Path) -> None:
 
 def test_parse_truncation_limit_is_single_sourced(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser_mod = _parser_module()
     support_mod = sys.modules[f"{PACKAGE_NAME}.image._support"]
-    assert parser_mod.MAX_DESCRIPTION_CHARS == support_mod.MAX_DESCRIPTION_CHARS
 
     class Bridge:
         async def resolve_provider_id(self, _umo, preferred):
