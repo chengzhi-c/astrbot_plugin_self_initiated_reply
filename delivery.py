@@ -271,8 +271,8 @@ class DeliveryRunner:
                     # SUPPRESSED 有两类成因：代次已变与插件停止。停止成因回显
                     # 停止文案，统一报「会话已更新」会把关停期间的抑制误导向
                     # 排查会话代次。两类成因都不计失败、不重试。
-                    # 判据取 code 而非 detail 文案：detail 是日志文本，改措辞
-                    # 不该改变控制流（此处曾靠 "stopping" 子串判定）。
+                    # 判据取 code 而非 detail 文案：detail 是给人看的日志文本，
+                    # 改措辞不该改变控制流。
                     if sent.code is SuppressCode.STOPPING:
                         return STOPPING_REPLY_TEXT
                     return STALE_REPLY_MESSAGE

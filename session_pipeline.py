@@ -52,47 +52,6 @@ def record_decision(
     }
 
 
-async def decide_session_reply(
-    decision: Any,
-    gate: Any,
-    last_decisions: dict[str, Any],
-    umo: str,
-    state: SessionState,
-    *,
-    trigger: str,
-    force: bool,
-    expected_generation: int | None,
-) -> dict[str, Any] | str:
-    result = await decision.decide(umo, state, trigger=trigger, force=force)
-    if isinstance(result, str):
-        record_decision(last_decisions, umo, trigger, should_reply=False, reason=result)
-        return result
-    if not gate.is_current(umo, expected_generation):
-        return STALE_TASK_MESSAGE
-    record_decision(
-        last_decisions,
-        umo,
-        trigger,
-        should_reply=bool(result.get("should_reply")),
-        reason=str(result.get("reason") or ""),
-    )
-    logger.info(
-        "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
-        PLUGIN_ID,
-        umo,
-        trigger,
-        result.get("should_reply"),
-        float(result.get("elapsed_sec") or 0.0),
-        collapse_whitespace(result.get("reason") or "-"),
-    )
-    if not result.get("should_reply"):
-        # 契约（decide 侧）：should_reply=False 时已转成字符串返回，文案单源在
-        # decision。走到这里说明该契约被破坏，静默放行会造成"判断不该回复
-        # 却仍然生成并发送"。
-        raise RuntimeError("decide() must convert should_reply=False into a string")
-    return result
-
-
 class SessionPipeline:
     """单会话主动回复检查编排（持锁路径与未持锁入口）。"""
 
@@ -122,6 +81,45 @@ class SessionPipeline:
         self._last_events = last_events
         self._last_decisions = last_decisions
         self._track_critical_task = track_critical_task
+
+    async def _decide_session_reply(
+        self,
+        umo: str,
+        state: SessionState,
+        *,
+        trigger: str,
+        force: bool,
+        expected_generation: int | None,
+    ) -> dict[str, Any] | str:
+        """一次判断：通过返回 decision dict，早退返回跳过原因（并登记裁决）。"""
+        result = await self._decision.decide(umo, state, trigger=trigger, force=force)
+        if isinstance(result, str):
+            record_decision(self._last_decisions, umo, trigger, should_reply=False, reason=result)
+            return result
+        if not self._gate.is_current(umo, expected_generation):
+            return STALE_TASK_MESSAGE
+        record_decision(
+            self._last_decisions,
+            umo,
+            trigger,
+            should_reply=bool(result.get("should_reply")),
+            reason=str(result.get("reason") or ""),
+        )
+        logger.info(
+            "[%s] decision session=%s trigger=%s should_reply=%s elapsed=%.2fs reason=%s",
+            PLUGIN_ID,
+            umo,
+            trigger,
+            result.get("should_reply"),
+            float(result.get("elapsed_sec") or 0.0),
+            collapse_whitespace(result.get("reason") or "-"),
+        )
+        if not result.get("should_reply"):
+            # 契约（decide 侧）：should_reply=False 时已转成字符串返回，文案单源在
+            # decision。走到这里说明该契约被破坏，静默放行会造成"判断不该回复
+            # 却仍然生成并发送"。
+            raise RuntimeError("decide() must convert should_reply=False into a string")
+        return result
 
     async def check_session(
         self,
@@ -182,10 +180,7 @@ class SessionPipeline:
         ledger = AttemptLedger()
         effective_reply = ""
         try:
-            decision = await decide_session_reply(
-                self._decision,
-                self._gate,
-                self._last_decisions,
+            decision = await self._decide_session_reply(
                 umo,
                 state,
                 trigger=trigger,

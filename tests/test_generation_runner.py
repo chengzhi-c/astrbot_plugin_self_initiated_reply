@@ -136,7 +136,7 @@ class FakeRuntime:
             tool_set.tools = [t for t in tool_set.tools if t.name not in drop]
         return True
 
-    def final_tool_ids(self, req):
+    def _tool_list(self, req):
         tool_set = getattr(req, "func_tool", None)
         if tool_set is None:
             return []

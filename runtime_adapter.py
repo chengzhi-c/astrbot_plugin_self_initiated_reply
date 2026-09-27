@@ -80,7 +80,7 @@ _MISSING = object()
 # ProviderRequest 实例在 generation 中实际赋值的字段：缺失即红
 #
 # func_tool 是本清单里唯一承担安全职责的字段：它是工具边界的唯一读写点
-# （final_tool_ids / filter_final_tools）。它留在本清单里是 load-bearing 的，
+# （_tool_list / filter_final_tools）。它留在本清单里是 load-bearing 的，
 # 加载期断言缺失即 raise，使 filter_final_tools 的「缺属性」分支在生产上不可达。
 # 删掉它会让那条分支复活成真实 fail-open，故由
 # tests/test_runtime_adapter.py::test_func_tool_stays_in_load_time_contract_assertion
@@ -375,10 +375,13 @@ class AstrBotRuntimeAdapter:
     def _tool_list(self, req: Any) -> list[str] | None:
         """共享工具枚举前奏：哨兵/None/tools 三段判定。
 
+        AstrBot 在 reset/run 时从 ``req.func_tool`` 取工具，所以请求对象就是
+        事后的权威快照，本方法是它唯一的枚举入口。
+
         枚举失败统一 DEBUG，决策与告警归调用方（``filter_final_tools`` 升
-        WARNING 并中止，``final_tool_ids`` 保持 ``None`` 语义），否则单次失败
-        会产生重复告警（实测 2 条）。返回 ``None`` 表示无法枚举，调用方必须
-        各自 fail closed；``[]`` 与 ``None`` 的区分见 ``final_tool_ids``。
+        WARNING 并中止），否则单次失败会产生重复告警（实测 2 条）。返回
+        ``None`` 表示无法枚举，调用方必须各自 fail closed；返回 ``[]`` 是
+        "本次没有工具"，与"读不到工具集"方向相反，区分见下方三段判定。
 
         ``func_tool`` 属性缺失与显式 ``None`` 分开处理：后者是宿主声明
         「本次无工具」，枚举结果就是空列表；前者是读不到该字段本身，返回
@@ -412,17 +415,6 @@ class AstrBotRuntimeAdapter:
                 exc,
             )
             return None
-
-    def final_tool_ids(self, req: Any) -> list[str] | None:
-        """Enumerate the tool ids that would actually reach the provider.
-
-        AstrBot resolves tools from ``req.func_tool`` at reset/run time, so the
-        request object is the authoritative post-build snapshot. Returns
-        ``None`` when the tool set cannot be enumerated (callers must fail
-        closed); the sentinel/``None``/``tools`` discrimination lives in
-        ``_tool_list``.
-        """
-        return self._tool_list(req)
 
     def filter_final_tools(
         self,
@@ -509,7 +501,7 @@ class AstrBotRuntimeAdapter:
                 exc,
             )
             return False
-        remaining = self.final_tool_ids(req)
+        remaining = self._tool_list(req)
         if remaining is None:
             logger.warning(
                 "[%s] tool boundary fail-closed: post-filter enumeration unavailable; "

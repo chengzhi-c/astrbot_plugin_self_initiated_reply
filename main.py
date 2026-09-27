@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncGenerator, Coroutine
 from types import MappingProxyType
 from typing import Any
 
@@ -113,7 +113,7 @@ from .utils import (
     session_group_id,
     session_whitelisted,
 )
-from .webapi import bind_api_handlers, load_ui_prefs, register_web_apis
+from .webapi import load_ui_prefs, register_web_apis
 from .whitelist import WhitelistManager
 
 
@@ -124,12 +124,6 @@ from .whitelist import WhitelistManager
     PLUGIN_VERSION,
 )
 class SelfInitiatedReplyPlugin(Star):
-    # Web API 由 bind_api_handlers 挂 partial；裸注解仅导航
-    # （test_bound_api_handlers_match_class_declarations）。
-    _api_get_config: Callable[[], Awaitable[dict[str, Any]]]
-    _api_post_config: Callable[[], Awaitable[dict[str, Any]]]
-    _api_get_ui_theme: Callable[[], Awaitable[dict[str, Any]]]
-    _api_post_ui_theme: Callable[[], Awaitable[dict[str, Any]]]
     _coordinator: SessionCoordinator
     _decision: DecisionMaker
     _delivery: DeliveryRunner
@@ -261,7 +255,6 @@ class SelfInitiatedReplyPlugin(Star):
             self.settings.vision_provider_id or "<current>",
             self.settings.vision_judge_provider_resolved or "<current>",
         )
-        bind_api_handlers(self)
         register_web_apis(self)
 
     def _startup_disk_writes(self) -> Coroutine[Any, Any, None]:
@@ -326,7 +319,6 @@ class SelfInitiatedReplyPlugin(Star):
             containers=self._containers,
             quarantine_task=self._quarantine_task,
         )
-        self._scheduler.last_cleanup_at = now_ts()
 
         self._decision = DecisionMaker(
             settings=self.settings,

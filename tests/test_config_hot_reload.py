@@ -15,7 +15,10 @@ import sys
 
 import pytest
 
-from .host_stubs import with_plugin
+from .host_stubs import (
+    webapi_module,
+    with_plugin,
+)
 
 PACKAGE = "selfreply_main_test_package"
 UMO = "fake:group:123"
@@ -41,7 +44,7 @@ def test_hot_reload_reaches_components(tmp_path) -> None:
 
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"cooldown_sec": 777, "message_delay_sec": 88}
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result["ok"] is True
 
         # 单一实例契约：插件与组件持有同一 Settings 对象
@@ -74,7 +77,7 @@ def test_hot_reload_reaches_generation_and_whitelist(tmp_path) -> None:
 
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"max_reply_chars": 42}
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result["ok"] is True
 
         assert plugin.settings is generation_identity
@@ -97,7 +100,7 @@ def test_rollback_restore_component_visible_settings(tmp_path) -> None:
         plugin._save_storage = boom
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"cooldown_sec": 999}
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result["ok"] is False
 
         # 回滚后同一实例恢复旧值，组件立即可见
@@ -130,14 +133,14 @@ def test_recent_message_limit_hot_reload_rebuilds_existing_deques(tmp_path) -> N
         # 调大：存量会话的上限必须跟着涨
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"recent_message_limit": 50}
-        assert (await plugin._api_post_config())["ok"] is True
+        assert (await webapi_module(main)._api_post_config(plugin))["ok"] is True
         grown = plugin._state_for(UMO)
         assert grown.recent.maxlen == 50, "调大后存量会话仍持旧上限"
         assert [item.text for item in grown.recent] == [f"m{i}" for i in range(8)], "重建丢历史"
 
         # 调小：立即截断，且保留最近的而非最早的
         web.request.payload = {"recent_message_limit": 3}
-        assert (await plugin._api_post_config())["ok"] is True
+        assert (await webapi_module(main)._api_post_config(plugin))["ok"] is True
         shrunk = plugin._state_for(UMO)
         assert shrunk.recent.maxlen == 3
         assert [item.text for item in shrunk.recent] == ["m5", "m6", "m7"], "截断须保留最近条目"
@@ -181,7 +184,7 @@ def test_rollback_restores_session_history_trimmed_during_apply_window(tmp_path)
         try:
             web = sys.modules["astrbot.api.web"]
             web.request.payload = {"recent_message_limit": 3}
-            result = await plugin._api_post_config()
+            result = await webapi_module(main)._api_post_config(plugin)
             assert result["ok"] is False
         finally:
             plugin._persist_config = real_persist
@@ -298,7 +301,7 @@ def test_config_rollback_preserves_every_container_holder(tmp_path) -> None:
         try:
             web = sys.modules["astrbot.api.web"]
             web.request.payload = {"cooldown_sec": 777}
-            result = await plugin._api_post_config()
+            result = await webapi_module(main)._api_post_config(plugin)
             assert result.get("ok") is False, "配置持久化未失败，回滚路径没被触发"
         finally:
             plugin._persist_config = original_persist

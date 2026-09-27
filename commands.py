@@ -137,7 +137,7 @@ def status_text(
     ``lifecycle`` 与 ``last_decision`` 必填且无默认值：降级是单向门，
     ``runtime_enabled`` 读持久配置仍为 True，只有 lifecycle 能说明插件实际已
     拒绝一切新工作。给默认值会让新增调用点静默回落 "RUNNING" 而谎报正常
-    （装饰器命令就漏过一次），故由签名强制每个调用方显式表态。
+    故由签名强制每个调用方显式表态。
     ``last_decision`` 同理：它是本会话最近一次裁决（``_last_decisions``，与
     ``GET /status`` 同源），拿不到就得显式传 None，而不是让新调用点默默不显示。
     """
@@ -204,8 +204,7 @@ def _lifecycle_reject_text(plugin: SelfInitiatedReplyPlugin, action: str) -> str
     """生命周期拒绝的统一文案（DEGRADED 与未启用分开说）。
 
     DEGRADED 时插件是"已启用但降级"：统一说"未启用"会误导运营去改配置而不是
-    重启插件。多个写指令共用本函数，避免各自措辞漂移（曾出现 ``/on`` 在降级态
-    谎报"已启用"的形态）。
+    重启插件。多个写指令共用本函数，避免同一成因在不同指令上措辞漂移。
     """
     if plugin.lifecycle_state == "DEGRADED":
         return f"插件已降级，无法{action}（需重启插件恢复）。"

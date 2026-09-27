@@ -99,7 +99,9 @@ class SessionScheduler:
         self._patrol_task: asyncio.Task[Any] | None = None
         self._image_cleanup_task: asyncio.Task[Any] | None = None
         self._image_cleanup_lock = asyncio.Lock()
-        self._last_cleanup = 0.0
+        # 节流起点取构造时刻：0.0 会让第一条消息就触发一整轮事件/图片索引回收，
+        # 而构造即回收既无意义又把遍历成本压进消息热路径。
+        self._last_cleanup = now_ts()
 
     @property
     def patrol_task(self) -> asyncio.Task[Any] | None:
@@ -108,14 +110,6 @@ class SessionScheduler:
     @property
     def image_cleanup_task(self) -> asyncio.Task[Any] | None:
         return self._image_cleanup_task
-
-    @property
-    def last_cleanup_at(self) -> float:
-        return self._last_cleanup
-
-    @last_cleanup_at.setter
-    def last_cleanup_at(self, value: float) -> None:
-        self._last_cleanup = float(value)
 
     # ------------------------------------------------------------------
     # 延迟检查

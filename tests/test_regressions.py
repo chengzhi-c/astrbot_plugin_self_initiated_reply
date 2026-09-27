@@ -24,6 +24,7 @@ from .host_stubs import (
     PipelineTestAdapter,
     load_modules,
     until,
+    webapi_module,
     with_plugin,
 )
 from .test_main_runtime import UMO, _make_event
@@ -135,7 +136,7 @@ def test_config_mutations_share_one_lock_and_settings_normalizer(tmp_path: Path)
 
     async def scenario(plugin, main):
         web = sys.modules["astrbot.api.web"]
-        webapi = sys.modules[plugin._api_post_config.func.__module__]
+        webapi = webapi_module(main)
         payloads = iter(({"cooldown_sec": 111}, {"min_silence_sec": 222}))
         original = webapi._request_json
 
@@ -147,7 +148,8 @@ def test_config_mutations_share_one_lock_and_settings_normalizer(tmp_path: Path)
         webapi._request_json = fake_json
         try:
             first, second = await asyncio.gather(
-                plugin._api_post_config(), plugin._api_post_config()
+                webapi_module(main)._api_post_config(plugin),
+                webapi_module(main)._api_post_config(plugin),
             )
         finally:
             webapi._request_json = original
@@ -221,7 +223,7 @@ def test_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> None
             assert result.text == "你好呀"
             # 快照为 False：即使运行中 settings 变为 True，enforce 仍按 False 清理
             assert enforce_snapshots == [[], []]
-            assert main._AGENT_RUNTIME.final_tool_ids(ctrl["req_holder"]["req"]) == []
+            assert main._AGENT_RUNTIME._tool_list(ctrl["req_holder"]["req"]) == []
         finally:
             ctrl["restore"]()
 
@@ -350,7 +352,7 @@ def test_config_rollback_restores_sessions_and_locks(tmp_path: Path) -> None:
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"whitelist_sessions": []}
         # API 层不抛异常：内部回滚后返回 ok:False
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result.get("ok") is False
         assert umo in plugin.sessions
         assert umo in plugin._session_locks
@@ -602,7 +604,7 @@ def test_rollback_reschedules_delayed_check(tmp_path: Path) -> None:
         plugin._save_storage = boom
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"whitelist_sessions": []}
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result.get("ok") is False
         # 修复前：回滚不恢复延迟任务 → UMO 不在 _delay_tasks（红灯）
         new_task = plugin._delay_tasks.get(UMO)
@@ -690,7 +692,7 @@ def test_config_revision_rejects_stale_versioned_write(tmp_path: Path) -> None:
 
     async def scenario(plugin, main):
         web = sys.modules["astrbot.api.web"]
-        current = await plugin._api_get_config()
+        current = await webapi_module(main)._api_get_config(plugin)
         original_min_silence = plugin.settings.min_silence_sec
         assert current["config_revision"].startswith("sha256:")
 
@@ -698,7 +700,7 @@ def test_config_revision_rejects_stale_versioned_write(tmp_path: Path) -> None:
             "cooldown_sec": 111,
             "base_revision": current["config_revision"],
         }
-        first = await plugin._api_post_config()
+        first = await webapi_module(main)._api_post_config(plugin)
         assert first["ok"] is True
         assert first["config_revision"] != current["config_revision"]
         assert plugin.settings.cooldown_sec == 111
@@ -707,7 +709,7 @@ def test_config_revision_rejects_stale_versioned_write(tmp_path: Path) -> None:
             "min_silence_sec": 222,
             "base_revision": current["config_revision"],
         }
-        stale = await plugin._api_post_config()
+        stale = await webapi_module(main)._api_post_config(plugin)
         assert stale == {
             "ok": False,
             "error_code": "STALE_WRITE",
@@ -723,8 +725,8 @@ def test_concurrent_versioned_writers_have_one_winner(tmp_path: Path) -> None:
     """同一 revision 的并发全量写入只能有一个赢家。"""
 
     async def scenario(plugin, main):
-        webapi = sys.modules[plugin._api_post_config.func.__module__]
-        revision = (await plugin._api_get_config())["config_revision"]
+        webapi = webapi_module(main)
+        revision = (await webapi_module(main)._api_get_config(plugin))["config_revision"]
         payloads = [
             {"cooldown_sec": 111, "base_revision": revision},
             {"min_silence_sec": 222, "base_revision": revision},
@@ -739,7 +741,8 @@ def test_concurrent_versioned_writers_have_one_winner(tmp_path: Path) -> None:
         webapi._request_json = fake_json
         try:
             first, second = await asyncio.gather(
-                plugin._api_post_config(), plugin._api_post_config()
+                webapi_module(main)._api_post_config(plugin),
+                webapi_module(main)._api_post_config(plugin),
             )
         finally:
             webapi._request_json = original
@@ -763,7 +766,7 @@ def test_unversioned_config_write_reports_adjustment(
         web.request.payload = {
             "whitelist_sessions": ["a", "a"],
         }
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result["ok"] is True
         assert "whitelist_sessions" in result["adjusted_fields"]
         assert plugin.settings.whitelist == {"a"}
@@ -781,7 +784,7 @@ def test_get_config_enabled_is_persisted_value(tmp_path: Path) -> None:
 
     async def scenario(plugin, main):
         plugin.runtime_enabled = False  # 直接构造分叉态（不再等同于 /off）
-        cfg = await plugin._api_get_config()
+        cfg = await webapi_module(main)._api_get_config(plugin)
         # 修复前：enabled 返回 runtime_enabled=False → 前端全量保存会固化关闭（红灯）
         assert cfg["enabled"] is plugin.settings.enabled
         assert cfg["enabled"] is True
@@ -977,7 +980,7 @@ def test_new_config_keys_take_effect(tmp_path: Path) -> None:
             "generation_timeout_sec": 90,
             "decision_history_min_messages": 8,
         }
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result.get("ok") is True, result
         s = plugin.settings
         assert s.recent_message_limit == 30
@@ -1017,7 +1020,7 @@ def test_unknown_config_key_is_rejected(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"bogus_setting": 1}
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result.get("ok") is False
         assert "bogus_setting" in str(result.get("error", ""))
 
@@ -1618,7 +1621,7 @@ def test_config_rollback_restores_task_topology(tmp_path: Path) -> None:
         try:
             web = sys.modules["astrbot.api.web"]
             web.request.payload = {"enabled": False}
-            result = await plugin._api_post_config()
+            result = await webapi_module(main)._api_post_config(plugin)
             assert result.get("ok") is False
             # 修复前：回滚只恢复 settings/runtime_enabled，不重启 patrol（红灯）
             assert plugin.runtime_enabled is True
@@ -1651,7 +1654,7 @@ def test_config_rollback_reschedules_cancelled_delayed_checks(tmp_path: Path) ->
         try:
             web = sys.modules["astrbot.api.web"]
             web.request.payload = {"enabled": False}
-            result = await plugin._api_post_config()
+            result = await webapi_module(main)._api_post_config(plugin)
             assert result.get("ok") is False
             new_task = plugin._delay_tasks.get(UMO)
             assert new_task is not None and not new_task.done(), "回滚后延迟检查未重建"

@@ -26,6 +26,7 @@ from .host_stubs import (
     install_astrbot_stubs,
     load_modules,
     load_package,
+    webapi_module,
     with_plugin,
 )
 from .test_main_runtime import _make_event
@@ -392,7 +393,7 @@ def test_state_corruption_on_partial_write(tmp_path: Path) -> None:
 
     # 尝试写入不可序列化的对象（应该失败但不损坏旧文件）
     bad_payload = {"sessions": {"bad": object()}}
-    success = storage.write_sessions_payload(path, bad_payload)
+    success = storage.write_json_atomic(path, bad_payload)
 
     assert not success, "应该拒绝不可序列化的数据"
 
@@ -691,7 +692,7 @@ def test_api_post_config_rejects_oversized_whitelist_item(tmp_path: Path) -> Non
         models = importlib.import_module(f"{main.__package__}.models")
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"whitelist_sessions": ["x" * (models.MAX_STRING_LIST_ITEM_LEN + 1)]}
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result.get("ok") is False
         assert "过长" in result.get("error", "")
         assert all(
@@ -699,7 +700,7 @@ def test_api_post_config_rejects_oversized_whitelist_item(tmp_path: Path) -> Non
         )
         # 合法更新仍须生效（防误杀正常白名单）
         web.request.payload = {"whitelist_sessions": ["正常会话"]}
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result.get("ok") is True
         assert "正常会话" in plugin.settings.whitelist
 
@@ -713,7 +714,7 @@ def test_api_post_config_rejects_illegal_whitelist_chars(tmp_path: Path) -> None
         web = sys.modules["astrbot.api.web"]
         for bad in ['bad"quote', "bad\\slash", "bad\x01ctrl"]:
             web.request.payload = {"whitelist_sessions": [bad]}
-            result = await plugin._api_post_config()
+            result = await webapi_module(main)._api_post_config(plugin)
             assert result.get("ok") is False, f"应拒绝 {bad!r}"
             assert "非法字符" in result.get("error", "")
 
@@ -731,11 +732,11 @@ def test_api_post_config_rejects_non_integer_numbers(tmp_path: Path) -> None:
         web = sys.modules["astrbot.api.web"]
         for bad in (1.5, "5", True):
             web.request.payload = {"min_silence_sec": bad}
-            result = await plugin._api_post_config()
+            result = await webapi_module(main)._api_post_config(plugin)
             assert result.get("ok") is False, f"应拒绝 {bad!r}"
             assert "min_silence_sec 必须是整数" in result.get("error", "")
         web.request.payload = {"min_silence_sec": 45}
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result.get("ok") is True
 
     with_plugin(tmp_path, scenario)
@@ -750,7 +751,7 @@ def test_whitelist_runtime_umos_reclaimed_when_inactive(tmp_path: Path) -> None:
         plugin._whitelist_runtime_umos["group:1"] = {"group:1:user:a", "group:1:user:b"}
         plugin._last_events["group:1:user:a"] = _make_event()
         plugin._last_event_at["group:1:user:a"] = stale_at
-        plugin._scheduler.last_cleanup_at = 0  # 强制本次执行清理
+        plugin._scheduler._last_cleanup = 0  # 强制本次执行清理
         plugin._scheduler.cleanup_events_if_needed()
         # a 的活动事件已陈旧：两个 UMO 都离开活跃集 → 整组回收
         assert "group:1" not in plugin._whitelist_runtime_umos
@@ -760,7 +761,7 @@ def test_whitelist_runtime_umos_reclaimed_when_inactive(tmp_path: Path) -> None:
         plugin._whitelist_runtime_umos["group:2"] = {"group:2:user:c"}
         plugin._last_events["group:2:user:c"] = _make_event()
         plugin._last_event_at["group:2:user:c"] = fresh_at
-        plugin._scheduler.last_cleanup_at = 0
+        plugin._scheduler._last_cleanup = 0
         plugin._scheduler.cleanup_events_if_needed()
         assert plugin._whitelist_runtime_umos.get("group:2") == {"group:2:user:c"}
 
@@ -905,7 +906,7 @@ def test_provider_change_emits_audit_log(tmp_path: Path, caplog: object) -> None
                 "vision_provider_id": "attacker-vision",
                 "ignored_sender_ids": ["10001"],
             }
-            assert (await plugin._api_post_config()).get("ok") is True
+            assert (await webapi_module(main)._api_post_config(plugin)).get("ok") is True
 
         audit = [r.getMessage() for r in caplog.records if "config audit" in r.getMessage()]
         assert audit, "Provider 变更未留审计日志"
@@ -921,7 +922,7 @@ def test_provider_change_emits_audit_log(tmp_path: Path, caplog: object) -> None
         with caplog.at_level(logging.INFO):
             caplog.clear()
             web.request.payload = {"judge_provider_id": "attacker-endpoint"}
-            assert (await plugin._api_post_config()).get("ok") is True
+            assert (await webapi_module(main)._api_post_config(plugin)).get("ok") is True
         assert not [r for r in caplog.records if "config audit" in r.getMessage()], (
             "值未变更却记录了审计日志"
         )
@@ -958,7 +959,7 @@ def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplo
         with caplog.at_level(logging.WARNING):
             caplog.clear()
             web.request.payload = {"cooldown_sec": 77}
-            result = await plugin._api_post_config()
+            result = await webapi_module(main)._api_post_config(plugin)
         assert result.get("ok") is False
         echoed = str(result.get("error", ""))
         assert secret not in echoed, f"内部路径回显给了客户端: {echoed}"
@@ -971,7 +972,7 @@ def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplo
 
         # 2) 校验失败仍须回显字段级文案（前端表单靠它定位出错字段）
         web.request.payload = {"cooldown_sec": "not-an-int"}
-        rejected = await plugin._api_post_config()
+        rejected = await webapi_module(main)._api_post_config(plugin)
         assert rejected.get("ok") is False
         assert "cooldown_sec" in str(rejected.get("error", "")), (
             "校验文案被一并通用化，前端无法定位出错字段"
@@ -979,7 +980,7 @@ def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplo
 
         # 3) enum 校验失败同样回显字段名（options 不匹配路径）
         web.request.payload = {"reply_length_mode": "verbose"}
-        rejected_enum = await plugin._api_post_config()
+        rejected_enum = await webapi_module(main)._api_post_config(plugin)
         assert rejected_enum.get("ok") is False
         assert "reply_length_mode" in str(rejected_enum.get("error", "")), (
             "enum 校验文案被一并通用化，前端无法定位出错字段"
@@ -987,7 +988,7 @@ def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplo
 
         # 3) 主题接口不得反射客户端原值
         web.request.payload = {"theme": "<script>alert(1)</script>"}
-        theme_result = await plugin._api_post_ui_theme()
+        theme_result = await webapi_module(main)._api_post_ui_theme(plugin)
         assert theme_result.get("ok") is False
         assert "script" not in str(theme_result.get("error", "")), "回显了客户端可控原值"
 

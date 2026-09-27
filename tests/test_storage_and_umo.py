@@ -50,9 +50,7 @@ def test_bare_group_whitelist_keeps_platform_state_isolated(tmp_path: Path) -> N
     state.daily_count = 2
     sessions = {qq: state, telegram: storage.SessionState(recent=deque(maxlen=5))}
     path = tmp_path / "state.json"
-    assert storage.write_sessions_payload(
-        path, storage.build_sessions_payload(sessions, whitelist, 5)
-    )
+    assert storage.write_json_atomic(path, storage.build_sessions_payload(sessions, whitelist, 5))
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert set(payload["sessions"]) == {qq, telegram}
 
@@ -559,7 +557,7 @@ def test_atomic_state_writer_leaves_previous_file_on_serialization_failure(tmp_p
     _, _, storage = _load_modules()
     path = tmp_path / "state.json"
     path.write_text('{"previous": true}', encoding="utf-8")
-    assert not storage.write_sessions_payload(path, {"bad": object()})
+    assert not storage.write_json_atomic(path, {"bad": object()})
     assert json.loads(path.read_text(encoding="utf-8")) == {"previous": True}
 
 

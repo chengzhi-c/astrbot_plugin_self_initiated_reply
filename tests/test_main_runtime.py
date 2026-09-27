@@ -28,6 +28,7 @@ from .host_stubs import (
     install_astrbot_stubs,
     load_package,
     reset_hook_calls,
+    webapi_module,
     with_plugin,
 )
 
@@ -81,12 +82,8 @@ def test_skipped_decision_recorded_in_last_decisions(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         umo = UMO
         state = plugin._state_for(umo)
-        plugin._decision = _FakeDecision()
-        pipeline = importlib.import_module(main.__package__ + ".session_pipeline")
-        result = await pipeline.decide_session_reply(
-            plugin._decision,
-            plugin._gate,
-            plugin._last_decisions,
+        plugin._pipeline._decision = _FakeDecision()
+        result = await plugin._pipeline._decide_session_reply(
             umo,
             state,
             trigger="message",
@@ -146,14 +143,14 @@ def test_inherit_tools_default_off_and_persisted_via_api(tmp_path: Path) -> None
     async def scenario(plugin, main):
         assert plugin.settings.proactive_inherit_tools is False
 
-        await _post_config(plugin, {"proactive_inherit_tools": True})
+        await _post_config(plugin, main, {"proactive_inherit_tools": True})
         assert plugin.settings.proactive_inherit_tools is True
 
-        config = await plugin._api_get_config()
+        config = await webapi_module(main)._api_get_config(plugin)
         assert config.get("proactive_inherit_tools") is True
 
         # 非法类型必须拒绝
-        await _post_config(plugin, {"proactive_inherit_tools": "yes"})
+        await _post_config(plugin, main, {"proactive_inherit_tools": "yes"})
         assert plugin.settings.proactive_inherit_tools is True  # 未变化
 
     with_plugin(tmp_path, scenario)
@@ -231,7 +228,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
             assert enforce_tool_snapshots[0] == []
             assert enforce_tool_snapshots[1] == []
             # run 结束时 req.func_tool 保持为空
-            assert main._AGENT_RUNTIME.final_tool_ids(ctrl["req_holder"]["req"]) == []
+            assert main._AGENT_RUNTIME._tool_list(ctrl["req_holder"]["req"]) == []
             # 直发计数：前 2 次被接受，第 3 次超预算抑制
             assert result.direct_send_count == 2
             assert len(result.direct_texts) == 2
@@ -346,12 +343,12 @@ def test_generation_rejects_stale_expected_token(tmp_path: Path) -> None:
 # ============================================================================
 
 
-async def _post_config(plugin, payload: dict) -> None:
+async def _post_config(plugin, main, payload: dict) -> None:
     import sys
 
     web = sys.modules["astrbot.api.web"]
     web.request.payload = payload
-    await plugin._api_post_config()
+    await webapi_module(main)._api_post_config(plugin)
 
 
 def test_off_persists_enabled_across_restart(tmp_path: Path) -> None:
@@ -455,7 +452,7 @@ def test_runtime_override_survives_unrelated_config_post(tmp_path: Path) -> None
         # 临时关闭（/off 语义）
         plugin.runtime_enabled = False
 
-        await _post_config(plugin, {"decision_temperature": 0.5})
+        await _post_config(plugin, main, {"decision_temperature": 0.5})
         assert plugin.runtime_enabled is False
         assert plugin.settings.enabled is True
 
@@ -469,7 +466,7 @@ def test_persisted_enabled_change_resets_runtime_override(tmp_path: Path) -> Non
         plugin.settings.enabled = False
         plugin.runtime_enabled = False  # 模拟临时 off
 
-        await _post_config(plugin, {"enabled": True})  # 持久 false -> true，真正变化
+        await _post_config(plugin, main, {"enabled": True})  # 持久 false -> true，真正变化
         assert plugin.settings.enabled is True
         assert plugin.runtime_enabled is True
 
@@ -482,7 +479,7 @@ def test_repeated_same_enabled_post_keeps_runtime_override(tmp_path: Path) -> No
     async def scenario(plugin, main):
         plugin.runtime_enabled = False  # 临时 off，持久仍 true
 
-        await _post_config(plugin, {"enabled": True})  # 持久 true -> true，无变化
+        await _post_config(plugin, main, {"enabled": True})  # 持久 true -> true，无变化
         assert plugin.settings.enabled is True
         assert plugin.runtime_enabled is False  # 临时 off 保持
 
@@ -1291,7 +1288,7 @@ def test_ui_theme_defaults_to_auto(tmp_path: Path) -> None:
     """未设置时 GET ui/theme 返回 auto。"""
 
     async def scenario(plugin, main):
-        cfg = await plugin._api_get_ui_theme()
+        cfg = await webapi_module(main)._api_get_ui_theme(plugin)
         assert cfg == {"ok": True, "theme": "auto", "dim": False, "bold": False}
 
     with_plugin(tmp_path, scenario)
@@ -1300,7 +1297,7 @@ def test_ui_theme_defaults_to_auto(tmp_path: Path) -> None:
 def test_ui_theme_loads_from_bom_file(tmp_path: Path) -> None:
     """带 BOM 的 ui_prefs.json 必须能读取（与状态文件的 utf-8-sig 口径一致）。
 
-    缺陷：``_load_ui_prefs`` 用 utf-8 读，BOM 会让 json.loads 失败回退默认，
+    缺陷：``load_ui_prefs`` 用 utf-8 读，BOM 会让 json.loads 失败回退默认，
     历史文件/外部编辑器产物即丢用户偏好。写侧由本插件原子写（无 BOM），
     本用例守读侧容错。
     """
@@ -1326,7 +1323,7 @@ def test_ui_theme_persists_across_instances(tmp_path: Path) -> None:
 
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"theme": "light"}
-        result = await plugin._api_post_ui_theme()
+        result = await webapi_module(main)._api_post_ui_theme(plugin)
         assert result == {"ok": True, "theme": "light", "dim": False, "bold": False}
         # 文件已落盘
         prefs_path = plugin._ui_prefs_path
@@ -1334,7 +1331,7 @@ def test_ui_theme_persists_across_instances(tmp_path: Path) -> None:
         assert '"theme": "light"' in prefs_path.read_text(encoding="utf-8")
         # 非法主题被拒且不改变状态
         web.request.payload = {"theme": "blue"}
-        bad = await plugin._api_post_ui_theme()
+        bad = await webapi_module(main)._api_post_ui_theme(plugin)
         assert bad.get("ok") is False
         assert plugin._ui_theme == "light"
 
@@ -1342,7 +1339,7 @@ def test_ui_theme_persists_across_instances(tmp_path: Path) -> None:
 
     # 同一数据目录新建实例：模拟刷新/重启后主题仍在（iframe 场景的关键）
     async def reopen(plugin, main):
-        cfg = await plugin._api_get_ui_theme()
+        cfg = await webapi_module(main)._api_get_ui_theme(plugin)
         assert cfg == {"ok": True, "theme": "light", "dim": False, "bold": False}
 
     with_plugin(tmp_path, reopen)
@@ -1356,15 +1353,15 @@ def test_ui_dim_bold_survive_theme_only_post_and_reopen(tmp_path: Path) -> None:
 
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"dim": True, "bold": True}
-        result = await plugin._api_post_ui_theme()
+        result = await webapi_module(main)._api_post_ui_theme(plugin)
         assert result == {"ok": True, "theme": "auto", "dim": True, "bold": True}
         web.request.payload = {"theme": "dark"}
-        result = await plugin._api_post_ui_theme()
+        result = await webapi_module(main)._api_post_ui_theme(plugin)
         assert result == {"ok": True, "theme": "dark", "dim": True, "bold": True}
         saved = json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8"))
         assert saved == {"theme": "dark", "dim": True, "bold": True}
         web.request.payload = {"dim": "yes"}
-        bad = await plugin._api_post_ui_theme()
+        bad = await webapi_module(main)._api_post_ui_theme(plugin)
         assert bad.get("ok") is False
         assert "yes" not in str(bad.get("error", ""))
         assert plugin._ui_dim is True
@@ -1372,7 +1369,7 @@ def test_ui_dim_bold_survive_theme_only_post_and_reopen(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
     async def reopen(plugin, main):
-        cfg = await plugin._api_get_ui_theme()
+        cfg = await webapi_module(main)._api_get_ui_theme(plugin)
         assert cfg == {"ok": True, "theme": "dark", "dim": True, "bold": True}
 
     with_plugin(tmp_path, reopen)
@@ -1723,7 +1720,7 @@ def test_startup_writes_skipped_when_disk_already_current(tmp_path: Path) -> Non
     config_writes: list[int] = []
     state_writes: list[int] = []
     original_persist = main.persist_settings_config
-    original_write_sessions = plugin_state.write_sessions_payload
+    original_write_sessions = plugin_state.write_json_atomic
 
     def counting_persist(*args: Any, **kwargs: Any) -> bool:
         config_writes.append(1)
@@ -1744,12 +1741,12 @@ def test_startup_writes_skipped_when_disk_already_current(tmp_path: Path) -> Non
         assert state_writes == [], "磁盘未变化时仍重写了状态文件（无谓 fsync）"
 
     main.persist_settings_config = counting_persist
-    plugin_state.write_sessions_payload = counting_write_sessions
+    plugin_state.write_json_atomic = counting_write_sessions
     try:
         with_plugin(tmp_path, second_load)
     finally:
         main.persist_settings_config = original_persist
-        plugin_state.write_sessions_payload = original_write_sessions
+        plugin_state.write_json_atomic = original_write_sessions
 
 
 def test_startup_still_writes_when_disk_shape_differs(tmp_path: Path) -> None:

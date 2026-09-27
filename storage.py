@@ -393,15 +393,6 @@ def build_sessions_payload(
     return payload
 
 
-def write_sessions_payload(
-    path: Path,
-    payload: dict[str, Any],
-    *,
-    abandoned: Callable[[], bool] | None = None,
-) -> bool:
-    return write_json_atomic(path, payload, abandoned=abandoned)
-
-
 def persist_settings_config(path: Path, config_obj: Any, settings: Settings) -> bool:
     """原子落盘当前 Settings 的全部配置（含白名单）并同步宿主配置对象。
 

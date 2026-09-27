@@ -22,7 +22,7 @@ from .storage import (
     apersist_settings_config,
     build_sessions_payload,
     sessions_payload_matches,
-    write_sessions_payload,
+    write_json_atomic,
 )
 from .utils import (
     event_sender_id,
@@ -192,7 +192,7 @@ def save_storage_sync(plugin: SelfInitiatedReplyPlugin) -> None:
         return
     if sessions_payload_matches(plugin._storage_path, payload):
         return
-    if not write_sessions_payload(
+    if not write_json_atomic(
         plugin._storage_path,
         payload,
         abandoned=lambda: plugin._abandon_disk_writes,
@@ -215,7 +215,7 @@ async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
         payload = _build_payload(plugin)
         write_task = asyncio.create_task(
             asyncio.to_thread(
-                write_sessions_payload,
+                write_json_atomic,
                 plugin._storage_path,
                 payload,
                 abandoned=lambda: plugin._abandon_disk_writes,

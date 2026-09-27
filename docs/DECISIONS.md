@@ -264,9 +264,9 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 
 ## `webapi.py` 不拆
 
-与 `models.py` / `image/parser.py` 同款理由：它并置五类关注点（路由注册与处理器绑定、
+与 `models.py` / `image/parser.py` 同款理由：它并置五类关注点（路由注册、
 配置读视图、严格校验、应用与回滚、审计 + UI 偏好 + 运维 status），扇入面只有
-`main.py` 的 `bind_api_handlers` / `register_web_apis` 与 `tests/test_webapi.py`；
+`main.py` 的 `register_web_apis` 与按函数本体调用处理器的测试；
 拆文件要同步改这两处引用面，属高 churn、零行为收益的纯搬迁。文件顶部已补齐与其余模块
 同款的「拥有 / 不拥有 + 分区目录」结构说明，阅读定位靠它而不是文件边界。
 

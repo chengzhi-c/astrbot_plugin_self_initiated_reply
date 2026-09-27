@@ -350,7 +350,7 @@ def test_remaining_silence_sec_computation(tmp_path: Path) -> None:
 
 def test_cleanup_events_interval_gate_and_stale_reaping(tmp_path: Path) -> None:
     _, models, scheduler, _, _ = _make_scheduler(tmp_path)
-    scheduler.last_cleanup_at = 0.0
+    scheduler._last_cleanup = 0.0
     stale_umo = "g1:user:a"
     fresh_umo = "g2:user:c"
     scheduler._last_events[stale_umo] = object()
@@ -379,7 +379,7 @@ def scheduler_mod_now() -> float:
 
 def test_cleanup_events_live_session_protection(tmp_path: Path) -> None:
     _, models, scheduler, _, _ = _make_scheduler(tmp_path)
-    scheduler.last_cleanup_at = 0.0
+    scheduler._last_cleanup = 0.0
     umo = "g1:user:a"
     scheduler._last_events[umo] = object()
     scheduler._last_event_at[umo] = 100.0

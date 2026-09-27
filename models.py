@@ -75,7 +75,7 @@ STALE_TASK_MESSAGE = "会话已经更新，放弃旧任务。"
 STALE_REPLY_MESSAGE = "会话已更新，放弃旧回复。"
 # 停机抑制的文案：投递早退（``_is_stopping``）与发送后回读成因
 # （``SuppressCode.STOPPING``）是同一成因，必须同一口径。两处不一致会把
-# 「插件停止中」误导向「配置未启用」的排查方向（该分支曾回报“插件未启用”）。
+# 「插件停止中」误导向「配置未启用」的排查方向。
 STOPPING_REPLY_TEXT = "插件正在停止，放弃回复。"
 
 # 泄漏告警阈值：后台任务表/会话代次表规模超阈值时在周期
@@ -129,8 +129,7 @@ HOST_DANGEROUS_TOOL_IDS: frozenset[str] = frozenset(
         "astrbot_execute_browser",
         "astrbot_execute_browser_batch",
         "astrbot_run_browser_skill",
-        # filesystem（astrbot/core/computer/tools/fs.py，4.23.3 实测实际 name；
-        # astrbot_create_file/astrbot_read_file/astrbot_read_file_tool 为死条目已删）
+        # filesystem（astrbot/core/computer/tools/fs.py，4.23.3 实测的 FunctionTool name）
         "astrbot_upload_file",
         "astrbot_download_file",
         "astrbot_file_read_tool",
@@ -846,8 +845,7 @@ class ConfigSpec:
     item_pattern: str = ""
     empty_policy: str = ""
     # 空提交复位的内置默认（目前唯一消费者是 text 类键）。复位语义只在读侧
-    # coerce_config_value 实现一次，webapi._strict_value 不做回落，以免两处
-    # 各持一份口径（曾出现过「写侧落默认值、读侧再判差异」的误报链）。
+    # coerce_config_value 实现一次，webapi._strict_value 不做回落，以免两处各持一份口径。
     reset_default: Any = ""
     surfaces: frozenset[str] = frozenset({"host"})
 

@@ -445,7 +445,7 @@ def test_new_build_config_missing_type_raises() -> None:
 
 
 # ============================================================================
-# final_tool_ids / filter_final_tools：fail-closed 边界
+# _tool_list / filter_final_tools：fail-closed 边界
 # ============================================================================
 
 
@@ -479,21 +479,20 @@ class _ToolSet:
         self.tools = [tool for tool in self.tools if tool.name != name]
 
 
-def test_final_tool_ids_degraded_shapes() -> None:
+def test_tool_list_degraded_shapes() -> None:
     runtime = _load_adapter()
     adapter = _adapter(runtime)
     # 无工具集 → 空列表（无可达工具，非枚举失败）
-    assert adapter.final_tool_ids(SimpleNamespace(func_tool=None)) == []
+    assert adapter._tool_list(SimpleNamespace(func_tool=None)) == []
     # 工具集无 tools 属性 → None（fail closed 信号）
-    assert adapter.final_tool_ids(SimpleNamespace(func_tool=object())) is None
+    assert adapter._tool_list(SimpleNamespace(func_tool=object())) is None
 
     class BoomIterable:
         def __iter__(self):
             raise RuntimeError("iterate broken")
 
     assert (
-        adapter.final_tool_ids(SimpleNamespace(func_tool=SimpleNamespace(tools=BoomIterable())))
-        is None
+        adapter._tool_list(SimpleNamespace(func_tool=SimpleNamespace(tools=BoomIterable()))) is None
     )
 
 
@@ -581,7 +580,7 @@ def test_missing_func_tool_attribute_fails_closed_not_open(caplog: object) -> No
     读不到工具边界本身，无法枚举、无法移除、无法核验，只能中止。
 
     末段一并锁住低噪音约定：本出口同样只许一条 WARNING。它现在天然满足
-    （直接 return，不经 ``final_tool_ids``），但这是实现细节，若日后把它改成
+    （直接 return，不经 ``_tool_list``），但这是实现细节，若日后把它改成
     先枚举再判定，就会与 ``test_fail_closed_emits_exactly_one_warning`` 记录的
     历史缺陷同形（同源告警打两条），故在此就地钉住。
     """
@@ -607,11 +606,11 @@ def test_missing_func_tool_attribute_fails_closed_not_open(caplog: object) -> No
     assert adapter.filter_final_tools(SimpleNamespace(func_tool=None), keep=frozenset()) is True
 
 
-def test_final_tool_ids_separates_unreadable_from_empty() -> None:
+def test_tool_list_separates_unreadable_from_empty() -> None:
     """枚举器把「读不到 ``func_tool``」与「查过了、是空的」分开。
 
     与上一个用例刻意分开：那个盯 ``filter_final_tools`` 的决策出口，这个盯
-    ``final_tool_ids`` 的枚举出口。两处的 ``getattr`` 默认值各改一处都会被
+    ``_tool_list`` 的枚举出口。两处的 ``getattr`` 默认值各改一处都会被
     对应用例单独抓到（实测两次变异各只有一个用例变红），所以谁退化了、
     退化在哪一层，从失败用例名就能读出来。
 
@@ -625,8 +624,8 @@ def test_final_tool_ids_separates_unreadable_from_empty() -> None:
     class NoFuncTool:
         """连 func_tool 属性都没有的 req。"""
 
-    assert adapter.final_tool_ids(NoFuncTool()) is None  # 查不到
-    assert adapter.final_tool_ids(SimpleNamespace(func_tool=None)) == []  # 查过了，是空的
+    assert adapter._tool_list(NoFuncTool()) is None  # 查不到
+    assert adapter._tool_list(SimpleNamespace(func_tool=None)) == []  # 查过了，是空的
 
 
 def test_func_tool_stays_in_load_time_contract_assertion() -> None:
@@ -661,8 +660,8 @@ def test_func_tool_stays_in_load_time_contract_assertion() -> None:
 def test_fail_closed_emits_exactly_one_warning(caplog: object) -> None:
     """工具边界 fail-closed 每次失败只允许一条 WARNING（低噪音日志约定）。
 
-    历史缺陷：final_tool_ids 与 filter_final_tools 各自 warning，单次失败
-    经 filter → final_tool_ids 会打出两条同源告警，叠加 generation 调用方
+    历史缺陷：_tool_list 与 filter_final_tools 各自 warning，单次失败
+    经 filter → _tool_list 会打出两条同源告警，叠加 generation 调用方
     的第三条。现约定：底层枚举器降 DEBUG，决策点 filter 保留 WARNING。
     """
     import logging
@@ -670,7 +669,7 @@ def test_fail_closed_emits_exactly_one_warning(caplog: object) -> None:
     runtime = _load_adapter()
     adapter = _adapter(runtime)
 
-    # 移除后枚举失败：filter 内部会再调 final_tool_ids，最易产生重复告警
+    # 移除后枚举失败：filter 内部会再调 _tool_list，最易产生重复告警
     vanish_set = _ToolSet([_Tool("x")], none_after=True)
     with capture_logs(caplog, runtime.logger, logging.DEBUG):
         assert (

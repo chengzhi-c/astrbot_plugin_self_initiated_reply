@@ -254,8 +254,8 @@ def test_mutating_webapi_endpoints_write_off_the_event_loop(tmp_path: Path) -> N
             for module in (storage, webapi):
                 module.write_json_atomic = make_probe(originals[module])
             endpoints = (
-                ("POST /config", plugin._api_post_config, {"cooldown_sec": 7}),
-                ("POST /ui/theme", plugin._api_post_ui_theme, {"theme": "dark"}),
+                ("POST /config", lambda: webapi._api_post_config(plugin), {"cooldown_sec": 7}),
+                ("POST /ui/theme", lambda: webapi._api_post_ui_theme(plugin), {"theme": "dark"}),
             )
             for label, drive, payload in endpoints:
                 before = len(threads)

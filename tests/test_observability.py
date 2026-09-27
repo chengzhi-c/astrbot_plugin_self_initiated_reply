@@ -56,6 +56,8 @@ def _make_scheduler(tmp_path: Path, scheduler, models):
             sessions={},
         ),
     )
+    # 生产侧构造即起 1h 节流（SessionScheduler.__init__），这里清零让首轮清理立即触发。
+    instance._last_cleanup = 0.0
     return instance, gate, delay_tasks, background_tasks
 
 

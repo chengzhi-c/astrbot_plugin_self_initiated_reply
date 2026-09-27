@@ -14,7 +14,10 @@ from typing import Any
 
 import pytest
 
-from .host_stubs import with_plugin
+from .host_stubs import (
+    webapi_module,
+    with_plugin,
+)
 
 UMO = "fake:group:123"
 PACKAGE = "selfreply_main_test_package"
@@ -94,7 +97,7 @@ def test_str_provider_keys_truncate_on_persist(tmp_path) -> None:
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"judge_provider_id": "p" * (models.MAX_PROVIDER_ID_LEN + 50)}
 
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
 
         assert result["ok"] is True
         assert len(result["config"]["judge_provider_id"]) == models.MAX_PROVIDER_ID_LEN
@@ -331,63 +334,6 @@ def test_api_status_contains_failure_and_hides_details(tmp_path) -> None:
     with_plugin(tmp_path, scenario)
 
 
-def test_bound_api_handlers_match_class_declarations() -> None:
-    """``bind_api_handlers`` 绑定的名字集合 == 主类里的裸注解声明。
-
-    这四个处理器不在类里 ``def``，而是运行时以 ``partial(...)`` 挂到实例上（供约 30 处
-    测试与外部以 ``plugin._api_*`` 调用）。主类新增了对应的裸注解，让读者在类里搜得到
-    这些名字。两侧各自手工维护，漂移方向决定后果：
-
-    - 绑了没声明：读者在类里搜不到，声明白写；
-    - 声明了没绑：注解承诺了一个运行时不存在的属性，比没有注解更误导，读者会以为
-      ``plugin._api_xxx`` 可调用，实际 ``AttributeError``。
-
-    刻意用 AST 读两侧源码而非运行时 ``dir(plugin)``：裸注解**不创建**类属性（这正是
-    选它的原因，不遮蔽 partial 绑定），运行时反射看不到它，只有读源码才能比对。
-    """
-    import ast
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[1]
-
-    webapi_tree = ast.parse((root / "webapi.py").read_text(encoding="utf-8"))
-    bound: set[str] = set()
-    for node in ast.walk(webapi_tree):
-        if not isinstance(node, ast.FunctionDef) or node.name != "bind_api_handlers":
-            continue
-        for stmt in ast.walk(node):
-            if not isinstance(stmt, ast.Assign):
-                continue
-            for target in stmt.targets:
-                if (
-                    isinstance(target, ast.Attribute)
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id == "plugin"
-                ):
-                    bound.add(target.attr)
-    assert bound, "未从 bind_api_handlers 提取到任何绑定（写法变了，需复核本守卫）"
-
-    main_tree = ast.parse((root / "main.py").read_text(encoding="utf-8"))
-    declared: set[str] = set()
-    for node in ast.walk(main_tree):
-        if not isinstance(node, ast.ClassDef) or node.name != "SelfInitiatedReplyPlugin":
-            continue
-        for stmt in node.body:
-            # 裸注解：AnnAssign 且 value 为 None（有 value 就是真赋值，会遮蔽 partial）
-            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-                if stmt.target.id.startswith("_api_"):
-                    assert stmt.value is None, (
-                        f"{stmt.target.id} 被赋了值，会遮蔽 bind_api_handlers 的 partial 绑定；"
-                        f"这里必须是裸注解"
-                    )
-                    declared.add(stmt.target.id)
-
-    assert declared == bound, (
-        f"bind_api_handlers 绑定 {sorted(bound)}，主类声明 {sorted(declared)}；"
-        f"只绑未声明={sorted(bound - declared)}，只声明未绑={sorted(declared - bound)}"
-    )
-
-
 def test_api_cleanup_image_cache_paths(tmp_path) -> None:
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]
@@ -431,15 +377,15 @@ def test_ui_theme_load_and_get(tmp_path) -> None:
         webapi = sys.modules[f"{PACKAGE}.webapi"]
         # 损坏文件回退 auto
         plugin._ui_prefs_path.write_text("{bad json", encoding="utf-8")
-        assert webapi._load_ui_prefs(plugin) == ("auto", False, False)
+        assert webapi.load_ui_prefs(plugin) == ("auto", False, False)
         # 非法主题回退 auto；缺 dim/bold 默认关
         plugin._ui_prefs_path.write_text('{"theme": "neon"}', encoding="utf-8")
-        assert webapi._load_ui_prefs(plugin) == ("auto", False, False)
+        assert webapi.load_ui_prefs(plugin) == ("auto", False, False)
         # 正常读取
         plugin._ui_prefs_path.write_text(
             '{"theme": "dark", "dim": true, "bold": false}', encoding="utf-8"
         )
-        assert webapi._load_ui_prefs(plugin) == ("dark", True, False)
+        assert webapi.load_ui_prefs(plugin) == ("dark", True, False)
         # GET 返回实例当前偏好
         plugin._ui_theme = "light"
         plugin._ui_dim = False
@@ -642,7 +588,7 @@ def test_api_post_config_stopping(tmp_path) -> None:
         web = sys.modules["astrbot.api.web"]
         web.request.payload = {"cooldown_sec": 10}
         plugin._stopping = True
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result["ok"] is False
 
     with_plugin(tmp_path, scenario)
@@ -662,7 +608,7 @@ def test_api_post_config_returns_normalized_values(tmp_path) -> None:
             "whitelist_sessions": list(reversed(whitelist)),
         }
 
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
 
         assert result["ok"] is True
         assert result["adjusted_fields"] == [
@@ -698,7 +644,7 @@ def test_api_post_config_returns_runtime_enabled_after_toggle(tmp_path) -> None:
         plugin.runtime_enabled = True
         web.request.payload = {"enabled": False}
 
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
 
         # 断言带 error 上下文：落盘失败时 _api_post_config 只回通用文案，
         # 不带出来就只剩一句 "assert False is True"，看不出是哪条路径失败的。
@@ -775,7 +721,7 @@ def test_apply_vision_change_clears_parser_cache(tmp_path, payload) -> None:
         parser_before = plugin._vision.get_image_parser()
         assert parser_before is not None
         web.request.payload = payload
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result["ok"] is True
         for key, value in payload.items():
             assert getattr(plugin.settings, key) == value
@@ -800,7 +746,7 @@ def test_rollback_drops_unknown_delay_umo(tmp_path) -> None:
         web = sys.modules["astrbot.api.web"]
         # 白名单变更使配置应用路径进入回滚
         web.request.payload = {"whitelist_sessions": []}
-        result = await plugin._api_post_config()
+        result = await webapi_module(main)._api_post_config(plugin)
         assert result.get("ok") is False
         # umo2 不在 sessions：回滚不为其重建延迟检查（原任务已被移除且无新任务）
         assert umo2 not in plugin._delay_tasks
@@ -856,7 +802,7 @@ def test_rollback_reschedule_failure_is_logged(tmp_path) -> None:
         try:
             web = sys.modules["astrbot.api.web"]
             web.request.payload = {"whitelist_sessions": []}
-            result = await plugin._api_post_config()
+            result = await webapi_module(main)._api_post_config(plugin)
         finally:
             plugin._vision.clear_parsers = real_clear_parsers
             plugin._scheduler.ensure_patrol = real_ensure_patrol
@@ -904,7 +850,7 @@ def test_cancelled_config_apply_rolls_back(tmp_path) -> None:
             web = sys.modules["astrbot.api.web"]
             web.request.payload = {"whitelist_sessions": [], "cooldown_sec": 909}
             with pytest.raises(asyncio.CancelledError):
-                await plugin._api_post_config()
+                await webapi_module(main)._api_post_config(plugin)
         finally:
             plugin._save_storage = real_save
 

@@ -206,7 +206,7 @@ def _strict_bool(value: Any, field: str) -> bool:
     return value
 
 
-def _load_ui_prefs(plugin: SelfInitiatedReplyPlugin) -> tuple[str, bool, bool]:
+def load_ui_prefs(plugin: SelfInitiatedReplyPlugin) -> tuple[str, bool, bool]:
     """从 ui_prefs.json 加载主题/压暗/粗体；损坏或缺失回退 auto + 关。"""
     try:
         # utf-8-sig 与状态文件（storage.py）同口径：BOM 头一并吞掉，
@@ -809,15 +809,3 @@ def register_web_apis(plugin: SelfInitiatedReplyPlugin) -> None:
         ["POST"],
         "更新插件页面 UI 偏好（主题/压暗/粗体）",
     )
-
-
-def bind_api_handlers(plugin: SelfInitiatedReplyPlugin) -> None:
-    """在实例上保留历史方法名，供测试与外部以 plugin._api_* 调用。"""
-    plugin._api_get_config = partial(_api_get_config, plugin)
-    plugin._api_post_config = partial(_api_post_config, plugin)
-    plugin._api_get_ui_theme = partial(_api_get_ui_theme, plugin)
-    plugin._api_post_ui_theme = partial(_api_post_ui_theme, plugin)
-
-
-# 公开入口：main.py 初始化时加载 UI 偏好。
-load_ui_prefs = _load_ui_prefs

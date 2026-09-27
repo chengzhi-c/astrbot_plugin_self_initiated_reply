@@ -226,6 +226,11 @@ def load_package(package_name: str, module: str) -> types.ModuleType:
     return importlib.import_module(f"{package_name}.{module}")
 
 
+def webapi_module(main: types.ModuleType) -> types.ModuleType:
+    """取本次加载的 webapi 模块：HTTP 处理器是模块函数，测试直接调它本体。"""
+    return sys.modules[f"{main.__package__}.webapi"]
+
+
 def load_modules(package_name: str, *names: str) -> tuple[types.ModuleType, ...]:
     """按动态包名批量加载插件模块（各测试文件引导的单源实现）。
 
@@ -566,7 +571,7 @@ def make_counting_enforce(
 
     def counting_enforce(req: Any, inherit_tools: Any) -> bool:
         ok = original_enforce(req, inherit_tools)
-        snapshots.append(sorted(runtime.final_tool_ids(req) or []))
+        snapshots.append(sorted(runtime._tool_list(req) or []))
         if len(snapshots) == 1:
             for name in first_enforce_tools:
                 req.func_tool.add_tool(SimpleNamespace(name=name))
@@ -765,7 +770,7 @@ def make_plugin(tmp_path: Path, **config_overrides: Any) -> tuple[Any, types.Mod
 class PipelineTestAdapter:
     """Wrap the real runtime adapter; only build/run are injectable.
 
-    ``enforce``/``final_tool_ids``/``new_tool_set`` stay real so the integration
+    ``enforce``/``_tool_list``/``new_tool_set`` stay real so the integration
     test exercises the actual tool-boundary logic.
     """
 
@@ -822,7 +827,7 @@ def install_tool_injecting_pipeline(
         async def _reset() -> None:
             if snapshot_reset:
                 reset_snapshots.append(
-                    sorted(main._AGENT_RUNTIME.final_tool_ids(req_holder["req"]) or [])
+                    sorted(main._AGENT_RUNTIME._tool_list(req_holder["req"]) or [])
                 )
 
         return FakeBuildResult(

@@ -734,7 +734,7 @@ class ImageParser:
             if local_path:
                 # 也走 allowlist：这条路径不是宿主自有产物。
                 # get_local_image_path 取的是记录里的 local_path，最终交给第三方
-                # recorder 插件的 get_media_absolute_path 解析（recorder_bridge.py:74,86），
+                # recorder 插件的 get_media_absolute_path 解析（image/recorder_bridge.py），
                 # 而 local_path 源头是对端可控的 OneBot 字段。若 resolver 是朴素
                 # 拼接，`../../..` 可逃出媒体目录，与本地文件读取同一攻击面。
                 # recorder 媒体目录在 <data>/plugin_data/ 下，已被 data_root 覆盖，
