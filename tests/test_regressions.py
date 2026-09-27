@@ -1174,6 +1174,7 @@ def test_check_command_waits_for_previous_run_release(tmp_path: Path) -> None:
 
     with_plugin(tmp_path, scenario)
 
+
 # ============================================================================
 # Agent 管线装配与宿主交互路径（build/run 效应、闸门恢复、_call_compat）
 # ============================================================================

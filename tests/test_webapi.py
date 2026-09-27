@@ -687,7 +687,9 @@ def test_api_post_config_returns_runtime_enabled_after_toggle(tmp_path) -> None:
 
         result = await plugin._api_post_config()
 
-        assert result["ok"] is True
+        # 断言带 error 上下文：落盘失败时 _api_post_config 只回通用文案，
+        # 不带出来就只剩一句 "assert False is True"，看不出是哪条路径失败的。
+        assert result["ok"] is True, result.get("error")
         assert result["runtime_enabled"] is False
         assert plugin.runtime_enabled is False
 

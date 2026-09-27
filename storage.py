@@ -116,6 +116,27 @@ def sessions_payload_matches(path: Path, payload: dict[str, Any]) -> bool:
     return _json_file_matches(path, payload)
 
 
+# Windows 上实时扫描/索引器会短暂持有刚写出的目标文件，``os.replace`` 随之抛
+# ``PermissionError``（[WinError 5] 拒绝访问 / 32 共享冲突）。实测：连跑
+# tests/test_main_runtime.py 20 次复现 1 次，用户侧的等价后果是一次 ``/off``
+# 直接报"配置文件写入失败"。重试几次即可穿过那个窗口。
+# 只重试 PermissionError：磁盘写满等确定性错误重试无意义，早失败早暴露。
+_REPLACE_RETRY_ATTEMPTS = 5
+_REPLACE_RETRY_DELAY_SEC = 0.02
+
+
+def _replace_with_retry(src: Path, dst: Path) -> None:
+    """``os.replace`` 的瞬时占用重试包装；重试次数与间隔见上方常量。"""
+    for attempt in range(_REPLACE_RETRY_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAY_SEC)
+
+
 def write_json_atomic(
     path: Path,
     data: dict[str, Any],
@@ -147,7 +168,7 @@ def write_json_atomic(
         if abandoned is not None and abandoned():
             logger.debug("[%s] abandoned write dropped path=%s", PLUGIN_ID, path)
             return False
-        os.replace(tmp_path, path)
+        _replace_with_retry(tmp_path, path)
         return True
     except (OSError, UnicodeEncodeError, TypeError, ValueError) as exc:
         logger.warning("[%s] failed to write %s: %s", PLUGIN_ID, path, exc)
@@ -181,7 +202,7 @@ def _backup_state_file(path: Path) -> None:
     """Move a damaged/incompatible state file aside so the cause is recoverable."""
     try:
         backup = path.with_name(f"{path.name}.corrupt-{time.time_ns()}")
-        os.replace(path, backup)
+        _replace_with_retry(path, backup)
         logger.error("[%s] state file backed up to %s", PLUGIN_ID, backup.name)
     except OSError:
         logger.error("[%s] failed to back up state file %s", PLUGIN_ID, path)

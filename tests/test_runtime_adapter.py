@@ -338,6 +338,7 @@ def test_private_host_symbols_confined() -> None:
             violations.append(rel)
     assert not violations, f"宿主私有层 import 泄漏到：{', '.join(violations)}"
 
+
 # ============================================================================
 # 降级宿主分支与工具过滤边界（validate 告警、路径回退、fail-closed、run 直通）
 # ============================================================================

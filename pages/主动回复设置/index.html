@@ -448,11 +448,13 @@
                 type="checkbox"
                 id="enabledInput"
                 data-config-key="enabled"
+                aria-labelledby="enabledInputLabel"
               />
               <span class="master-switch-body">
                 <i class="master-track" aria-hidden="true"></i>
                 <span class="master-copy">
                   <b
+                    id="enabledInputLabel"
                     ><svg class="inline-icon" aria-hidden="true">
                       <use href="#i-power" /></svg
                     >主动回复</b
@@ -953,7 +955,7 @@
                     >识图模型 Provider</label
                   >
                   <div
-                    class="provider-field vision-provider-field"
+                    class="provider-field"
                     id="visionProviderField"
                     data-config-key="vision_provider_id"
                     data-config-control="vision"
@@ -987,7 +989,7 @@
                     >判断阶段识图 Provider</label
                   >
                   <div
-                    class="provider-field vision-provider-field"
+                    class="provider-field"
                     id="visionJudgeProviderField"
                     data-config-key="vision_judge_provider_id"
                     data-config-control="visionJudge"

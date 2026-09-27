@@ -73,7 +73,6 @@ function getEls() {
 		configSaveState: $("configSaveState"),
 		toast: $("toast"),
 		boot: $("boot"),
-		mobileSaveBar: $("mobileSaveBar"),
 		mobileSaveState: $("mobileSaveState"),
 		saveMobileBtn: $("saveMobileBtn"),
 		mobileTabbar: $("mobileTabbar"),

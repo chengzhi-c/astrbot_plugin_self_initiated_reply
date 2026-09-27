@@ -784,6 +784,25 @@ test("provider and mention controls expose the labels screen readers should anno
   expect(errors).toEqual([]);
 });
 
+test("the master switch name is its static label, not the live status text", async ({ page }) => {
+  // #selfStatus 是 aria-live 状态文本。它落在包裹 <label> 内时会被算进开关的
+  // 可访问名，于是开关名随状态漂移（"主动回复 启用" / "主动回复 关闭"），
+  // 读屏在 live 播报之外还会因名字变化再播一次。名字必须钉在静态标题上。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page);
+  const errors = await openPage(page);
+
+  await expect(page.locator("#enabledInput")).toHaveAccessibleName(/^主动回复$/);
+  await expect(page.locator("#enabledInput")).toHaveAttribute(
+    "aria-labelledby",
+    "enabledInputLabel"
+  );
+  // 状态文本本身照旧可读可播报，不能为了改名把它藏掉。
+  await expect(page.locator("#selfStatus")).toHaveText("启用");
+  await expect(page.locator("#selfStatus")).toHaveAttribute("aria-live", "polite");
+  expect(errors).toEqual([]);
+});
+
 test("dim and bold switches expose their pressed state", async ({ page }) => {
   // #dimBtn/#boldBtn 是切换开关，此前只有 .active 类，读屏无从得知当前状态。
   await page.setViewportSize({ width: 1440, height: 1000 });

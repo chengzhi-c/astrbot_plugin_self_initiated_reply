@@ -18,10 +18,11 @@ export function createProviderControl(refs, deps) {
     manual = Boolean(enabled);
     // 容器类由本函数统一负责：三个 Provider 控件（judge / vision / visionJudge）
     // 共用这一处实现。只让 judge 的 onModeChange 加类时，vision 两个字段切手动
-    // 后容器类恒为空，于是 .vision-provider-field 的两列定义继续生效，按钮被拉成
+    // 后容器类恒为空，于是基类 `.provider-control` 的两列定义继续生效，按钮被拉成
     // 整行宽（实测 373px，judge 同态 78px）。
-    // 注意这是「类没挂上」而不是 CSS 优先级问题：.provider-field.manual 含 3 个
-    // 类（0,3,0）本就压过 .vision-provider-field（0,2,0），无需为 vision 另写规则。
+    // 注意这是「类没挂上」而不是 CSS 优先级问题：`.provider-field.manual
+    // .provider-control` 含 3 个类（0,3,0），本就压过基类 `.provider-control`
+    // （0,1,0），无需为 vision 另写规则。
     if (refs.field) refs.field.classList.toggle("manual", manual);
     if (refs.button) {
       refs.button.textContent = manual ? "使用列表" : "手动输入";

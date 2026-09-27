@@ -870,9 +870,11 @@ def test_sessions_payload_matches_disk_semantics(tmp_path: Path) -> None:
     path.write_text("[]", encoding="utf-8")
     assert storage.sessions_payload_matches(path, payload) is False
 
+
 # ============================================================================
 # 配置对象多态、原子写异常与容错分支（迁移/同步的持久化失败出口）
 # ============================================================================
+
 
 def _storage_module():
     from .host_stubs import load_modules
@@ -994,6 +996,50 @@ def test_write_json_atomic_unexpected_error(tmp_path: Path) -> None:
             raise RuntimeError("parent broken")
 
     assert storage.write_json_atomic(WeirdPath(), {"a": 1}) is False
+
+
+def test_write_json_atomic_retries_transient_permission_error(tmp_path: Path, monkeypatch) -> None:
+    """``os.replace`` 被瞬时占用时必须重试，不能一次失败就放弃整次保存。
+
+    成因实测：Windows 上实时扫描/索引器会短暂持有刚写出的目标文件，``os.replace``
+    随之抛 ``PermissionError: [WinError 5] 拒绝访问``（连跑 test_main_runtime.py
+    20 次复现 1 次，表现为 ``/off`` 落盘失败）。重试前这里直接返回 False。
+    """
+    storage = _storage_module()
+    path = tmp_path / "config.json"
+    real_replace = storage.os.replace
+    calls = {"n": 0}
+
+    def flaky_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError(5, "拒绝访问")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(storage.os, "replace", flaky_replace)
+    assert storage.write_json_atomic(path, {"enabled": False}) is True
+    assert calls["n"] == 3, "瞬时占用应被重试穿过，而非第一次就放弃"
+    assert json.loads(path.read_text(encoding="utf-8")) == {"enabled": False}
+
+
+def test_write_json_atomic_gives_up_after_bounded_retries(
+    tmp_path: Path, caplog: object, monkeypatch
+) -> None:
+    """持续占用时重试必须有界：仍返回 False、留 warning、不留临时文件。"""
+    storage = _storage_module()
+    path = tmp_path / "config.json"
+    calls = {"n": 0}
+
+    def always_locked(src, dst):
+        calls["n"] += 1
+        raise PermissionError(5, "拒绝访问")
+
+    monkeypatch.setattr(storage.os, "replace", always_locked)
+    assert storage.write_json_atomic(path, {"a": 1}) is False
+    assert calls["n"] == storage._REPLACE_RETRY_ATTEMPTS, "重试次数必须封顶"
+    assert not list(tmp_path.glob("*.tmp")), "重试耗尽后临时文件必须清理"
+    warnings = messages_at_least(caplog, logging.WARNING)
+    assert any("failed to write" in msg for msg in warnings), warnings
 
 
 def test_load_config_data_unexpected_error(caplog: object) -> None:

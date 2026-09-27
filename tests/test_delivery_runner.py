@@ -967,9 +967,11 @@ async def test_quote_skipped_without_message_id(tmp_path: Path) -> None:
     assert outcome.status is models.SendStatus.DELIVERED
     assert len(chains[0]) == 1
 
+
 # ============================================================================
 # send_reply 异常与分支路径（代次复核失效点、外发未提交、钩子异常、context 兜底）
 # ============================================================================
+
 
 class _FlipGate:
     """前 true_times 次 is_current 返回 True，之后一律 False（代次翻转模拟）。"""

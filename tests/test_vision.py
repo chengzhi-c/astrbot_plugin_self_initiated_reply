@@ -1355,10 +1355,16 @@ def _make_directory_junction(link: Path, target: Path) -> None:
     就成了"环境问题冒充缺陷"。跳过时给出原因，避免静默空转报告 PASSED。
     """
     try:
+        # encoding 必须显式给：中文 Windows 下 mklink 输出含 GBK 字节，
+        # 默认 UTF-8 解码会在 reader 线程抛 UnicodeDecodeError，表现为
+        # PytestUnhandledThreadExceptionWarning（与
+        # tests/test_compat_check_import_safety.py 的子进程口径一致）。
         completed = subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(link), str(target)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
     except OSError as exc:  # cmd 不可执行（非 Windows 等）
@@ -2007,6 +2013,7 @@ async def test_freeze_images_logs_accepted_count(caplog: object) -> None:
     messages = [record.getMessage() for record in caplog.records]
     assert any("captured 1/2 images" in message for message in messages)
     assert not any("captured 2/2 images" in message for message in messages)
+
 
 # ============================================================================
 # parser 错误分支与边界行为（DNS 与传输层守卫、物化、快照、清理配额）
