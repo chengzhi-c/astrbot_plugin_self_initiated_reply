@@ -13,7 +13,8 @@
     <link rel="stylesheet" href="./style.css" />
     <script>
       // 在首帧前应用主题，避免深色下闪白
-      // 注意：下方 localStorage key 与 theme.mjs 的 THEME_KEY 同步，改名需两处一起改
+      // 注意：下方 localStorage key 与主题合法值集合同 theme.mjs 同步（THEME_KEY、
+      // THEME_CYCLE）；本脚本在模块加载前执行，import 不到那两处。
       (function () {
         try {
           var saved = localStorage.getItem("selfreply-theme");

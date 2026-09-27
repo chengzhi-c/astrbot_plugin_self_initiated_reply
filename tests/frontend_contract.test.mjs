@@ -383,7 +383,7 @@ test("every data-config-control in the page is registered in config-io", async (
     [...html.matchAll(/data-config-control="([^"]+)"/g)].map((m) => m[1]),
   );
   assert.ok(declared.size > 0, "index.html declares no data-config-control");
-  const registry = configIo.match(/const providerControls = \(\) => \(\{([\s\S]*?)\}\);/);
+  const registry = configIo.match(/const providerControls = (?:\(\) => )?\{([\s\S]*?)\};/);
   assert.ok(registry, "config-io.mjs providerControls registry not found");
   const registered = new Set(
     [...registry[1].matchAll(/(\w+):/g)].map((m) => m[1]),
@@ -1503,17 +1503,6 @@ test("undici and abort failures map to the connection hint", () => {
 test("backend messages containing fetch details pass through untouched", () => {
   const backend = new Error("保存失败：fetch failed details");
   assert.equal(normalizeApiError(backend), backend);
-});
-
-test("empty number fields reuse last loaded values", () => {
-  const field = {
-    dataset: { configKey: "cooldown_sec" },
-    type: "number",
-    value: "",
-  };
-  const form = { querySelectorAll: () => [field] };
-  const body = buildConfigSaveBody(form, {}, "", { cooldown_sec: 777 });
-  assert.equal(body.cooldown_sec, 777);
 });
 
 test("whitelist format collapses a group UMO onto its bare group id", () => {

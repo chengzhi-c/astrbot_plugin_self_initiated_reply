@@ -2,14 +2,19 @@ import { dimBoldWasTouched } from "./chrome.mjs";
 
 export const THEME_KEY = "selfreply-theme";
 const THEME_CYCLE = ["auto", "light", "dark"];
+// 主题合法值的单点判定：index.html 的首帧内联脚本在模块加载前执行，拿不到这里，
+// 那是本集合仅剩的第二份副本。
+export function normalizeTheme(value) {
+  const text = String(value ?? "").trim();
+  return THEME_CYCLE.includes(text) ? text : "auto";
+}
 const THEME_LABELS = {
   auto: "跟随系统",
   light: "浅色 · 慈爱之惠",
   dark: "深色 · 审判之司",
 };
 export function currentTheme() {
-  const value = document.documentElement.getAttribute("data-theme");
-  return value === "light" || value === "dark" ? value : "auto";
+  return normalizeTheme(document.documentElement.getAttribute("data-theme"));
 }
 function cacheThemeLocally(theme) {
   try {
@@ -52,9 +57,8 @@ export async function persistTheme(theme, apiPost) {
 export async function restoreTheme(apiGet) {
   try {
     const result = await apiGet("ui/theme");
-    const saved =
-      result && result.ok !== false ? String(result.theme || "auto").trim() : "auto";
-    const resolved = saved === "light" || saved === "dark" ? saved : "auto";
+    const stored = result && result.ok !== false ? result.theme : "";
+    const resolved = normalizeTheme(stored);
     /* 本地缓存由调用方守卫后的 applyTheme 落盘：此处若直写，在途响应会把用户
        刚点击的主题从 localStorage 覆盖回旧值（下一次冷启动主题回退）。 */
     return {

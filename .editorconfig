@@ -23,3 +23,6 @@ indent_style = tab
 
 [pages/主动回复设置/config-io.mjs]
 indent_style = tab
+
+[pages/主动回复设置/style.css]
+indent_style = tab

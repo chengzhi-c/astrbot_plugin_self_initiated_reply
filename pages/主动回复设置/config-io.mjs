@@ -1,5 +1,4 @@
 import {
-	toNumberOrFallback,
 	numberFieldError,
 	parseWhitelist,
 	summarizeWhitelist,
@@ -29,25 +28,21 @@ function providerConfigKeys(form) {
 		.map((control) => control.dataset.configKey);
 }
 
-function configControlValue(control, providerControls, lastKnown = {}) {
-	const { configControl, configKey, configTransform } = control.dataset;
+function configControlValue(control, providerControls) {
+	const { configControl, configTransform } = control.dataset;
 	if (configControl) return providerControls[configControl].value();
 	if (configTransform === "whitelist") return parseWhitelist(control.value);
 	if (control.type === "checkbox") return control.checked;
-	if (control.type === "number") return toNumberOrFallback(control.value, lastKnown[configKey]);
+	// 数值不需要兜底：saveConfig 先跑 validateAll，空值与非法值都拦在取值之前。
+	if (control.type === "number") return Number(control.value);
 	return configTransform === "trim" ? control.value.trim() : control.value;
 }
 
-export function buildConfigSaveBody(
-	form,
-	providerControls,
-	baseRevision = "",
-	lastKnown = {},
-) {
+export function buildConfigSaveBody(form, providerControls, baseRevision = "") {
 	const body = Object.fromEntries(
 		configControls(form).map((control) => [
 			control.dataset.configKey,
-			configControlValue(control, providerControls, lastKnown),
+			configControlValue(control, providerControls),
 		]),
 	);
 	if (baseRevision) body.base_revision = baseRevision;
@@ -102,14 +97,13 @@ export function createConfigIo(deps) {
 	} = deps;
 	const coordinator = requestCoordinator || createConfigRequestCoordinator();
 	// 三个 Provider 控件的唯一注册表：读写表单与保存请求共用同一映射。
-	const providerControls = () => ({
+	const providerControls = {
 		judge: judgeProviderControl,
 		vision: visionProviderControl,
 		visionJudge: visionJudgeProviderControl,
-	});
+	};
 	let numberFields = [];
 	let saveStateKind = "";
-	let lastKnownConfig = {};
 	function els() {
 		return getEls();
 	}
@@ -315,7 +309,7 @@ export function createConfigIo(deps) {
 	}
 	function applyConfigPayload(config) {
 		const e = els();
-		loadConfigControls(e.configForm, config, providerControls());
+		loadConfigControls(e.configForm, config, providerControls);
 		// 只有 GET /config 携带 decision_prompt_default（面板视图键）；POST 返回的
 		// config 是持久配置，不含它。此处若用 decision_prompt_template 兜底，会把用户
 		// 刚提交的值写成"默认"，「恢复默认提示词」随之变成空操作。
@@ -331,7 +325,6 @@ export function createConfigIo(deps) {
 			setStatState(e.decisionModelStat, decisionOn ? "is-on" : "is-off");
 		}
 		renderPromptPreview();
-		lastKnownConfig = { ...config };
 		const runtimeOn = config.runtime_enabled !== false;
 		e.selfStatus.textContent = config.enabled
 			? runtimeOn
@@ -372,7 +365,6 @@ export function createConfigIo(deps) {
 			return true;
 		} catch (error) {
 			if (coordinator.isCurrentLoad(requestEpoch)) {
-				if (!getState().configLoaded) setState({ configLoaded: false });
 				setSaving(false);
 				if (initialLoad && e.configForm) e.configForm.inert = true;
 			}
@@ -435,9 +427,8 @@ export function createConfigIo(deps) {
 		try {
 			const body = buildConfigSaveBody(
 				e.configForm,
-				providerControls(),
+				providerControls,
 				state.configRevision,
-				lastKnownConfig,
 			);
 			let result;
 			// 先滤掉留空：留空表示「用当前会话默认模型」，而列表不可用时
@@ -588,6 +579,6 @@ export function createConfigIo(deps) {
 // 配置未加载完时禁止写操作（保存、重置提示词）的统一判据与文案。
 // 两处调用点共用：提示文案分叉会让同一个前置条件对用户呈现两种说法，
 // 而判据分叉更危险，一处放开、一处仍拦时，被放开的那处会把空表单写成盘。
-export function configNotLoadedMessage() {
+function configNotLoadedMessage() {
 	return "配置尚未成功加载，请先刷新页面";
 }

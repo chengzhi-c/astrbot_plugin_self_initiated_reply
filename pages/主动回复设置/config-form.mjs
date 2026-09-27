@@ -1,10 +1,4 @@
-export function toNumberOrFallback(value, fallback) {
-  if (value === "" || value === undefined || value === null) return fallback;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-// 空串在此即非法：validateField 凭它拦下保存，避免静默沿用旧值。
-// toNumberOrFallback 的 fallback 只留作序列化兜底（可达路径上走不到）。
+// 空串在此即非法：validateField 凭它拦下保存，序列化侧因此不必再兜底。
 // integer 由控件 data-integer 标注，与后端 kind=="int" 一一对应（契约测试钉）：
 // 后端 _strict_int 拒绝一切非 int、_strict_float 接受任意有限小数，step 属性
 // 只是滑杆增量（message_delay_sec step=5 但 47 合法），不能拿来当整除判据。

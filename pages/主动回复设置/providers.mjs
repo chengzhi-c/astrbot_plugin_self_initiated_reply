@@ -79,10 +79,5 @@ export function createProviderControl(refs, deps) {
       if (deps.onDirty && value() !== before) deps.onDirty();
     });
   }
-  if (refs.select) {
-    refs.select.addEventListener("change", () => {
-      if (refs.input) refs.input.value = "";
-    });
-  }
   return { value, render, sync };
 }

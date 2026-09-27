@@ -1,8 +1,4 @@
-import {
-	FETCH_TIMEOUT_MS,
-	createConfigRequestCoordinator,
-	requestPluginApi,
-} from "./frontend-core.mjs";
+import { FETCH_TIMEOUT_MS, requestPluginApi } from "./frontend-core.mjs";
 import { renderPromptTemplateHtml } from "./config-form.mjs";
 import { createProviderControl } from "./providers.mjs";
 import {
@@ -10,6 +6,7 @@ import {
 	applyTheme,
 	currentTheme,
 	nextTheme,
+	normalizeTheme,
 	persistTheme,
 	restoreTheme,
 } from "./theme.mjs";
@@ -96,7 +93,6 @@ const state = {
 	requiresConfigRefresh: false,
 	isDirty: false,
 };
-const configRequestCoordinator = createConfigRequestCoordinator();
 const REFRESH_ARM_MS = 3000;
 const TOAST_MS = 2200;
 const PREVIEW_DEBOUNCE_MS = 80;
@@ -244,7 +240,6 @@ const configIo = createConfigIo({
 	visionProviderControl,
 	visionJudgeProviderControl,
 	fmtBool,
-	requestCoordinator: configRequestCoordinator,
 	getProviderOptions: () => providerOptions,
 	isProviderListAvailable: () => providerListAvailable,
 });
@@ -413,8 +408,8 @@ if (els.themeToggle) {
 bindDimBoldButtons(() => persistTheme(null, apiPost));
 restoreDimBold();
 try {
-	const saved = localStorage.getItem(THEME_KEY);
-	if (saved === "light" || saved === "dark") applyTheme(saved, els.themeToggle);
+	const saved = normalizeTheme(localStorage.getItem(THEME_KEY));
+	if (saved !== "auto") applyTheme(saved, els.themeToggle);
 } catch (error) {
 	/* localStorage 不可用 */
 }
