@@ -61,7 +61,7 @@
 默认关闭。开启后，可感知对话中近期发送的图片：
 
 - **独立开关**：支持分别控制判断模型与主模型的识图功能。判断阶段建议保持关闭以节省 Token，正文生成阶段按需开启。
-- **表情过滤**：自动跳过普通表情包，将识图额度留给真实聊天图片。
+- **表情包跳过**：默认关闭。开启后跳过平台标记为表情包的图片，把识图额度留给真实聊天图片。
 - **本地缓存**：相同图片在有效期内复用解析结果，减少重复请求。
 
 ---
@@ -77,18 +77,18 @@
 
 ### 常用配置项
 
-| 配置项 | 推荐值 | 说明 |
+| 配置项 | 推荐值（默认值） | 说明 |
 | --- | --- | --- |
 | 启用判断模型 | 开启 | 主动接话的核心开关 |
 | 判断模型 Provider | 留空或轻量模型 | 默认跟随会话模型，也可配置 `gpt-4o-mini` 等模型 |
-| 判断温度 | `0.0-0.3` | 控制判断输出的确定性，数值越低越稳定 |
+| 判断温度 | `0.1-0.4`（默认 `0.2`） | 控制判断输出的确定性，数值越低越稳定 |
 | 判断提示词 | 默认模板 | 支持 `{latest_message}`、`{recent_messages}`、`{session}`、`{bot_aliases}` 等变量，右侧面板支持实时预览 |
-| 最小静默秒数 | `45-120` 秒 | 收到消息后等待环境安静的秒数 |
-| 冷却秒数 | `300-900` 秒 | 同一会话两次主动回复的最小时间间隔 |
-| 新消息到达放弃旧回复 | 视场景开启 | 正在生成回复时若出现新发言，自动作废当前生成 |
+| 最小静默秒数 | `45-120` 秒（默认 `45`） | 收到消息后等待环境安静的秒数 |
+| 冷却秒数 | `300-900` 秒（默认 `900`） | 同一会话两次主动回复的最小时间间隔 |
+| 新消息到达放弃旧回复 | 视场景开启（默认关） | 正在生成回复时若出现新发言，自动作废当前生成 |
 | 被点名后本批消息不再主动接话 | 开启 | @Bot 由 AstrBot 正常回复后，同一批消息不再追加主动回复；下一条新消息到达即恢复 |
-| 主动回复引用消息 | 不引用 / 由判断模型决定 | 引用本次回复依据的最后一条消息；`model` 由判断模型决定，`random` 按引用概率，取不到消息 ID 或不支持的平台自动降级为普通发送 |
-| 引用概率 | `30-70` % | 「按概率引用」的比例，也是判断模型未表态时的兜底（0 从不、100 每次） |
+| 主动回复引用消息 | 不引用 / 由判断模型决定 / 按概率 | 引用本次回复依据的最后一条消息；默认 `off`（不引用），`model` 由判断模型决定，`random` 按引用概率，取不到消息 ID 或不支持的平台自动降级为普通发送 |
+| 引用概率 | `30-70` %（默认 `50`） | 「按概率引用」的比例，也是判断模型未表态时的兜底（0 从不、100 每次） |
 | 主动回复 @ 对方 | 不 @（默认） | `always` 每次都 @ 本次回复依据的那条消息的发送者，`random` 按 @ 概率；与「引用消息」是两个独立开关，可同时开启；取不到发送者 ID 或不支持 @ 的平台自动降级为普通发送 |
 
 ---
@@ -146,7 +146,7 @@ An AstrBot plugin that enables your bot to naturally join conversations in white
 - **Silence Detection**: Waits for active chat to pause before evaluating, preventing message interruption.
 - **Two-Stage Architecture**: A lightweight judge model evaluates whether to respond, and the main AstrBot agent generates the reply.
 - **Restricted Sandbox**: High-risk system execution and shell tools are disabled during proactive replies.
-- **Optional Vision**: Capable of reading recent images with automatic caching and meme filtering.
+- **Optional Vision**: Reads recent images when enabled, with caption caching and an opt-in sticker skip.
 - **Web Settings Page**: Built-in Light and Dark themes for managing whitelist, cooldowns, and judge prompts.
 
 Commands: `/selfreply` · `status` · `add` · `remove` · `list` · `check [text]` · `on` · `off` · `debug`

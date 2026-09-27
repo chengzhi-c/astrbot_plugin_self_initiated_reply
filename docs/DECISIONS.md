@@ -10,9 +10,9 @@
 
 不采用「hatch 构建 wheel → `check_wheel`/`check_sdist` 内容断言 → 从 wheel
 派生部署 zip」的理由：那套三层互锁（pyproject exclude 列表 ↔ 检查脚本禁运名单 ↔
-pathspec 交叉核验）曾漂移过两次，而分发主路径不产生 wheel，其全部维护成本只服务
-于次要路径；而 `git archive` + `export-ignore` 把同一保证变成单点声明，
-“缓存泄漏进包”这类问题在结构上不再存在。pyproject 的 wheel/sdist 配置保留
+pathspec 交叉核验）要求三份名单同步，任一处漏改就静默失守，而分发主路径不产生
+wheel，全部维护成本只服务于次要路径；`git archive` + `export-ignore` 把同一保证变成
+单点声明，“缓存泄漏进包”这类问题在结构上不再存在。pyproject 的 wheel/sdist 配置保留
 （本地构建仍干净），但不再有发布链依赖它。
 
 ## 双面板
@@ -29,7 +29,7 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 
 ## 设置页 chrome
 
-浅/深/跟随系统与压暗/粗体均经 `GET/POST ui/theme` 写入 `ui_prefs.json`（页面在 Dashboard iframe 内，localStorage 不可靠）。保存必须带齐三字段，禁止只写主题抹掉压暗/粗体。落盘与状态文件共用 `storage` 原子写。服务端 prefs 覆盖 localStorage，但 `GET ui/theme` 返回前用户已点过主题、压暗或粗体则那次点击优先，迟到的 GET 不得抹掉；本地缓存也只能经守卫后的 `applyTheme` 落盘（`restoreTheme` 不自行写缓存）。
+浅/深/跟随系统与压暗/粗体均经 `GET/POST ui/theme` 写入 `ui_prefs.json`（页面在 Dashboard iframe 内，localStorage 不可靠）。POST 只提交**用户真的动过**的键，后端对未提交的键保持原值：GET 返回前的渲染态是本地默认（主题恒为 `auto`、压暗/粗体恒为关），把它一并提交会把服务端已存的选项静默改掉。守卫是 `theme.mjs keeps the dim/bold submission behind the touched guard` 与浏览器用例对请求体的反向断言。落盘与状态文件共用 `storage` 原子写。服务端 prefs 覆盖 localStorage，但 `GET ui/theme` 返回前用户已点过主题、压暗或粗体则那次点击优先，迟到的 GET 不得抹掉；本地缓存也只能经守卫后的 `applyTheme` 落盘（`restoreTheme` 不自行写缓存）。
 
 ## 默认值
 
@@ -86,6 +86,7 @@ GET `/config` 是 panel 视图：只回 panel 键加 `runtime_enabled` / `decisi
 清理周期、冻结预算、裁决 token）在各模块本地常量并附一行取值理由。不把后者搬进
 `models.py`，避免依赖图叶子继续膨胀。
 
+## 图片链路与宿主兼容层
 
 `recorder_bridge` 按平台消息 ID 查本地图片时，多图记录里 URL 未命中必须拒绝
 盲取首图（首图属于另一张图，错配会让 Vision 描述错图）；单图消息宽容取用
@@ -100,8 +101,6 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 图片描述 LRU 同时受条目数和字节预算约束，磁盘不可用时的 data URL
 索引受全局/会话原始载荷预算约束。事件清理只删除事件引用，图片索引由独立保护窗口回收；
 失效和终止才清理两者。运行时依赖由 `pyproject.toml` 与宿主兼容检查锁定。
-
-覆盖率门槛以 `pyproject.toml` 的 `fail_under` 为准。
 
 ## models.py 不拆分
 
@@ -148,10 +147,10 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 `aria-*` 锚点上误报，豁免名单本身会腐烂。
 
 **`RUF100`**（`pyproject.toml`）：为未启用规则写的 `noqa` 让人以为某处已被忽略，实际
-没有。实测存量里确有此类指令（`tests/test_adapters.py` 的 `N802`：`__signature__`
-是 dunder，`--select N802` 对该文件也是 All checks passed）。
+没有；存量里确实出现过此类指令（`tests/test_adapters.py` 曾挂 `N802`，而 `__signature__`
+是 dunder，该规则对该文件本就是 All checks passed）。
 注意别用 `ruff check --select RUF100` 去复核存量：`--select` 会整体**替换**配置里的
-选择集，`F401` 随之不在启用之列，两条 `# noqa: F401` 会被连带报成「未启用」，那是
+选择集，`F401` 随之不在启用之列，在用的 `# noqa: F401` 会被连带报成「未启用」，那是
 命令副作用，不是存量问题。只用配置本身跑。
 
 **日志断言一律经 `capture_logs(模块.logger)`，禁用 `caplog.at_level(..., logger="astrbot")`**
@@ -161,8 +160,8 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 纯属巧合（桩 logger `propagate=True`，caplog 的 handler 挂在 root），一旦宿主侧改成
 `propagate=False`，所有日志断言恒空且无人会发现。配套地，承重日志在被测文档里承诺了
 级别时，断言必须钉 `record.levelno`：否则「降到 INFO 被噪音淹没」「升到 ERROR 触发无关
-告警通道」两个方向都不报。实测：把泄漏告警 `logger.warning` 改成 `info` 或 `error`，
-两条方向都能被 `test_leak_warning_task_threshold` 捕获。
+告警通道」两个方向都不报（`test_leak_warning_task_threshold` 即按级别断言，两个方向的
+降级都判红）。
 
 **`POST /ui/theme` 关停门有行为断言**（`tests/test_webapi.py::test_api_post_ui_theme_paths`）：
 teardown 之后落盘的偏好会在下次启动被读回，用户看到「已被丢弃」却仍然生效的旧设置。
@@ -171,11 +170,11 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 
 ## 核实后刻意不改的项
 
-以下都是「看起来能删/能收，实测后判定不该动」的项，不必重新测一遍：
+以下都是「看起来能删/能收，核实后判定不该动」的项：
 
 - **`PipelineReply.direct_send_count` / `direct_texts`（`models.py`）**：是对
-  `AttemptLedger` 的视图式读取，**有 18 处测试读者**（`test_generation_runner` /
-  `test_main_runtime` 里的 `result` 就是 `PipelineReply`）。删它要改写 18 处断言为
+  `AttemptLedger` 的视图式读取，多处测试以 `result` 直接读它
+  （`test_generation_runner` / `test_main_runtime`）。删它要把这些断言改写成
   `.ledger.*`，生产侧零收益，只是把测试更深地绑到内存结构。
 - **`MessageRecord.sender_id`**：不是会话级中转字段，而是消息记录的固有字段，
   且是去重语义用例的证据标记；删除要重写多个测试文件而不改变任何行为。
@@ -190,74 +189,54 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
   重新推导一遍。变更史、评审轮次与外部条目号不属此类，不该保留。
 - **双层防护中的冗余层**：例如图片端口白名单与传输层地址校验重叠：去掉任一层
   都有另一层兜住，行为等价；这是刻意的纵深，不是重复实现。
-- **`compat_check._runtime_api_gaps` 不改成行为冒烟**：曾试过把 52 行签名枚举换成
-  「对 `http://127.0.0.1/x.png` 跑一次 `_fetch_image_data_url` 断言返回 None」。
-  撤回理由两条：一是**净代码零缩减**（`with` + async probe + 标签字典反而更长），
-  没换来任何维护面收益；二是冒烟要 import `ImageParser` → 需要真实 `astrbot`，
-  而签名枚举只依赖 httpx/httpcore，`_bootstrap()` 的假包路径（本地未装宿主时）也能跑。
-  签名枚举守的「本仓库**直接使用**的第三方 API 形态」确实与依赖上界不同层：上界只挡
-  大版本，挡不住小版本的签名变化。
-- **扩充 ruff 规则集**：逐条实测后只加了 `RUF100`。`S110`+`SIM105`（吞异常）里
-  `S110` 默认只报裸 `except: pass` 与 `except Exception: pass`（16 条），开
-  `check-typed-exception` 后涨到 39 条，而 `SIM105` 只有 18 条，差集全是**多 except
-  子句**（既有取消/超时处理又有日志，`contextlib.suppress` 表达不了），要为一条零事故
-  记录的门禁动 18-39 处并加一批 `noqa`，破坏运行时模块零 `noqa` 这个更有价值的现状。
-  `ASYNC` 全仓 9 条全是误报（4 条是 httpcore `connect_tcp(timeout=)` 的必需签名、5 条
-  是测试轮询），且它只认固定列表的阻塞调用，本仓两次真实的阻塞缺陷（`rglob` 遍历、
-  `write_json_atomic`）它都抓不到。`BLE`(88) / `TRY`(73) / `PL`(65) / `EM`(54) /
-  `SLF`(114) / `RUF`全量(2563) 是刻意写法与中文标点的 ambiguous-unicode 误报；
-  `PTH` 会改行为（`image/extractor` 刻意用 `os.path.isabs or ntpath.isabs` 兼容异风格
-  路径，`Path.is_absolute()` 不等价）；`TID` / `N` / `A` 分别撞上包名带连字符（宿主约定）
+- **`compat_check._runtime_api_gaps` 用签名枚举，不改成行为冒烟**：冒烟形态（真跑一次
+  `_fetch_image_data_url` 断言返回 None）净代码更长，且要 import `ImageParser` → 需要
+  真实 `astrbot`；签名枚举只依赖 httpx/httpcore，`_bootstrap()` 的假包路径（本地未装
+  宿主时）也能跑。它守的「本仓库**直接使用**的第三方 API 形态」与依赖上界不同层：
+  上界只挡大版本，挡不住小版本的签名变化。
+- **扩充 ruff 规则集只到 `RUF100` 为止**：逐条核实后否决的判据（命中数是版本相关的，
+  不在此复述）：`S110`+`SIM105` 的差集是**多 except 子句**（既有取消/超时处理又有日志，
+  `contextlib.suppress` 表达不了），采纳要为一条零事故记录的门禁动几十处并加一批
+  `noqa`，破坏运行时模块零 `noqa` 这个更有价值的现状。`ASYNC` 只认固定列表的阻塞调用，
+  本仓真实出现过的阻塞缺陷（`rglob` 遍历、`write_json_atomic`）它都抓不到，命中则是
+  httpcore `connect_tcp(timeout=)` 的必需签名与测试轮询。`BLE` / `TRY` / `PL` / `EM` /
+  `SLF` / `RUF` 全量撞上刻意写法与中文标点的 ambiguous-unicode 误报；`PTH` 会改行为
+  （`image/extractor` 刻意用 `os.path.isabs or ntpath.isabs` 兼容异风格路径，
+  `Path.is_absolute()` 不等价）；`TID` / `N` / `A` 分别撞上包名带连字符（宿主约定）
   与宿主 API 名 `filter`。
-- **前端不引 ESLint / `tsc --checkJs` / CSS lint**：为 4.8k 行零构建前端新增
-  devDependency 与配置的维护成本高于它能抓到的缺陷类；其中真会静默失效的一类
-  （字面量 id 注册表）已由上面的 id 契约以约 20 行断言覆盖。
-- **不追覆盖率**：未覆盖行按四类逐行归类，96% 落在前两类，补它们只能靠构造宿主
-  异常注入，属“为覆盖率补行”。归类如下（`pytest --cov=. --cov-report=term-missing`
-  实测 270 行未覆盖，占比以该次运行为准）：
+- **前端不引 ESLint / `tsc --checkJs` / CSS lint**：为零构建前端新增 devDependency 与
+  配置的维护成本高于它能抓到的缺陷类；其中真会静默失效的一类（字面量 id 注册表）
+  已由上面的 id 契约以少量断言覆盖。
+- **不追覆盖率**：门槛以 `pyproject.toml` 的 `fail_under` 为准。未覆盖行集中在四类，
+  补它们只能靠构造宿主异常注入，属“为覆盖率补行”，不做：
 
-  1. **防御分支（约 49%）**：异常兜底、`not x` 早退、`return ""/None/False` 降级。
-     例：`delivery.py` 的 quote/mention 组件构造失败静默降级（L146-148、L209-211）、
-     `generation.py` 的任务结果回收（L58-60）、`storage.py` 的原子写失败路径
-     （L148-149、L160-161）。这些分支的价值在于**存在**而非被执行：它们对应的
-     是“宿主/磁盘/平台出错时不要崩”，触发条件是外部故障，不是代码路径。
-  2. **宿主能力分支（约 47%）**：宿主配置对象签名差异、`save_config` 缺失、
-     `get_messages`/`message_obj`/`raw_message` 形态差异、`set_extra` 老宿主未实现。
-     例：`storage.py` 的 `_config_to_dict`/`_persist_config_obj` 兜底（L41、L80-81）、
-     `adapters.py` 的签名探测回退、`image/extractor.py` 的组件字段读取差异
-     （L33-38、L116）。触发条件是**换一个宿主版本**，本仓库只测 4.23.3 / 4.27.2 /
-     latest 三条腿，其余版本的差异分支不被驱动。
-  3. **二次回滚失败（约 3%）**：`whitelist.commit_change` 回滚再失败、
-     `plugin_state.persist_enabled` 的二次回滚、`storage` 的状态文件备份失败。
-     触发条件是“磁盘在回滚窗口内连续两次失败”，属可接受降级 + 告警路径。
-  4. **注册面不可驱动（约 1%）**：`main.py` 的 10 个指令组函数
-     （`selfreply`/`_help`/`_status`/`_list`/`_add`/`_remove`/`_check`/`_on`/`_off`/
-     `_debug`）。类属性被宿主装饰器换成 `RegisteringCommandable`，真实宿主与
-     `host_stubs` 都取不回原函数，其行为不可被任何测试驱动。两条路径的等价由别名
-     契约 + 装饰器委托契约钉住（见下文“不改双指令路径架构”）。
+  1. **防御分支**：异常兜底、`not x` 早退、`return ""/None/False` 降级（`delivery` 的
+     quote/mention 组件构造失败、`generation` 的任务结果回收、`storage` 的原子写失败）。
+     价值在于**存在**而非被执行：对应“宿主/磁盘/平台出错时不要崩”。
+  2. **宿主能力分支**：宿主配置对象签名差异、`save_config` 缺失、`get_messages` /
+     `message_obj` / `raw_message` 形态差异、`set_extra` 老宿主未实现（`storage` 的
+     `_config_to_dict`/`_persist_config_obj` 兜底、`adapters` 的签名探测回退、
+     `image/extractor` 的组件字段读取差异）。CI 只跑三条宿主腿，其余版本的差异分支
+     不被驱动。
+  3. **二次回滚失败**：`whitelist.commit_change` 回滚再失败、`plugin_state.persist_enabled`
+     的二次回滚、`storage` 的状态文件备份失败。触发条件是磁盘在回滚窗口内连续两次失败，
+     属可接受降级 + 告警路径。
+  4. **注册面不可驱动**：`main.py` 的指令组函数。类属性被宿主装饰器换成
+     `RegisteringCommandable`，真实宿主与 `host_stubs` 都取不回原函数，其行为不可被任何
+     测试驱动；两条路径的等价由别名契约 + 装饰器委托契约钉住（见下文“不改双指令路径架构”）。
 
-  按第 4 类剔除后的**可驱动口径覆盖率为 93.21%**（3843 条可驱动语句、261 行未覆盖），
-  与 `fail_under = 89` 之间有 4.21 点缓冲。缓冲偏大意味着门槛对「新增未覆盖代码」
-  不敏感：一次改动覆盖不到十行也不会把总覆盖率拉下 0.2 点。要收紧应先改这里的分母
-  口径（例如把第 4 类从 `[tool.coverage.run] omit` 表达出去），而不是直接抬数字：
-  `omit` 只按文件路径匹配，而指令组函数必须在 `Star` 子类内（宿主
-  `selfreply.command` 装饰器依赖类属性），移不出去。
-
-  **同步义务**：改动上述任一类未覆盖行时，必须同步本归类（行号与占比以最近一次
-  `pytest --cov=. --cov-report=term-missing` 实测为准）。
+  要收紧门槛应先改第 4 类的分母口径，而不是直接抬数字：`omit` 只按文件路径匹配，而指令组
+  函数必须在 `Star` 子类内（宿主 `selfreply.command` 装饰器依赖类属性），移不出去。
 - **测试去重的判据是「被更强断言覆盖」，不是「行数差不多」**：收敛掉的重复用例
   各有一条覆盖它的用例，且覆盖方的断言集是它的超集（例：`test_config_schema.py` 的
   「规格表键 == schema 键且顺序一致」蕴含另两条只做集合比较的用例；`CONTAINER_HOLDERS`
-  表驱动用例逐一枚举 11 个持有者绑定，强于原先抽查 4 个的那条）。
+  表驱动用例逐一枚举全部持有者绑定，强于原先只抽查部分的那条）。
   剩下的不重复靠这条纪律保持：**新用例若与既有用例断言同一事实，必须说明覆盖方为何
   不是超集**，说不出来就不加。
-- **不重构 `style.css`**：文件内零 id 选择器；重复规则体**绝大多数**是单声明出现在
-  不同选择器上下文（实测 13 组里 6 组是多声明，去掉刻意一致的两份深色令牌块后仍余 5 组：
-  `h2`/`.master-copy b`、`.sidenav-link:focus-visible`/`.mtab:focus-visible`、
-  `.theme-toggle:hover`/`.top-actions .action-refresh:hover`、三处焦点环、两处动作行
-  flex）。那 5 组是同一视觉模式在互不相关的语义上下文里的重复，合并要么引入跨组件分组
-  选择器、要么加一层自定义属性间接，收益为零而视觉回归风险不可控。
-  另有两份刻意保持一致的深色令牌块（已有用例钉住）。
+- **不重构 `style.css`**：文件内零 id 选择器；重复规则体绝大多数是同一声明出现在
+  互不相关的选择器上下文（焦点环、`:focus-visible` 系列、hover 态、动作行 flex 等），
+  合并要么引入跨组件分组选择器、要么加一层自定义属性间接，收益为零而视觉回归风险
+  不可控。两份深色令牌块是刻意一致，已有用例钉住。
 - **不改双指令路径架构**：删内联路径会丢 `_is_command_entry` 的裸词保护与
   `COMMAND_HANDLED_KEY` 去重；删装饰器路径会让宿主失去指令组注册与权限声明。两条路径
   的等价由别名契约 + 装饰器委托契约共同钉住，成本远低于重构。
@@ -272,8 +251,8 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 
 ## 前端契约的已知无守卫面
 
-前端 4.8k 行、9 个文件、27 个配置键，契约覆盖面见两个测试文件的用例清单（不在此复述条数，数字会随用例增删而腐烂）。以下几类**刻意**不守，
-改动前请自行评估后果，不要误以为有网兜住：
+契约覆盖面见两个前端测试文件的用例清单（条数会随用例增删腐烂，不在此复述）。
+以下几类**刻意**不守，改动前请自行评估后果，不要误以为有网兜住：
 
 - **类选择器**（`.topbar` / `.sidenav-list` / `.sidenav-fade-*` / `.mtab` /
   `.sidenav-link[data-target]`）：`styles do not target element ids` 只断言 CSS 不用 id，
@@ -294,20 +273,17 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 时自行 `classList.toggle("manual", …)`，`app.js` 的 `PROVIDER_CONTROLS` 每一项都必须
 传 `field`。
 
-**不要退回「让 judge 的 `onModeChange` 加类」那种写法。** 那是本缺陷的成因：
-`manual` 类只在 judge 的 spec 上有回调，vision 两个字段切手动后容器类恒为空，
-于是基类 `.provider-control` 的两列定义继续生效，按钮被拉成
-整行宽。实测 1440×1000 下按钮宽 373px，而 judge 同态 78px。
+**不要退回「让 judge 的 `onModeChange` 加类」那种写法。** 三个字段共用一条路径才有保证：
+`manual` 类只挂在 judge 的 spec 回调上时，vision 两个字段切手动后容器类恒为空，基类
+`.provider-control` 的两列定义继续生效，按钮被拉成整行宽。
 
 为什么 CSS 不用改（这是一个容易误判的点）：`.provider-field.manual .provider-control`
-含 **3 个类**（特异性 0,3,0），基类 `.provider-control` 只有 **1 个**
-（0,1,0）。前者本来就压过后者，与源码先后位置无关；此前失败的唯一原因是那个类
-从未被挂到 vision 容器上。给 vision 补 `:not(.manual)` 或再写一条
-`.provider-field.manual` 覆盖规则都是多余的。
+的特异性本来就压过基类 `.provider-control`，与源码先后位置无关；缺的只是那个类没挂上。
+给 vision 补 `:not(.manual)` 或再写一条 `.provider-field.manual` 覆盖规则都是多余的。
 
 守卫：`tests/frontend_browser.test.mjs` 的
 `vision provider fields lay out on one row like the judge field` 在手动态量取
-容器类名、列数与按钮宽度（阈值 100px 不锁像素），并反向断言切回列表态恢复两列。
+容器类名、列数与按钮宽度（阈值不锁像素），并反向断言切回列表态恢复两列。
 
 ## 吸顶态不得改变 topbar 的占位高度
 
@@ -315,37 +291,34 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 `background` 表达。**不得**在 `.is-stuck` 里改 `padding`、`margin`、`height` 等任何
 影响占位高度的属性。
 
-原因：粘附阈值在 `chrome.mjs` 是 `window.scrollY > 8`。曾用 `padding: 20px → 12px`
-表达"变矮"，实测占位高度随之变化约 16px；浏览器滚动锚定为保持视觉锚点会补偿
-`scrollY`，而 `scrollY` 又决定 `is-stuck` 是否保留，高度差一旦超过阈值就自激，
-表现为页面接近最顶部时疯狂抖动（实测 1.2s 内 class 翻转 129 次）。
+原因：粘附阈值在 `chrome.mjs` 是 `window.scrollY > 8`。用 `padding` 一类占位属性表达
+"变矮"时，占位高度随之变化；浏览器滚动锚定为保持视觉锚点会补偿 `scrollY`，而
+`scrollY` 又决定 `is-stuck` 是否保留，高度差一旦超过阈值就自激，表现为页面接近最顶部时
+持续抖动。
 
 - 守卫：`tests/frontend_browser.test.mjs`
   `topbar must not change its height when the stuck class toggles`
-  （还原 padding 收缩即红，已用自变异确认）
+  （把占位属性改回收缩态即红）
 - 视觉收缩需求请改用不占布局高度的手段，并先确认不会缩放文字。
 
 ## `--topbar-h` 由运行时写回，不违反上面的防抖动约束
 
-`--topbar-h` 的三个静态值（`:110` / `@1024` / `@720`）实测全与顶栏真实高度不符
-（中屏 64 vs 83 → 滚动后侧栏被盖 19px；窄屏换行时 62 vs 115 → 锚点标题被遮 18px），
-故改由 `chrome.mjs` 的 `syncTopbarHeight` 用 `ResizeObserver` 观测 `.topbar` 实测
-高度写回，静态值降为无 JS 时的兜底。
+`--topbar-h` 的三个静态值（`:110` / `@1024` / `@720`）与顶栏在各断点的真实高度都不相等，
+侧栏让位与锚点偏移会差一截，故由 `chrome.mjs` 的 `syncTopbarHeight` 用 `ResizeObserver`
+观测 `.topbar` 实测高度写回，静态值降为无 JS 时的兜底。
 
 **这不与上一节冲突**：那条约束针对的是改 `.topbar` 自身的**占位属性**；本机制只改
-一个**不被顶栏消费**的变量（`--topbar-h` 的 4 个消费点全在 `.sidenav` 与
-`scroll-margin-top`）。实测确认无自激：观测写回后 `writes: 1`、`distinctHeights: [83]`
-（只写一次即收敛）；把该变量改成 200px / 20px 时 `.topbar` 高度恒为 83px（完全独立）。
+一个**不被顶栏消费**的变量（`--topbar-h` 的消费点全在 `.sidenav` 与
+`scroll-margin-top`），写回因此回不到上一条的自激回路。
 
-整数值守卫（测得值与当前变量相同时跳过写回）**没有测试钉住**：实测同值
-`setProperty` 不产生 style mutation、也不触发 `ResizeObserver` 回调，属行为等价写法；
-该行由 `frontend_contract` 的源码文本断言（防删除锚）保护。
+整数值守卫（测得值与当前变量相同时跳过写回）**没有测试钉住**：同值 `setProperty` 不产生
+style mutation、也不触发 `ResizeObserver` 回调，属行为等价写法；该行由
+`frontend_contract` 的源码文本断言（防删除锚）保护。
 
 ## 浏览器用例的「等首屏」预算与断言预算分开
 
-`frontend_browser.test.mjs` 的 `openPage()`（及其 3 处同形态 `goto` 后等待）等
-`#boot` 隐藏时显式传 `BOOT_WAIT_MS = 15s`，不用 `playwright.config.mjs` 的
-`expect.timeout`（5s）。
+`frontend_browser.test.mjs` 的 `openPage()`（以及同形态直接 `goto` 后的等待）等
+`#boot` 隐藏时显式传 `BOOT_WAIT_MS`，不用 `playwright.config.mjs` 的 `expect.timeout`。
 
 原因：5s 是**断言**预算，不是**加载**预算。页面自身给首屏的是 12s 看门狗 +
 每次抓取 15s 硬上限，即页面允许自己慢到 12s 才判定失败；测试用 5s 截断它，
@@ -357,89 +330,23 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 读值/toast/`errors` 断言照旧失败。
 （`fetch-pending` 那条不受影响：它把 `FETCH_TIMEOUT_MS` 压到 30ms，走快速失败分支。）
 
----
+## 内存与字节预算
 
-# 每会话内存基准
+上限全部落在具名常量里，单位口径按**代码同型表达式**读（避免 MiB/KiB 换算歧义）：
+`MAX_RECENT_MESSAGE_LIMIT`（每会话历史条数）、`MAX_CACHED_IMAGE_EVENTS × vision_max_images`
+（每会话图片索引张数）、`MAX_IMAGE_BYTES`（单张图片输入）、
+`MAX_SESSION_IMAGE_MEMORY_BYTES` / `MAX_IMAGE_MEMORY_BYTES`（data URL 原始载荷，单会话与全局）、
+`MAX_IMAGE_DESCRIPTION_CACHE_BYTES`（Vision 描述 LRU）、`MAX_IMAGE_CACHE_BYTES`（磁盘冻结缓存）。
+会话内存随 `recent_message_limit` 与 `vision_max_images` 线性增长；图片本体只在磁盘不可用时
+才以 data URL 留在内存，超预算的图片不进索引并记 WARNING。
 
-本页把"拍脑袋常数"（缓存容量、消息上限）改写为可推导的公式，并给出
-实测数据（CPython 3.14 / x64）。数值为上限估算：deque 容器随
-`maxlen` 预分配，深度计算含嵌套对象，实测见下文表。
+字节预算的行为由三条测试钉住：会话与全局 data URL 见 `tests/test_session_coordinator.py`，
+Vision 描述 LRU 见 `tests/test_image_cache.py`，单张输入上限见 `tests/test_vision.py`。
+描述 LRU 只按**值**大小记账、不含 key：`ImageInfo.cache_key()` 对超长值做 sha256 摘要化，
+key 长度因此有上界，预算不会从键上逃出。
 
-KB 数字是历史 `sys.getsizeof` 深度求和，没有公式测试钉住。
-图片字节预算的行为由会话协调器与图片缓存测试锁定。
-
-## 每会话内存组成
-
-| 组件 | 容量公式 | 上限说明 |
-| --- | --- | --- |
-| 会话状态固定字段 | `F`（实测 ≈0.95 KB） | SessionState 8 字段 + deque 容器 |
-| 历史消息 | `R × M` | `R = recent_message_limit`（配置 3..100），`M` = 单条 MessageRecord |
-| 事件缓存 | `E`（≈0.1 KB） | `_last_events` 每会话 1 个宿主事件引用 + 时间戳 |
-| 图片索引 | `I × V × G` | `I = MAX_CACHED_IMAGE_EVENTS(20)` 含图事件数，`V = vision_max_images`（配置 1..5），`G` = 单张 ImageInfo |
-
-**单会话内存上限（不含图片本体）**
-
-```
-B(session) = F + R×M + E + I×V×G
-默认配置（R=20, V=2）: ≈ 0.95 + 20×0.33 + 0.1 + 20×2×0.21 ≈ 13.6 KB
-最坏配置（R=100, V=5）: ≈ 0.95 + 100×0.33 + 0.1 + 20×5×0.21 ≈ 55.1 KB
-```
-
-**全量内存**
-
-```
-B(total) = N × B(session) + 全局表（O(N)：delay/running/白名单运行时映射）
-N = 活跃会话数（白名单上限 MAX_WHITELIST_SIZE = 1000）
-最坏 N=1000、R=100、V=5：≈ 55 MB（不含图片本体）
-```
-
-## 图片本体（数据 URL 冻结）
-
-正常路径把冻结图片写入内容寻址的磁盘缓存，`ImageInfo.prepared_source` 只保留
-路径；磁盘不可用时才保留 data URL。内存回退按**原始载荷字节数**计数；热路径增量维护已入账字节，不再每次全量 `b64decode`。预算同时受：
-
-- `MAX_SESSION_IMAGE_MEMORY_BYTES = 16 * 1024 * 1024`：单会话图片索引预算；
-- `MAX_IMAGE_MEMORY_BYTES = 64 * 1024 * 1024`：所有会话图片索引共享预算；
-- `MAX_IMAGE_BYTES = 10 * 1024 * 1024`：单张图片输入上限。
-
-超出预算的图片不会进入会话索引，并记录 WARNING；淘汰按最旧图片事件进行，
-不会静默无限增长。Vision 描述缓存另受 `MAX_IMAGE_DESCRIPTION_CACHE_BYTES = 512 * 1024`
-和 50 条条目上限约束。磁盘冻结缓存仍受 `MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024`
-容量清理约束。
-
-## 实测数据（CPython 3.14 / x64，sys.getsizeof 深度求和）
-
-| 对象 | 深度大小 |
-| --- | --- |
-| 空 SessionState（maxlen=100） | 0.95 KB |
-| MessageRecord（20 字中文消息） | 0.33 KB |
-| SessionState 满 100 条 | 14.8 KB |
-| ImageInfo（含 prepared_source） | 0.21 KB |
-| 图片索引满（20 事件 × 2 张） | 5.7 KB |
-
-## 常数与行为测试
-
-各常数的单位按**代码同型表达式**书写（可 grep 比对，避免 MiB/KiB 换算歧义）：
-
-- `MAX_CACHED_IMAGE_EVENTS × vision_max_images` = 每会话图片索引张数上限
-- `MAX_SESSION_IMAGE_MEMORY_BYTES = 16 * 1024 * 1024` = 单会话 data URL 原始载荷字节上限
-- `MAX_IMAGE_MEMORY_BYTES = 64 * 1024 * 1024` = 全局 data URL 原始载荷字节上限
-- `MAX_IMAGE_DESCRIPTION_CACHE_BYTES = 512 * 1024` = Vision 描述内存缓存上限
-- `MAX_IMAGE_CACHE_BYTES = 256 * 1024 * 1024` = 磁盘冻结缓存总容量上限
-- `MAX_RECENT_MESSAGE_LIMIT = 100` = 每会话历史消息条数上限（recent deque maxlen）
-- `MAX_IMAGE_BYTES = 10 * 1024 * 1024` = 单张图片输入上限
-
-字节预算行为：
-
-- 会话 / 全局 data URL：`tests/test_session_coordinator.py`
-- Vision 描述 LRU：`tests/test_image_cache.py`
-- 单张输入上限：`tests/test_vision.py`
-
-描述 LRU 的字节预算只按**值**大小记账，不含 key：`ImageInfo.cache_key()` 对
-超长值（磁盘缓存不可用时的 data URL 回退）做 sha256 摘要化，故 key 长度有上界、
-不会逃出 `MAX_IMAGE_DESCRIPTION_CACHE_BYTES`。两条共同保证「键的开销不在预算外」。
-
-改常数时同步本节；不要为 KB 估算补公式测试。
+KB 级估算（`sys.getsizeof` 深度求和）不写成文档也不补公式测试：它随 CPython 版本与
+平台变，没有可维护的口径。
 
 ## 已知边界：命令路径回滚不覆盖调度器侧的三张表
 
@@ -458,5 +365,3 @@ N = 活跃会话数（白名单上限 MAX_WHITELIST_SIZE = 1000）
 静默期。webapi 路径（配置保存）不受影响：它走的是 `plugin_state` 侧的快照-回滚，
 不经过 `_prune`。**这是刻意的取舍，不是遗漏**：若将来调度器改为事件驱动重建在途
 状态，此处可一并消除。
-
-

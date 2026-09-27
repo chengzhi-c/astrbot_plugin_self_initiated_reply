@@ -97,7 +97,6 @@ exclude = [
   "uv.lock",
   "*.md",
   ".gitignore",
-  ".pre-commit-config.yaml",
   # 测试运行产物。pytest-cov 的并行数据文件名带主机名与 pid
   # （.coverage.<host>.pid<N>.<rand>），不以固定后缀结尾，仅靠上面的
   # 具名条目排不掉；实测它会被整目录打包收进 wheel。
