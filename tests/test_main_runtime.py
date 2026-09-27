@@ -367,6 +367,17 @@ def test_off_persists_enabled_across_restart(tmp_path: Path) -> None:
     （重建插件后仍关闭）也红。断言磁盘原文与重建后的实例，不只断言内存字段。
     """
     import json
+    import time
+
+    def read_config(path: Path) -> dict:
+        # 刚被 os.replace 的文件在 Windows 上可能被实时扫描短暂锁住（实测偶发
+        # PermissionError），读失败时短暂重试；断言语义不变。
+        for _ in range(20):
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except PermissionError:
+                time.sleep(0.05)
+        return json.loads(path.read_text(encoding="utf-8"))
 
     async def scenario(plugin, main):
         assert plugin.settings.enabled is True
@@ -377,8 +388,7 @@ def test_off_persists_enabled_across_restart(tmp_path: Path) -> None:
         assert plugin.runtime_enabled is False
         assert plugin.settings.enabled is False
         # 磁盘原文：光看内存字段无法区分「已落盘」与「只改了内存」
-        on_disk = json.loads(plugin._config_path.read_text(encoding="utf-8"))
-        assert on_disk["enabled"] is False
+        assert read_config(plugin._config_path)["enabled"] is False
         return plugin._config_path
 
     config_path = with_plugin(tmp_path, scenario)
@@ -388,7 +398,7 @@ def test_off_persists_enabled_across_restart(tmp_path: Path) -> None:
         assert plugin.settings.enabled is False
         assert plugin.runtime_enabled is False
 
-    assert json.loads(config_path.read_text(encoding="utf-8"))["enabled"] is False
+    assert read_config(config_path)["enabled"] is False
     with_plugin(tmp_path, after_restart)
 
 
