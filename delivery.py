@@ -43,7 +43,7 @@ from .models import (
 from .outbound import OutboundGateway
 from .utils import event_message_id, event_self_id, event_sender_id, safe_exc_text
 
-# 注入回调的类型别名。这五个全按位置调用，故用 Callable；models.py 的三个
+# 注入回调的类型别名。这四个全按位置调用，故用 Callable；models.py 的三个
 # Protocol 有关键字形参（limit / enabled+provider_id / force），Callable 表达不了。
 #
 # - SaveStorageCallback：生产注入 ``_save_storage``（锁串行 + 快照 + to_thread

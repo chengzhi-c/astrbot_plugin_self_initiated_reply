@@ -409,30 +409,3 @@ def test_audited_keys_come_from_spec_table() -> None:
         f"审计名单与规格表漂移：表={sorted(from_table)} "
         f"webapi={sorted(webapi._AUDITED_CONFIG_KEYS)}"
     )
-
-
-def _frontend_sources() -> str:
-    page = ROOT / "pages" / "主动回复设置"
-    parts = [(page / "index.html").read_text(encoding="utf-8")]
-    for path in sorted(page.glob("*.js")) + sorted(page.glob("*.mjs")):
-        parts.append(path.read_text(encoding="utf-8"))
-    return "\n".join(parts)
-
-
-def test_every_exposed_config_key_is_consumed_by_the_panel() -> None:
-    """GET 暴露的配置键必须被面板消费，否则是"接口给了、面板没接"。
-
-    失效场景：给规格表标 ``panel`` 并配好 POST 校验，却忘了在 pages/ 加控件。
-    此时后端测试全绿（键在表里、校验通过），面板上却根本看不到这个设置项。
-    GET 已从表派生，这里直接钉 panel 面，不再抠返回字典字面量。
-    """
-    models = _models()
-    exposed = [spec.key for spec in models.panel_config_specs()]
-    assert exposed, "panel 面为空（surfaces 标记失效）"
-
-    front = _frontend_sources()
-    missing = [key for key in exposed if key not in front]
-    assert not missing, (
-        f"这些配置键标了 panel 但 pages/ 零引用：{sorted(missing)}。"
-        f"要么补面板控件，要么从 surfaces 拿掉 panel。"
-    )

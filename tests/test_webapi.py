@@ -163,6 +163,19 @@ def test_parse_config_updates_formal_defaults() -> None:
     assert updates["vision_judge_provider_id"] == ""
 
 
+def test_parse_config_updates_rejects_container_types_for_text() -> None:
+    """text 规格与 str 规格同口径拒绝容器类型。
+
+    否则 ``{"decision_prompt_template": {"a": 1}}`` 会落盘成 Python repr
+    字符串 ``"{'a': 1}"``（随后被长度上限截断），既不是用户输入也不是有效
+    模板，属静默损坏。
+    """
+    webapi = _webapi()
+    for bad in (True, {"a": 1}, ["x"]):
+        with pytest.raises(ValueError, match="必须是字符串"):
+            webapi._parse_config_updates({"decision_prompt_template": bad})
+
+
 # ============================================================================
 # provider 收集链
 # ============================================================================

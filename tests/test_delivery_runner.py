@@ -632,8 +632,13 @@ async def test_deliver_local_gate_block_with_directs_records(tmp_path: Path) -> 
     assert [item.role for item in state.recent] == []
 
 
-async def test_deliver_send_failure_with_directs_records_confirmed(tmp_path: Path) -> None:
-    """发送确定失败（非 UNKNOWN）且有直发：记录走 confirmed 语义并写历史。"""
+async def test_deliver_confirmed_failure_with_directs_skips_history(tmp_path: Path) -> None:
+    """发送确定失败（非 UNKNOWN）时，即使有工具直发也不消耗配额、不写历史。
+
+    FAILED_BEFORE_SUBMIT 表示平台侧确定未提交（行为契约 §2）：工具直发是另一条
+    链路的既成副作用，不改变"本次最终发送未送达"这一事实，故配额与 assistant
+    历史都不动。
+    """
     _, models, runner, _ = _make_runner(tmp_path, sender_status="failed_before_submit")
     state = _state(models)
     result = await runner.deliver_reply(

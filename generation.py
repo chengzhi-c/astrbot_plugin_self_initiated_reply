@@ -388,7 +388,7 @@ class GenerationRunner:
         last_event = run.last_event
         original_send = getattr(last_event, "send", None)
         event_dict = getattr(last_event, "__dict__", {})
-        run.had_instance_send = isinstance(event_dict, dict) and "send" in event_dict
+        run.had_instance_send = "send" in event_dict
         run.original_instance_send = event_dict.get("send") if run.had_instance_send else None
         outbound = OutboundGateway(
             original_send,

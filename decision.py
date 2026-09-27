@@ -2,8 +2,10 @@
 
 只负责裁决时序与闸门：判断模型调用（超时/失败分类）、判断提示词构建与
 注入清理、局部闸门判定（免打扰/日配额/静默/冷却/观察窗口）。
-对外只暴露一个裁决入口 ``decide``，入参为会话状态与触发类型，出参为
-"回复/跳过+原因"。模型解析/生成、历史读取、Vision 描述经注入回调执行，
+对外入口 ``decide`` 之外，``local_gate`` 也被 ``main`` 与 ``session_pipeline``
+直接调用；``ask_decision_model`` / ``build_decision_prompt`` /
+``build_recent_messages`` 供本模块内部复用，并可独立单测。
+模型解析/生成、历史读取、Vision 描述经注入回调执行，
 因此可脱离插件实例独立单测（注入假判断模型与假时钟）。
 """
 
@@ -392,11 +394,14 @@ class DecisionMaker:
         )
         if "{recent_messages}" not in raw and "{latest_message}" not in raw:
             rendered = rendered.strip() + "\n\n最近消息:\n" + values["recent_messages"]
-        if "should_reply" not in rendered or "reason" not in rendered:
+        # 契约是否缺失只看**模板**（``raw``），不看代入群聊内容后的 ``rendered``：
+        # 后者把不可信的 recent/latest 文本也算进来，群友只要在消息里写出
+        # "should_reply" / "reason" / "quote" 就会让契约注入被静默抑制。
+        if "should_reply" not in raw or "reason" not in raw:
             rendered = rendered.rstrip() + "\n\n" + DECISION_JSON_CONTRACT
         # 引用决定只在 model 模式下要求模型给出；用户模板里若已自带 quote 约定
         # 就不再追加（避免重复指令）。
-        if self.settings.quote_mode == "model" and "quote" not in rendered:
+        if self.settings.quote_mode == "model" and "quote" not in raw:
             rendered = rendered.rstrip() + "\n\n" + QUOTE_DECISION_HINT
         return rendered.strip()
 

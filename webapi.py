@@ -438,6 +438,10 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
         # 只做类型与空白规范化。空提交 = 恢复内置默认（面板留空即复位，见
         # test_config_schema 的 _INTENTIONAL_EMPTY_DEFAULT）由读侧
         # models.coerce_config_value 单点实现，写侧再回落一次就是第二份口径。
+        # 容器类型与 str 分支同口径拒绝：str({'a':1}) 落盘的是 Python repr，
+        # 既不是用户输入也不匹配任何模板，属静默损坏。
+        if isinstance(raw, (bool, dict, list)):
+            raise ValueError(f"{spec.key} 必须是字符串")
         return str(raw or "").strip()
     # kind == "str"：拒绝 bool/dict/list（str(True)="True"、str({'a':1})="{'a': 1}"
     # 落盘后永远匹配不到任何 provider，故障静默且不自愈）。int/float 沿用 falsy 规范化
@@ -733,7 +737,6 @@ async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     try:
         return {
             "ok": True,
-            "loaded": True,
             "runtime_enabled": plugin.runtime_enabled,
             "lifecycle": plugin.lifecycle_state,
             "whitelist_count": len(plugin.settings.whitelist),

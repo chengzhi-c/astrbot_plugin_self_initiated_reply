@@ -139,8 +139,6 @@ class SessionPipeline:
             # 持锁后仍会复检（运行互斥的 TOCTOU），此处只做“不建锁”的快速返回。
             return pre_guard
         lock = self._gate.lock_for(umo)
-        if lock.locked():
-            return "已有判断任务在运行。"
         async with lock:
             return await self.check_session_locked(
                 umo,
@@ -414,9 +412,9 @@ class SessionPipeline:
         except asyncio.CancelledError:
             await asyncio.shield(cast(asyncio.Future[Any], task))
             raise
-        # 结论只从账本状态读：``_record_ledger`` 也自行返回 bool，但那条返回值
-        # 从未被消费（两个出口各判一次会让"成功"有两个真相源）。失败路径已由
-        # ``mark_record_failed`` 落进账本，故此处看 phase 即等价且单源。
+        # 结论只从账本状态读：``_record_ledger`` 不返回 bool（见其 docstring），
+        # 失败路径由 ``mark_record_failed`` 落进账本，故看 phase 即等价且单源；
+        # 两侧各判一次会让"成功"出现两个真相源。
         return ledger.phase == LedgerPhase.RECORDED
 
     def session_check_guard(

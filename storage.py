@@ -205,7 +205,14 @@ def _backup_state_file(path: Path) -> None:
         _replace_with_retry(path, backup)
         logger.error("[%s] state file backed up to %s", PLUGIN_ID, backup.name)
     except OSError:
-        logger.error("[%s] failed to back up state file %s", PLUGIN_ID, path)
+        # 备份失败时不阻断加载，但必须说清后果：损坏文件没被移走，后续任何一次
+        # 状态写入都会把它覆盖掉，用户再无从查证原始数据。
+        logger.error(
+            "[%s] failed to back up state file %s; the damaged file will be overwritten "
+            "by the next state save",
+            PLUGIN_ID,
+            path,
+        )
 
 
 def _read_state_document(path: Path) -> dict[Any, Any]:

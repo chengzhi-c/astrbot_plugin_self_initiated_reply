@@ -37,17 +37,20 @@
       }, 8000);
     </script>
     <script src="/api/plugin/page/bridge-sdk.js"></script>
-    <!-- 无脚本时隐藏 boot 遮罩，否则「正在加载」会一直挡着说明文字 -->
+    <!-- 无脚本时隐藏 boot 遮罩，否则「正在加载」会一直挡着说明文字。
+         head 内的 noscript 只允许 link/style/meta，提示文案放到 body 起始处。 -->
     <noscript>
       <style>
         .boot {
           display: none !important;
         }
       </style>
-      <p>配置页需要启用 JavaScript 才能加载与保存，请启用后刷新。</p>
     </noscript>
   </head>
   <body>
+    <noscript>
+      <p>配置页需要启用 JavaScript 才能加载与保存，请启用后刷新。</p>
+    </noscript>
     <!-- 统一线性图标库：内联 symbol 复用，1.5px 描边，16/20 两档 -->
     <svg class="icon-sprite" aria-hidden="true" focusable="false">
       <symbol

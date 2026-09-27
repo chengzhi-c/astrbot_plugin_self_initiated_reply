@@ -232,7 +232,7 @@ async def test_get_local_image_path_first_image_fallback(bridge_mod, tmp_path) -
 
 
 async def test_get_local_image_path_without_url_rejects_multi_image(bridge_mod, tmp_path) -> None:
-    """多图记录缺少目标 URL 时不得把首图误配给当前图片。"""
+    """多图记录完全没有 URL 时（空串走 ``if image_url`` 的假值侧）也不得盲取首图。"""
 
     target = tmp_path / "first.png"
     target.write_bytes(PNG_BYTES)
@@ -248,7 +248,7 @@ async def test_get_local_image_path_without_url_rejects_multi_image(bridge_mod, 
 
 
 async def test_get_local_image_path_url_mismatch_multi_image_rejected(bridge_mod, tmp_path) -> None:
-    """多图记录中 URL 缺失或未匹配时拒绝盲取首图。
+    """多图记录中 URL 未匹配时拒绝盲取首图。
 
     多图消息的第二张图走这里时，首图组件是**另一张图**的本地路径，
     盲 fallback 会让 Vision 描述错图。单图消息（见 first_image_fallback）

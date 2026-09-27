@@ -99,8 +99,7 @@ GRACEFUL_STOP_GRACE_SEC = 3.0
 # terminate() 等待后台/关键任务的硬窗口；与宽限同值但是两条语义，
 # 不能合成一个常数。stop_timeout fallback 必须引用这里，禁止再写 3.0。
 TERMINATE_TASK_TIMEOUT_SEC = 3.0
-# 指令动作集合：help/status/list/debug 为只读，不触碰会话任务；
-# add/remove/check/on/off 为写操作，各自内部处理会话失效语义。
+# 内联指令入口做管理员校验的动作集合（``help`` 不在内，任何成员可取帮助回显）。
 ADMIN_COMMAND_ACTIONS = {"status", "list", "add", "remove", "check", "on", "off", "debug"}
 # 进入命令即需取消在途主动回复的写操作集合。只读动作（help/status/list/debug）
 # 不打断正在进行的回复检查；写操作在权限校验通过后才触发取消。
@@ -488,9 +487,8 @@ class SuppressCode(StrEnum):
     这类判定会在措辞调整时静默失效（改文案不该改变控制流）。调用方要区分的
     成因放这里，``detail`` 只进日志。
 
-    四个成员都是分类域的一部分，各有真实构造点（守卫强制声明，漏填即红）；
-    目前只有 ``STOPPING`` 有读取点（决定回显文案）。新增分支时按语义取用现成
-    成员，不重新拆分类。
+    四个成员都是分类域的一部分，各有真实构造点；目前只有 ``STOPPING`` 有读取点
+    （决定回显文案）。新增分支时按语义取用现成成员，不重新拆分类。
     """
 
     STOPPING = "stopping"
@@ -1218,11 +1216,10 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
         try:
             return normalize_string_list(spec, raw, mode="disk")
         except ValueError:
+            # 只有 raw 类型非法才走到这里；fallback 恒为 list 规格的 ``spec.default``
+            # 或一次成功的 coerce 结果，disk 模式对合法 list 不抛，故无第二层兜底。
             logger.warning("[%s] %s list value invalid; using fallback", PLUGIN_ID, spec.key)
-            try:
-                return normalize_string_list(spec, fallback, mode="disk")
-            except ValueError:
-                return normalize_string_list(spec, spec.default, mode="disk")
+            return normalize_string_list(spec, fallback, mode="disk")
     if spec.kind == "str":
         return _truncate_text(spec, str(raw or "").strip())
     return str(raw or "").strip()

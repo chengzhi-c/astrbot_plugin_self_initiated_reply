@@ -135,9 +135,7 @@ async def _capture_images(
     )
 
 
-def _schedule_message_check(
-    plugin: SelfInitiatedReplyPlugin, umo: str, clean_text: str, generation: int
-) -> None:
+def _schedule_message_check(plugin: SelfInitiatedReplyPlugin, umo: str, generation: int) -> None:
     if not plugin.settings.enabled_message_trigger:
         return
     trigger = CheckTrigger.MESSAGE_DELAY
@@ -187,4 +185,4 @@ async def handle_incoming_message(
         except Exception as exc:
             logger.warning("[%s] image capture failed session=%s: %s", PLUGIN_ID, umo, exc)
     plugin._scheduler.cleanup_events_if_needed()
-    _schedule_message_check(plugin, umo, clean_text, generation)
+    _schedule_message_check(plugin, umo, generation)

@@ -1400,6 +1400,43 @@ test("unknown provider id warns but does not block save", async () => {
   assert.ok(toasts.some((msg) => msg.includes("不在列表中")));
 });
 
+test("dirty indicator covers every save entry point", () => {
+  // 四个保存入口（顶栏、移动端、底部、侧栏圆点）必须同步 is-dirty；
+  // 漏掉移动端会让窄屏下唯一可见的保存按钮没有未保存角标。
+  const toggles = [];
+  const btn = (name) => ({
+    classList: {
+      toggle(cls, on) {
+        toggles.push([name, cls, on]);
+      },
+    },
+  });
+  const state = { isDirty: false };
+  const io = makeConfigIo({
+    elements: {
+      saveTopBtn: btn("top"),
+      saveMobileBtn: btn("mobile"),
+      saveBottomBtn: btn("bottom"),
+      navSaveDot: btn("dot"),
+    },
+    state,
+    apiPost: async () => ({ ok: true }),
+  });
+
+  io.setDirty(true);
+
+  assert.equal(state.isDirty, true);
+  assert.deepEqual(
+    toggles.map(([name, cls, on]) => `${name}:${cls}:${on}`).sort(),
+    [
+      "bottom:is-dirty:true",
+      "dot:is-dirty:true",
+      "mobile:is-dirty:true",
+      "top:is-dirty:true",
+    ]
+  );
+});
+
 test("an empty provider field never raises the off-list warning", async () => {
   // 留空表示「用当前会话默认模型」，是合法默认语义。但列表不可用时
   // providerNeedsManualInput 对空串也返回 true，于是保存时误报「不在列表中」，

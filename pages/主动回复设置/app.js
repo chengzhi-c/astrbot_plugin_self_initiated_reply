@@ -181,7 +181,7 @@ const providerDeps = {
 };
 
 /* 三个 Provider 控件同构。差异只在占位文案，以及 judge 要切换 hint 文案。
-   容器类（manual）由 createProviderControl.setManual 统一挂载，三个控件都必须
+   容器类（manual）由控件内部的 setManual 统一挂载，三个控件都必须
    传 field，否则该类只会挂到 judge 上，vision 两个字段切手动后会落回基类列定义、
    按钮被拉成整行宽。元素在此直接取：它们不参与其余逻辑，不必再进 getEls。 */
 const PROVIDER_CONTROLS = [

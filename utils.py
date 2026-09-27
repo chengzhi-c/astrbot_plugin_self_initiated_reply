@@ -33,7 +33,10 @@ from .models import (
 # INLINE_SPACE_PATTERN）由 models 持有，见那边的注释（依赖方向）。
 # 例外：is_explicit_direct_call 的两条「@ 提及」模式由 self_id 拼出，
 # 只能在调用点构造（模式随事件变），不在此列。
-_AT_MENTION_PATTERN = re.compile(r"^(?:\[[^\]]*[Aa][Tt][^\]]*\]\s*)+")
+# 只剥离 `[At:<id>]` 这一种前缀形态。宽松写法 `\[[^\]]*[Aa][Tt][^\]]*\]`
+# 命中条件只是方括号内含子串 "at"，会把 `[chat]` / `[data]` 等正文方括号块
+# 一并从历史文本里吃掉，用户侧表现为消息前缀静默丢失。
+_AT_MENTION_PATTERN = re.compile(r"^(?:\[At:[^\]]+\]\s*)+", re.IGNORECASE)
 _CQ_AT_PATTERN = re.compile(r"^(?:\[CQ:at,[^\]]+\]\s*)+")
 _TEXT_AT_PATTERN = re.compile(r"^(?:@\S+\s*)+")
 _INLINE_AT_PATTERN = re.compile(r"\[CQ:at,[^\]]+\]")

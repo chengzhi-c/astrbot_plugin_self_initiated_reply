@@ -576,6 +576,57 @@ async def test_prompt_custom_template_substitutes_variables(tmp_path: Path) -> N
     assert prompt.startswith("会话:s1 触发:message_delay 消息:阿c回一下")
 
 
+async def test_prompt_json_contract_ignores_message_content(tmp_path: Path) -> None:
+    """是否追加 JSON 契约只看模板，不看聊天内容。
+
+    旧实现拿代入聊天内容后的文本判断 ``should_reply`` / ``reason`` 是否缺席，
+    群友只要在消息里写出这些字样，契约注入就被静默跳过，模型失去输出约束。
+    """
+    _, models, maker, _, _ = _make_decision(
+        tmp_path,
+        {"decision_prompt_template": "会话:{session}\n消息:{recent_messages}"},
+    )
+    state = _state(
+        models,
+        active_at=900.0,
+        recent=[("user", "reason should_reply quote", 990.0)],
+    )
+    prompt = await maker.build_decision_prompt("s1", state, "message_delay")
+    assert "输出 JSON" in prompt
+
+
+async def test_prompt_json_contract_not_duplicated_when_template_declares_it(
+    tmp_path: Path,
+) -> None:
+    """模板自身已声明 should_reply/reason 时不重复追加契约。"""
+    template = (
+        "会话:{session}\n消息:{recent_messages}\n"
+        '输出 JSON: {"should_reply": true/false, "reason": "理由"}'
+    )
+    _, models, maker, _, _ = _make_decision(tmp_path, {"decision_prompt_template": template})
+    state = _state(models, active_at=900.0, recent=[("user", "你好", 990.0)])
+    prompt = await maker.build_decision_prompt("s1", state, "message_delay")
+    assert prompt.count("输出 JSON") == 1
+
+
+async def test_prompt_quote_hint_ignores_message_content(tmp_path: Path) -> None:
+    """是否追加 quote 约定同样只看模板，聊天内容里的 "quote" 字样不参与判定。"""
+    _, models, maker, _, _ = _make_decision(
+        tmp_path,
+        {
+            "decision_prompt_template": "会话:{session}\n消息:{recent_messages}",
+            "quote_mode": "model",
+        },
+    )
+    state = _state(
+        models,
+        active_at=900.0,
+        recent=[("user", "reason should_reply quote", 990.0)],
+    )
+    prompt = await maker.build_decision_prompt("s1", state, "message_delay")
+    assert "可选字段 quote" in prompt
+
+
 async def test_build_recent_messages_merges_history_when_sparse(tmp_path: Path) -> None:
     _, models, maker, _, calls = _make_decision(
         tmp_path,

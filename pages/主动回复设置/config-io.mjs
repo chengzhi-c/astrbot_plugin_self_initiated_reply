@@ -144,10 +144,11 @@ export function createConfigIo(deps) {
 		if (dirty) coordinator.markEdited();
 		setState({ isDirty: dirty });
 		const e = els();
-		if (e.saveTopBtn) e.saveTopBtn.classList.toggle("is-dirty", dirty);
-		const bottomSave = e.saveBottomBtn;
-		if (bottomSave) bottomSave.classList.toggle("is-dirty", dirty);
-		if (e.navSaveDot) e.navSaveDot.classList.toggle("is-dirty", dirty);
+		// 四个脏值入口同源：桌面顶栏、移动端保存按钮、底部保存按钮与侧栏圆点。
+		// saveMobileBtn 必须在内，否则窄屏下唯一可见的保存入口没有未保存角标。
+		[e.saveTopBtn, e.saveMobileBtn, e.saveBottomBtn, e.navSaveDot].forEach((btn) => {
+			if (btn) btn.classList.toggle("is-dirty", dirty);
+		});
 		if (e.navSaveState)
 			e.navSaveState.textContent = dirty ? "有未保存改动" : "已同步";
 		if (dirty && saveStateKind !== "saving")

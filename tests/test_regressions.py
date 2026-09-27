@@ -67,6 +67,21 @@ def test_bare_command_word_is_parsed_as_command() -> None:
 # 载荷形状，比在 except 尾段里搜 "return" 更直接，也不会因重排 except 而误红。
 
 
+def test_leading_mention_strip_only_removes_at_form() -> None:
+    """@ 前缀剥离必须精确匹配 ``[At:<id>]``，不得吞掉正文方括号块。
+
+    宽松正则 ``\\[[^\\]]*[Aa][Tt][^\\]]*\\]`` 只要求方括号内含子串 "at"，
+    于是 ``[chat]`` / ``[data]`` / ``[cat]`` 开头的消息前缀会在入历史时
+    被静默删除，进判断模型的消息文本与群里实际发言不符。
+    """
+    _, utils, _, _, _ = _load_r3_modules()
+    assert utils.clean_chat_text("[At:123] 你好") == "你好"
+    assert utils.clean_chat_text("[At:123][At:456] 你好") == "你好"
+    assert utils.clean_chat_text("[chat] 你好") == "[chat] 你好"
+    assert utils.clean_chat_text("[data] x") == "[data] x"
+    assert utils.clean_chat_text("[cat] meow") == "[cat] meow"
+
+
 # ============================================================================
 # RL-6 会话代次表无界增长（低危）
 # ============================================================================

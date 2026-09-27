@@ -84,5 +84,5 @@ export function createProviderControl(refs, deps) {
       if (refs.input) refs.input.value = "";
     });
   }
-  return { value, render, sync, setManual };
+  return { value, render, sync };
 }

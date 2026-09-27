@@ -2,7 +2,7 @@ import { dimBoldWasTouched } from "./chrome.mjs";
 
 export const THEME_KEY = "selfreply-theme";
 const THEME_CYCLE = ["auto", "light", "dark"];
-export const THEME_LABELS = {
+const THEME_LABELS = {
   auto: "跟随系统",
   light: "浅色 · 慈爱之惠",
   dark: "深色 · 审判之司",
