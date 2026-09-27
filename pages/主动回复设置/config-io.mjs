@@ -431,16 +431,17 @@ export function createConfigIo(deps) {
 				state.configRevision,
 			);
 			let result;
-			// 先滤掉留空：留空表示「用当前会话默认模型」，而列表不可用时
-			// providerNeedsManualInput 对空串也返回 true，会把默认语义误报成
-			// 「不在列表中」。
-			const offList = providerConfigKeys(e.configForm)
-				.filter((key) => String(body[key] ?? "").trim() !== "")
-				.some((key) =>
+			// 「不在列表中」是一个关于列表的断言，只有列表真的加载成功时才作得
+			// 出来；不可用时无从比对，成因由 loadProviders 另行告知。留空表示
+			// 「用当前会话默认模型」，由 providerNeedsManualInput 的空串分支放行。
+			const listAvailable = isProviderListAvailable();
+			const offList =
+				listAvailable &&
+				providerConfigKeys(e.configForm).some((key) =>
 					providerNeedsManualInput(
 						body[key],
 						getProviderOptions(),
-						isProviderListAvailable(),
+						listAvailable,
 					),
 				);
 			if (offList) {

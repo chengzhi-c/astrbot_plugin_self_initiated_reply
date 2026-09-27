@@ -129,10 +129,15 @@ function debounce(fn, delay) {
 
 async function getBridge() {
 	if (!window.AstrBotPluginPage) return null;
+	// ready() 的结论必须被读出来：requestPluginApi 靠本函数的返回值决定走 bridge
+	// 还是走 fetch，握手失败却仍返回对象，等于宣称 bridge 可用，兜底路径永不触发。
+	// 映射成布尔而不是直接取真值，避免「握手成功但解析为 falsy」被误判成失败。
 	if (!bridgeReady)
-		bridgeReady = window.AstrBotPluginPage.ready().catch(() => null);
-	await bridgeReady;
-	return window.AstrBotPluginPage;
+		bridgeReady = window.AstrBotPluginPage.ready().then(
+			() => true,
+			() => false,
+		);
+	return (await bridgeReady) ? window.AstrBotPluginPage : null;
 }
 
 function request(method, endpoint, payload = {}) {
@@ -320,12 +325,17 @@ async function doRefresh() {
 }
 
 if (els.refreshBtn) {
-	els.refreshBtn.addEventListener("click", () => {
+	els.refreshBtn.addEventListener("click", (event) => {
 		if (refreshing) return;
 		if (state.isDirty && !refreshArmed) {
 			refreshArmed = true;
 			els.refreshBtn.classList.add("is-armed");
 			showToast("有未保存改动，3 秒内再点一次刷新将丢弃改动");
+			// 本按钮同时在 #moreActionsMenu 内，chrome.mjs 给菜单里每个 button 挂了
+			// closeMenu。窄屏下它会在武装之后立刻隐藏菜单，「再点一次」就点不到了。
+			// 两个监听器同目标同类型、按注册序触发，而 setupMoreActionsMenu 晚于此处
+			// 注册，故 stopImmediatePropagation 只挡 closeMenu 一个，不需要跨模块约定。
+			event.stopImmediatePropagation();
 			window.clearTimeout(refreshArmTimer);
 			refreshArmTimer = window.setTimeout(() => {
 				refreshArmed = false;

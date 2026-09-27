@@ -1395,10 +1395,11 @@ test("dirty indicator covers every save entry point", () => {
   );
 });
 
-test("an empty provider field never raises the off-list warning", async () => {
-  // 留空表示「用当前会话默认模型」，是合法默认语义。但列表不可用时
-  // providerNeedsManualInput 对空串也返回 true，于是保存时误报「不在列表中」，
-  // 用户会去改一个本来正确的字段。
+test("the off-list warning requires a loaded list and a non-empty id", async () => {
+  // 「不在列表中」是一个关于列表的断言：列表没加载成功时页面无从比对，
+  // 作不出这个断言（成因由 loadProviders 另行告知）；留空表示「用当前会话
+  // 默认模型」，是合法默认语义，同样不该报警。三种组合各钉一侧，
+  // 少任何一种，这条都会被「永不报警」或「总是报警」满足。
   const classList = { add() {}, remove() {}, toggle() {} };
   const fields = [
     { dataset: { configKey: "judge_provider_id", configControl: "judge" } },
@@ -1410,44 +1411,44 @@ test("an empty provider field never raises the off-list warning", async () => {
     querySelector: () => null,
     querySelectorAll: () => fields,
   };
-  const state = {
-    configLoaded: true,
-    savingConfig: false,
-    configRevision: TEST_REVISION,
-    isDirty: false,
-    requiresConfigRefresh: false,
-  };
-  const toasts = [];
-  const io = makeConfigIo({
-    elements: { configForm: form, configSaveState: { textContent: "", classList } },
-    state,
-    apiPost: async () => ({ ok: true, config: {}, adjusted_fields: [] }),
-    showToast: (message) => toasts.push(message),
-  });
-
-  await io.saveConfig({ preventDefault() {} });
+  // 每次都用新 state：saveConfig 会改动它，且 savingConfig 未回落时直接返回。
+  async function warnedOnSave({ judge = "", providerOptions, providerListAvailable }) {
+    const toasts = [];
+    const io = makeConfigIo({
+      elements: { configForm: form, configSaveState: { textContent: "", classList } },
+      state: {
+        configLoaded: true,
+        savingConfig: false,
+        configRevision: TEST_REVISION,
+        isDirty: false,
+        requiresConfigRefresh: false,
+      },
+      judge: providerControls(judge),
+      apiPost: async () => ({ ok: true, config: {}, adjusted_fields: [] }),
+      showToast: (message) => toasts.push(message),
+      providerOptions,
+      providerListAvailable,
+    });
+    await io.saveConfig({ preventDefault() {} });
+    return toasts.some((message) => message.includes("不在列表中"));
+  }
+  const loadedList = { providerListAvailable: true, providerOptions: [{ id: "real-id" }] };
 
   assert.equal(
-    toasts.some((message) => message.includes("不在列表中")),
+    await warnedOnSave(loadedList),
     false,
-    `留空的 Provider 被误报为不在列表中：${toasts.join(" / ")}`,
+    "留空的 Provider 被误报为不在列表中",
   );
-
-  // 对照：真的填了一个列表里没有的 ID 仍必须报警，否则这条会被"永不报警"满足。
-  // 用独立 state：上一次保存会改动它，而 savingConfig 未回落时 saveConfig 直接返回。
-  const offListToasts = [];
-  const offListState = { ...state, savingConfig: false, requiresConfigRefresh: false };
-  const offListIo = makeConfigIo({
-    elements: { configForm: form, configSaveState: { textContent: "", classList } },
-    state: offListState,
-    judge: providerControls("typo-id"),
-    apiPost: async () => ({ ok: true, config: {}, adjusted_fields: [] }),
-    showToast: (message) => offListToasts.push(message),
-    providerOptions: [{ id: "real-id" }],
-    providerListAvailable: true,
-  });
-  await offListIo.saveConfig({ preventDefault() {} });
-  assert.ok(offListToasts.some((message) => message.includes("不在列表中")));
+  assert.equal(
+    await warnedOnSave({ ...loadedList, judge: "typo-id" }),
+    true,
+    "列表可用且 ID 确实不在列表中时必须报警",
+  );
+  assert.equal(
+    await warnedOnSave({ judge: "typo-id", providerListAvailable: false }),
+    false,
+    "列表不可用时无从比对，不得断言 ID 不在列表中",
+  );
 });
 
 test("undici and abort failures map to the connection hint", () => {

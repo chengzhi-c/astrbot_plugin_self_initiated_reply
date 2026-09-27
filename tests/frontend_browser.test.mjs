@@ -81,7 +81,7 @@ async function serveStatic(request, response) {
 
 async function installBridge(page, options = {}) {
   await page.addInitScript(
-    ({ config, providersFail, saveMode, theme, dim, bold, refreshConfigPending, themePending, cleanupRemoved, cleanupFail, configFail }) => {
+    ({ config, providersFail, saveMode, theme, dim, bold, refreshConfigPending, themePending, cleanupRemoved, cleanupFail, configFail, readyFails }) => {
       const state = {
         saveMode,
         saveAttempts: 0,
@@ -93,13 +93,20 @@ async function installBridge(page, options = {}) {
         themePending,
         cleanupRemoved,
         cleanupFail,
+        readyFails,
       };
       window.__bridgeCalls = [];
       window.__bridgeState = state;
       window.AstrBotPluginPage = {
-        ready: async () => true,
+        ready: async () => {
+          if (state.readyFails) throw new Error("bridge handshake rejected");
+          return true;
+        },
         apiGet: async (endpoint) => {
           window.__bridgeCalls.push({ method: "GET", endpoint });
+          // 握手已失败时 bridge 不可用：任何调用都是误用，必须炸出来而不是
+          // 静默返回成功值，否则「不回退 fetch」的缺陷在用例里不可见。
+          if (state.readyFails) throw new Error("bridge used after handshake failure");
           if (endpoint === "providers") {
             if (state.providersFail) throw new Error("provider list unavailable");
             return { ok: true, providers: [{ id: "provider-a", label: "Provider A" }] };
@@ -128,6 +135,7 @@ async function installBridge(page, options = {}) {
         },
         apiPost: async (endpoint, body) => {
           window.__bridgeCalls.push({ method: "POST", endpoint, body });
+          if (state.readyFails) throw new Error("bridge used after handshake failure");
           if (endpoint === "config") {
             state.saveAttempts += 1;
             if (state.saveMode === "pending" && state.saveAttempts === 1) {
@@ -185,6 +193,7 @@ async function installBridge(page, options = {}) {
       themePending: Boolean(options.themePending),
       cleanupRemoved: options.cleanupRemoved ?? 0,
       cleanupFail: Boolean(options.cleanupFail),
+      readyFails: Boolean(options.readyFails),
     }
   );
 }
@@ -476,6 +485,20 @@ test("a provider list failure keeps the provider already chosen in the form", as
   expect(body).not.toBeNull();
   expect(body.judge_provider_id).toBe("provider-a");
   expect(body.vision_provider_id).toBe("provider-b");
+  expect(errors).toEqual([]);
+});
+
+test("a rejected bridge handshake falls back to fetch instead of using the bridge", async ({
+  page,
+}) => {
+  // 握手失败意味着 bridge 不可信，requestPluginApi 靠 getBridge() 的返回值决定
+  // 走 bridge 还是走 fetch。返回了对象就等于宣称握手成功，fetch 兜底永不触发，
+  // 而桩的 apiGet/apiPost 在这种情况下会抛，整页配置随之加载失败。
+  await installBridge(page, { readyFails: true });
+  const errors = await openPage(page);
+  await expect(page.locator("#selfStatus")).toHaveText("启用");
+  await expect(page.locator("#configForm")).not.toHaveAttribute("inert", "");
+  expect(await page.evaluate(() => window.__bridgeCalls)).toEqual([]);
   expect(errors).toEqual([]);
 });
 
@@ -977,6 +1000,39 @@ test("closing the compact menu returns focus to its trigger", async ({ page }) =
   expect(await page.evaluate(() => document.activeElement?.id)).not.toBe(
     "moreActionsBtn",
   );
+  expect(errors).toEqual([]);
+});
+
+test("arming the compact refresh confirm keeps the menu open for the second click", async ({
+  page,
+}) => {
+  // #refreshBtn 在 #moreActionsMenu 内，而 chrome.mjs 给菜单里每个 button 都挂了
+  // closeMenu。窄屏下脏表单的第一次点击只负责「武装」，提示语是「3 秒内再点一次」，
+  // 但紧随其后的 closeMenu 会把菜单隐藏，第二下点不到（要先重新展开菜单），
+  // 提示与可达行为矛盾。断言菜单仍可见、按钮带 is-armed，且第二下真的发出刷新。
+  await page.setViewportSize({ width: 460, height: 800 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  await page.locator("#messageDelayInput").fill("75");
+  await page.locator("#moreActionsBtn").click();
+  await expect(page.locator("#moreActionsMenu")).toBeVisible();
+
+  await page.locator("#refreshBtn").click();
+  await expect(page.locator("#refreshBtn")).toHaveClass(/is-armed/);
+  await expect(page.locator("#moreActionsMenu")).toBeVisible();
+  await expect(page.locator("#toast")).toContainText("再点一次");
+
+  const configGets = () =>
+    page.evaluate(
+      () =>
+        window.__bridgeCalls.filter(
+          (call) => call.method === "GET" && call.endpoint === "config",
+        ).length,
+    );
+  const before = await configGets();
+  await page.locator("#refreshBtn").click();
+  await expect.poll(configGets).toBe(before + 1);
+  await expect(page.locator("#refreshBtn")).not.toHaveClass(/is-armed/);
   expect(errors).toEqual([]);
 });
 
