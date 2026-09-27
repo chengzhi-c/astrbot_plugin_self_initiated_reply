@@ -167,7 +167,7 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 **`POST /ui/theme` 关停门有行为断言**（`tests/test_webapi.py::test_api_post_ui_theme_paths`）：
 teardown 之后落盘的偏好会在下次启动被读回，用户看到「已被丢弃」却仍然生效的旧设置。
 该门在生产里是**两层**（锁外预检 + 锁内复查），只删一层另一层兜住，行为断言
-锁住两层并存——与本仓库其余端点（config / image-cache）的口径一致。
+锁住两层并存，与本仓库其余端点（config / image-cache）的口径一致。
 
 ## 核实后刻意不改的项
 
