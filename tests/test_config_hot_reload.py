@@ -1,8 +1,8 @@
-"""配置热更新一致性红灯测试。
+"""配置热更新一致性守卫。
 
 缺陷链：webapi._apply_config_updates 对 plugin.settings 做整体替换，
 而 decision/delivery/generation/scheduler/whitelist 五组件在构造时各存
-self.settings 旧引用 → 热更新后组件读过期配置，533 基线测试不暴露
+self.settings 旧引用 → 热更新后组件读过期配置，基线测试不暴露
 （现有断言只看 plugin.settings 新值，不看组件侧读取路径）。
 
 修复后契约：Settings 单一实例，热更新与回滚都保持对象身份（apply 原地

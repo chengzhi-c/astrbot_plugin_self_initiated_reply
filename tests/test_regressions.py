@@ -401,7 +401,7 @@ def test_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
                 UMO, plugin._state_for(UMO), expected_generation=1, force=True
             )
             assert result.text == "你好呀"
-            # 修复前：继承分支直接 return True → 危险工具残留（红灯）
+            # 修复前：继承分支直接 return True → 危险工具残留
             assert enforce_snapshots[0] == ["send_image"]
             assert enforce_snapshots[1] == ["send_image", "third_party_weather"]
         finally:
@@ -464,7 +464,7 @@ def test_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) -> No
         try:
             result = await plugin._pipeline.check_session(UMO, trigger="patrol", force=True)
             assert "未自动重试" in result
-            # 修复前：direct_send_count>0 时跳过记录 → daily_count 不增（红灯）
+            # 修复前：direct_send_count>0 时跳过记录 → daily_count 不增
             assert state.daily_count >= 1
             assert state.last_proactive_observed_at >= state.last_active_at
             assert state.last_proactive_at >= state.last_active_at
@@ -593,7 +593,7 @@ def test_rollback_reschedules_delayed_check(tmp_path: Path) -> None:
         web.request.payload = {"whitelist_sessions": []}
         result = await webapi_module(main)._api_post_config(plugin)
         assert result.get("ok") is False
-        # 修复前：回滚不恢复延迟任务 → UMO 不在 _delay_tasks（红灯）
+        # 修复前：回滚不恢复延迟任务 → UMO 不在 _delay_tasks
         new_task = plugin._delay_tasks.get(UMO)
         assert new_task is not None
         assert new_task is not old_task
@@ -659,7 +659,7 @@ def test_timeout_requests_graceful_stop(tmp_path: Path) -> None:
             result = await plugin._generation.generate(
                 UMO, plugin._state_for(UMO), expected_generation=1, force=True
             )
-            # 修复前：wait_for 直接取消 run_agent → request_stop 从未被调（红灯）
+            # 修复前：wait_for 直接取消 run_agent → request_stop 从未被调
             assert stop_called == [True]
             assert result.text == ""
         finally:
@@ -772,7 +772,7 @@ def test_get_config_enabled_is_persisted_value(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin.runtime_enabled = False  # 直接构造分叉态（不再等同于 /off）
         cfg = await webapi_module(main)._api_get_config(plugin)
-        # 修复前：enabled 返回 runtime_enabled=False → 前端全量保存会固化关闭（红灯）
+        # 修复前：enabled 返回 runtime_enabled=False → 前端全量保存会固化关闭
         assert cfg["enabled"] is plugin.settings.enabled
         assert cfg["enabled"] is True
         assert cfg["runtime_enabled"] is False
@@ -875,7 +875,7 @@ def test_non_admin_write_command_does_not_cancel(tmp_path: Path) -> None:
     """非管理员发写指令：权限拒绝先行，在途延迟检查不得被取消。
 
     修复前 on_message 命令分支无条件 _cancel_event_session（白名单会话）
-    → 任务被取消（红灯）。
+    → 任务被取消。
     """
 
     async def scenario(plugin, main):
@@ -905,7 +905,7 @@ def test_non_admin_write_command_does_not_cancel(tmp_path: Path) -> None:
 def test_admin_write_cancels_but_read_does_not(tmp_path: Path) -> None:
     """管理员视角：只读（status）不打断进行中的检查，写（add）才取消。
 
-    修复前只读指令同样被无条件取消 → status 后任务被取消（红灯）。
+    修复前只读指令同样被无条件取消 → status 后任务被取消。
     """
 
     async def scenario(plugin, main):
@@ -945,7 +945,7 @@ def test_admin_write_cancels_but_read_does_not(tmp_path: Path) -> None:
 def test_new_config_keys_take_effect(tmp_path: Path) -> None:
     """POST 13 个规范键 + decision_history_min_messages 必须真实写入 settings。
 
-    修复前这些键无处理分支 → ok:true 但 settings 不变（虚假绿灯，红灯）。
+    修复前这些键无处理分支 → ok:true 但 settings 不变（虚假成功）。
     """
 
     async def scenario(plugin, main):
@@ -1001,7 +1001,7 @@ def test_new_config_keys_take_effect(tmp_path: Path) -> None:
 def test_unknown_config_key_is_rejected(tmp_path: Path) -> None:
     """schema 之外的键必须被拒并列出未知键，而不是静默返回 ok:true。
 
-    修复前未知键被忽略 → ok:true（虚假成功，红灯）。
+    修复前未知键被忽略 → ok:true（虚假成功）。
     """
 
     async def scenario(plugin, main):
@@ -1251,7 +1251,7 @@ def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
                 await task
             except asyncio.CancelledError:
                 pass
-            # 修复前：run_task 未被 shield 收敛，成为孤儿继续运行（红灯）
+            # 修复前：run_task 未被 shield 收敛，成为孤儿继续运行
             assert run_finished == [True]
             assert stop_called == [True]
         finally:
@@ -1522,7 +1522,7 @@ def test_context_send_none_is_delivered_and_writes_history(tmp_path: Path) -> No
         )
         try:
             result = await plugin._pipeline.check_session(UMO, trigger="patrol", force=True)
-            # 修复前：None 被记 UNKNOWN → "主动发送状态未知，未自动重试。"（红灯）
+            # 修复前：None 被记 UNKNOWN → "主动发送状态未知，未自动重试。"
             assert "已主动回复" in result
             assert sent_via_context
             assert state.last_proactive_text == "你好呀"
@@ -1554,7 +1554,7 @@ def test_readonly_commands_do_not_invalidate_session(tmp_path: Path) -> None:
         assert task is not None and not task.done()
 
         await plugin._command_text(event, "status")
-        # 修复前：status 也 invalidate → 延迟任务被取消移除、缓存被清（红灯）
+        # 修复前：status 也 invalidate → 延迟任务被取消移除、缓存被清
         assert plugin._delay_tasks.get(UMO) is task
         assert not task.done()
         assert plugin._last_events.get(UMO) is event
@@ -1588,7 +1588,7 @@ def test_config_rollback_restores_task_topology(tmp_path: Path) -> None:
             web.request.payload = {"enabled": False}
             result = await webapi_module(main)._api_post_config(plugin)
             assert result.get("ok") is False
-            # 修复前：回滚只恢复 settings/runtime_enabled，不重启 patrol（红灯）
+            # 修复前：回滚只恢复 settings/runtime_enabled，不重启 patrol
             assert plugin.runtime_enabled is True
             assert plugin._scheduler.patrol_task is not None
             assert not plugin._scheduler.patrol_task.done()
@@ -1727,5 +1727,5 @@ def test_call_compat_does_not_retry_body_type_error() -> None:
                 minimal_kwargs={"prompt": "x"},
             )
         )
-    # 修复前：TypeError 触发 minimal 重试 → 调用两次（对 LLM 即重复计费）（红灯）
+    # 修复前：TypeError 触发 minimal 重试 → 调用两次（对 LLM 即重复计费）
     assert calls == ["x"]

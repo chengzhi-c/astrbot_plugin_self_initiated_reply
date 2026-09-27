@@ -81,7 +81,7 @@ def _threshold_records(caplog: object) -> list:
 
 
 async def test_leak_warning_task_threshold(tmp_path: Path, caplog: object) -> None:
-    """任务数超阈值发出**WARNING** 级告警（红灯：当前实现无告警逻辑）。"""
+    """任务数超阈值发出**WARNING** 级告警。"""
     scheduler, scheduler_mod, models, gate, delay_tasks, background_tasks = _new_scheduler(tmp_path)
     for i in range(models.LEAK_WARN_TASK_THRESHOLD + 1):
         delay_tasks[f"s{i}"] = _done_task()
