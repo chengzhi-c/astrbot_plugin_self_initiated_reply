@@ -95,6 +95,10 @@ class DeliveryRunner:
         except Exception:
             pass
 
+    def _probability_hit(self, percent: int) -> bool:
+        """按百分制掷一次随机：引用与 @ 两条概率判定共用同一形状。"""
+        return self._random_value() * 100 < percent
+
     # ------------------------------------------------------------------
     # 引用（可选装饰）
     # ------------------------------------------------------------------
@@ -111,7 +115,7 @@ class DeliveryRunner:
             return False
         if mode == "model" and model_decision is not None:
             return bool(model_decision)
-        return self._random_value() * 100 < self.settings.quote_probability
+        return self._probability_hit(self.settings.quote_probability)
 
     def _quote_target_id(self, umo: str) -> str:
         """引用目标 = 该会话最后一条被插件接住的消息。
@@ -169,7 +173,7 @@ class DeliveryRunner:
             return False
         if mode == "always":
             return True
-        return self._random_value() * 100 < self.settings.mention_probability
+        return self._probability_hit(self.settings.mention_probability)
 
     def _mention_target_id(self, umo: str) -> str:
         """@ 目标 = 本次主动回复所依据的那条消息的发送者。
@@ -572,10 +576,6 @@ class DeliveryRunner:
         try:
             outbound = OutboundGateway(
                 lambda message: self._context_send(umo, message),
-                # Context.send_message 正常完成返回 None（True 也代表送达），
-                # False 已被单独区分为 FAILED_BEFORE_SUBMIT；未抛异常即视为已
-                # 提交，记 DELIVERED 才能写入 assistant 历史供后续决策参考。
-                none_status=SendStatus.DELIVERED,
                 ledger=ledger,
             )
             chain = MessageChain().message(reply)

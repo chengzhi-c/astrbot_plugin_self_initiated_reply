@@ -142,23 +142,22 @@ def test_tool_direct_exception_is_unknown_and_still_consumes_budget() -> None:
     assert gateway.ledger.direct_send_count == 1
 
 
-def test_context_none_result_is_unknown_while_event_none_is_delivered() -> None:
+def test_none_result_is_delivered_on_both_channels() -> None:
+    """``None`` 返回值两条出口都归 DELIVERED。
+
+    event.send 与 Context.send_message 正常完成都返回 None（True 同样代表送达）；
+    记成未提交会让 assistant 历史少一条、下一次决策看不到自己说过什么。
+    """
     outbound = _load_gateway()
 
     async def sender(_message):
         return None
 
-    event_gateway = outbound.OutboundGateway(sender)
-    context_gateway = outbound.OutboundGateway(
-        sender,
-        none_status=outbound.SendStatus.UNKNOWN,
-    )
-
-    event_result = asyncio.run(event_gateway.send("event"))
-    context_result = asyncio.run(context_gateway.send("context"))
+    event_result = asyncio.run(outbound.OutboundGateway(sender).send("event"))
+    context_result = asyncio.run(outbound.OutboundGateway(sender).send("context"))
 
     assert event_result.outcome.status is outbound.SendStatus.DELIVERED
-    assert context_result.outcome.status is outbound.SendStatus.UNKNOWN
+    assert context_result.outcome.status is outbound.SendStatus.DELIVERED
 
 
 def test_sender_false_is_failed_before_submit() -> None:
@@ -169,10 +168,7 @@ def test_sender_false_is_failed_before_submit() -> None:
     async def sender(_message):
         return False
 
-    gateway = outbound.OutboundGateway(
-        sender,
-        none_status=outbound.SendStatus.UNKNOWN,
-    )
+    gateway = outbound.OutboundGateway(sender)
     result = asyncio.run(gateway.send("message"))
 
     assert result.outcome.status is outbound.SendStatus.FAILED_BEFORE_SUBMIT

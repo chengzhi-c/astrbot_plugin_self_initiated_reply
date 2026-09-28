@@ -1,7 +1,8 @@
 """宿主私有层（``astrbot.core.*``）的隔离墙。
 
-拥有：``_HOST_CONTRACT`` 单源符号表、加载期一次性探测与契约校验、以及一组
-窄方法，事件结果、provider 请求、事件类型、钩子、路径全经这里出去。
+拥有：``_HOST_CONTRACT`` 单源符号表、加载期一次性探测与契约校验、以及一组窄方法：
+事件结果、provider 请求与事件类型经这里出去；钩子与路径函数由 main.py 在 import 期
+从 capabilities 直接绑成模块级名字（理由见 ``AstrBotRuntimeAdapter`` 内注释）。
 
 隔离的价值在于宿主升级时的失败位置：符号缺失在加载期即报（core 组缺失拒绝
 加载，probe 组缺失降级为 None），而不是在某次发送的半路。增删宿主符号只改
@@ -21,7 +22,6 @@ from typing import Any, NamedTuple
 from astrbot.api import logger
 
 from .models import PLUGIN_ID
-from .utils import maybe_await
 
 
 def _require[T](value: T | None, name: str) -> T:
@@ -215,7 +215,7 @@ class AstrBotRuntimeAdapter:
         调用时机是加载期一次：``_AGENT_RUNTIME.validate()`` 在 ``SelfInitiatedReplyPlugin.__init__``
         首条语句执行（无条件、不被 try 包裹），宿主不兼容即拒绝加载。各入口
         （6 个 property + ``new_event_result`` / ``new_provider_request`` /
-        ``call_event_hook`` / ``new_build_config``）**不再逐次调本方法**：
+        ``new_build_config``）**不再逐次调本方法**：
         ``capabilities`` 是 frozen dataclass，加载期通过之后契约不会在运行期变化，
         逐次校验只是重复 ``inspect.signature`` 与两次宿主类实例化。运行期的 None
         兜底由 ``_require`` 承担。
@@ -359,17 +359,11 @@ class AstrBotRuntimeAdapter:
         """宿主 ProviderRequest 实例。"""
         return _require(self.capabilities.provider_request_cls, "ProviderRequest")()
 
-    async def call_event_hook(self, event: Any, event_type: Any, req: Any = None) -> Any:
-        """宿主事件钩子链调用（event/event_type 位置参数）。"""
-        hook = _require(self.capabilities.call_event_hook, "call_event_hook")
-        if req is None:
-            return await maybe_await(hook(event, event_type))
-        return await maybe_await(hook(event, event_type, req))
-
-    # 路径函数（config_path_fn / plugin_data_path_fn）不经本类方法出口：main.py 在
-    # import 期把 capabilities 里的两个函数绑成模块级名字（供 resolve_paths 使用，
-    # 也是测试替换点），路径解析失败由 resolve_paths 让异常传播、加载期即崩，
-    # 吞异常静默回退会让状态写到错误路径后无声丢失。结构决策见 docs/DECISIONS.md。
+    # 事件钩子与路径函数（config_path_fn / plugin_data_path_fn）不经本类方法出口：
+    # main.py 在 import 期把 capabilities 里的这几项绑成模块级名字，测试按名字替换。
+    # 宿主 call_event_hook 本身是 async 函数，调用点直接 await，不再套一层转发。
+    # 路径解析失败由 resolve_paths 让异常传播、加载期即崩，吞异常静默回退会让状态写
+    # 到错误路径后无声丢失。结构决策见 docs/DECISIONS.md。
 
     def _tool_list(self, req: Any) -> list[str] | None:
         """共享工具枚举前奏：哨兵/None/tools 三段判定。

@@ -501,15 +501,21 @@ class SessionScheduler:
         while self._should_run():
             try:
                 image_age = self._image_age_sec()
-                # 清理周期取图片保留窗口的一半（60s-1h 夹取）：磁盘上限可控，又不至于频繁 rglob。
-                await asyncio.sleep(min(3600.0, max(60.0, image_age / 2.0)))
+                # 清理周期取图片保留窗口的一半，夹在 [MIN_VISION_IMAGE_AGE_SEC,
+                # EVENT_CLEANUP_INTERVAL_SEC]：磁盘上限可控，又不至于频繁 rglob。
+                await asyncio.sleep(
+                    min(
+                        float(EVENT_CLEANUP_INTERVAL_SEC),
+                        max(float(MIN_VISION_IMAGE_AGE_SEC), image_age / 2.0),
+                    )
+                )
                 if not self._should_run():
                     return
                 await self.run_image_cleanup()
             except Exception as exc:
                 logger.warning("[%s] image cleanup loop failed: %s", PLUGIN_ID, exc)
-                # 清理失败 60s 后重试：与巡检退避同量级，不空转也不久拖。
-                await asyncio.sleep(60.0)
+                # 清理失败后按巡检退避同量级重试，不空转也不久拖。
+                await asyncio.sleep(float(PATROL_BACKOFF_DELAY_SEC))
 
     # ------------------------------------------------------------------
     # 巡检

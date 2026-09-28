@@ -101,7 +101,6 @@ from .storage import (
 from .utils import (
     event_umo,
     is_admin_event,
-    is_at_or_wake_command_event,
     is_explicit_direct_call,
     session_group_id,
     session_whitelisted,
@@ -169,7 +168,6 @@ class SelfInitiatedReplyPlugin(Star):
         # 不可靠，主题/压暗/粗体写入后端 JSON（与 state.json 同目录）。
         self._ui_prefs_path = self._storage_path.parent / "ui_prefs.json"
         self._ui_theme, self._ui_dim, self._ui_bold = load_ui_prefs(self)
-        self._vision: VisionService
         self._whitelist_runtime_umos: dict[str, set[str]] = {}
         self._delay_tasks: dict[str, asyncio.Task[Any]] = {}
         self._running_check_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -528,7 +526,9 @@ class SelfInitiatedReplyPlugin(Star):
         """
         if str(text or "").lstrip().startswith("/"):
             return True
-        return is_at_or_wake_command_event(event) or is_explicit_direct_call(event, text)
+        # is_explicit_direct_call 的第一判据就是宿主的 is_at_or_wake_command，
+        # 这里不再重复调一次（宿主 callable 被同一个事件跑两遍）。
+        return is_explicit_direct_call(event, text)
 
     # 只读视图：数据归属 SessionGate，以下 property 供既有调用点与测试
     # 以原字段名访问，避免同步迁移动辄数十处引用面。回滚整表覆盖

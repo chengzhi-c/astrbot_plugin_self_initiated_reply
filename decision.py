@@ -21,6 +21,7 @@ from astrbot.api import logger
 
 from .models import (
     CONFIG_SPEC_BY_KEY,
+    CONTEXT_CAP_MARKER,
     DECISION_JSON_CONTRACT,
     PLUGIN_ID,
     CheckTrigger,
@@ -377,7 +378,7 @@ class DecisionMaker:
             "recent_messages": cap_context_text(
                 sanitize_prompt_variable(recent, max_length=None, allow_newlines=True),
                 MAX_DECISION_CONTEXT_CHARS,
-                marker="…(更早历史因长度预算省略)",
+                marker=CONTEXT_CAP_MARKER,
             ),
         }
         # 回落取 ``ConfigSpec.reset_value``：与读侧落盘、面板「恢复默认」同一表达式。

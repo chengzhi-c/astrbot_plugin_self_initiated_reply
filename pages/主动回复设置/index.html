@@ -532,9 +532,9 @@
                 placeholder="留空则任何会话都不会主动回复&#10;群聊可填完整 UMO，也可直接填 QQ 群号"
               ></textarea>
               <div class="whitelist-bar">
-                <span class="whitelist-summary" id="whitelistSummary"
-                  >未配置会话（留空则不主动回复任何会话）</span
-                >
+                <!-- 文案由 config-form.mjs 的 summarizeWhitelist 单源写入：这里再抄一份
+                     会在加载完成后立刻被覆盖，两处各自演化就是漂移。 -->
+                <span class="whitelist-summary" id="whitelistSummary"></span>
               </div>
               <span class="field-error" id="whitelistError" role="alert"></span>
             </div>

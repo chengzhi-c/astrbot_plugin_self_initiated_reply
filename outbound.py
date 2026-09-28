@@ -42,19 +42,11 @@ class OutboundGateway:
         *,
         max_direct_sends: int = 0,
         allow_direct: Callable[[], bool] | None = None,
-        none_status: SendStatus = SendStatus.DELIVERED,
         ledger: AttemptLedger | None = None,
     ) -> None:
-        if none_status not in {
-            SendStatus.DELIVERED,
-            SendStatus.UNKNOWN,
-            SendStatus.FAILED_BEFORE_SUBMIT,
-        }:
-            raise ValueError("none_status must describe an adapter completion")
         self._sender = sender
         self._max_direct_sends = max(0, int(max_direct_sends))
         self._allow_direct = allow_direct
-        self._none_status = none_status
         self._ledger = ledger or AttemptLedger()
         self._direct_send_count = 0
         self._direct_fail_count = 0
@@ -137,9 +129,10 @@ class OutboundGateway:
                     SendStatus.FAILED_BEFORE_SUBMIT,
                     "sender returned False (definitely not submitted)",
                 )
-            elif raw_result is None:
-                outcome = SendOutcome(self._none_status, "sender completed")
             else:
+                # ``None`` 与真值同归 DELIVERED：event.send 正常返回 None，
+                # Context.send_message 也是（True 同样代表送达）。未抛异常即已
+                # 提交，记 DELIVERED 才会写进 assistant 历史供后续决策参考。
                 outcome = SendOutcome(SendStatus.DELIVERED, "sender completed")
 
         if is_direct and outcome.status is SendStatus.FAILED_BEFORE_SUBMIT:

@@ -89,8 +89,8 @@ export function createConfigIo(deps) {
 		renderPromptPreview,
 		providerControls,
 		fmtBool,
-		getProviderOptions = () => [],
-		isProviderListAvailable = () => false,
+		getProviderOptions,
+		isProviderListAvailable,
 	} = deps;
 	const coordinator = createConfigRequestCoordinator();
 	let numberFields = [];

@@ -101,7 +101,7 @@ let toastTimer = null;
 
 function setStatState(element, stateName) {
 	if (!element) return;
-	element.classList.remove("is-on", "is-off", "is-info");
+	element.classList.remove("is-on", "is-off");
 	element.classList.add(stateName);
 }
 

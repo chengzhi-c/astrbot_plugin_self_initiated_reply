@@ -24,6 +24,7 @@ from astrbot.api import logger
 from astrbot.api.event import MessageChain
 
 from .models import (
+    CONTEXT_CAP_MARKER,
     HOST_DANGEROUS_TOOL_IDS,
     MAX_AGENT_STEPS,
     MAX_DIRECT_TOOL_SENDS,
@@ -400,6 +401,16 @@ class GenerationRunner:
         event_dict = getattr(last_event, "__dict__", {})
         run.had_instance_send = "send" in event_dict
         run.original_instance_send = event_dict.get("send") if run.had_instance_send else None
+        if not callable(original_send):
+            # 前置到 tracker 构造之前：本方法此后默认 original_send 可调用，
+            # 闭包里不再重复判一次。
+            logger.warning(
+                "[%s] event send tracker unavailable ledger_id=%s session=%s",
+                PLUGIN_ID,
+                run.ledger.ledger_id,
+                run.umo,
+            )
+            return run.partial_reply()
         outbound = OutboundGateway(
             original_send,
             max_direct_sends=MAX_DIRECT_TOOL_SENDS,
@@ -427,8 +438,6 @@ class GenerationRunner:
                         run.umo,
                     )
                     return False
-                if original_send is None:
-                    raise RuntimeError("event send 已接管却没有可调用的原发函数")
                 return await original_send(message)
             result = await outbound.send(message, kind="tool_direct")
             if not result.submitted:
@@ -442,14 +451,6 @@ class GenerationRunner:
             return result.raw_result
 
         run.tracked_send = tracked_send
-        if not callable(original_send):
-            logger.warning(
-                "[%s] event send tracker unavailable ledger_id=%s session=%s",
-                PLUGIN_ID,
-                run.ledger.ledger_id,
-                run.umo,
-            )
-            return run.partial_reply()
         try:
             last_event.send = tracked_send
             run.tracker_installed = True
@@ -812,9 +813,7 @@ class GenerationRunner:
                 MAX_GENERATION_CONTEXT_CHARS,
             )
             context_text = cap_context_text(
-                context_text,
-                MAX_GENERATION_CONTEXT_CHARS,
-                marker="…(更早历史因长度预算省略)",
+                context_text, MAX_GENERATION_CONTEXT_CHARS, marker=CONTEXT_CAP_MARKER
             )
         image_context = await self._build_image_context(
             umo,

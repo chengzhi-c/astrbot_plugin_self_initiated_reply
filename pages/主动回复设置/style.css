@@ -148,9 +148,6 @@
 	:root:not([data-theme]) select {
 		background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23b09a80' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
 	}
-	:root:not([data-theme]) .theme-toggle .icon-dark {
-		color: var(--spirit);
-	}
 }
 
 /* ==== 重置与全局元素 ==== */
@@ -1538,9 +1535,9 @@ textarea {
 .top-actions .action-refresh.is-armed .inline-icon {
 	color: var(--warn);
 }
+/* 保存期间的交互屏蔽由 form.inert 负责（与 is-saving 同起同收），这里只留视觉。 */
 .form.is-saving {
 	opacity: 0.72;
-	pointer-events: none;
 }
 
 /* ==== 浮层（toast/boot/移动端栏） ==== */

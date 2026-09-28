@@ -458,36 +458,36 @@ class ImageParser:
     async def prepare(self, image_info: ImageInfo) -> bool:
         """Freeze a message image before the delayed proactive check.
 
-        The image is downloaded and cached while the original event is still
-        being handled.  Selfreply previously kept only the expiring QQ URL and
-        fetched it minutes later, after which the provider often saw an unusable
-        image.  A successful data URL is therefore materialized into the plugin data
-        directory and the ImageInfo is changed to point at that local file.
+        QQ direct URLs expire, so fetching one minutes later (when the delayed
+        check runs) often hands the provider an unusable image.  The download
+        therefore happens while the original event is still being handled, and a
+        successful data URL is materialized into the plugin data directory with
+        the ImageInfo repointed at that local file.
         """
         if not image_info.has_any_source:
             return False
         if image_info.prepared_source:
             return True
         try:
+            # _resolve_image_url 只产 data URL 或 None：不存在"拿到裸远端地址
+            # 稍后再取"的形态，所以这里不再判 scheme，冻结失败也不回退到远端。
             image_url = await self._resolve_image_url(image_info)
             if not image_url:
                 logger.info("[%s] image source unavailable during event capture", PLUGIN_ID)
                 return False
-            if image_url.startswith("data:") and self._source_cache_dir:
-                path = await asyncio.to_thread(self._materialize_data_url, image_url)
-                if path:
-                    image_info.file_path = str(path)
-                    image_info.prepared_source = str(path)
-                    logger.debug("[%s] image frozen to local cache: %s", PLUGIN_ID, path.name)
-                    return True
-            if image_url.startswith("data:"):
+            path = (
+                await asyncio.to_thread(self._materialize_data_url, image_url)
+                if self._source_cache_dir
+                else None
+            )
+            if path:
+                image_info.file_path = str(path)
+                image_info.prepared_source = str(path)
+                logger.debug("[%s] image frozen to local cache: %s", PLUGIN_ID, path.name)
+            else:
                 image_info.prepared_source = image_url
                 logger.debug("[%s] image frozen as in-memory data URL", PLUGIN_ID)
-                return True
-            logger.warning(
-                "[%s] image source was not materialized; refusing delayed raw URL", PLUGIN_ID
-            )
-            return False
+            return True
         except Exception as exc:
             logger.warning("[%s] image capture failed: %s", PLUGIN_ID, exc)
             return False

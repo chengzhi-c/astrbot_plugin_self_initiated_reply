@@ -2369,19 +2369,6 @@ def test_prepare_data_url_without_cache_dir_stays_in_memory(tmp_path: Path) -> N
     assert info.prepared_source == PNG_DATA_URL
 
 
-def test_prepare_refuses_unmaterialized_remote_url(tmp_path: Path) -> None:
-    _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
-
-    async def raw_url(_info):
-        return "https://cdn.example/x.png"
-
-    parser._resolve_image_url = raw_url
-    info = image.ImageInfo(url="https://x/y.png")
-    assert asyncio.run(parser.prepare(info)) is False
-    assert not info.prepared_source
-
-
 def test_prepare_surfaces_resolve_exception_as_false(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
     parser = _make_parser(image, tmp_path)

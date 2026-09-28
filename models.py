@@ -40,7 +40,7 @@ MAX_STRING_LIST_ITEM_LEN = (
     200  # 字符串列表条目最大长度（白名单/别名/忽略名单等共用），防止垃圾长条目
 )
 # str 类键（provider id）的硬上限：与列表条目同宽，防止无限长字符串落盘。
-MAX_PROVIDER_ID_LEN = 200
+MAX_PROVIDER_ID_LEN = MAX_STRING_LIST_ITEM_LEN
 # 与前端 pages/主动回复设置/config-form.mjs 的 WHITELIST_ILLEGAL_RE 同字符集。
 # 控制字符 + 引号 + 反斜杠：过长文案截进 logger.warning 时不能伪造日志行。
 STRING_LIST_ILLEGAL_RE = re.compile(r"[\x00-\x1f\"'\\]")
@@ -57,6 +57,9 @@ MAX_RECENT_MESSAGE_LIMIT = 100  # 历史消息最大缓存数
 # 变量净化），生成路径不给预算时长文群会把整段刷屏历史灌进主 Agent。
 # 6000 ≈ 默认 20 条 × 常见消息长度，正常会话永不触发，只裁病态长史。
 MAX_GENERATION_CONTEXT_CHARS = 6000
+# 保尾裁剪时插在最前的一行省略提示。判断与生成两条路径都用它：用户在两边看到的
+# 「历史被省略」必须是同一句话，各写一份字面量会让一侧先改口。
+CONTEXT_CAP_MARKER = "…(更早历史因长度预算省略)"
 MAX_DAILY_REPLIES_LIMIT = 1000  # 每日回复次数上限
 MAX_VISION_IMAGES = 5  # 单次主动回复最多解析的图片数
 MIN_VISION_IMAGE_AGE_SEC = 60  # 图片上下文最短保留时间（短于此清理会退化成抖动）
@@ -290,7 +293,7 @@ def as_int(value: Any, default: int, minimum: int = 0, maximum: int = 100000) ->
     return max(minimum, min(maximum, parsed))
 
 
-def as_float(value: Any, default: float, minimum: float = 0.0, maximum: float = 300.0) -> float:
+def as_float(value: Any, default: float, minimum: float, maximum: float) -> float:
     if isinstance(value, bool):
         return default
     try:
@@ -412,11 +415,16 @@ class MessageRecord:
     at: float = field(default_factory=now_ts)
 
 
+# 取不到发送者名字时的兜底显示名。提示词里的历史行与事件侧都用它，两处各写一遍
+# 会让模型看到同一个人有两种称呼。
+FALLBACK_SENDER_NAME = "用户"
+
+
 def history_display_name(role: str, name: str | None = None) -> str:
     """历史展示名：助手固定 Bot，其他人用名字，缺名才回落用户。"""
     if role == "assistant":
         return "Bot"
-    return str(name or "用户")
+    return str(name or FALLBACK_SENDER_NAME)
 
 
 class ReadHistoryCallback(Protocol):
@@ -820,7 +828,7 @@ class ConfigSpec:
         legacy_keys: 旧版本键名，只在读侧回退；``to_config_dict`` 只写正式键。
         special/editor_mode/editor_language: schema 的 UI 专属字段。
         max_len/max_items: 硬上限（防 OOM 与费用滥用），超限截断并记 warning。
-        item_max_len/item_pattern/empty_policy: list/set 条目的统一规范化规则。
+        item_max_len/item_pattern: list/set 条目的统一规范化规则。
         reset_default: 空提交复位的内置默认（目前唯一消费者是 text 类键）。
         surfaces: 该键出现在哪些配置面。``host`` 为宿主 schema；
             ``panel`` 为自定义设置页。GET /config 与前端可写键都从此派生。
@@ -844,7 +852,6 @@ class ConfigSpec:
     max_items: int | None = None
     item_max_len: int | None = None
     item_pattern: str = ""
-    empty_policy: str = ""
     # 空提交复位的内置默认（目前唯一消费者是 text 类键）。复位语义只在读侧
     # coerce_config_value 实现一次，webapi._strict_value 不做回落，以免两处各持一份口径。
     reset_default: Any = ""
@@ -909,7 +916,9 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
     ConfigSpec(
         "decision_history_min_messages",
         "int",
-        5,
+        # 与生成侧预算下限同源：MIN_RECENT_TEXT_RECORDS 就是这条配置的消费值，
+        # 再写一遍数字等于允许两者被单独改掉。
+        MIN_RECENT_TEXT_RECORDS,
         0,
         30,
         step=1,
@@ -949,7 +958,6 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         max_items=MAX_BOT_ALIASES,
         item_max_len=MAX_STRING_LIST_ITEM_LEN,
         item_pattern=STRING_LIST_ILLEGAL_RE.pattern,
-        empty_policy="drop",
     ),
     ConfigSpec(
         "ignored_sender_ids",
@@ -960,7 +968,6 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         max_items=MAX_IGNORED_SENDER_IDS,
         item_max_len=MAX_STRING_LIST_ITEM_LEN,
         item_pattern=STRING_LIST_ILLEGAL_RE.pattern,
-        empty_policy="drop",
     ),
     ConfigSpec(
         "whitelist_sessions",
@@ -973,7 +980,6 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         max_items=MAX_WHITELIST_SIZE,
         item_max_len=MAX_STRING_LIST_ITEM_LEN,
         item_pattern=STRING_LIST_ILLEGAL_RE.pattern,
-        empty_policy="drop",
         surfaces=_PANEL,
     ),
     ConfigSpec("enabled_private_sessions", "bool", True, surfaces=_PANEL),
@@ -1024,7 +1030,6 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         max_items=MAX_QUIET_HOURS,
         item_max_len=MAX_STRING_LIST_ITEM_LEN,
         item_pattern=STRING_LIST_ILLEGAL_RE.pattern,
-        empty_policy="drop",
     ),
     ConfigSpec("enabled_message_trigger", "bool", True),
     ConfigSpec("enabled_patrol_trigger", "bool", False),
@@ -1106,9 +1111,8 @@ def _normalize_list_item(spec: ConfigSpec, raw: Any, mode: str) -> tuple[str | N
     """Normalize one list item and return ``(value, dropped, adjusted)``."""
     text = str(raw).strip()
     if not text:
-        if spec.empty_policy == "drop":
-            return None, 1, 0
-        return text, 0, 0
+        # 空条目一律丢弃：留它会写出 "- " 这样的空行，白名单与别名列表都无意义。
+        return None, 1, 0
     if spec.item_pattern and re.search(spec.item_pattern, text):
         if mode == "api":
             raise ValueError(f"{spec.key} 条目含非法字符")
@@ -1221,7 +1225,9 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
             return normalize_string_list(spec, fallback, mode="disk")
     if spec.kind == "str":
         return _truncate_text(spec, str(raw or "").strip())
-    return str(raw or "").strip()
+    # 规格表写错 kind 时不得静默降级成"去掉空白的字符串"：那会让一个 int/bool 键
+    # 带着非法值落盘并在面板上显示成正常值。与上面缺边界的两条自检同口径，加载期响。
+    raise RuntimeError(f"{spec.key}: 未知配置 kind {spec.kind!r}")
 
 
 def normalize_config_updates(updates: dict[str, Any]) -> dict[str, Any]:

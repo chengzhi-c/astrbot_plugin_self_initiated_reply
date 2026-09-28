@@ -136,6 +136,31 @@ def test_frontend_whitelist_max_count_matches_backend() -> None:
     )
 
 
+def _webapi_module():
+    from .host_stubs import install_astrbot_stubs, load_package
+
+    install_astrbot_stubs()
+    return load_package("selfreply_config_sot_package", "webapi")
+
+
+def test_frontend_theme_values_match_backend() -> None:
+    """前端主题轮换表必须等于后端 ``ui/theme`` 接受的集合。
+
+    两侧各列一份合法值时漂移是静默的：后端多一个值，前端永远切不到那里；前端多一个
+    值，提交被拒后主题只在本次页面生效，下次冷启动回退成旧值。
+    """
+    webapi = _webapi_module()
+    theme = (ROOT / "pages" / "主动回复设置" / "theme.mjs").read_text(encoding="utf-8")
+    match = re.search(r"const THEME_CYCLE = \[([^\]]*)\];", theme)
+    assert match, "THEME_CYCLE not found in theme.mjs"
+    frontend = {item.strip().strip("'\"") for item in match.group(1).split(",") if item.strip()}
+    backend = set(webapi.UI_THEME_VALUES)
+    assert frontend == backend, (
+        f"前后端主题取值漂移：前端独有 {sorted(frontend - backend)}，"
+        f"后端独有 {sorted(backend - frontend)}"
+    )
+
+
 def test_frontend_number_bounds_match_panel_specs() -> None:
     """自定义页 number 控件的 min/max/step 必须等于规格表。"""
     models = _models_module()

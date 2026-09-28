@@ -21,6 +21,7 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import At
 
 from .models import (
+    FALLBACK_SENDER_NAME,
     INLINE_SPACE_PATTERN,
     PLUGIN_ID,
     WHITESPACE_PATTERN,
@@ -54,6 +55,11 @@ _SENTENCE_TAIL_PATTERN = re.compile(r"^([\s\S]*[。！？.!?])[^。！？.!?]*$"
 # 日志/对外文本中 URL 的最大呈现长度（含脱敏标记）：与脱敏前的裸截断口径一致，
 # 避免"为了安全"反而把日志行拉宽。
 LOG_URL_MAX_CHARS = 80
+# 判断模型 JSON 里的布尔字面量集合。刻意窄于 models.as_bool：配置面认
+# on/启用/开启，模型侧不认，免得模型措辞变宽后更积极接话。should_reply 与
+# quote 两个字段共用这一份判定。
+MODEL_JSON_TRUE_WORDS = frozenset({"true", "yes", "1", "是"})
+MODEL_JSON_FALSE_WORDS = frozenset({"false", "no", "0", "否"})
 _REDACTED_QUERY_MARK = "?<redacted>"
 # 判断模型 reason 的对外呈现长度上限：超长截断，只进日志/前端展示。
 DECISION_REASON_MAX_CHARS = 200
@@ -177,13 +183,12 @@ def parse_decision_json(text: str) -> dict[str, Any] | None:
     if "should_reply" not in parsed:
         return None
 
-    # 规范化 should_reply 为布尔值。集合刻意窄于 models.as_bool：
-    # 配置面认 on/启用/开启，判断模型 JSON 不认，避免模型措辞变宽后更积极接话。
+    # 规范化 should_reply 为布尔值（字面量集合单源见 MODEL_JSON_TRUE_WORDS）。
     raw_reply = parsed["should_reply"]
     if isinstance(raw_reply, bool):
         should_reply = raw_reply
     elif isinstance(raw_reply, str):
-        should_reply = raw_reply.strip().lower() in {"true", "yes", "1", "是"}
+        should_reply = raw_reply.strip().lower() in MODEL_JSON_TRUE_WORDS
     elif isinstance(raw_reply, (int, float)):
         should_reply = bool(raw_reply)
     else:
@@ -205,8 +210,8 @@ def parse_decision_json(text: str) -> dict[str, Any] | None:
         normalized = raw_quote.strip().lower()
         quote = (
             True
-            if normalized in {"true", "yes", "1", "是"}
-            else (False if normalized in {"false", "no", "0", "否"} else None)
+            if normalized in MODEL_JSON_TRUE_WORDS
+            else (False if normalized in MODEL_JSON_FALSE_WORDS else None)
         )
     elif isinstance(raw_quote, (int, float)):
         quote = bool(raw_quote)
@@ -375,9 +380,9 @@ def event_message_id(event: Any) -> str:
 
 def event_sender_name(event: AstrMessageEvent) -> str:
     try:
-        return str(event.get_sender_name() or event.get_sender_id() or "用户")
+        return str(event.get_sender_name() or event.get_sender_id() or FALLBACK_SENDER_NAME)
     except Exception:
-        return "用户"
+        return FALLBACK_SENDER_NAME
 
 
 def event_extra(event: AstrMessageEvent, key: str, default: Any = None) -> Any:

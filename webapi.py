@@ -61,6 +61,11 @@ from .utils import redact_exc_text
 # 历史兼容别名由 Settings.from_config 的 legacy_keys 回退读取，不入本名单。
 CONFIG_SCHEMA_KEYS = frozenset(spec.key for spec in CONFIG_SPECS)
 
+# UI 偏好主题取值：GET/POST ui/theme 两端各判一次，两处字面量会让"新增一种主题"
+# 只改一侧而静默拒绝另一侧。前端集合与本常量的漂移由
+# test_config_source_of_truth.test_frontend_theme_values_match_backend 钉住。
+UI_THEME_VALUES = frozenset({"auto", "light", "dark"})
+
 
 def _config_value(config: Any, key: str, default: Any = "") -> Any:
     if isinstance(config, dict):
@@ -217,7 +222,7 @@ def load_ui_prefs(plugin: SelfInitiatedReplyPlugin) -> tuple[str, bool, bool]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError):
         # 文件缺失/编码损坏/JSON 损坏/顶层非对象一律回退
         return "auto", False, False
-    if theme not in {"auto", "light", "dark"}:
+    if theme not in UI_THEME_VALUES:
         theme = "auto"
     if not isinstance(dim, bool):
         dim = False
@@ -265,7 +270,7 @@ async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]
     submitted: dict[str, Any] = {}
     if "theme" in data:
         theme = str(data.get("theme", "")).strip()
-        if theme not in {"auto", "light", "dark"}:
+        if theme not in UI_THEME_VALUES:
             # 不回显 theme 原值：那是客户端可控输入，回显等于把请求体
             # 原文反射回响应。合法取值是固定枚举，直接告知即可，无需回放输入。
             return {"ok": False, "error": "无效主题，可选值：auto / light / dark"}

@@ -83,6 +83,22 @@ def strip_command_prefix(text: str) -> str:
     return parsed[1] if parsed else text
 
 
+def _alias_help_line() -> str:
+    """别名说明从调度表派生。
+
+    手写这份清单时，给某个动作加别名而忘了同步文案是静默的：用户查帮助看不到，
+    而宿主那边其实已经注册上了。装饰器侧的 ``alias=`` 仍各自写字面量（不共用同一
+    个 set 对象，理由见 ``test_command_aliases_single_source``），它与本表由那条
+    守卫钉等价，本行则直接从表里长出来。
+    """
+    groups = [
+        f"{action}/{'/'.join(sorted(names - {action}))}"
+        for action, names in COMMAND_ALIASES.items()
+        if names - {action}
+    ]
+    return "可用英文别名：" + "、".join(groups) + "。"
+
+
 def help_text() -> str:
     return "\n".join(
         [
@@ -95,7 +111,7 @@ def help_text() -> str:
             "/selfreply on: 启用主动回复，重启后保持（管理员）",
             "/selfreply off: 暂停主动回复，重启后保持（管理员）",
             "/selfreply debug: 查看当前会话、发送者与识别信息（管理员）",
-            "可用英文别名：help/h、status/stat、list/ls/whitelist、check/test、remove/rm/del/delete、on/enable/start、off/disable/pause/stop、debug/diag/diagnose。",
+            _alias_help_line(),
             "也支持 @Bot selfreply <动作>（无需斜杠）。",
         ]
     )

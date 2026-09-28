@@ -231,36 +231,6 @@ def test_narrow_symbol_accessors() -> None:
     assert req.session_id == ""
 
 
-async def test_call_event_hook_awaits_async_callback() -> None:
-    """call_event_hook 两分支（req 缺省/显式）对异步回调都走 maybe_await 正常 await。
-
-    utils.maybe_await 是唯一实现，本测试锁住适配层调用点
-    （此前该分支零覆盖：若导入/传参错误，测试不红）。
-    """
-    runtime = _load_adapter()
-    calls: list[str] = []
-
-    async def async_hook(event, event_type, req=None):
-        calls.append(str(req))
-        return "async-result"
-
-    adapter = runtime.AstrBotRuntimeAdapter(
-        base_runtime_capabilities(runtime, call_event_hook=async_hook)
-    )
-    assert await adapter.call_event_hook("evt", "OnLLMRequestEvent") == "async-result"
-    assert await adapter.call_event_hook("evt", "OnLLMRequestEvent", req="req") == "async-result"
-    assert calls == ["None", "req"]
-
-
-async def test_call_event_hook_passes_through_sync_callback() -> None:
-    """同步回调（非可等待值）原样返回，不误 await。"""
-    runtime = _load_adapter()
-    adapter = runtime.AstrBotRuntimeAdapter(
-        base_runtime_capabilities(runtime, call_event_hook=lambda e, t, req=None: "sync")
-    )
-    assert await adapter.call_event_hook("evt", "t") == "sync"
-
-
 def test_runtime_contract_checks_listed() -> None:
     """compat_check 的存在性清单与适配层契约单源（增删符号必须同步）。"""
     runtime = _load_adapter()

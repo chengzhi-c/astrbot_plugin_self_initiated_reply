@@ -74,7 +74,6 @@ def test_list_specs_declare_one_machine_normalization_contract() -> None:
         assert spec.max_items is not None, spec.key
         assert spec.item_max_len is not None, spec.key
         assert spec.item_pattern, spec.key
-        assert spec.empty_policy in {"drop", "keep"}, spec.key
 
 
 def test_config_revision_is_canonical_and_restart_stable() -> None:
