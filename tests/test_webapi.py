@@ -454,6 +454,13 @@ def test_api_post_ui_theme_paths(tmp_path) -> None:
         assert not plugin._ui_prefs_path.exists(), "关停中仍写入了 UI 偏好"
         assert plugin._ui_theme != "dark"
         plugin._stopping = False
+        # 请求体读不出（非法 JSON）：与「空对象」是两回事。报成「未提供任何字段」
+        # 会让人去数字段名，而真正坏的是请求体本身。
+        web.request.error = ValueError("invalid json body")
+        result = await webapi._api_post_ui_theme(plugin)
+        assert result["ok"] is False
+        assert "合法 JSON" in result["error"], result
+        web.request.error = None
         # 非 dict 请求体
         web.request.payload = ["dark"]
         result = await webapi._api_post_ui_theme(plugin)

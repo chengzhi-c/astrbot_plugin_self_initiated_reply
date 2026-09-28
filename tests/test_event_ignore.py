@@ -91,16 +91,21 @@ async def test_keep_normal_message() -> None:
     assert _should_ignore(events, event, "普通消息", vision=False) is False
 
 
-def test_cq_at_requires_digit_boundary() -> None:
-    """CQ @ 判定要求数字边界：他人 QQ 号以 self_id 结尾时不得误判为点名。
+def test_cq_at_requires_identifier_boundary() -> None:
+    """CQ @ 判定要求标识符边界：self_id 只是他人 id 的一段时不得误判为点名。
 
     `[CQ:at,qq=456123]` 在 self_id=123 下若被误判，该消息会被
-    should_ignore_event 当作直接点名静默丢弃、不进观察窗口。
+    should_ignore_event 当作直接点名静默丢弃、不进观察窗口。字母侧同型：
+    非纯数字账号（如带前后缀的平台 id）以 self_id 结尾时也是一次误判，
+    只挡数字一侧等于把这条路径留着。
     """
     events = _events_module()
     event = _FakeEvent(self_id="123")
     assert events.is_explicit_direct_call(event, "[CQ:at,qq=123]") is True
     assert events.is_explicit_direct_call(event, "[CQ:at,qq=456123]") is False
+    assert events.is_explicit_direct_call(event, "[CQ:at,qq=abc123def]") is False
+    assert events.is_explicit_direct_call(event, "[CQ:at,qq=123x]") is False
+    assert events.is_explicit_direct_call(event, "[CQ:at,qq=123,type=1]") is True
     assert events.is_explicit_direct_call(event, "[At:123]") is True
     assert events.is_explicit_direct_call(event, "[At:456123]") is False
 

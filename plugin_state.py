@@ -224,9 +224,13 @@ async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
         try:
             success = await asyncio.shield(write_task)
         except asyncio.CancelledError:
-            success = await write_task
-            if not success and not plugin._abandon_disk_writes:
-                raise OSError(f"状态文件写入失败：{plugin._storage_path}") from None
+            # 等 shield 保护的那次写完，只为决定要不要留一条失败日志：取消必须
+            # 原样重放。改写成 OSError 会把「被取消」上报成「写盘失败」，调用方
+            # 因此落到 except Exception 分支，取消路径的回滚语义丢失。
+            if not await write_task and not plugin._abandon_disk_writes:
+                logger.warning(
+                    "[%s] state save failed while cancelled: %s", PLUGIN_ID, plugin._storage_path
+                )
             raise
         if not success and not plugin._abandon_disk_writes:
             raise OSError(f"状态文件写入失败：{plugin._storage_path}")

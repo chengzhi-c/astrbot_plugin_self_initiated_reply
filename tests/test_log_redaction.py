@@ -310,3 +310,41 @@ def test_vision_provider_exception_log_drops_credentials() -> None:
     for secret in SECRETS:
         assert secret not in line, f"vision 异常日志泄漏凭证 {secret}：{line}"
     assert "<redacted>" in line, f"未标记 query 已被剥离：{line}"
+
+
+def test_history_read_failure_log_drops_credentials() -> None:
+    """宿主会话存储后端失败时，降级 debug 日志不得带出连接串凭证。
+
+    会话后端可能是 redis/db，其异常文本常含带 user:pass 的连接 URL；本方法与
+    ``_call_host`` 走同一脱敏口径，级别低不是豁免理由。
+    """
+    install_astrbot_stubs()
+    adapters = load_package(f"{PACKAGE_NAME}_adapters", "adapters")
+
+    class _Manager:
+        async def get_curr_conversation_id(self, _umo):
+            raise RuntimeError(f"connect failed for {SIGNED_URL}")
+
+    class _Context:
+        conversation_manager = _Manager()
+
+    lines: list[str] = []
+
+    class _Recorder:
+        def debug(self, template: str, *args: object) -> None:
+            lines.append(template % args if args else template)
+
+        def __getattr__(self, _name: str):
+            return lambda *a, **k: None
+
+    original_logger = adapters.logger
+    adapters.logger = _Recorder()
+    try:
+        bridge = adapters.AstrBotBridge(_Context())
+        assert asyncio.run(bridge.read_astrbot_history("s1", limit=5)) == []
+    finally:
+        adapters.logger = original_logger
+
+    assert lines, "未捕获历史读取失败日志"
+    for secret in SECRETS:
+        assert secret not in lines[-1], f"日志泄漏凭证 {secret}：{lines}"

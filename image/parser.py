@@ -56,6 +56,7 @@ from ._support import (
     ImageInfo,
     sniff_image_mime,
     to_data_url,
+    url_scheme,
 )
 from .recorder_bridge import MessageRecorderBridge
 
@@ -541,8 +542,7 @@ class ImageParser:
         if not image_info.trusted_local_path or not image_info.file_path:
             return False
         file_value = str(image_info.file_path).strip()
-        parsed = urlparse(file_value)
-        if parsed.scheme in URL_SCHEMES:
+        if url_scheme(file_value) in URL_SCHEMES:
             return False
         path = Path(file_value)
         if not path.is_absolute():
@@ -733,8 +733,7 @@ class ImageParser:
 
         if image_info.file_path:
             file_value = str(image_info.file_path).strip()
-            parsed = urlparse(file_value)
-            if parsed.scheme in HTTP_SCHEMES:
+            if url_scheme(file_value) in HTTP_SCHEMES:
                 data_url = await self._fetch_image_data_url(file_value)
                 if data_url:
                     return data_url

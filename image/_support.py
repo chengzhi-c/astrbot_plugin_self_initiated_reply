@@ -7,6 +7,7 @@ import hashlib
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from ..models import MAX_IMAGE_BYTES, sanitize_prompt_variable
 
@@ -16,6 +17,21 @@ from ..models import MAX_IMAGE_BYTES, sanitize_prompt_variable
 #   文件系统路径，extractor 与 parser 各自用这个口径排除本地路径。
 HTTP_SCHEMES = frozenset({"http", "https"})
 URL_SCHEMES = HTTP_SCHEMES | frozenset({"file"})
+
+
+def url_scheme(value: str) -> str:
+    """取 scheme；畸形值按「无 scheme」处理。
+
+    ``url`` 与 ``file`` 都是对端可控的 OneBot 原始值，而
+    ``urlparse("http://[::1/bad.png")`` 抛 ``Invalid IPv6 URL``。让这种值把异常
+    穿出，等于给对端一个「填一个畸形字段即可屏蔽整条解析链」的能力，所以判据
+    收成一处：解析不出 scheme 就按裸路径口径继续。
+    """
+    try:
+        return urlparse(value or "").scheme
+    except (ValueError, TypeError):
+        return ""
+
 
 # 图片地址允许的端口白名单（SSRF 防护）：只放行标准 HTTP/HTTPS 端口，避免把
 # 内网服务端口探测嫁接到识图链路上。传输层与 URL 校验两处必须同一口径，

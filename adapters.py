@@ -323,8 +323,13 @@ class AstrBotBridge:
             raw = getattr(conversation, "history", "")
             history = json.loads(raw) if isinstance(raw, str) else raw
         except Exception as exc:
+            # 同本文件 _call_host 口径：宿主存储后端（redis/db）失败时异常文本
+            # 常带连接串，会话历史这条 debug 也不例外。
             logger.debug(
-                "[%s] read astrbot history failed session=%s error=%s", PLUGIN_ID, umo, exc
+                "[%s] read astrbot history failed session=%s error=%s",
+                PLUGIN_ID,
+                umo,
+                redact_exc_text(exc),
             )
             return []
         if not isinstance(history, list):

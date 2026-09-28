@@ -57,8 +57,12 @@
 	--info-soft: light-dark(rgba(61, 110, 168, 0.12), rgba(158, 197, 239, 0.16));
 	--ok: light-dark(#437128, #b8d89a);
 	--ok-soft: light-dark(rgba(67, 113, 40, 0.12), rgba(184, 216, 154, 0.16));
-	--warn: light-dark(#8f670f, #e0c670);
-	--warn-soft: light-dark(rgba(143, 103, 15, 0.12), rgba(224, 198, 112, 0.16));
+	/* --warn 是武装态刷新按钮的文字色（.action-refresh.is-armed），按正文级 AA
+	   4.5 取色：#8f670f 在 --warn-soft 上只有 4.37。加深到 #7d590d 后四种浅底
+	   （--surface/-2/-3/--bg）最低 4.80，深色侧 7.00 余。数值由
+	   frontend_browser.test.mjs 的对比度用例实测断言，改值前先复算。 */
+	--warn: light-dark(#7d590d, #e0c670);
+	--warn-soft: light-dark(rgba(125, 89, 13, 0.12), rgba(224, 198, 112, 0.16));
 	--danger: light-dark(#a13014, #e8a68a);
 	--danger-soft: light-dark(rgba(161, 48, 20, 0.11), rgba(232, 166, 138, 0.16));
 	--switch-track: light-dark(#d5d9e5, #35281a);

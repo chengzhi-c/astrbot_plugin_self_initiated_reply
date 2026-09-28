@@ -620,15 +620,24 @@ async def _call_event_hook(event: Any, event_type: Any, *args: Any, **kwargs: An
 
 
 class FakeRequest:
-    """Web request stub whose JSON payload tests can swap per call."""
+    """Web request stub whose JSON payload tests can swap per call.
+
+    ``error`` 让用例模拟宿主的另一种出口：请求体读不出时 reader 抛错，而不是
+    返回空对象（Quart 的 ``request.json()`` 对非法 JSON 就是这么做的）。
+    """
 
     def __init__(self) -> None:
         self.payload: Any = {}
+        self.error: BaseException | None = None
 
     async def json(self, default: Any = None) -> Any:
+        if self.error is not None:
+            raise self.error
         return self.payload
 
     async def get_json(self, **_: Any) -> Any:
+        if self.error is not None:
+            return None
         return self.payload
 
 

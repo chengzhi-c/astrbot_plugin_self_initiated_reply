@@ -599,9 +599,16 @@ class SessionScheduler:
         if task and not task.done():
             task.cancel()
             done, _ = await asyncio.wait({task}, timeout=max(0.0, TERMINATE_TASK_TIMEOUT_SEC))
-            if not done and self._quarantine_task:
-                self._quarantine_task(task, "patrol stop deadline exceeded")
-            elif done:
+            if not done:
+                if self._quarantine_task:
+                    self._quarantine_task(task, "patrol stop deadline exceeded")
+                else:
+                    # 巡检任务吞掉取消且无人登记：不记日志就只剩一个静默泄漏。
+                    logger.warning(
+                        "[%s] patrol task ignored stop deadline and is unregistered",
+                        PLUGIN_ID,
+                    )
+            else:
                 try:
                     task.result()
                 except asyncio.CancelledError:

@@ -2394,6 +2394,28 @@ def test_prepare_surfaces_resolve_exception_as_false(tmp_path: Path) -> None:
     assert asyncio.run(parser.prepare(info)) is False
 
 
+def test_malformed_file_path_does_not_void_url_branch() -> None:
+    """畸形 ``file`` 只废掉 file 这一路，``url`` 分支必须照常出图。
+
+    ``http://[::1/x`` 会让 ``urlparse`` 抛 ValueError，而该值完全对端可控
+    （OneBot 的 ``file`` 字段）。提取层对同一字段已逐组件隔离，解析器不套同一
+    隔离时异常穿出 ``_resolve_image_url``，对端填一个坏 ``file`` 就能屏蔽整张图
+    的 ``url`` 分支，与本方法自陈的「失败即继续下一路」相反。
+    """
+    _, image, _ = _load_modules()
+    parser = image.ImageParser(object())
+
+    async def fake_fetch(url):
+        assert url == "https://cdn.example/x.png", url
+        return PNG_DATA_URL
+
+    parser._fetch_image_data_url = fake_fetch
+    info = image.ImageInfo(url="https://cdn.example/x.png", file_path="http://[::1/x")
+
+    assert asyncio.run(parser.prepare(info)) is True
+    assert info.prepared_source == PNG_DATA_URL
+
+
 # ============================================================================
 # _snapshot_local_source()：宿主临时文件快照分支
 # ============================================================================

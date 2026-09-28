@@ -238,10 +238,20 @@ class GenerationRunner:
         """
 
         def quarantine(task: asyncio.Task[Any], reason: str) -> None:
-            if self._quarantine_task and not task.done():
-                self._quarantine_task(task, reason)
-                if on_quarantine is not None:
-                    on_quarantine()
+            if task.done():
+                return
+            if self._quarantine_task is None:
+                # 与 decision 的同场景同口径：任务吞掉取消又没被隔离登记，是一条
+                # 零日志的泄漏路径（cleanup 会摘掉发给它的工具直发闸门）。
+                logger.warning(
+                    "[%s] agent task ignored cancellation and is unregistered: %s",
+                    PLUGIN_ID,
+                    reason,
+                )
+                return
+            self._quarantine_task(task, reason)
+            if on_quarantine is not None:
+                on_quarantine()
 
         request_stop = getattr(agent_runner, "request_stop", None)
         if callable(request_stop):
@@ -687,9 +697,10 @@ class GenerationRunner:
 
         The default allowlist is empty, so every tool the host injected during
         build or through hooks is removed. Returns ``False`` (fail closed) when
-        the final tool set cannot be enumerated or cleaned. When
-        ``inherit_tools`` is enabled the policy is skipped entirely: the run
-        deliberately inherits the full host tool chain.
+        the final tool set cannot be enumerated or cleaned. ``inherit_tools``
+        does not skip the policy: it switches from allowlist mode to denylist
+        mode, so host-dangerous capabilities stay refused even when a hook
+        injects them after build.
         """
         if inherit_tools:
             # 继承模式：放行宿主/插件工具链，但宿主级危险能力（cron、浏览器/

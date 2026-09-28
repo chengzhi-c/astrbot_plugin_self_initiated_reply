@@ -54,6 +54,7 @@ from .models import (
     restore_container_inplace,
 )
 from .storage import write_json_atomic
+from .utils import redact_exc_text
 
 # 配置 schema 全键：从 models.CONFIG_SPECS 派生（fail loud，此名单之外的
 # 提交键一律 400 拒绝，防止前端/未来代码提交新字段时被静默吞掉）。
@@ -252,8 +253,12 @@ async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]
         return {"ok": False, "error": "插件正在关闭"}
     try:
         data = await _request_json()
-    except Exception:
-        data = {}
+    except Exception as exc:
+        # 请求体读不出（非法 JSON / 宿主 reader 不支持）与「空对象」是两回事：
+        # 吞成 {} 会报成「未提供任何字段」，把人指向字段名而不是坏掉的请求体。
+        # 详情只进服务端日志，不回显异常原文（宿主 reader 的错误文本可能含请求体）。
+        logger.debug("[%s] ui/theme request body unreadable: %s", PLUGIN_ID, redact_exc_text(exc))
+        return {"ok": False, "error": "请求体不是合法 JSON"}
     if not isinstance(data, dict):
         return {"ok": False, "error": "请求体必须是 JSON 对象"}
     # 字段校验只用请求体、不读当前状态，故可留在锁外：无效输入不应当去抢锁。

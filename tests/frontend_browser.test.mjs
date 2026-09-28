@@ -1563,10 +1563,11 @@ test("image cache cleanup reports the count and surfaces failures", async ({ pag
   expect(errors).toEqual([]);
 });
 
-test("faint hint token clears WCAG AA on both themes and both surfaces", async ({ page }) => {
-  // style.css 的 --faint 注释手算了四组对比度（浅色 5.11/4.77，深色 5.39/4.97），
-  // 但没有任何断言：把令牌改浅（或改暗）一档就跌破 AA，而全套用例照绿，11-12px
-  // 小字号提示文字最先不可读。这里取实际计算值复算，不信任注释里的数字。
+test("hint tokens clear WCAG AA on both themes and every surface", async ({ page }) => {
+  // style.css 的 --faint / --warn 注释各自手算了对比度，但注释里的数字会随令牌
+  // 漂移：改浅一档就跌破 AA，而全套用例照绿，小字号提示文字最先不可读。
+  // 这里取实际计算值复算，不信任注释。--warn 是武装态刷新按钮的文字色，底是
+  // 半透明 --warn-soft，因此按 alpha 压到每种不透明底上再算。
   await openPage(page);
   const measured = await page.evaluate(() => {
     const probe = (variable, property) => {
@@ -1577,31 +1578,50 @@ test("faint hint token clears WCAG AA on both themes and both surfaces", async (
       el.remove();
       return value.trim();
     };
+    const channels = (color) => color.match(/[\d.]+/g).map(Number);
     const luminance = (color) => {
-      const [r, g, b] = color.match(/[\d.]+/g).slice(0, 3).map(Number);
+      const [r, g, b] = channels(color).slice(0, 3);
       const channel = (value) => {
         const scaled = value / 255;
         return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4;
       };
       return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
     };
+    const composite = (top, bottom) => {
+      const source = channels(top);
+      const base = channels(bottom).slice(0, 3);
+      const alpha = source.length > 3 ? source[3] : 1;
+      const mixed = source.slice(0, 3).map((value, index) =>
+        Math.round(value * alpha + base[index] * (1 - alpha))
+      );
+      return `rgb(${mixed.join(", ")})`;
+    };
+    const surfaces = ["--surface", "--surface-2", "--surface-3", "--bg"];
     const rows = [];
+    const push = (theme, token, foreground, background) => {
+      const first = luminance(foreground);
+      const second = luminance(background);
+      const [bright, dim] = [first, second].sort((a, b) => b - a);
+      rows.push({ theme, token, ratio: (bright + 0.05) / (dim + 0.05) });
+    };
     for (const theme of ["light", "dark"]) {
       document.documentElement.setAttribute("data-theme", theme);
-      const faint = luminance(probe("--faint", "color"));
-      for (const surface of ["--surface", "--surface-2"]) {
-        const background = luminance(probe(surface, "background-color"));
-        const [bright, dim] = [faint, background].sort((a, b) => b - a);
-        rows.push({ theme, surface, ratio: (bright + 0.05) / (dim + 0.05) });
+      const faint = probe("--faint", "color");
+      const warn = probe("--warn", "color");
+      const warnSoft = probe("--warn-soft", "background-color");
+      for (const surface of surfaces) {
+        const background = probe(surface, "background-color");
+        push(theme, "--faint", faint, background);
+        push(theme, "--warn", warn, composite(warnSoft, background));
       }
     }
     return rows;
   });
 
-  expect(measured).toHaveLength(4);
-  for (const { theme, surface, ratio } of measured) {
-    // 4.5:1 是正文级 AA（11-12px 提示文字属于正文级，不算大字号）。
-    expect(ratio, `${theme} 主题 ${surface} 底的 --faint 对比度`).toBeGreaterThanOrEqual(4.5);
+  expect(measured).toHaveLength(16);
+  for (const { theme, token, ratio } of measured) {
+    // 4.5:1 是正文级 AA（11-12px 提示文字与武装态按钮文字都属于正文级）。
+    expect(ratio, `${theme} 主题 ${token} 的对比度`).toBeGreaterThanOrEqual(4.5);
   }
 });
 

@@ -881,6 +881,56 @@ def test_terminate_quarantines_stuck_final_save(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+def test_state_save_cancellation_replays_cancel_not_write_failure(tmp_path: Path) -> None:
+    """取消 ``save_storage`` 必须原样重放取消，不能改写成 ``OSError``。
+
+    ``except CancelledError`` 里等那次 shield 保护的写完，只为决定是否留一条失败
+    日志。把「被取消」上报成「写盘失败」，调用方就落到 ``except Exception`` 分支，
+    取消路径的回滚语义因此丢失（与 §6 的取消收敛同口径）。
+    """
+    import sys
+    import threading
+
+    from .host_stubs import MAIN_PACKAGE_NAME, load_main
+    from .host_stubs import until as _until
+
+    # 先把包装载起来，才能取到它命名空间里的 plugin_state 模块。
+    load_main()
+    plugin_state = sys.modules[f"{MAIN_PACKAGE_NAME}.plugin_state"]
+    original_write = plugin_state.write_json_atomic
+    armed = threading.Event()
+    started = threading.Event()
+    release = threading.Event()
+
+    def stub_write(path: Any, payload: Any, **kwargs: Any) -> bool:
+        if not armed.is_set():
+            # 构造期启动落盘照常走真实实现：本用例只驱动 scenario 里那一次写。
+            return original_write(path, payload, **kwargs)
+        started.set()
+        release.wait(2.0)
+        return False
+
+    async def scenario(plugin, _main):
+        plugin_state.write_json_atomic = stub_write
+        try:
+            # 状态文件是构造期那次启动落盘的产物：等它出现，此后第一笔写必然来自
+            # 本用例创建的任务，取消才落在 shield 出口上而不是锁等待上。
+            await _until(lambda: plugin._storage_path.exists())
+            armed.set()
+            task = asyncio.create_task(plugin._save_storage())
+            await _until(lambda: started.is_set())
+            task.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            armed.set()
+            release.set()
+            plugin_state.write_json_atomic = original_write
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_terminate_clears_tasks_and_saves(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin._gate.advance(UMO)
