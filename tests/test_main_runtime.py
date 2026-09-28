@@ -125,8 +125,13 @@ def test_install_boundary_only_touches_event_plugins_name(tmp_path: Path) -> Non
     with_plugin(tmp_path, scenario)
 
 
-def test_inherit_tools_mode_keeps_plugin_names_and_skips_policy(tmp_path: Path) -> None:
-    """开关开启时：主动运行不清空插件工具边界，最终工具集也不清理。"""
+def test_inherit_tools_mode_keeps_plugin_names_and_ordinary_tools(tmp_path: Path) -> None:
+    """开关开启时：主动运行不清空插件工具边界，普通插件工具也不被允许列表删掉。
+
+    本用例的工具名不在宿主危险能力名单内，只钉「继承模式不清洗普通工具」这一半；
+    危险能力在该模式下仍被拒绝，由 ``test_inherit_mode_denylists_host_dangerous_tools``
+    钉住。
+    """
 
     async def scenario(plugin, main):
         event = make_event()
