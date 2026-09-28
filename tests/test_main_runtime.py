@@ -17,6 +17,7 @@ import importlib
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,20 @@ from .host_stubs import (
 )
 
 UMO = "fake:group:123"
+
+
+def read_json_with_retry(path: Path) -> Any:
+    """刚被 ``os.replace`` 换上的文件在 Windows 上可能被实时扫描短暂占用。
+
+    读失败时短暂重试；调用方的断言语义不变，只是不把「还没可读」当成「读到的是
+    旧内容」。
+    """
+    for _ in range(20):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError:
+            time.sleep(0.05)
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(autouse=True)
@@ -363,18 +378,6 @@ def test_off_persists_enabled_across_restart(tmp_path: Path) -> None:
     ``_persist_enabled`` 换回 ``self.runtime_enabled = False``，第三条断言
     （重建插件后仍关闭）也红。断言磁盘原文与重建后的实例，不只断言内存字段。
     """
-    import json
-    import time
-
-    def read_config(path: Path) -> dict:
-        # 刚被 os.replace 的文件在 Windows 上可能被实时扫描短暂锁住（实测偶发
-        # PermissionError），读失败时短暂重试；断言语义不变。
-        for _ in range(20):
-            try:
-                return json.loads(path.read_text(encoding="utf-8"))
-            except PermissionError:
-                time.sleep(0.05)
-        return json.loads(path.read_text(encoding="utf-8"))
 
     async def scenario(plugin, main):
         assert plugin.settings.enabled is True
@@ -385,7 +388,7 @@ def test_off_persists_enabled_across_restart(tmp_path: Path) -> None:
         assert plugin.runtime_enabled is False
         assert plugin.settings.enabled is False
         # 磁盘原文：光看内存字段无法区分「已落盘」与「只改了内存」
-        assert read_config(plugin._config_path)["enabled"] is False
+        assert read_json_with_retry(plugin._config_path)["enabled"] is False
         return plugin._config_path
 
     config_path = with_plugin(tmp_path, scenario)
@@ -395,7 +398,7 @@ def test_off_persists_enabled_across_restart(tmp_path: Path) -> None:
         assert plugin.settings.enabled is False
         assert plugin.runtime_enabled is False
 
-    assert read_config(config_path)["enabled"] is False
+    assert read_json_with_retry(config_path)["enabled"] is False
     with_plugin(tmp_path, after_restart)
 
 
@@ -1776,8 +1779,8 @@ def test_startup_still_writes_when_disk_shape_differs(tmp_path: Path) -> None:
     """
     import json
 
-    from .host_stubs import load_main, with_plugin
     from .host_stubs import until as _until
+    from .host_stubs import with_plugin
 
     async def first_load(plugin, _main):
         await _until(lambda: config_path.exists())
@@ -1785,32 +1788,18 @@ def test_startup_still_writes_when_disk_shape_differs(tmp_path: Path) -> None:
 
     config_path = tmp_path / "config" / "astrbot_plugin_self_initiated_reply_config.json"
     with_plugin(tmp_path, first_load)
-    on_disk = json.loads(config_path.read_text(encoding="utf-8"))
+    on_disk = read_json_with_retry(config_path)
     on_disk.pop("cooldown_sec")  # 制造旧形状：缺一个正式键
     config_path.write_text(json.dumps(on_disk, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    main = load_main()
-    config_writes: list[int] = []
-    original_persist = main.persist_settings_config
-
-    def counting_passthrough(*args: Any, **kwargs: Any) -> bool:
-        config_writes.append(1)
-        return original_persist(*args, **kwargs)
-
     async def second_load(plugin, _main):
-        # 迁移发生在 __init__，其落盘已后台化：等它真正写完再断言磁盘形状。
+        # 迁移发生在 __init__，其落盘在后台任务且写盘进线程：判据取磁盘形状本身，
+        # 不是「写配置被调用过」。落盘被误跳时磁盘仍是旧形状，等超时即红。
         from .host_stubs import until
 
-        await until(lambda: bool(config_writes))
-        assert config_writes, "磁盘为旧形状时启动没有重写配置，迁移落盘被误跳"
-        migrated = json.loads(config_path.read_text(encoding="utf-8"))
-        assert "cooldown_sec" in migrated, "重写后磁盘仍是旧形状"
+        await until(lambda: "cooldown_sec" in read_json_with_retry(config_path))
 
-    main.persist_settings_config = counting_passthrough
-    try:
-        with_plugin(tmp_path, second_load)
-    finally:
-        main.persist_settings_config = original_persist
+    with_plugin(tmp_path, second_load)
 
 
 def test_messages_during_running_check_coalesce_to_one_follow_up(tmp_path: Path) -> None:

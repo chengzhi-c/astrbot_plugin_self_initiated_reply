@@ -127,20 +127,21 @@ class FakeRuntime:
 
     def filter_final_tools(self, req, *, keep=None, drop=frozenset()):
         self.filter_calls.append((keep, drop))
-        tool_set = getattr(req, "func_tool", None)
-        if tool_set is None or not hasattr(tool_set, "tools"):
+        if not hasattr(req, "func_tool"):
+            # 属性缺失 = 读不到工具边界本身，与生产同方向 fail closed。
+            return False
+        tool_set = req.func_tool
+        if tool_set is None:
+            # 显式 None = 宿主声明本次无工具，平凡通过（生产同款判定见
+            # test_runtime_adapter 的 _tool_list/filter_final_tools 用例）。
+            return True
+        if not hasattr(tool_set, "tools"):
             return False
         if keep is not None:
             tool_set.tools = [t for t in tool_set.tools if t.name in keep]
         else:
             tool_set.tools = [t for t in tool_set.tools if t.name not in drop]
         return True
-
-    def _tool_list(self, req):
-        tool_set = getattr(req, "func_tool", None)
-        if tool_set is None:
-            return []
-        return tool_set.ids()
 
     async def load_session_conversation(self, event, context):
         return SimpleNamespace(history="[]")
@@ -963,7 +964,10 @@ async def test_generate_second_enforcement_aborts_and_closes_reset(tmp_path: Pat
 async def test_enforce_policy_keep_mode_filters(tmp_path: Path) -> None:
     _, _, runner, runtime, _, _ = _make_runner(tmp_path)
     req = SimpleNamespace(func_tool=None)
-    assert runner.enforce_final_tool_policy(req, False) is False  # 无法枚举 → fail closed
+    assert runner.enforce_final_tool_policy(req, False) is True  # 无工具平凡通过
+
+    req = SimpleNamespace()
+    assert runner.enforce_final_tool_policy(req, False) is False  # 缺属性才 fail closed
 
     tool_set = FakeToolSet()
     tool_set.add_tool(SimpleNamespace(name="web_search"))
