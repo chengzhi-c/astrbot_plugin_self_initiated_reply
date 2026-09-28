@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+from ._support import command_surface_loader, make_event
 from .host_stubs import (
     MAIN_PACKAGE_NAME,
     install_astrbot_stubs,
@@ -29,7 +30,6 @@ from .host_stubs import (
     webapi_module,
     with_plugin,
 )
-from .test_main_runtime import _make_event
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,10 +41,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME_R3 = "selfreply_round3_package"
 
 
-def _load_r3_modules():
-    return load_modules(
-        PACKAGE_NAME_R3, "models", "utils", "commands", "image", "image.recorder_bridge"
-    )
+_load_r3_modules = command_surface_loader(PACKAGE_NAME_R3)
 
 
 # ============================================================================
@@ -749,7 +746,7 @@ def test_whitelist_runtime_umos_reclaimed_when_inactive(tmp_path: Path) -> None:
         models_mod = sys.modules[f"{MAIN_PACKAGE_NAME}.models"]
         stale_at = main.now_ts() - models_mod.EVENT_CLEANUP_INTERVAL_SEC * 2
         plugin._whitelist_runtime_umos["group:1"] = {"group:1:user:a", "group:1:user:b"}
-        plugin._last_events["group:1:user:a"] = _make_event()
+        plugin._last_events["group:1:user:a"] = make_event()
         plugin._last_event_at["group:1:user:a"] = stale_at
         plugin._scheduler._last_cleanup = 0  # 强制本次执行清理
         plugin._scheduler.cleanup_events_if_needed()
@@ -759,7 +756,7 @@ def test_whitelist_runtime_umos_reclaimed_when_inactive(tmp_path: Path) -> None:
         # 对照组：有新鲜事件的会话必须保留
         fresh_at = main.now_ts()
         plugin._whitelist_runtime_umos["group:2"] = {"group:2:user:c"}
-        plugin._last_events["group:2:user:c"] = _make_event()
+        plugin._last_events["group:2:user:c"] = make_event()
         plugin._last_event_at["group:2:user:c"] = fresh_at
         plugin._scheduler._last_cleanup = 0
         plugin._scheduler.cleanup_events_if_needed()

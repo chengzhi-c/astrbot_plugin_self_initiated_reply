@@ -16,7 +16,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from .test_vision import PACKAGE_NAME, _load_modules
+from ._support import core_loader
+
+PACKAGE_NAME = "selfreply_generation_test_package"
+_load_modules = core_loader(PACKAGE_NAME)
 
 
 def _generation_module():

@@ -9,12 +9,13 @@ import importlib
 import logging
 import sys
 
-from .test_vision import PACKAGE_NAME
+from ._support import core_loader, make_event
+
+PACKAGE_NAME = "selfreply_event_ignore_test_package"
+_load_modules = core_loader(PACKAGE_NAME)
 
 
 def _events_module():
-    from .test_vision import _load_modules
-
     _load_modules()  # 先创建测试包再导入 utils（与 whitelist 测试一致）
     return importlib.import_module(f"{PACKAGE_NAME}.utils")
 
@@ -119,26 +120,24 @@ def test_handle_incoming_message_skips_events_the_command_path_already_took(tmp_
     from .host_stubs import with_plugin
 
     async def scenario(plugin, main):
-        from .test_main_runtime import _make_event
-
         ingress = sys.modules[f"{main.__package__}.message_ingress"]
         utils = sys.modules[f"{main.__package__}.utils"]
         scheduled: list[str] = []
         plugin._scheduler.schedule_delayed_check = lambda umo, **_kw: scheduled.append(umo)
 
         # 1. 已被指令路径接住的事件直接返回，不排延迟检查
-        handled_event = _make_event(message_str="出来聊聊")
+        handled_event = make_event(message_str="出来聊聊")
         handled_event.set_extra(main.COMMAND_HANDLED_KEY, True)
         await ingress.handle_incoming_message(plugin, handled_event)
         assert scheduled == []
 
         # 对照：去掉标志位的同一事件必须真的排上一次检查，否则上一条永不变红
-        await ingress.handle_incoming_message(plugin, _make_event(message_str="出来聊聊"))
+        await ingress.handle_incoming_message(plugin, make_event(message_str="出来聊聊"))
         assert scheduled
 
         # 2. 开启 abandon_stale_on_new_message 时收到 @Bot 直接点名：推进活跃时间
         plugin.settings.abandon_stale_on_new_message = True
-        direct_event = _make_event(message_str="@Bot 出来聊聊")
+        direct_event = make_event(message_str="@Bot 出来聊聊")
         direct_event.is_at_or_wake_command = True
         await ingress.handle_incoming_message(plugin, direct_event)
         state = plugin._state_for(utils.whitelist_storage_key(utils.event_umo(direct_event)))
@@ -188,8 +187,6 @@ def test_image_capture_failure_does_not_break_the_scheduling_chain(tmp_path, cap
     from .host_stubs import capture_logs, messages_at_least, with_plugin
 
     async def scenario(plugin, main):
-        from .test_main_runtime import _make_event
-
         ingress = sys.modules[f"{main.__package__}.message_ingress"]
         assert plugin.settings.vision_enabled is True
 
@@ -200,7 +197,7 @@ def test_image_capture_failure_does_not_break_the_scheduling_chain(tmp_path, cap
 
         plugin._vision.capture = _boom
 
-        event = _make_event(message_str="看看这张图")
+        event = make_event(message_str="看看这张图")
         event.is_at_or_wake_command = False
         event.get_messages = lambda: [_SourcedImage()]
 
@@ -223,8 +220,6 @@ def test_image_without_source_degrades_to_placeholder_and_still_schedules(tmp_pa
     from .host_stubs import capture_logs, messages_at_least, with_plugin
 
     async def scenario(plugin, main):
-        from .test_main_runtime import _make_event
-
         ingress = sys.modules[f"{main.__package__}.message_ingress"]
         utils = sys.modules[f"{main.__package__}.utils"]
         scheduled = _spy_scheduler(plugin)
@@ -236,7 +231,7 @@ def test_image_without_source_degrades_to_placeholder_and_still_schedules(tmp_pa
 
         plugin._vision.capture = _capture
 
-        event = _make_event(message_str="   ")
+        event = make_event(message_str="   ")
         event.is_at_or_wake_command = False
         event.get_messages = lambda: [_SourcelessImage()]
 
@@ -263,13 +258,11 @@ def test_bare_selfreply_word_is_ordinary_chat_not_a_command(tmp_path) -> None:
     from .host_stubs import with_plugin
 
     async def scenario(plugin, main):
-        from .test_main_runtime import _make_event
-
         utils = sys.modules[f"{main.__package__}.utils"]
         ingress = sys.modules[f"{main.__package__}.message_ingress"]
         plugin.settings.abandon_stale_on_new_message = False
 
-        bare = _make_event(message_str="selfreply add")
+        bare = make_event(message_str="selfreply add")
         bare.is_at_or_wake_command = False
         await ingress.handle_incoming_message(plugin, bare)
         assert bare.sent_texts == [], "裸词不得触发指令回显"
@@ -279,7 +272,7 @@ def test_bare_selfreply_word_is_ordinary_chat_not_a_command(tmp_path) -> None:
             "裸词必须当作普通聊天进观察窗口"
         )
 
-        cmd = _make_event(message_str="/selfreply list", is_admin=True)
+        cmd = make_event(message_str="/selfreply list", is_admin=True)
         cmd.is_at_or_wake_command = False
         await ingress.handle_incoming_message(plugin, cmd)
         assert cmd.is_stopped() is True, "带斜杠的真指令仍必须被消费"
@@ -298,12 +291,10 @@ def test_direct_call_defers_same_batch_proactive_reply(tmp_path) -> None:
     from .host_stubs import with_plugin
 
     async def scenario(plugin, main):
-        from .test_main_runtime import _make_event
-
         utils = sys.modules[f"{main.__package__}.utils"]
         ingress = sys.modules[f"{main.__package__}.message_ingress"]
 
-        event = _make_event(message_str="@Bot 出来聊聊")
+        event = make_event(message_str="@Bot 出来聊聊")
         event.is_at_or_wake_command = True
         await ingress.handle_incoming_message(plugin, event)
 
@@ -317,7 +308,7 @@ def test_direct_call_defers_same_batch_proactive_reply(tmp_path) -> None:
         # 关闭开关即回到旧行为：只更新活跃时间，不推进观察窗口
         plugin.settings.skip_after_direct_call = False
         before = state.last_proactive_observed_at
-        other = _make_event(message_str="@Bot 在吗")
+        other = make_event(message_str="@Bot 在吗")
         other.is_at_or_wake_command = True
         await ingress.handle_incoming_message(plugin, other)
         assert state.last_proactive_observed_at == before, "开关关闭后不得再推进观察窗口"

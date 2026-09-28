@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from ._support import UMO, make_event
 from .host_stubs import (
     FakeToolSet,
     PipelineTestAdapter,
@@ -32,8 +33,6 @@ from .host_stubs import (
     webapi_module,
     with_plugin,
 )
-
-UMO = "fake:group:123"
 
 
 def read_json_with_retry(path: Path) -> Any:
@@ -55,12 +54,6 @@ def _cleanup_plugin_state():
     reset_hook_calls()
     yield
     reset_hook_calls()
-
-
-def _make_event(umo: str = UMO, **kwargs):
-    from .host_stubs import FakeEvent
-
-    return FakeEvent(umo=umo, **kwargs)
 
 
 # ============================================================================
@@ -117,7 +110,7 @@ def test_install_boundary_only_touches_event_plugins_name(tmp_path: Path) -> Non
     """共享 platform_meta 不得被原地修改；只允许收紧事件自己的插件范围。"""
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         original_plugins_name = ["other_plugin"]
         event.platform_meta.support_proactive_message = True
         event.plugins_name = list(original_plugins_name)
@@ -136,7 +129,7 @@ def test_inherit_tools_mode_keeps_plugin_names_and_skips_policy(tmp_path: Path) 
     """开关开启时：主动运行不清空插件工具边界，最终工具集也不清理。"""
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         event.plugins_name = ["stealer", "living_memory"]
 
         state = plugin._generation.install_agent_tool_boundary(event, True)
@@ -212,7 +205,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
     async def scenario(plugin, main):
         from .host_stubs import _FakeMessageChain, install_tool_injecting_pipeline
 
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         original_plugins_name = ["other_plugin"]
@@ -264,7 +257,7 @@ def test_pipeline_hook_early_exit_still_restores_event(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         from .host_stubs import FakeBuildResult, _FakeResetCoro
 
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         original_plugins_name = ["other_plugin"]
@@ -382,7 +375,7 @@ def test_off_persists_enabled_across_restart(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         assert plugin.settings.enabled is True
 
-        text = await plugin._command_text(_make_event(), "off")
+        text = await plugin._command_text(make_event(), "off")
 
         assert "已暂停" in text
         assert plugin.runtime_enabled is False
@@ -419,7 +412,7 @@ def test_off_rolls_back_memory_when_config_write_fails(tmp_path: Path) -> None:
         plugin._persist_config = failing_persist
         try:
             with pytest.raises(OSError):
-                await plugin._command_text(_make_event(), "off")
+                await plugin._command_text(make_event(), "off")
             # 回滚后内存两个字段都必须回到开启
             assert plugin.settings.enabled is True
             assert plugin.runtime_enabled is True
@@ -434,8 +427,8 @@ def test_on_persists_enabled_across_restart(tmp_path: Path) -> None:
     import json
 
     async def scenario(plugin, main):
-        await plugin._command_text(_make_event(), "off")
-        text = await plugin._command_text(_make_event(), "on")
+        await plugin._command_text(make_event(), "off")
+        text = await plugin._command_text(make_event(), "on")
 
         assert "已启用" in text
         assert plugin.settings.enabled is True
@@ -510,7 +503,7 @@ def test_degraded_state_rejects_new_spawn_and_force_check(tmp_path: Path) -> Non
             expected_generation=None,
         )
         assert result == "插件未启用。"
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         # check 的拒绝文案必须点明降级原因：降级不是"未启用"，
         # 说错会让运营去改配置而不是重启插件。
@@ -601,7 +594,7 @@ def test_decorated_commands_delegate_to_the_shared_dispatch(tmp_path: Path) -> N
             f"只在装饰器 {sorted(set(handlers) - set(commands.COMMAND_ALIASES))}，"
             f"只在别名表 {sorted(set(commands.COMMAND_ALIASES) - set(handlers))}"
         )
-        event = _make_event(umo=UMO)
+        event = make_event(umo=UMO)
         original = plugin._command_text
         calls: list[tuple[str, str]] = []
 
@@ -633,7 +626,7 @@ def test_decorated_readonly_commands_match_inline_dispatch_text(tmp_path: Path) 
     handlers = _decorated_command_handlers()
 
     async def scenario(plugin, main):
-        event = _make_event(umo=UMO)
+        event = make_event(umo=UMO)
         for action in ("help", "status", "list", "debug"):
             inline = await plugin._command_text(event, action)
             decorated = await _drive_decorated(plugin, event, handlers[action])
@@ -654,7 +647,7 @@ def test_status_debug_do_not_create_session_state(tmp_path: Path) -> None:
         import sys
 
         utils = sys.modules[f"{main.__package__}.utils"]
-        event = _make_event(umo="fake:group:999")
+        event = make_event(umo="fake:group:999")
         key = utils.whitelist_storage_key(utils.event_umo(event))
         assert key not in plugin.sessions
 
@@ -694,7 +687,7 @@ def test_degraded_lifecycle_is_visible_in_status_and_add_message(tmp_path: Path)
         assert status["lifecycle"] == "DEGRADED"
 
         # /selfreply status 文本不再谎报"运行中: True"，而是点明降级。
-        event = _make_event()
+        event = make_event()
         text = await plugin._command_text(event, "status")
         assert "已降级" in text
         assert "运行中: True" not in text
@@ -727,7 +720,7 @@ def test_status_recent_decision_line_comes_from_last_decisions(tmp_path: Path) -
     async def scenario(plugin, main):
         commands = importlib.import_module(main.__package__ + ".commands")
         utils = importlib.import_module(main.__package__ + ".utils")
-        event = _make_event(umo=UMO)
+        event = make_event(umo=UMO)
         umo = utils.event_umo(event)
 
         # 还没裁决过：必须明说「暂无记录」，而不是省略这一行。
@@ -1064,7 +1057,7 @@ def test_plugin_smoke_message_path(tmp_path: Path) -> None:
     """on_message 全流程冒烟：白名单消息进入调度，不抛异常。"""
 
     async def scenario(plugin, main):
-        event = _make_event(message_str="今天天气不错")
+        event = make_event(message_str="今天天气不错")
         await plugin.on_message(event)
         assert UMO in plugin._last_events
         assert UMO in plugin._delay_tasks
@@ -1107,13 +1100,13 @@ def test_write_commands_require_admin_and_admins_can_run_them(tmp_path: Path) ->
     async def scenario(plugin, main):
         other = "fake:group:999"
         before = set(plugin.settings.whitelist)
-        denied = _make_event(umo=other, message_str="/selfreply add", is_admin=False)
+        denied = make_event(umo=other, message_str="/selfreply add", is_admin=False)
         await plugin._handle_inline_command(denied, ("add", ""))
         assert any("没有权限" in text for text in denied.sent_texts)
         assert set(plugin.settings.whitelist) == before
         assert other not in plugin.settings.whitelist
 
-        allowed = _make_event(umo=other, message_str="/selfreply add", is_admin=True)
+        allowed = make_event(umo=other, message_str="/selfreply add", is_admin=True)
         await plugin._handle_inline_command(allowed, ("add", ""))
         assert other in plugin.settings.whitelist
         assert allowed.sent_texts
@@ -1154,7 +1147,7 @@ def test_force_check_prunes_session_state(tmp_path: Path) -> None:
             other = "fake:group:999"
             plugin._state_for(other)  # 模拟 check 流程已建会话状态
             assert other in plugin.sessions
-            event = _make_event(umo=other)
+            event = make_event(umo=other)
             await plugin._command_text(event, "check")
             assert other not in plugin.sessions
             assert plugin.sessions.get(other) is None
@@ -1176,7 +1169,7 @@ def test_manual_check_records_sender_id(tmp_path: Path) -> None:
         plugin._pipeline.check_session = fake_check
         plugin.settings.whitelist.add(UMO)
         try:
-            event = _make_event(
+            event = make_event(
                 umo=UMO,
                 sender_id="sender-42",
                 message_str="/selfreply check 测一下",
@@ -1211,7 +1204,7 @@ def test_decorated_command_check_reads_body_from_event_text(tmp_path: Path) -> N
         plugin._pipeline.check_session = fake_check
         plugin.settings.whitelist.add(UMO)
         try:
-            event = _make_event(
+            event = make_event(
                 umo=UMO,
                 sender_id="sender-42",
                 message_str="/selfreply check 你好啊",
@@ -1454,7 +1447,7 @@ def test_on_message_skips_private_when_disabled(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin.settings.whitelist.add(PRIVATE_UMO)
         plugin.settings.enabled_private_sessions = False
-        await plugin.on_message(_make_event(umo=PRIVATE_UMO, message_str="今天天气不错"))
+        await plugin.on_message(make_event(umo=PRIVATE_UMO, message_str="今天天气不错"))
         assert PRIVATE_UMO not in plugin._last_events
         assert PRIVATE_UMO not in plugin._delay_tasks
 
@@ -1464,7 +1457,7 @@ def test_on_message_skips_private_when_disabled(tmp_path: Path) -> None:
 def test_on_message_still_schedules_group_when_private_disabled(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin.settings.enabled_private_sessions = False
-        await plugin.on_message(_make_event(message_str="今天天气不错"))
+        await plugin.on_message(make_event(message_str="今天天气不错"))
         assert UMO in plugin._last_events
         assert UMO in plugin._delay_tasks
 
@@ -1475,7 +1468,7 @@ def test_on_message_schedules_private_when_enabled(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin.settings.whitelist.add(PRIVATE_UMO)
         plugin.settings.enabled_private_sessions = True
-        await plugin.on_message(_make_event(umo=PRIVATE_UMO, message_str="今天天气不错"))
+        await plugin.on_message(make_event(umo=PRIVATE_UMO, message_str="今天天气不错"))
         assert PRIVATE_UMO in plugin._last_events
         assert PRIVATE_UMO in plugin._delay_tasks
 
@@ -1487,7 +1480,7 @@ def test_on_message_period_keeps_inflight_generation_by_default(tmp_path: Path) 
         assert plugin.settings.abandon_stale_on_new_message is False
         token = plugin._gate.advance(UMO)
         plugin._gate.mark_running(UMO)
-        await plugin.on_message(_make_event(message_str="。"))
+        await plugin.on_message(make_event(message_str="。"))
         assert plugin._gate.current(UMO) == token
         assert plugin._gate.is_current(UMO, token)
         plugin._gate.unmark_running(UMO)
@@ -1505,14 +1498,14 @@ def test_period_during_generation_does_not_silence_skip_when_abandon_off(
         state = plugin._state_for(UMO)
         started = main.now_ts() - 30
         state.last_active_at = started
-        plugin._coordinator.record_event(UMO, _make_event(message_str="阿c回我一下"), started)
+        plugin._coordinator.record_event(UMO, make_event(message_str="阿c回我一下"), started)
         token = plugin._gate.advance(UMO)
 
         async def fake_decide(*_args, **_kwargs):
             return {"should_reply": True, "reason": "点名", "elapsed_sec": 0.0}
 
         async def fake_generate(_umo, _state, **kwargs):
-            await plugin.on_message(_make_event(message_str="。"))
+            await plugin.on_message(make_event(message_str="。"))
             ledger = kwargs.get("ledger") or models.AttemptLedger()
             return models.PipelineReply(text="一直在呢", ledger=ledger)
 
@@ -1591,7 +1584,7 @@ def test_on_message_period_abandons_inflight_when_enabled(tmp_path: Path) -> Non
         plugin.settings.abandon_stale_on_new_message = True
         token = plugin._gate.advance(UMO)
         plugin._gate.mark_running(UMO)
-        await plugin.on_message(_make_event(message_str="。"))
+        await plugin.on_message(make_event(message_str="。"))
         assert plugin._gate.current(UMO) > token
         assert not plugin._gate.is_current(UMO, token)
         plugin._gate.unmark_running(UMO)
@@ -1603,7 +1596,7 @@ def test_command_list_returns_sorted_whitelist_lines(tmp_path: Path) -> None:
     """/selfreply list 输出白名单全量与空态文案。"""
 
     async def scenario(plugin, main):
-        event = _make_event(message_str="/selfreply list")
+        event = make_event(message_str="/selfreply list")
         plugin.settings.whitelist = set()
         assert await plugin._command_text(event, "list") == "主动回复白名单为空。"
 
@@ -1653,7 +1646,7 @@ def test_command_check_still_runs_private_when_disabled(tmp_path: Path) -> None:
         original_check = plugin._pipeline.check_session
         plugin._pipeline.check_session = fake_check
         try:
-            event = _make_event(umo=PRIVATE_UMO, message_str="/selfreply check")
+            event = make_event(umo=PRIVATE_UMO, message_str="/selfreply check")
             text = await plugin._command_text(event, "check")
             assert text == "主动回复检查结果：完成"
             assert seen["umo"] == PRIVATE_UMO
@@ -1668,7 +1661,7 @@ def test_command_debug_returns_diagnostic_info(tmp_path: Path) -> None:
     """/selfreply debug 指令输出诊断文本，覆盖 commands.debug_text 分支。"""
 
     async def scenario(plugin, main):
-        event = _make_event(message_str="/selfreply debug")
+        event = make_event(message_str="/selfreply debug")
         text = await plugin._command_text(event, "debug")
         assert "主动回复调试信息" in text
         assert "归一化 UMO:" in text
@@ -1708,7 +1701,7 @@ def test_cooldown_skips_decision_model_after_proactive_reply(tmp_path: Path) -> 
         plugin.settings.message_delay_sec = 0
         state = plugin._state_for(UMO)
         now = main.now_ts()
-        event = _make_event(message_str="新消息")
+        event = make_event(message_str="新消息")
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = now - 30
         state.last_active_at = now - 30
@@ -1875,7 +1868,7 @@ def test_messages_during_running_check_coalesce_to_one_follow_up(tmp_path: Path)
         plugin.settings.cooldown_sec = 0
         plugin.settings.message_delay_sec = 0
         plugin.settings.abandon_stale_on_new_message = False
-        plugin._last_events[UMO] = _make_event(message_str="先来一条")
+        plugin._last_events[UMO] = make_event(message_str="先来一条")
         plugin._last_event_at[UMO] = main.now_ts()
         plugin._state_for(UMO).last_active_at = main.now_ts() - 30
         token = plugin._gate.advance(UMO)
@@ -1886,9 +1879,9 @@ def test_messages_during_running_check_coalesce_to_one_follow_up(tmp_path: Path)
             )
         )
         await entered.wait()
-        await plugin.on_message(_make_event(message_str="检查中 1"))
-        await plugin.on_message(_make_event(message_str="检查中 2"))
-        await plugin.on_message(_make_event(message_str="检查中 3"))
+        await plugin.on_message(make_event(message_str="检查中 1"))
+        await plugin.on_message(make_event(message_str="检查中 2"))
+        await plugin.on_message(make_event(message_str="检查中 3"))
         pending = [
             delayed
             for delayed in plugin._delay_tasks.values()

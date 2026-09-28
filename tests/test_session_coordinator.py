@@ -13,7 +13,10 @@ import importlib
 from collections import deque
 from types import SimpleNamespace
 
-from .test_vision import PACKAGE_NAME, _load_modules
+from ._support import core_loader
+
+PACKAGE_NAME = "selfreply_coordinator_test_package"
+_load_modules = core_loader(PACKAGE_NAME)
 
 
 def _coordinator_module():

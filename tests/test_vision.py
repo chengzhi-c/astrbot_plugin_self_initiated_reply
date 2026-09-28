@@ -16,13 +16,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from ._support import CORE_MODULES
 from .host_stubs import ROOT, capture_logs, install_astrbot_stubs, load_modules, load_package
 
 PACKAGE_NAME = "selfreply_vision_test_package"
 
 
 def _load_modules():
-    return load_modules(PACKAGE_NAME, "adapters", "image", "models")
+    return load_modules(PACKAGE_NAME, *CORE_MODULES)
 
 
 def test_image_extractor_preserves_remote_url_and_local_path() -> None:

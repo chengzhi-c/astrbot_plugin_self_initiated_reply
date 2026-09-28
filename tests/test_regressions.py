@@ -19,16 +19,15 @@ from typing import Any
 
 import pytest
 
+from ._support import UMO, command_surface_loader, make_event
 from .host_stubs import (
     PipelineTestAdapter,
     install_astrbot_stubs,
-    load_modules,
     load_package,
     until,
     webapi_module,
     with_plugin,
 )
-from .test_main_runtime import UMO, _make_event
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,22 +39,17 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME_R3 = "selfreply_regressions_package"
 
 
-def _load_r3_modules():
-    return load_modules(
-        PACKAGE_NAME_R3, "models", "utils", "commands", "image", "image.recorder_bridge"
-    )
+_load_r3_modules = command_surface_loader(PACKAGE_NAME_R3)
 
 
 def _load_plugin_module(module: str):
-    """在 test_vision 的动态包名下加载插件模块。
+    """在本文件的动态包名下加载单个插件模块。
 
-    复用其包名以共享 sys.modules 隔离；stub 安装不能依赖 test_vision 先跑
-    （本文件可独立运行），加载前显式安装，幂等。
+    与 ``_load_r3_modules`` 同包，两侧取到的模块对象身份一致；本文件可独立运行，
+    不依赖其他用例文件先跑（stub 安装幂等）。
     """
-    import tests.test_vision as vision
-
     install_astrbot_stubs()
-    return load_package(vision.PACKAGE_NAME, module)
+    return load_package(PACKAGE_NAME_R3, module)
 
 
 # ============================================================================
@@ -191,7 +185,7 @@ def test_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> None
     """入口快照：运行中把开关改为 True 不得让本次运行 fail-open。"""
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         event.plugins_name = ["other_plugin"]
@@ -224,7 +218,7 @@ def test_second_enforce_happens_before_reset(tmp_path: Path) -> None:
     """reset 执行时工具集必须已经清理：hook 注入的工具不能进 runner。"""
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         event.plugins_name = ["other_plugin"]
@@ -246,7 +240,7 @@ def test_system_hint_matches_tool_policy(tmp_path: Path) -> None:
     """继承模式提示词描述真实边界；默认模式仍写死禁用工具。"""
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
 
@@ -262,7 +256,7 @@ def test_system_hint_matches_tool_policy(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
     async def inherit_scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
 
@@ -368,7 +362,7 @@ def test_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
     """继承模式放行普通工具，但宿主级危险工具（含 hook 注入）一律拒绝。"""
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
 
@@ -413,7 +407,7 @@ def test_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) -> No
     async def scenario(plugin, main):
         from .host_stubs import DirectSendingRunner, FakeBuildResult, PipelineTestAdapter
 
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         state = plugin._state_for(UMO)
@@ -474,7 +468,7 @@ def test_after_send_cancellation_records_delivered_attempt(tmp_path: Path) -> No
     async def scenario(plugin, main):
         from .host_stubs import DirectSendingRunner, FakeBuildResult, PipelineTestAdapter
 
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         state = plugin._state_for(UMO)
@@ -563,7 +557,7 @@ def test_rollback_reschedules_delayed_check(tmp_path: Path) -> None:
     import sys
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         plugin._state_for(UMO)
@@ -605,7 +599,7 @@ def test_timeout_requests_graceful_stop(tmp_path: Path) -> None:
     stop_called: list[bool] = []
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
 
@@ -781,7 +775,7 @@ def test_concurrent_checks_are_mutexed(tmp_path: Path) -> None:
     from .host_stubs import FakeBuildResult, _FakeResetCoro
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         state = plugin._state_for(UMO)
@@ -845,7 +839,7 @@ def test_non_force_check_rejected_for_non_whitelisted_session(tmp_path: Path) ->
     """非白名单会话的非 force 检查必须被闸门拒绝，不进入决策管线。"""
 
     async def scenario(plugin, main):
-        plugin._last_events[UMO] = _make_event()
+        plugin._last_events[UMO] = make_event()
         plugin._last_event_at[UMO] = 1.0
         plugin.settings.whitelist = set()
         result = await plugin._pipeline.check_session(UMO, trigger="patrol", force=False)
@@ -867,7 +861,7 @@ def test_non_admin_write_command_does_not_cancel(tmp_path: Path) -> None:
     """
 
     async def scenario(plugin, main):
-        event = _make_event(message_str="/selfreply add")
+        event = make_event(message_str="/selfreply add")
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         plugin.settings.whitelist = {UMO}
@@ -905,7 +899,7 @@ def test_admin_write_cancels_but_read_does_not(tmp_path: Path) -> None:
         assert task is not None and not task.done()
 
         # 只读指令不打断
-        read_event = _make_event(message_str="/selfreply status")
+        read_event = make_event(message_str="/selfreply status")
         read_event.role = "admin"
         plugin._last_events[UMO] = read_event
         plugin._last_event_at[UMO] = 1.0
@@ -915,7 +909,7 @@ def test_admin_write_cancels_but_read_does_not(tmp_path: Path) -> None:
         assert plugin._delay_tasks.get(UMO) is task, "只读指令不应取消在途回复"
 
         # 写指令取消在途回复
-        write_event = _make_event(message_str="/selfreply add")
+        write_event = make_event(message_str="/selfreply add")
         write_event.role = "admin"
         plugin._last_events[UMO] = write_event
         plugin._last_event_at[UMO] = 1.0
@@ -1015,7 +1009,7 @@ def test_aba_old_task_does_not_revive_after_re_add(tmp_path: Path) -> None:
     from .host_stubs import FakeBuildResult, _FakeResetCoro
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         plugin._gate.advance(UMO)  # 真实会话：新消息已推进过代次
@@ -1089,7 +1083,7 @@ def test_invalidate_clears_observation_material(tmp_path: Path) -> None:
     """
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._coordinator.record_event(UMO, event, 1.0)
         plugin._coordinator.capture_images(UMO, 1.0, [])
         assert plugin._last_events is plugin._coordinator._events
@@ -1146,7 +1140,7 @@ def test_check_command_waits_for_previous_run_release(tmp_path: Path) -> None:
 
     async def scenario(plugin, main):
         commands = sys.modules[f"{PACKAGE_NAME_R3}.commands"]
-        event = _make_event()
+        event = make_event()
         plugin.settings.whitelist = {UMO}
         plugin.settings.min_silence_sec = 0
         plugin._last_events[UMO] = event
@@ -1184,7 +1178,7 @@ def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
     run_finished: list[bool] = []
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         entered = asyncio.Event()
@@ -1360,7 +1354,7 @@ def test_stale_generation_rejected_at_session_entry(tmp_path: Path) -> None:
     """旧代次任务在会话入口即被放弃，不进入决策与发送。"""
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         token = plugin._gate.advance(UMO)
@@ -1383,7 +1377,7 @@ def test_force_cancel_converges_before_grace_timeout(tmp_path: Path) -> None:
     run_finished: list[bool] = []
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         entered = asyncio.Event()
@@ -1461,7 +1455,7 @@ def test_context_send_none_is_delivered_and_writes_history(tmp_path: Path) -> No
     from .host_stubs import FakeBuildResult, _FakeResetCoro
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         state = plugin._state_for(UMO)
@@ -1531,7 +1525,7 @@ def test_readonly_commands_do_not_invalidate_session(tmp_path: Path) -> None:
     """status 只读查询不得取消待执行的延迟检查，也不得清空事件缓存。"""
 
     async def scenario(plugin, main):
-        event = _make_event()
+        event = make_event()
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         plugin._state_for(UMO)

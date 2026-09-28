@@ -13,8 +13,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from ._support import UMO, make_event
 from .host_stubs import until, with_plugin
-from .test_main_runtime import UMO, _make_event
 
 
 def test_multi_session_cancel_converges_all_tables(tmp_path: Path) -> None:
@@ -32,7 +32,7 @@ def test_multi_session_cancel_converges_all_tables(tmp_path: Path) -> None:
         assert baseline_tasks == 1  # 常驻 image cleanup 任务
         umos = [f"leak{i}:group:g" for i in range(5)]
         for umo in umos:
-            plugin._last_events[umo] = _make_event()
+            plugin._last_events[umo] = make_event()
             plugin._scheduler.schedule_delayed_check(
                 umo, delay_sec=1, trigger="message_delay", force=False
             )
@@ -58,7 +58,7 @@ def test_completed_checks_leave_no_running_check_residue(tmp_path: Path) -> None
     async def scenario(plugin, main):
         umos = [f"leak{i}:group:g" for i in range(5)]
         for umo in umos:
-            plugin._last_events[umo] = _make_event()
+            plugin._last_events[umo] = make_event()
             plugin._scheduler.schedule_delayed_check(
                 umo, delay_sec=0, trigger="message_delay", force=False
             )
@@ -82,7 +82,7 @@ def test_terminate_is_idempotent(tmp_path: Path) -> None:
             finally:
                 finished.set()
 
-        plugin._last_events[UMO] = _make_event()
+        plugin._last_events[UMO] = make_event()
         plugin._coordinator.capture_images(UMO, 1.0, [object()])
         plugin._track_background_task(background())
         plugin._scheduler.schedule_delayed_check(

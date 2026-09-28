@@ -15,13 +15,13 @@ import sys
 
 import pytest
 
+from ._support import UMO
 from .host_stubs import (
     webapi_module,
     with_plugin,
 )
 
 PACKAGE = "selfreply_main_test_package"
-UMO = "fake:group:123"
 
 
 @pytest.fixture(autouse=True)

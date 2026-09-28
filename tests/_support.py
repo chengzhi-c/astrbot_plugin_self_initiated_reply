@@ -1,0 +1,40 @@
+"""跨用例文件共享的引导：模块清单与默认会话事件桩。
+
+宿主 stub 与加载原语归 ``host_stubs``，本文件只放「多个文件都要用的同一组插件
+模块」和同一个默认会话，避免把某个千行主题用例文件当依赖库私取符号。动态包名仍由
+各文件自持：同一份源码在不同文件里用不同包名隔离 ``sys.modules`` 是刻意的，收成一个
+全局包名会让跨测试的对象身份意外重合。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from types import ModuleType
+from typing import Any
+
+from .host_stubs import FakeEvent, load_modules
+
+# 识图链与配置面用例共用的模块集合。
+CORE_MODULES = ("adapters", "image", "models")
+
+# 指令面与配置面安全用例的模块集合。
+COMMAND_SURFACE_MODULES = ("models", "utils", "commands", "image", "image.recorder_bridge")
+
+UMO = "fake:group:123"
+
+
+def core_loader(package_name: str) -> Callable[[], tuple[ModuleType, ...]]:
+    """按调用方自己的包名生成"加载共用模块集合"的函数。
+
+    模块清单在本文件单源，包名仍由各文件持有（隔离语义见模块 docstring）。
+    """
+    return lambda: load_modules(package_name, *CORE_MODULES)
+
+
+def command_surface_loader(package_name: str) -> Callable[[], tuple[ModuleType, ...]]:
+    """指令面/配置面用例的模块集合加载器（同 ``core_loader`` 的包名口径）。"""
+    return lambda: load_modules(package_name, *COMMAND_SURFACE_MODULES)
+
+
+def make_event(umo: str = UMO, **kwargs: Any) -> FakeEvent:
+    return FakeEvent(umo=umo, **kwargs)

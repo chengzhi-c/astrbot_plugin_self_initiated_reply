@@ -14,8 +14,11 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from ._support import core_loader
 from .host_stubs import capture_logs, messages_at_least, until
-from .test_vision import PACKAGE_NAME, _load_modules
+
+PACKAGE_NAME = "selfreply_scheduler_test_package"
+_load_modules = core_loader(PACKAGE_NAME)
 
 
 def _scheduler_module():
