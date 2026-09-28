@@ -191,6 +191,33 @@ def test_frontend_prompt_textarea_maxlength_matches_backend() -> None:
     )
 
 
+def test_frontend_provider_manual_inputs_match_backend_max_len() -> None:
+    """手填 Provider 输入的 maxlength 必须等于后端 ``MAX_PROVIDER_ID_LEN``。
+
+    后端在读取强制时按该常量截断，前端不设上限时用户填超长值会拿到「保存成功、
+    重载后值被改写」的结果而无提示。同页 number 边界、textarea 长度、白名单条数
+    与单条长度都已有同源守卫，只有 Provider 手填框是缺口。数量也从规格表派生：
+    新增一个 select_provider 面的键而页面少一个手填框时，这条判红而不是静默少守。
+    """
+    models = _models_module()
+    html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
+    manual_inputs = re.findall(r'<input\b[^>]*class="provider-manual-input"[^>]*>', html)
+    expected = [
+        spec.key for spec in models.panel_config_specs() if spec.special == "select_provider"
+    ]
+
+    assert len(manual_inputs) == len(expected), (
+        f"手填 Provider 输入数量与规格表不符：页面 {len(manual_inputs)}，规格表 {expected}"
+    )
+    for tag in manual_inputs:
+        element_id = re.search(r'id="(\w+)"', tag)
+        maxlength = re.search(r'maxlength="(\d+)"', tag)
+        assert maxlength is not None, f"{element_id and element_id.group(1)} 缺少 maxlength"
+        assert int(maxlength.group(1)) == models.MAX_PROVIDER_ID_LEN, (
+            f"手填 Provider maxlength={maxlength.group(1)} 后端上限={models.MAX_PROVIDER_ID_LEN}"
+        )
+
+
 def _html_enum_options(html: str) -> dict[str, set[str]]:
     """取 HTML 里每个 enum 控件的 option 值集合（按 data-config-key 归组）。"""
     options: dict[str, set[str]] = {}

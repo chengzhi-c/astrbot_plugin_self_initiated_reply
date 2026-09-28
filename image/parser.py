@@ -330,6 +330,10 @@ class _FixedResponseStream(httpx.AsyncByteStream):
             self._release(self._pool)
 
 
+class _ImageAddressBlocked(httpx.ConnectError):
+    """传输层按安全判据主动拒绝，与网络故障区分：前者值得 WARNING（契约 §9）。"""
+
+
 class _FixedAddressTransport(httpx.AsyncBaseTransport):
     """HTTPX transport that binds each request to its checked DNS result.
 
@@ -350,7 +354,7 @@ class _FixedAddressTransport(httpx.AsyncBaseTransport):
         scheme = str(request.url.scheme or "").lower()
         port = request.url.port or (443 if scheme == "https" else 80)
         if scheme not in HTTP_SCHEMES or not host or port not in ALLOWED_IMAGE_PORTS:
-            raise httpx.ConnectError(f"拒绝连接不安全的图片地址: {host}")
+            raise _ImageAddressBlocked(f"拒绝连接不安全的图片地址: {host}")
         resolver = self._resolver or _resolve_global_address
         # 一次性注入地址只在首跳生效：消费后即清空，重定向等后续每跳都重新
         # 解析并重新做公网校验（host 虽复用，地址不缓存）。
@@ -362,7 +366,7 @@ class _FixedAddressTransport(httpx.AsyncBaseTransport):
         except ValueError:
             checked_address = None
         if checked_address is None or not checked_address.is_global:
-            raise httpx.ConnectError(f"拒绝连接非公网主机: {host}")
+            raise _ImageAddressBlocked(f"拒绝连接非公网主机: {host}")
 
         pool = httpcore.AsyncConnectionPool(
             ssl_context=ssl.create_default_context(),
@@ -554,11 +558,7 @@ class ImageParser:
         try:
             # 这条路径的 file 值来自对端可控的 OneBot 原始值，可信度判定统一
             # 交给 _file_to_data_url 的 allowlist（契约 §7.1）。
-            data_url = await asyncio.to_thread(
-                self._file_to_data_url,
-                path,
-                trusted=False,
-            )
+            data_url = await asyncio.to_thread(self._file_to_data_url, path)
             if not data_url:
                 return False
             cached_path = await asyncio.to_thread(self._materialize_data_url, data_url)
@@ -704,29 +704,30 @@ class ImageParser:
         )
 
     async def _resolve_image_url(self, image_info: ImageInfo) -> str | None:
-        """把一条图片记录解析成可交给 Vision 的 data URL，按可信度降序尝试四条来源。
+        """把一条图片记录解析成可交给 Vision 的 data URL，按可用性顺序尝试四条来源。
 
-        顺序即优先级，越靠前越可信：
-        1. ``prepared_source``（本插件已快照/下载的副本，trusted）；
-        2. 录制桥按 message_id 找到的宿主本地文件（trusted）；
-        3. ``file_path``，http(s) 走下载；**绝对本地路径一律走 allowlist**，
-           相对路径经录制桥解析成功后才升为 trusted；
+        1. ``prepared_source``（本插件已快照/下载的副本；``data:`` 形态直接返回）；
+        2. 录制桥按 message_id 找到的宿主本地文件；
+        3. ``file_path``，http(s) 走下载；
         4. ``url`` 远程下载。
 
-        ``trusted`` 只对「来源不由消息内容决定」的路径置 True（本插件缓存副本、
-        录制桥按 message_id 交回的宿主文件）。消息里带来的绝对路径一律交给
-        ``_allowed_local_roots`` 判定，不再采信提取层的可信推断，见 ``__init__``
-        里的可达性说明（防任意本地文件读取外传）。
+        本地路径（含 1 与 2 与 3 的本地形态）一律由 ``_allowed_local_roots``
+        判定，不留任何例外分支（契约 §7.1）：``prepared_source`` 只由
+        ``_materialize_data_url`` 写入、产物必在 image_cache 内，同一判据今天
+        不会拒掉合法副本，但它把「路径落在允许根内」保持为唯一判据。
+        不采信提取层的可信推断，因为宿主 aiocqhttp 的 ``Image.file`` 是对端可控
+        的 OneBot 原始值，且 ``Image`` 是 pydantic 组件而非 Mapping，恰好满足旧判据。
 
         失败时：任一路仅在成功时提前返回，失败即继续下一路；全部失败返回
-        ``None``（调用方据此跳过该图）。下载失败会记一条 URL 已脱敏的 INFO。
+        ``None``（调用方据此跳过该图）。下载失败会记一条 URL 已脱敏的 INFO，
+        被地址策略拒绝则记 WARNING。
         """
         if image_info.prepared_source:
             prepared = str(image_info.prepared_source).strip()
             if prepared.startswith("data:"):
                 return prepared
             prepared_path = Path(prepared)
-            data_url = await asyncio.to_thread(self._file_to_data_url, prepared_path, trusted=True)
+            data_url = await asyncio.to_thread(self._file_to_data_url, prepared_path)
             if data_url:
                 return data_url
 
@@ -743,9 +744,7 @@ class ImageParser:
                 # 拼接，`../../..` 可逃出媒体目录，与本地文件读取同一攻击面。
                 # recorder 媒体目录在 <data>/plugin_data/ 下，已被 data_root 覆盖，
                 # 合法文件不受影响。
-                data_url = await asyncio.to_thread(
-                    self._file_to_data_url, local_path, trusted=False
-                )
+                data_url = await asyncio.to_thread(self._file_to_data_url, local_path)
                 if data_url:
                     return data_url
 
@@ -764,14 +763,14 @@ class ImageParser:
             # 本地路径一律走 allowlist：image_info.trusted_local_path
             # 由提取层从「组件不是 Mapping」推断，而对端可控的 OneBot file 值
             # 恰好装配成非 Mapping 的 pydantic Image，该推断可被伪造。
-            # 相对路径经录制桥解析后同样不升 trusted：resolver 的入参
+            # 相对路径经录制桥解析后同样受同一判据约束：resolver 的入参
             # 就是这里的 file_value，对端可控，`../../..` 不受 is_absolute 检查
             # 拦截，朴素拼接的 resolver 会交出媒体目录之外的路径。
             if not path.is_absolute() and self._recorder_bridge:
-                resolved = self._recorder_bridge.resolve_relative_path(file_value)
+                resolved = await self._recorder_bridge.resolve_relative_path(file_value)
                 if resolved is not None:
                     path = resolved
-            data_url = await asyncio.to_thread(self._file_to_data_url, path, trusted=False)
+            data_url = await asyncio.to_thread(self._file_to_data_url, path)
             if data_url:
                 return data_url
 
@@ -828,12 +827,12 @@ class ImageParser:
             logger.debug("[%s] image cache write failed: %s", PLUGIN_ID, exc)
             return None
 
-    def _file_to_data_url(self, path: Path, *, trusted: bool = False) -> str | None:
+    def _file_to_data_url(self, path: Path) -> str | None:
         try:
             if not path.is_absolute() or path.is_symlink():
                 return None
             candidate = path.resolve(strict=True)
-            if not trusted and not any(
+            if not any(
                 candidate == root or root in candidate.parents for root in self._allowed_local_roots
             ):
                 logger.warning(
@@ -869,9 +868,9 @@ class ImageParser:
         嗅探**决定而非响应头声明。
 
         失败时全部静默返回 ``None``（调用方据此降级为"本次不带图"）：
-        URL 不安全、状态码 >= 400、超限、空响应、嗅探不出图片类型、以及任何异常
-        （仅异常路径记 debug）。返回 ``None`` 的语义是"这张图不可用"，不是"出错了"，
-        因此不向上抛。
+        URL 不安全、状态码 >= 400、超限、空响应、嗅探不出图片类型、以及任何异常。
+        地址策略拒绝记 WARNING（降级可被运营感知，契约 §9），其余异常记 DEBUG。
+        返回 ``None`` 的语义是"这张图不可用"，不是"出错了"，因此不向上抛。
         """
         try:
             parsed = urlparse(url)
@@ -913,6 +912,9 @@ class ImageParser:
                     if not content_type:
                         return None
                     return to_data_url(content_type, bytes(content))
+        except _ImageAddressBlocked as exc:
+            logger.warning("[%s] image download refused by address policy: %s", PLUGIN_ID, exc)
+            return None
         except Exception as exc:
             logger.debug("[%s] image download failed: %s", PLUGIN_ID, redact_exc_text(exc))
             return None

@@ -80,28 +80,28 @@ def _record_with(*images: dict[str, Any]) -> Any:
 # ============================================================================
 
 
-def test_ensure_api_false_without_context(bridge_mod) -> None:
+async def test_ensure_api_false_without_context(bridge_mod) -> None:
     bridge = bridge_mod.MessageRecorderBridge(None)
-    assert bridge._ensure_api() is False
+    assert await bridge._ensure_api() is False
     assert bridge._api is None
 
 
-def test_ensure_api_false_without_get_registered_star(bridge_mod) -> None:
+async def test_ensure_api_false_without_get_registered_star(bridge_mod) -> None:
     ctx = type("Ctx", (), {})()
     bridge = bridge_mod.MessageRecorderBridge(ctx)
-    assert bridge._ensure_api() is False
+    assert await bridge._ensure_api() is False
 
 
-def test_ensure_api_false_when_star_missing(bridge_mod) -> None:
+async def test_ensure_api_false_when_star_missing(bridge_mod) -> None:
     def get_registered_star(name):
         return None
 
     ctx = type("Ctx", (), {"get_registered_star": get_registered_star})()
     bridge = bridge_mod.MessageRecorderBridge(ctx)
-    assert bridge._ensure_api() is False
+    assert await bridge._ensure_api() is False
 
 
-def test_ensure_api_false_when_no_api_method(bridge_mod) -> None:
+async def test_ensure_api_false_when_no_api_method(bridge_mod) -> None:
     class Meta:
         star_instance = type("Star", (), {})()
 
@@ -110,19 +110,19 @@ def test_ensure_api_false_when_no_api_method(bridge_mod) -> None:
 
     ctx = type("Ctx", (), {"get_registered_star": get_registered_star})()
     bridge = bridge_mod.MessageRecorderBridge(ctx)
-    assert bridge._ensure_api() is False
+    assert await bridge._ensure_api() is False
 
 
-def test_ensure_api_false_on_exception(bridge_mod) -> None:
+async def test_ensure_api_false_on_exception(bridge_mod) -> None:
     def get_registered_star(name):
         raise OSError("boom")
 
     ctx = type("Ctx", (), {"get_registered_star": get_registered_star})()
     bridge = bridge_mod.MessageRecorderBridge(ctx)
-    assert bridge._ensure_api() is False
+    assert await bridge._ensure_api() is False
 
 
-def test_ensure_api_false_when_get_api_not_callable(bridge_mod) -> None:
+async def test_ensure_api_false_when_get_api_not_callable(bridge_mod) -> None:
     """探测链：star 的 get_api 不可调用时必须判负（40 行分支）。"""
 
     class Meta:
@@ -133,14 +133,14 @@ def test_ensure_api_false_when_get_api_not_callable(bridge_mod) -> None:
             return Meta()
 
     bridge = bridge_mod.MessageRecorderBridge(Ctx())
-    assert bridge._ensure_api() is False
+    assert await bridge._ensure_api() is False
 
 
-def test_ensure_api_caches_result(bridge_mod) -> None:
+async def test_ensure_api_caches_result(bridge_mod) -> None:
     api = _api_with(record=None)
     ctx = _context_with(api)
     bridge = bridge_mod.MessageRecorderBridge(ctx)
-    assert bridge._ensure_api() is True
+    assert await bridge._ensure_api() is True
     assert bridge._api is api
 
     # 成功 API 仍正缓存：破坏探测源后二次调用不重新探测。
@@ -148,10 +148,43 @@ def test_ensure_api_caches_result(bridge_mod) -> None:
         raise OSError("probe must not rerun")
 
     ctx.get_registered_star = boom
-    assert bridge._ensure_api() is True
+    assert await bridge._ensure_api() is True
 
 
-def test_ensure_api_retries_after_initial_miss(bridge_mod) -> None:
+async def test_ensure_api_resolves_async_get_api(bridge_mod, tmp_path) -> None:
+    """第三方 recorder 的 ``get_api`` 返回协程时，桥必须仍能取到本地图片路径。
+
+    本模块对宿主 API 一律经 ``maybe_await`` 取值（``get_by_platform_message_id``
+    同例），探测入口不得例外：coroutine 直接存进 ``self._api`` 时 ``is not None``
+    判真，后续属性查找抛 ``AttributeError`` 又被调用点的 ``except`` 吞成 DEBUG，
+    于是本地文件通道永久静默失效。
+    """
+    target = tmp_path / "recorded.png"
+    target.write_bytes(PNG_BYTES)
+    api = _api_with(
+        record=_record_with(
+            {"type": "image", "url": "https://x/y.png", "local_path": "media/a.png"}
+        ),
+        resolver=lambda _value: target,
+    )
+
+    class AsyncStar:
+        async def get_api(self):
+            return api
+
+    class Context:
+        def get_registered_star(self, _name):
+            return SimpleNamespace(star_instance=AsyncStar())
+
+    bridge = bridge_mod.MessageRecorderBridge(Context())
+
+    found = await bridge.get_local_image_path("m1", "https://x/y.png")
+
+    assert found == target
+    assert not inspect.isawaitable(bridge._api)
+
+
+async def test_ensure_api_retries_after_initial_miss(bridge_mod) -> None:
     api = _api_with(record=None)
 
     class Context:
@@ -163,9 +196,9 @@ def test_ensure_api_retries_after_initial_miss(bridge_mod) -> None:
     context = Context()
     bridge = bridge_mod.MessageRecorderBridge(context)
 
-    assert bridge._ensure_api() is False
+    assert await bridge._ensure_api() is False
     context.available = True
-    assert bridge._ensure_api() is True
+    assert await bridge._ensure_api() is True
     assert bridge._api is api
 
 
@@ -295,19 +328,19 @@ async def test_get_local_image_path_exception(bridge_mod) -> None:
 
 async def test_resolve_relative_path_empty(bridge_mod) -> None:
     bridge = bridge_mod.MessageRecorderBridge(_context_with(_api_with(record=None)))
-    assert bridge.resolve_relative_path("") is None
+    assert await bridge.resolve_relative_path("") is None
 
 
 async def test_resolve_relative_path_without_resolver(bridge_mod) -> None:
     api = _api_with(record=None, resolver=None)
     bridge = bridge_mod.MessageRecorderBridge(_context_with(api))
-    assert bridge.resolve_relative_path("x.png") is None
+    assert await bridge.resolve_relative_path("x.png") is None
 
 
 async def test_resolve_relative_path_missing_file(bridge_mod) -> None:
     api = _api_with(record=None, resolver=lambda value: str(ROOT / "no_such.png"))
     bridge = bridge_mod.MessageRecorderBridge(_context_with(api))
-    assert bridge.resolve_relative_path("no_such.png") is None
+    assert await bridge.resolve_relative_path("no_such.png") is None
 
 
 async def test_resolve_relative_path_success(bridge_mod, tmp_path) -> None:
@@ -315,7 +348,7 @@ async def test_resolve_relative_path_success(bridge_mod, tmp_path) -> None:
     target.write_bytes(PNG_BYTES)
     api = _api_with(record=None, resolver=lambda value: str(target))
     bridge = bridge_mod.MessageRecorderBridge(_context_with(api))
-    assert bridge.resolve_relative_path("ok.png") == target
+    assert await bridge.resolve_relative_path("ok.png") == target
 
 
 async def test_resolve_relative_path_exception(bridge_mod) -> None:
@@ -324,17 +357,17 @@ async def test_resolve_relative_path_exception(bridge_mod) -> None:
 
     api = _api_with(record=None, resolver=boom)
     bridge = bridge_mod.MessageRecorderBridge(_context_with(api))
-    assert bridge.resolve_relative_path("x.png") is None
+    assert await bridge.resolve_relative_path("x.png") is None
 
 
-def test_resolve_relative_path_resolver_not_callable(bridge_mod) -> None:
+async def test_resolve_relative_path_resolver_not_callable(bridge_mod) -> None:
     """探测链：api 的 get_media_absolute_path 不可调用时判负（84 行分支）。"""
 
     class StubApi:
         get_media_absolute_path = None
 
     bridge = bridge_mod.MessageRecorderBridge(_context_with(StubApi()))
-    assert bridge.resolve_relative_path("x.png") is None
+    assert await bridge.resolve_relative_path("x.png") is None
 
 
 # ============================================================================

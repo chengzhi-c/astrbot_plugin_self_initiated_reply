@@ -21,7 +21,8 @@ class MessageRecorderBridge:
         self._context = context
         self._api: Any = None
 
-    def _ensure_api(self) -> bool:
+    async def _ensure_api(self) -> bool:
+        """探测录制桥 API；宿主 API 可能是协程，取值口径与本模块其余调用一致。"""
         if self._api is not None:
             return True
         if self._context is None:
@@ -35,7 +36,7 @@ class MessageRecorderBridge:
             get_api = getattr(instance, "get_api", None)
             if not callable(get_api):
                 return False
-            self._api = get_api()
+            self._api = await maybe_await(get_api())
             return self._api is not None
         except Exception as exc:
             logger.debug("[%s] message recorder bridge unavailable: %s", PLUGIN_ID, exc)
@@ -43,7 +44,7 @@ class MessageRecorderBridge:
 
     async def get_local_image_path(self, message_id: str, image_url: str = "") -> Path | None:
         """Find a recorded local image matching a platform message."""
-        if not message_id or not self._ensure_api():
+        if not message_id or not await self._ensure_api():
             return None
         try:
             record = await maybe_await(self._api.get_by_platform_message_id(message_id))
@@ -78,13 +79,13 @@ class MessageRecorderBridge:
             local_path = str(selected.get("local_path") or "").strip()
             if not local_path:
                 return None
-            return self.resolve_relative_path(local_path)
+            return await self.resolve_relative_path(local_path)
         except Exception as exc:
             logger.debug("[%s] recorder image lookup failed: %s", PLUGIN_ID, exc)
             return None
 
-    def resolve_relative_path(self, value: str) -> Path | None:
-        if not value or not self._ensure_api():
+    async def resolve_relative_path(self, value: str) -> Path | None:
+        if not value or not await self._ensure_api():
             return None
         try:
             resolver = getattr(self._api, "get_media_absolute_path", None)

@@ -2306,6 +2306,29 @@ def test_fixed_transport_re_resolves_each_redirect_hop(monkeypatch) -> None:
     ]
 
 
+def test_download_warns_when_address_policy_blocks(tmp_path: Path, monkeypatch, caplog) -> None:
+    """地址策略拒绝必须记 WARNING，不能和网络故障同为 DEBUG（契约 §9）。
+
+    图片被安全判据拒掉时正文降级为不带图，运营者看到的只是「这张图没了」；
+    落在 DEBUG 就无从分辨是被拦还是源站坏了。这里用回环地址模拟重定向后
+    重解析落到内网的形态。
+    """
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: "127.0.0.1")
+
+    parser = _make_parser(image, tmp_path)
+    with capture_logs(caplog, parser_mod.logger, logging.DEBUG):
+        assert asyncio.run(parser._download_image_data_url("https://cdn.example/x.png")) is None
+
+    refused = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING and "cdn.example" in record.getMessage()
+    ]
+    assert len(refused) == 1, f"策略拒绝未记唯一一条 WARNING：{caplog.records}"
+
+
 # ============================================================================
 # prepare()：冻结分支
 # ============================================================================
@@ -3023,8 +3046,8 @@ def test_resolve_rejects_recorder_path_outside_data_root(tmp_path: Path) -> None
 
     攻击链：对端把 ``local_path`` 设成 ``../../../secrets/x.png``（相对路径，
     绕过 ``is_absolute`` 检查）→ 若第三方 recorder 的 resolver 是朴素
-    ``root / value``，就会交回 <data> 之外的绝对路径。修复前该分支直接
-    ``trusted=True`` 全量放行，与要关的攻击面同型。
+    ``root / value``，就会交回 <data> 之外的绝对路径。本地来源分支不设可信例外，
+    判据只有「落在允许根内」（契约 §7.1）。
     """
     _, image, _ = _load_modules()
     data_root = tmp_path / "data"
@@ -3035,7 +3058,7 @@ def test_resolve_rejects_recorder_path_outside_data_root(tmp_path: Path) -> None
         async def get_local_image_path(self, _message_id, _image_url):
             return outside
 
-        def resolve_relative_path(self, _value):
+        async def resolve_relative_path(self, _value):
             return outside
 
     parser = image.ImageParser(object(), recorder_bridge=TraversalRecorder(), data_root=data_root)
@@ -3045,6 +3068,36 @@ def test_resolve_rejects_recorder_path_outside_data_root(tmp_path: Path) -> None
     # ……以及相对路径解析升级来的路径
     by_relative = image.ImageInfo(file_path="../../../secrets/private.png")
     assert asyncio.run(parser._resolve_image_url(by_relative)) is None
+
+
+def test_resolve_rejects_prepared_source_outside_roots(tmp_path: Path) -> None:
+    """``prepared_source`` 的绝对路径也只由「落在允许根内」放行（契约 §7.1）。
+
+    今天该字段只由 ``_materialize_data_url`` 写入，产物必在 image_cache 内，所以
+    这条判据不会拒掉任何合法副本；它钉的是「再多一个 prepared_source 写点」时
+    的行为，判据本身不留例外。
+    """
+    _, image, _ = _load_modules()
+    outside = _png_file(tmp_path / "elsewhere", "private.png")
+
+    parser = image.ImageParser(object())
+    info = image.ImageInfo(url="https://x/y.png")
+    info.prepared_source = str(outside)
+
+    assert asyncio.run(parser._resolve_image_url(info)) is None
+
+
+def test_resolve_accepts_prepared_source_inside_cache_root(tmp_path: Path) -> None:
+    """允许根内的副本照常放行：上一条不得把合法路径一起拒掉。"""
+    _, image, _ = _load_modules()
+    cache_dir = tmp_path / "image_cache"
+    inside = _png_file(cache_dir / "ab", "abcdef.png")
+
+    parser = image.ImageParser(object(), source_cache_dir=cache_dir)
+    info = image.ImageInfo(url="https://x/y.png")
+    info.prepared_source = str(inside)
+
+    assert asyncio.run(parser._resolve_image_url(info)) == PNG_DATA_URL
 
 
 def test_resolve_recorder_miss_falls_through(tmp_path: Path, monkeypatch) -> None:
@@ -3119,7 +3172,7 @@ def test_resolve_relative_path_via_recorder(tmp_path: Path) -> None:
     source = _png_file(tmp_path, "media.png")
 
     class Recorder:
-        def resolve_relative_path(self, value):
+        async def resolve_relative_path(self, value):
             return source if value == "media/photo.png" else None
 
     parser = image.ImageParser(object(), recorder_bridge=Recorder(), data_root=tmp_path)
@@ -3146,7 +3199,7 @@ def test_recorder_resolved_path_outside_roots_is_rejected(tmp_path: Path) -> Non
     class NaiveRecorder:
         """模拟未做路径收敛的第三方 resolver（../ 逃出媒体根）。"""
 
-        def resolve_relative_path(self, value):
+        async def resolve_relative_path(self, value):
             return outside
 
         async def get_local_image_path(self, _message_id, _image_url):
@@ -3240,7 +3293,7 @@ def test_materialize_publishes_with_atomic_replace(tmp_path: Path, monkeypatch) 
 def test_file_to_data_url_rejects_missing_path(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
     parser = _make_parser(image, tmp_path)
-    assert parser._file_to_data_url(tmp_path / "missing.png", trusted=True) is None
+    assert parser._file_to_data_url(tmp_path / "missing.png") is None
 
 
 def test_fetch_tolerates_urlparse_failure(monkeypatch) -> None:
