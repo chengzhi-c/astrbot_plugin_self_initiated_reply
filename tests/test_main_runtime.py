@@ -1275,13 +1275,19 @@ def test_version_consistency_across_metadata() -> None:
     assert released.group(1) == version, (
         f"CHANGELOG 最新发布版本 {released.group(1)!r} 与 PLUGIN_VERSION={version!r} 不一致"
     )
-    # 宿主下限只钉形状不钉版本：正当抬下限（4.23.3 → 4.24.0）不该判红。
-    # 格式却必须在这里钉住，因为它的动态消费者 test_vision._locked_host_version
-    # 解析失败时返回空串，_find_host_platform_sources 随之返回 None，
-    # 宿主漂移守卫整条 pytest.skip 而不是判红。
-    assert re.search(r'astrbot_version:\s*">=\d+\.\d+\.\d+,<5"', metadata), (
+    # 形状必须钉住：唯一的动态消费者 test_vision._locked_host_version 解析失败时
+    # 返回空串，_find_host_platform_sources 随之返回 None，宿主漂移守卫整条
+    # pytest.skip 而不是判红。
+    floor = re.search(r'astrbot_version:\s*">=(\d+\.\d+\.\d+),<5"', metadata)
+    assert floor is not None, (
         "metadata.yaml 的 astrbot_version 下限形状不符，"
         "test_vision 的宿主漂移守卫会静默跳过而非判红"
+    )
+    # 下限可以正当抬、不可以降：docs/BEHAVIOR_CONTRACT.md 把 "AstrBot >= 4.23.3"
+    # 定为契约，而 _locked_host_version 拿这个字符串去选要扫描的宿主源码版本，
+    # 降到 4.23.3 之下会让漂移守卫扫另一个版本却照样报绿。
+    assert tuple(int(part) for part in floor.group(1).split(".")) >= (4, 23, 3), (
+        f"宿主下限被降到 4.23.3 之下（实测 {floor.group(1)}），与契约不符，且宿主漂移守卫会扫错版本"
     )
 
 

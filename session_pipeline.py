@@ -285,8 +285,8 @@ class SessionPipeline:
         """Apply one ledger outcome and retry only persistence, never state mutation.
 
         结论只写进账本（``mark_recorded`` / ``mark_record_failed``），不返回 bool：
-        调用方 ``_finalize_ledger`` 从 ``ledger.phase`` 读结论，两处各判一次会让
-        "成功"出现两个真相源。
+        ``ledger.phase`` 是结论的唯一真相源，测试直接断言它。再返回一份 bool
+        等于让"成功"有两处可读，两处会各自漂移。
         """
         logger.debug(
             "[%s] record proactive ledger_id=%s session=%s submissions=%s unknown=%s",
@@ -380,8 +380,8 @@ class SessionPipeline:
     ) -> None:
         """Seal one run and await its single record task, including cancellation.
 
-        结论只写进账本，不返回 bool：调用方与测试都从 ``ledger.phase`` 读，
-        理由同 ``_record_ledger`` 的 docstring。
+        不返回 bool：调用方只等它跑完，结论由 ``ledger.phase`` 单点表达
+        （理由同 ``_record_ledger`` 的 docstring）。
         """
         ledger.seal()
         # seal() 只把 open→sealed，recorded / record_failed 只能从 recording 经

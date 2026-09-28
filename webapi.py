@@ -438,8 +438,11 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
     # int/float 沿用 falsy 规范化（0→""、42→"42"，与历史面板行为一致，见
     # test_parse_config_updates_formal_defaults）。
     # 空提交 = 恢复内置默认（面板留空即复位，见 test_config_schema 的
-    # _INTENTIONAL_EMPTY_DEFAULT），复位与 max_len 截断都只由读侧
-    # models.coerce_config_value 单点实现，写侧再回落一次就是第二份口径。
+    # _INTENTIONAL_EMPTY_DEFAULT），但该复位只对 text 生效（读侧 coerce 的 text
+    # 分支 `or spec.reset_value`），str 的空值保持空串；写侧一律不回落，否则
+    # 默认口径有两处。长度上限同样只由读侧按 spec.max_len 截断。
+    # 三个 str 规格的 default 现在都是空串，故两种写法今天同值；这个区别是
+    # 给「新增一个带非空默认的 str 键」时准备的，那时它立刻可见。
     if isinstance(raw, (bool, dict, list)):
         raise ValueError(f"{spec.key} 必须是字符串")
     return str(raw or "").strip()

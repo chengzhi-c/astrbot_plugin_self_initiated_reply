@@ -81,14 +81,13 @@ async function serveStatic(request, response) {
 
 async function installBridge(page, options = {}) {
   await page.addInitScript(
-    ({ config, providersFail, saveMode, theme, dim, bold, refreshConfigPending, themePending, cleanupRemoved, cleanupFail, configFail, readyFails }) => {
+    ({ config, providersFail, saveMode, theme, dim, bold, refreshConfigPending, themePending, cleanupRemoved, cleanupFail, readyFails }) => {
       const state = {
         saveMode,
         saveAttempts: 0,
         config,
         configCalls: 0,
         providersFail,
-        configFail,
         refreshConfigPending,
         themePending,
         cleanupRemoved,

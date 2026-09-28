@@ -42,6 +42,7 @@ from ..models import (
     MAX_IMAGE_BYTES,
     MAX_IMAGE_CACHE_BYTES,
     MAX_IMAGE_DESCRIPTION_CACHE_BYTES,
+    MIN_VISION_IMAGE_AGE_SEC,
     PLUGIN_ID,
 )
 from ..utils import redact_exc_text, redact_url, response_text
@@ -666,7 +667,10 @@ class ImageParser:
         if not cache_root.is_dir():
             return 0
         try:
-            cutoff = (time.time() if now is None else float(now)) - max(60.0, float(max_age_sec))
+            cutoff = (time.time() if now is None else float(now)) - max(
+                float(MIN_VISION_IMAGE_AGE_SEC),
+                float(max_age_sec),
+            )
         except (TypeError, ValueError, OverflowError):
             return 0
 

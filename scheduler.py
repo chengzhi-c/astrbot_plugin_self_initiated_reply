@@ -342,7 +342,7 @@ class SessionScheduler:
 
     def _image_age_sec(self) -> float:
         """图片保留窗口；规格表已按同一下限夹取，这里兜住直写 ``settings`` 的路径。"""
-        return max(MIN_VISION_IMAGE_AGE_SEC, float(self.settings.vision_image_age_sec))
+        return max(float(MIN_VISION_IMAGE_AGE_SEC), float(self.settings.vision_image_age_sec))
 
     def _prune_image_index(self, current: float) -> tuple[float, set[str]]:
         """回收过期图片索引（纯内存，无磁盘 IO），返回 (保留窗口, 受保护源)。"""
