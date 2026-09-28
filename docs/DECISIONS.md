@@ -8,12 +8,11 @@
 `git archive --format=zip -o <name>.zip HEAD` 导出：排除规则单点声明在仓库根
 `.gitattributes` 的 `export-ignore`，未跟踪/被 .gitignore 排除的文件天然不进包。
 
-不采用「hatch 构建 wheel → `check_wheel`/`check_sdist` 内容断言 → 从 wheel
-派生部署 zip」的理由：那套三层互锁（pyproject exclude 列表 ↔ 检查脚本禁运名单 ↔
-pathspec 交叉核验）要求三份名单同步，任一处漏改就静默失守，而分发主路径不产生
-wheel，全部维护成本只服务于次要路径；`git archive` + `export-ignore` 把同一保证变成
-单点声明，“缓存泄漏进包”这类问题在结构上不再存在。pyproject 的 wheel/sdist 配置保留
-（本地构建仍干净），但不再有发布链依赖它。
+不从 wheel 派生部署 zip：那条路要 pyproject exclude 列表、检查脚本禁运名单与
+pathspec 交叉核验三份名单同步，任一处漏改就静默失守，而分发主路径不产生 wheel。
+`git archive` + `export-ignore` 把同一保证变成单点声明，"缓存泄漏进包"这类问题在
+结构上不再存在。pyproject 的 wheel 节只为 `pip install -e .` 与本地构建保持干净
+包形，发布链不依赖它。
 
 ## 双面板
 
@@ -131,8 +130,7 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 一个调用方，扇入低意味着拆分收益也低。属"高 churn、零行为收益"的纯文件搬迁。
 
 替代做法是文件顶部补齐与其余模块同款的结构说明（拥有 / 不拥有 + 分区目录）：
-让读者拿到定位索引，不复用文件边界。`webapi.py` 同理，一并补齐。将来若测试改为
-只依赖公开接口，可重新评估拆分。
+让读者拿到定位索引，不复用文件边界。`webapi.py` 同理，一并补齐。
 
 ## 门禁与守卫的准入证据
 
@@ -147,9 +145,7 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 `aria-*` 锚点上误报，豁免名单本身会腐烂。
 
 **`RUF100`**（`pyproject.toml`）：为未启用规则写的 `noqa` 让人以为某处已被忽略，实际
-没有；存量里确实出现过此类指令（`tests/test_adapters.py` 曾挂 `N802`，而 `__signature__`
-是 dunder，该规则对该文件本就是 All checks passed）。
-注意别用 `ruff check --select RUF100` 去复核存量：`--select` 会整体**替换**配置里的
+没有。注意别用 `ruff check --select RUF100` 去复核存量：`--select` 会整体**替换**配置里的
 选择集，`F401` 随之不在启用之列，在用的 `# noqa: F401` 会被连带报成「未启用」，那是
 命令副作用，不是存量问题。只用配置本身跑。
 
@@ -168,78 +164,52 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 该门在生产里是**两层**（锁外预检 + 锁内复查），只删一层另一层兜住，行为断言
 锁住两层并存，与本仓库其余端点（config / image-cache）的口径一致。
 
-## 核实后刻意不改的项
+## 刻意保留的现状
 
-以下都是「看起来能删/能收，核实后判定不该动」的项：
+以下形态看着能删、能收，实为刻意。改动前先读理由。
 
-- **`PipelineReply.direct_send_count` / `direct_texts`（`models.py`）**：是对
-  `AttemptLedger` 的视图式读取，多处测试以 `result` 直接读它
-  （`test_generation_runner` / `test_main_runtime`）。删它要把这些断言改写成
-  `.ledger.*`，生产侧零收益，只是把测试更深地绑到内存结构。
-- **`MessageRecord.sender_id`**：不是会话级中转字段，而是消息记录的固有字段，
-  且是去重语义用例的证据标记；删除要重写多个测试文件而不改变任何行为。
-  真正纯中转的 `SessionState.last_active_sender_id` 已删（见 `storage._load_session_record`
-  不再读该键；旧文件里的多余键由 `raw.get` 忽略，不需要 `STATE_VERSION` 迁移）。
+- **`PipelineReply.direct_send_count` / `direct_texts`（`models.py`）**：对
+  `AttemptLedger` 的视图式读取，测试以 `result` 直读它。改写成 `.ledger.*` 只是把测试
+  更深地绑到内存结构上，生产侧零收益。
+- **`MessageRecord.sender_id`**：消息记录的固有字段，也是去重语义用例的证据标记。
+  会话级的纯中转字段（`SessionState.last_active_sender_id`）不在其列：状态加载按
+  `raw.get` 取键，旧文件里的多余键被自然忽略，不需要 `STATE_VERSION` 迁移。
 - **`SessionState.last_proactive_text`**：`BEHAVIOR_CONTRACT.md` §1 具名（DELIVERED 时
-  写入），删它要改契约，超出「只做收益为正的收敛」边界。
-- **`AttemptState` / `SuppressCode` 的只写成员**：它们是分类域（枚举成员即语义标签），
-  删成员要另造一套等价表达，负收益。
-- **理由型注释的体量**：`docs` 另计，生产代码里的注释主体是**理由型**注释（为何不
-  那样写、哪条边界是刻意的）；它们是该仓库可评审性的来源，收敛它只会让下一个读者
-  重新推导一遍。变更史、评审轮次与外部条目号不属此类，不该保留。
-- **双层防护中的冗余层**：例如图片端口白名单与传输层地址校验重叠：去掉任一层
-  都有另一层兜住，行为等价；这是刻意的纵深，不是重复实现。
-- **`compat_check._runtime_api_gaps` 用签名枚举，不改成行为冒烟**：冒烟形态（真跑一次
-  `_fetch_image_data_url` 断言返回 None）净代码更长，且要 import `ImageParser` → 需要
-  真实 `astrbot`；签名枚举只依赖 httpx/httpcore，`_bootstrap()` 的假包路径（本地未装
-  宿主时）也能跑。它守的「本仓库**直接使用**的第三方 API 形态」与依赖上界不同层：
-  上界只挡大版本，挡不住小版本的签名变化。
-- **扩充 ruff 规则集只到 `RUF100` 为止**：逐条核实后否决的判据（命中数是版本相关的，
-  不在此复述）：`S110`+`SIM105` 的差集是**多 except 子句**（既有取消/超时处理又有日志，
-  `contextlib.suppress` 表达不了），采纳要为一条零事故记录的门禁动几十处并加一批
-  `noqa`，破坏运行时模块零 `noqa` 这个更有价值的现状。`ASYNC` 只认固定列表的阻塞调用，
-  本仓真实出现过的阻塞缺陷（`rglob` 遍历、`write_json_atomic`）它都抓不到，命中则是
-  httpcore `connect_tcp(timeout=)` 的必需签名与测试轮询。`BLE` / `TRY` / `PL` / `EM` /
-  `SLF` / `RUF` 全量撞上刻意写法与中文标点的 ambiguous-unicode 误报；`PTH` 会改行为
+  写入），删它要改契约。
+- **`AttemptState` / `SuppressCode` 的只写成员**：分类域的枚举成员本身就是语义标签，
+  删成员要另造一套等价表达。
+- **理由型注释的体量**：生产代码里的注释主体是理由型（为何不那样写、哪条边界是
+  刻意的），它们是该仓库可评审性的来源。变更史、评审轮次与外部条目号不属此类。
+- **双层防护中的冗余层**：例如图片端口白名单与传输层地址校验重叠，去掉任一层都有
+  另一层兜住，行为等价；这是刻意的纵深，不是重复实现。
+- **`compat_check._runtime_api_gaps` 用签名枚举，不做行为冒烟**：签名枚举只依赖
+  httpx/httpcore，`_bootstrap()` 的假包路径（本地未装宿主时）也能跑；冒烟形态要 import
+  `ImageParser`，净代码更长。它守的是「本仓库直接使用的第三方 API 形态」，依赖上界只挡
+  大版本，挡不住小版本的签名变化。
+- **ruff 规则集止于 `RUF100`**：`S110`+`SIM105` 的差集是多 except 子句（取消/超时处理与
+  日志并存，`contextlib.suppress` 表达不了）；`ASYNC` 只认固定列表的阻塞调用，本仓真实
+  出现过的阻塞缺陷（`rglob` 遍历、`write_json_atomic`）它都抓不到；`PTH` 会改行为
   （`image/extractor` 刻意用 `os.path.isabs or ntpath.isabs` 兼容异风格路径，
-  `Path.is_absolute()` 不等价）；`TID` / `N` / `A` 分别撞上包名带连字符（宿主约定）
-  与宿主 API 名 `filter`。
-- **前端不引 ESLint / `tsc --checkJs` / CSS lint**：为零构建前端新增 devDependency 与
-  配置的维护成本高于它能抓到的缺陷类；其中真会静默失效的一类（字面量 id 注册表）
-  已由上面的 id 契约以少量断言覆盖。
-- **不追覆盖率**：门槛以 `pyproject.toml` 的 `fail_under` 为准。未覆盖行集中在四类，
-  补它们只能靠构造宿主异常注入，属“为覆盖率补行”，不做：
-
-  1. **防御分支**：异常兜底、`not x` 早退、`return ""/None/False` 降级（`delivery` 的
-     quote/mention 组件构造失败、`generation` 的任务结果回收、`storage` 的原子写失败）。
-     价值在于**存在**而非被执行：对应“宿主/磁盘/平台出错时不要崩”。
-  2. **宿主能力分支**：宿主配置对象签名差异、`save_config` 缺失、`get_messages` /
-     `message_obj` / `raw_message` 形态差异、`set_extra` 老宿主未实现（`storage` 的
-     `_config_to_dict`/`_persist_config_obj` 兜底、`adapters` 的签名探测回退、
-     `image/extractor` 的组件字段读取差异）。CI 只跑三条宿主腿，其余版本的差异分支
-     不被驱动。
-  3. **二次回滚失败**：`whitelist.commit_change` 回滚再失败、`plugin_state.persist_enabled`
-     的二次回滚、`storage` 的状态文件备份失败。触发条件是磁盘在回滚窗口内连续两次失败，
-     属可接受降级 + 告警路径。
-  4. **注册面不可驱动**：`main.py` 的指令组函数。类属性被宿主装饰器换成
-     `RegisteringCommandable`，真实宿主与 `host_stubs` 都取不回原函数，其行为不可被任何
-     测试驱动；两条路径的等价由别名契约 + 装饰器委托契约钉住（见下文“不改双指令路径架构”）。
-
-  要收紧门槛应先改第 4 类的分母口径，而不是直接抬数字：`omit` 只按文件路径匹配，而指令组
-  函数必须在 `Star` 子类内（宿主 `selfreply.command` 装饰器依赖类属性），移不出去。
-- **测试去重的判据是「被更强断言覆盖」，不是「行数差不多」**：收敛掉的重复用例
-  各有一条覆盖它的用例，且覆盖方的断言集是它的超集（例：`test_config_schema.py` 的
-  「规格表键 == schema 键且顺序一致」蕴含另两条只做集合比较的用例；`CONTAINER_HOLDERS`
-  表驱动用例逐一枚举全部持有者绑定，强于原先只抽查部分的那条）。
-  剩下的不重复靠这条纪律保持：**新用例若与既有用例断言同一事实，必须说明覆盖方为何
-  不是超集**，说不出来就不加。
-- **不重构 `style.css`**：文件内零 id 选择器；重复规则体绝大多数是同一声明出现在
-  互不相关的选择器上下文（焦点环、`:focus-visible` 系列、hover 态、动作行 flex 等），
-  合并要么引入跨组件分组选择器、要么加一层自定义属性间接，收益为零而视觉回归风险
-  不可控。两份深色令牌块是刻意一致，已有用例钉住。
+  `Path.is_absolute()` 不等价）。
+- **前端不引 ESLint / `tsc --checkJs` / CSS lint**：为零构建前端新增 devDependency 与配置
+  的维护成本高于它能抓到的缺陷类；其中真会静默失效的一类（字面量 id 注册表）已由上面
+  的 id 契约以少量断言覆盖。
+- **不追覆盖率**：门槛以 `pyproject.toml` 的 `fail_under` 为准。未覆盖行集中在四类，补它们
+  只能靠构造宿主异常注入：防御分支（价值在于存在而非被执行）、宿主能力分支（CI 只跑三条
+  宿主腿，其余版本的差异分支不被驱动）、二次回滚失败（磁盘在回滚窗口内连续两次失败）、
+  注册面不可驱动的指令组函数（类属性被宿主装饰器换成 `RegisteringCommandable`，原函数取不
+  回来）。收紧门槛应先改第四类的分母口径而不是直接抬数字：`omit` 只按文件路径匹配，而
+  指令组函数必须在 `Star` 子类内（宿主装饰器依赖类属性），移不出去。
+- **测试去重的判据是「被更强断言覆盖」，不是「行数差不多」**：收敛掉的重复用例必须有一
+  条覆盖方，且覆盖方的断言集是它的超集。新用例若与既有用例断言同一事实，必须说明覆盖方
+  为何不是超集，说不出来就不加。
+- **`style.css` 不重构**：文件内零 id 选择器；重复规则体绝大多数是同一声明出现在互不相
+  关的选择器上下文（焦点环、`:focus-visible` 系列、hover 态、动作行 flex），合并要么引入
+  跨组件分组选择器、要么加一层自定义属性间接，收益为零而视觉回归风险不可控。深色侧只剩
+  `--shadow-*` 与 select 箭头两处按色向各写一份，同名令牌比对用例钉住漂移。
 - **不改双指令路径架构**：删内联路径会丢 `_is_command_entry` 的裸词保护与
-  `COMMAND_HANDLED_KEY` 去重；删装饰器路径会让宿主失去指令组注册与权限声明。两条路径
-  的等价由别名契约 + 装饰器委托契约共同钉住，成本远低于重构。
+  `COMMAND_HANDLED_KEY` 去重；删装饰器路径会让宿主失去指令组注册与权限声明。两条路径的
+  等价由别名契约 + 装饰器委托契约共同钉住。
 
 ## `webapi.py` 不拆
 
@@ -309,9 +279,9 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 一个**不被顶栏消费**的变量（`--topbar-h` 的消费点全在 `.sidenav` 与
 `scroll-margin-top`），写回因此回不到上一条的自激回路。
 
-整数值守卫（测得值与当前变量相同时跳过写回）**没有测试钉住**：同值 `setProperty` 不产生
-style mutation、也不触发 `ResizeObserver` 回调，属行为等价写法；该行由
-`frontend_contract` 的源码文本断言（防删除锚）保护。
+整数值守卫（测得值与当前变量相同时跳过写回）由 `frontend_contract` 的源码文本断言
+（防删除锚）保护：同值 `setProperty` 不产生 style mutation、也不触发
+`ResizeObserver` 回调，删掉它行为等价，因此没有行为断言可钉。
 
 ## 浏览器用例的「等首屏」预算与断言预算分开
 

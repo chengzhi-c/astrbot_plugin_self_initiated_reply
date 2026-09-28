@@ -1425,12 +1425,9 @@ test("the off-list warning requires a loaded list and a non-empty id", async () 
   );
 });
 
-test("undici and abort failures map to the connection hint", () => {
+test("undici failures map to the connection hint", () => {
   const hint = "无法连接插件 API，请重载页面或重启 AstrBot 后重试";
   assert.equal(normalizeApiError(new Error("fetch failed")).message, hint);
-  const aborted = new Error("This operation was aborted");
-  aborted.name = "AbortError";
-  assert.equal(normalizeApiError(aborted).message, hint);
 });
 
 test("backend messages containing fetch details pass through untouched", () => {

@@ -80,11 +80,10 @@ _MISSING = object()
 # ProviderRequest 实例在 generation 中实际赋值的字段：缺失即红
 #
 # func_tool 是本清单里唯一承担安全职责的字段：它是工具边界的唯一读写点
-# （_tool_list / filter_final_tools）。它留在本清单里是 load-bearing 的，
-# 加载期断言缺失即 raise，使 filter_final_tools 的「缺属性」分支在生产上不可达。
-# 删掉它会让那条分支复活成真实 fail-open，故由
-# tests/test_runtime_adapter.py::test_func_tool_stays_in_load_time_contract_assertion
-# 把这层耦合钉死。
+# （_tool_list / filter_final_tools）。加载期断言缺失即 raise，使
+# filter_final_tools 的「缺属性」分支在生产上不可达；删字段会把它复活成真实
+# fail-open。tests/test_runtime_adapter.py::test_func_tool_stays_in_load_time_contract_assertion
+# 钉住这层耦合。
 _PROVIDER_REQUEST_FIELDS = frozenset(
     {
         "prompt",

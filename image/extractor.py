@@ -342,8 +342,3 @@ class ImageExtractor:
             return any(True for _ in _eligible_image_entries(event, skip_stickers=skip_stickers))
         except Exception:
             return False
-
-    @staticmethod
-    def is_sticker(component: Any) -> bool:
-        """Expose platform sticker detection for diagnostics and tests."""
-        return _component_is_sticker(component)

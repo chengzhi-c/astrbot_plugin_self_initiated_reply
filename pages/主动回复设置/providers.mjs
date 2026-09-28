@@ -1,19 +1,20 @@
 import { providerNeedsManualInput } from "./frontend-core.mjs";
 /**
- * @param {{field?: HTMLElement|null, select: HTMLSelectElement|null,
- *          input: HTMLInputElement|null, button: HTMLButtonElement|null,
+ * @param {{field: HTMLElement, select: HTMLSelectElement,
+ *          input: HTMLInputElement, button: HTMLButtonElement,
  *          placeholder: string}} refs
- *          元素引用（多余字段被忽略）。``field`` 是包裹层，手动/列表切换由
- *          ``setManual`` 在它上面挂 ``manual`` 类；缺省时不挂类（该控件不参与
- *          列宽切换）。
+ *          元素引用（多余字段被忽略）。四项都必传：调用方是 app.js 的
+ *          PROVIDER_CONTROLS 表，元素 id 存在性由 frontend_contract 的
+ *          「脚本按字面量取的 id 都在 index.html 里声明」钉住，缺项就是页面写坏，
+ *          不再逐处判空降级。``field`` 是包裹层，手动/列表切换由 ``setManual``
+ *          在它上面挂 ``manual`` 类。
  * @param {{ getOptions: () => any[], isListAvailable: () => boolean,
- *           showToast: (msg: string) => void,
- *           onModeChange?: (manual: boolean) => void,
- *           onDirty?: () => void }} deps
+ *           showToast: (msg: string) => void, onDirty: () => void,
+ *           onModeChange?: (manual: boolean) => void }} deps
  */
 export function createProviderControl(refs, deps) {
   let manual = false;
-  const { getOptions, isListAvailable, showToast, onModeChange } = deps;
+  const { getOptions, isListAvailable, showToast, onDirty, onModeChange } = deps;
   function setManual(enabled, focusInput = false) {
     manual = Boolean(enabled);
     // 容器类由本函数统一负责：三个 Provider 控件（judge / vision / visionJudge）
@@ -23,22 +24,18 @@ export function createProviderControl(refs, deps) {
     // 注意这是「类没挂上」而不是 CSS 优先级问题：`.provider-field.manual
     // .provider-control` 含 3 个类（0,3,0），本就压过基类 `.provider-control`
     // （0,1,0），无需为 vision 另写规则。
-    if (refs.field) refs.field.classList.toggle("manual", manual);
-    if (refs.button) {
-      refs.button.textContent = manual ? "使用列表" : "手动输入";
-      refs.button.setAttribute("aria-expanded", String(manual));
-    }
-    if (refs.select) refs.select.hidden = manual;
-    if (refs.input) refs.input.hidden = !manual;
-    if (onModeChange) onModeChange(manual);
-    if (manual && focusInput && refs.input) refs.input.focus();
+    refs.field.classList.toggle("manual", manual);
+    refs.button.textContent = manual ? "使用列表" : "手动输入";
+    refs.button.setAttribute("aria-expanded", String(manual));
+    refs.select.hidden = manual;
+    refs.input.hidden = !manual;
+    onModeChange?.(manual);
+    if (manual && focusInput) refs.input.focus();
   }
   function value() {
-    if (manual) return refs.input ? refs.input.value.trim() : "";
-    return refs.select ? refs.select.value.trim() : "";
+    return (manual ? refs.input : refs.select).value.trim();
   }
   function render() {
-    if (!refs.select) return;
     const current = refs.select.value;
     refs.select.innerHTML = "";
     const fallback = document.createElement("option");
@@ -55,29 +52,27 @@ export function createProviderControl(refs, deps) {
   }
   function sync(providerId) {
     const next = String(providerId || "").trim();
-    if (!providerNeedsManualInput(next, getOptions(), isListAvailable()) && refs.select) {
+    if (!providerNeedsManualInput(next, getOptions(), isListAvailable())) {
       refs.select.value = next;
-      if (refs.input) refs.input.value = "";
+      refs.input.value = "";
       setManual(false);
       return;
     }
-    if (refs.input) refs.input.value = next;
+    refs.input.value = next;
     setManual(true);
   }
-  if (refs.button) {
-    refs.button.addEventListener("click", () => {
-      // 只是换输入方式不改配置值：标脏与否看前后取值是否真有变化，
-      // 否则用户点一下「手动输入」再点回「使用列表」就会留下一个假的未保存标记。
-      const before = value();
-      if (manual) {
-        sync(refs.input ? refs.input.value.trim() : "");
-        if (manual) showToast("当前 Provider 不在列表中，继续保留手动输入");
-      } else {
-        if (refs.input) refs.input.value = refs.select ? refs.select.value || "" : "";
-        setManual(true, true);
-      }
-      if (deps.onDirty && value() !== before) deps.onDirty();
-    });
-  }
+  refs.button.addEventListener("click", () => {
+    // 只是换输入方式（列表 ↔ 手动）不改配置值：标脏与否看前后取值是否真有变化，
+    // 否则用户点一下「手动输入」再点回「使用列表」就会留下一个假的未保存标记。
+    const before = value();
+    if (manual) {
+      sync(refs.input.value.trim());
+      if (manual) showToast("当前 Provider 不在列表中，继续保留手动输入");
+    } else {
+      refs.input.value = refs.select.value;
+      setManual(true, true);
+    }
+    if (value() !== before) onDirty();
+  });
   return { value, render, sync };
 }

@@ -34,21 +34,14 @@ from .session_gate import SessionGate
 # 逐条 yield event.plain_result(...)。宿主侧契约是
 # AsyncGenerator[MessageEventResult | str | None]，本插件只 yield 前者。
 #
-# **必须是运行时可解析的名字，不能放回 TYPE_CHECKING 块**。
-# 精确机制已在真机 4.27.2 上读源码确证（不是推断）：宿主
-# `core/star/filter/command.py::CommandFilter.init_handler_md` 注册每个指令处理器时调
-#   4.23.3: inspect.signature(handler)
-#   4.27.2: inspect.signature(handler, eval_str=True)   ← 一个参数之差
-# `eval_str=True` 会把 `from __future__ import annotations` 产出的字符串注解真的
-# eval 一遍，于是 TYPE_CHECKING-only 的名字在那一步 NameError，整个插件拒绝加载。
-# 宿主里没有 get_type_hints（故不是「等价于 get_type_hints」）。
-# 守卫：scripts/compat_check.py::_handler_signature_gaps 照抄这一步，两个宿主版本上
-# 都会红（4.23.3 上宿主自己不会失败，但那不是可依赖的事实，它已经变过一次）。
+# **必须是运行时可解析的名字，不能放回 TYPE_CHECKING 块**：宿主注册处理器时调
+# `inspect.signature(handler, eval_str=True)`（4.27.2 起；4.23.3 还没有该参数），
+# `eval_str=True` 会把 `from __future__ import annotations` 的字符串注解真的 eval 一遍，
+# TYPE_CHECKING-only 的名字在那一步 NameError，整个插件拒绝加载。
+# 守卫：scripts/compat_check.py::_handler_signature_gaps 照抄这一步，两个宿主版本都判红。
 #
-# 这里刻意不写成 AsyncGenerator[MessageEventResult, None]：那需要运行时 import 宿主
-# 符号（多一条加载期硬依赖，且测试替身未导出该名字）。参数化成 Any 不损失任何检查力
-# ，astrbot.* 在 mypy 眼里本就全是 Any，精确写法只有文档价值，
-# 该价值由本注释承载。
+# 刻意不写成 AsyncGenerator[MessageEventResult, None]：那需要运行时 import 宿主符号，
+# 多一条加载期硬依赖；宿主类型在 mypy 眼里本就全是 Any，精确写法只有文档价值。
 CommandReply = AsyncGenerator[Any, None]
 
 _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
@@ -150,8 +143,8 @@ class SelfInitiatedReplyPlugin(Star):
         self.settings = Settings.from_config(config_data)
         self.runtime_enabled = self.settings.enabled
 
-        # 只保留历史记录桥接；表情包和 livingmemory 不再由本插件直连，
-        # 改为通过 AstrBot 正常 LLM 管线自动触发，行为更接近 @Bot 回复。
+        # 桥只作历史记录读取用；表情包与 livingmemory 走 AstrBot 正常 LLM 管线，
+        # 由宿主自动触发。
         self.bridge = AstrBotBridge(context)
 
         # 首次规范化落盘的**判定**在这里，落盘本体延后到构造末尾与其余启动

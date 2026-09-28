@@ -489,8 +489,8 @@ async def test_deliver_reply_reports_stopping_when_lifecycle_stopped(tmp_path: P
     """投递入口的停机关口报停止文案，且不落任何 attempt。
 
     与 ``send_reply`` 的 ``SuppressCode.STOPPING`` 分支同一成因、必须同一文案：
-    该分支曾回报“插件未启用。”，与持久配置未启用的口径混同，把「停止中」
-    误导向改配置排障。真实停机关口先于代次闸门：停机中的在途投递不能计配额。
+    两处文案一旦混同，「停止中」就会被误导向改配置排障。真实停机关口先于代次
+    闸门：停机中的在途投递不能计配额。
     """
     _, models, runner, _ = _make_runner(tmp_path)
     runner._is_stopping = lambda: True
@@ -814,8 +814,7 @@ async def test_event_send_escaping_from_gateway_stays_unknown(tmp_path: Path) ->
     """护栏：事件路径的异常逃出 gateway 时必须仍记 UNKNOWN。
 
     与上一条同源缺陷，只是发生在事件路径（``last_event.send``）。两条路径各自
-    有独立的标志位与 ``except``，改一处不会连带另一处，本条测试专门守事件侧，
-    否则事件路径的悲观默认会成为无回归网的裸改动（实测：删掉它，全量测试仍全绿）。
+    有独立的标志位与 ``except``，改一处不会连带另一处，故事件侧单列一条。
     """
     _, models, runner, last_events = _make_runner(tmp_path)
 

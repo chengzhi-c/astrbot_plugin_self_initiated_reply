@@ -23,7 +23,7 @@ URL_SCHEMES = HTTP_SCHEMES | frozenset({"file"})
 ALLOWED_IMAGE_PORTS = frozenset({80, 443})
 
 # 单次批量识图的并发上限。图片下载与 provider 调用都是 IO 密集但对端有速率限制，
-# 2 是实测够用的保守值；六处字面量收敛到此。
+# 2 是实测够用的保守值；所有批方法共用此默认。
 VISION_MAX_CONCURRENT = 2
 
 _JPEG_PREFIX = b"\xff\xd8\xff"
@@ -71,7 +71,7 @@ class ImageInfo:
     def cache_key(self) -> str:
         """缓存键：优先冻结后的本地副本，其次原 URL，最后本地路径。
 
-        ``file_path`` 分支不再有 guard：无任何来源的 ImageInfo 到不了这里
+        ``file_path`` 分支无需 guard：无任何来源的 ImageInfo 到不了这里
         （extractor 跳过双空组件，parse 入口拒无源），故没有兜底键可言。
 
         值超长时换成 sha256 摘要：磁盘缓存不可用时 ``prepared_source`` 是完整
@@ -144,10 +144,10 @@ MIME_EXTENSIONS: dict[str, str] = {
 class ImageCache:
     """In-event-loop LRU bounded by entry count and UTF-8 bytes."""
 
-    def __init__(self, max_size: int = 50, max_bytes: int | None = None) -> None:
+    def __init__(self, *, max_size: int, max_bytes: int) -> None:
         self._cache: OrderedDict[str, str] = OrderedDict()
-        self._max_size = max(0, int(max_size))
-        self._max_bytes = None if max_bytes is None else max(0, int(max_bytes))
+        self._max_size = max_size
+        self._max_bytes = max_bytes
         self._bytes_used = 0
 
     @staticmethod
@@ -165,9 +165,8 @@ class ImageCache:
         return self._cache[key]
 
     def put(self, key: str, value: str) -> bool:
-        value = str(value)
         value_size = self._value_size(value)
-        if self._max_size == 0 or (self._max_bytes is not None and value_size > self._max_bytes):
+        if self._max_size == 0 or value_size > self._max_bytes:
             # 容量判定必须在摘除旧值之前：拒绝写入不应带「删除既有值」的
             # 副作用（一次超预算的写入会清掉本该仍在的有效描述）。
             return False
@@ -178,12 +177,11 @@ class ImageCache:
         self._cache[key] = value
         self._bytes_used += value_size
         while self._cache and (
-            len(self._cache) > self._max_size
-            or (self._max_bytes is not None and self._bytes_used > self._max_bytes)
+            len(self._cache) > self._max_size or self._bytes_used > self._max_bytes
         ):
             _, removed = self._cache.popitem(last=False)
             self._bytes_used -= self._value_size(removed)
-        return key in self._cache
+        return True
 
 
 def format_image_context(descriptions: Iterable[str | None]) -> str:

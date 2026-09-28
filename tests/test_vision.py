@@ -139,9 +139,6 @@ def test_sticker_images_can_be_skipped_by_platform_metadata() -> None:
     event = Event()
     assert image.ImageExtractor.has_images(event)
     assert image.ImageExtractor.has_images(event, skip_stickers=True)
-    assert image.ImageExtractor.is_sticker(StickerImage())
-    assert image.ImageExtractor.is_sticker(RawSticker())
-    assert image.ImageExtractor.is_sticker(raw_sticker)
 
     extracted = image.ImageExtractor.extract_images(event, skip_stickers=True)
     assert [item.url for item in extracted] == ["https://cdn.example.test/photo.png"]
@@ -416,13 +413,11 @@ def test_vision_service_snapshots_before_background_freeze(tmp_path: Path) -> No
     image_info = image.ImageInfo(url="https://cdn.example.test/cat.png")
     snapshots: list[list[object]] = []
 
-    async def snapshot(images: list[object], *, max_concurrent: int) -> list[bool]:
-        assert max_concurrent == 2
+    async def snapshot(images: list[object]) -> list[bool]:
         snapshots.append(images)
         return [True]
 
-    async def prepare(images: list[object], *, max_concurrent: int) -> list[bool]:
-        assert max_concurrent == 2
+    async def prepare(images: list[object]) -> list[bool]:
         assert snapshots == [[image_info]]
         return [True]
 
@@ -606,9 +601,9 @@ def test_forged_trusted_absolute_path_outside_data_root_is_rejected(tmp_path: Pa
     """对端伪造的 host-trusted 绝对路径不得绕过 allowlist。
 
     攻击面：宿主 aiocqhttp 适配器用通用分支 ``ComponentTypes[t](**m["data"])``
-    装配 ``Image``，其 ``file`` 是对端可控的 OneBot 原始值；``Image`` 是 pydantic
-    组件而非 Mapping，恰好满足提取层旧判据，于是 ``trusted_local_path`` 为真。
-    修复后放行只看路径是否在 ``<data>`` 或缓存根内，故此处必须被拒。
+    装配 ``Image``，其 ``file`` 是对端可控的 OneBot 原始值；``Image`` 恒为非
+    Mapping 组件，恰好满足提取层的信任推断条件，于是 ``trusted_local_path`` 为真。
+    放行只看路径是否在 ``<data>`` 或缓存根内，故此处必须被拒。
     """
     _, image, _ = _load_modules()
 
@@ -1052,7 +1047,8 @@ def test_persisted_config_keys_all_exist_in_schema() -> None:
 
 def test_image_cache_is_lru_bounded() -> None:
     _, image, _ = _load_modules()
-    cache = image.ImageCache(max_size=2)
+    # 字节预算给到远大于三条描述，本用例只测条数维度的 LRU。
+    cache = image.ImageCache(max_size=2, max_bytes=4096)
     cache.put("a", "desc-a")
     cache.put("b", "desc-b")
     assert cache.get("a") == "desc-a"
@@ -2798,25 +2794,18 @@ def test_parse_keeps_error_screenshot_description_and_caches_it() -> None:
 
 
 # ============================================================================
-# cleanup_source_cache()：清理守卫与异常降级
+# cleanup_source_cache()：清理守卫与配额回收
 # ============================================================================
 
 
 def test_cleanup_none_root_returns_zero() -> None:
     _, image, _ = _load_modules()
-    assert image.ImageParser.cleanup_source_cache(None) == 0
+    assert image.ImageParser.cleanup_source_cache(None, max_age_sec=60) == 0
 
 
 def test_cleanup_missing_root_returns_zero(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    assert image.ImageParser.cleanup_source_cache(tmp_path / "nope") == 0
-
-
-def test_cleanup_invalid_max_age_returns_zero(tmp_path: Path) -> None:
-    _, image, _ = _load_modules()
-    root = tmp_path / "cache"
-    root.mkdir()
-    assert image.ImageParser.cleanup_source_cache(root, max_age_sec="bad") == 0
+    assert image.ImageParser.cleanup_source_cache(tmp_path / "nope", max_age_sec=60) == 0
 
 
 def test_cleanup_ignores_data_url_and_outside_protected(tmp_path: Path) -> None:
@@ -2876,25 +2865,6 @@ def test_cleanup_unlink_failure_is_ignored(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(Path, "unlink", blocked_unlink)
     assert image.ImageParser.cleanup_source_cache(root, max_age_sec=60, now=5000.0) == 0
-
-
-def test_cleanup_invalid_quota_falls_back_to_age_only(tmp_path: Path) -> None:
-    _, image, _ = _load_modules()
-    root = tmp_path / "cache"
-    root.mkdir()
-    expired = root / "e.png"
-    expired.write_bytes(b"x")
-    os.utime(expired, (100.0, 100.0))
-    fresh = root / "f.png"
-    fresh.write_bytes(b"y")
-    os.utime(fresh, (5000.0, 5000.0))
-    removed = image.ImageParser.cleanup_source_cache(
-        root, max_age_sec=60, max_total_bytes="bad", now=5000.0
-    )
-    assert removed == 1
-    assert not expired.exists()
-    # 若 "bad" 被误当配额 0，配额分支会连新鲜文件一起删 → 断言红
-    assert fresh.exists()
 
 
 def test_cleanup_quota_skips_protected_when_nothing_else_left(tmp_path: Path) -> None:

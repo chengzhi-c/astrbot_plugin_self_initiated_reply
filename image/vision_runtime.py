@@ -44,22 +44,15 @@ class VisionService:
         self._is_stopping = is_stopping
         self._track_background_task = track_background_task
         self._parsers: dict[str, ImageParser] = {}
-        self._parser_timeout: float | None = None
 
     def clear_parsers(self) -> None:
         """Discard parser instances after a Vision configuration change."""
         self._parsers.clear()
-        self._parser_timeout = None
 
     def get_image_parser(self, provider_id: str = "") -> ImageParser | None:
         if not self._settings.vision_enabled:
             return None
         timeout = float(self._settings.vision_timeout_sec)
-        if self._parser_timeout != timeout:
-            # timeout 变化只会发生在改配置的瞬间：直接全量重建（描述 LRU 随
-            # 实例丢弃）比按 provider 逐个比对复杂度低，且该路径触发频率极低。
-            self._parsers.clear()
-            self._parser_timeout = timeout
         key = str(provider_id or "").strip()
         parser = self._parsers.get(key)
         if parser is None:
@@ -86,7 +79,7 @@ class VisionService:
         parser = self.get_image_parser()
         if parser is not None:
             try:
-                await parser.snapshot_local_sources(images, max_concurrent=VISION_MAX_CONCURRENT)
+                await parser.snapshot_local_sources(images)
             except Exception as exc:
                 logger.debug("[%s] local image snapshot stage failed: %s", PLUGIN_ID, exc)
         self._track_background_task(
@@ -111,7 +104,7 @@ class VisionService:
             if parser is None:
                 return
             prepared = await asyncio.wait_for(
-                parser.prepare_batch(images, max_concurrent=VISION_MAX_CONCURRENT),
+                parser.prepare_batch(images),
                 # 冻结预算取单图超时的 2 倍（5-30s 夹取）：批量可比单图慢，但不得拖住消息主链。
                 timeout=max(5.0, min(30.0, float(self._settings.vision_timeout_sec) * 2)),
             )

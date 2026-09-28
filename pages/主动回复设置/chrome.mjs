@@ -3,7 +3,7 @@ const DIM_KEY = "selfreply-dim";
 const BOLD_KEY = "selfreply-bold";
 const REDUCED_MOTION_MEDIA = "(prefers-reduced-motion: reduce)";
 // MediaQueryList 是活对象：`.matches` 会随环境变化，故惰性持有一份单例复用，
-// 不必每次调用都新建（旧实现每次 matchMedia，等于每处平滑滚动各建一份）。
+// 不必每次调用都新建一个。
 let reducedMotionQuery = null;
 function prefersReducedMotion() {
   if (!window.matchMedia) return false;

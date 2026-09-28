@@ -363,18 +363,10 @@ def test_spec_table_reproduces_python_defaults() -> None:
     assert not drift, "表驱动解析与 from_config 结果不一致：\n" + "\n".join(drift)
 
 
-# 注：曾有一条 test_spec_table_clamps_match_from_config_clamps（比较「表驱动夹取」
-# 与「from_config 夹取」）。from_config 表驱动化之后两侧走的是同一条
-# coerce_config_value，该断言退化为同义反复，实测把 int 分支的夹取整段删掉，
-# 它仍然绿，只有下方对照 _conf_schema.json 的
-# test_schema_slider_bounds_match_python_clamps 变红。故删除而非保留：
-# 夹取行为的真锚点是 schema 声明，不是另一条同源调用。
-
-
 def test_spec_table_legacy_fallback_matches_from_config() -> None:
     """旧键回退语义必须与 from_config 一致（存量配置迁移不能回归）。
 
-    同上：两侧共用 ``read_config_value``，本条不覆盖回退算法本身，只钉住
+    两侧共用 ``read_config_value``，本条不覆盖回退算法本身，只钉住
     ``legacy_keys`` 声明与 ``attr``/``container`` 的一致性。回退算法的真实
     锚点是 ``test_config_hot_reload.py::test_from_config_migrates_legacy_alias_keys``
     与 ``test_vision.py::test_legacy_vision_enabled_migrates_to_both_toggles``

@@ -600,8 +600,8 @@ async def test_prompt_custom_template_substitutes_variables(tmp_path: Path) -> N
 async def test_prompt_json_contract_ignores_message_content(tmp_path: Path) -> None:
     """是否追加 JSON 契约只看模板，不看聊天内容。
 
-    旧实现拿代入聊天内容后的文本判断 ``should_reply`` / ``reason`` 是否缺席，
-    群友只要在消息里写出这些字样，契约注入就被静默跳过，模型失去输出约束。
+    若按代入聊天内容后的文本判断 ``should_reply`` / ``reason`` 是否缺席，群友只要
+    在消息里写出这些字样，契约注入就会被静默跳过，模型失去输出约束。
     """
     _, models, maker, _, _ = _make_decision(
         tmp_path,
@@ -679,16 +679,11 @@ async def test_build_recent_messages_history_error_is_silent(tmp_path: Path) -> 
     assert calls["history"] == 1
 
 
-# ============================================================================
-
-
-# ============================================================================
 async def test_decision_prompt_keeps_newest_history_when_over_budget(tmp_path: Path) -> None:
     """上下文超预算时必须保尾。
 
-    曾经的写法是 ``sanitize_prompt_variable(recent, max_length=2000)``，截头，
-    会把最新的几条丢掉，与默认模板里「优先参考最近至少 8 条」的要求相反：模型
-    拿到的恰好是最不相关的老消息。
+    ``sanitize_prompt_variable`` 从头截断，拿它做预算会丢掉最新几条，与默认模板里
+    「优先参考最近至少 8 条」的要求相反：模型拿到的恰好是最不相关的老消息。
     """
     _, models, maker, _, _ = _make_decision(tmp_path, {"decision_model_enabled": True})
     state = _state(

@@ -4,8 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrbot_plugin_self_initiated_reply"
-# 版本号不在此处写死：改由 [tool.hatch.version] 从
-# models.PLUGIN_VERSION 读取，见该节的说明。
+# 版本号不在此处写死：由 [tool.hatch.version] 从 models.PLUGIN_VERSION 读取。
 dynamic = ["version"]
 requires-python = ">=3.12"
 dependencies = [
@@ -16,15 +15,12 @@ dependencies = [
 
 [project.optional-dependencies]
 # 开发依赖钉版：CI 的 mypy / test / compat 三个作业都跑 `pip install -e ".[dev]"`，
-# 而上界必须有，否则等于每次 CI 都装当日最新版，门禁因上游发版而变红时，
-# 改动本身是无辜的，排查成本却全落在改动者身上。
+# 无上界等于每次 CI 都装当日最新版，门禁因上游发版变红时排查成本全落在改动者身上。
 #
 # 取值口径：
-# - 全部用**主版本上界**而非精确钉版：test 作业覆盖 3.12-3.14，
-#   精确钉版会在新 Python 上撞到"该版本没有对应 wheel"。上界只挡破坏性大版本。
-# - ruff 的**精确**钉版唯一权威在 ci.yml 的 lint 作业（那里独立安装、不装 .[dev]）；
-#   本处用区间，与 CI 不构成"同值声明"，无需跨源互锁。
-# - mypy 下界 1.19：实测 1.19.0 与 2.3.0 对本仓库均为 Success，区间内共存无害。
+# - 用主版本上界而非精确钉版：test 作业覆盖 3.12-3.14，精确钉版会在新 Python 上
+#   撞到"该版本没有对应 wheel"。
+# - ruff 的精确钉版唯一权威在 ci.yml 的 lint 作业（那里独立安装、不装 .[dev]）。
 # - pytest-asyncio 上界 <2：asyncio_mode = "auto" 的语义历史上随大版本变过。
 dev = [
   "pytest>=8,<10",
@@ -35,15 +31,12 @@ dev = [
 ]
 
 [tool.hatch.version]
-# 版本号单源：wheel 文件名与 dist-info 从 models.PLUGIN_VERSION 派生，此处不再
-# 重抄，面板显示值与 pip 记录不同步的情况在结构上无法发生。
+# 版本号单源：wheel 文件名与 dist-info 从 models.PLUGIN_VERSION 派生，面板显示值与
+# pip 记录不同步的情况在结构上无法发生。仍需手工同步的 metadata.yaml 与 README 徽章
+# 由 tests/test_main_runtime.py::test_version_consistency_across_metadata 守，
+# 该用例同时核验本节的 path/pattern 真能取到值。
 #
-# 仍需手工同步的是 metadata.yaml（宿主安装后读取的静态清单）与 README 徽章，
-# 二者由 tests/test_main_runtime.py::test_version_consistency_across_metadata 守。
-# 该用例同时核验本节的 path/pattern 真能取到值，否则改坏这里会让构建失败而非静默。
-#
-# pattern 必须显式写：hatchling 默认只认 __version__ / VERSION 且带行首锚，
-# 而本仓库的常量名是 PLUGIN_VERSION（实测默认 pattern 匹配不到）。
+# pattern 必须显式写：hatchling 默认只认 __version__ / VERSION 且带行首锚。
 path = "models.py"
 pattern = "PLUGIN_VERSION = ['\"](?P<version>[^'\"]+)['\"]"
 
@@ -52,13 +45,10 @@ pattern = "PLUGIN_VERSION = ['\"](?P<version>[^'\"]+)['\"]"
 packages = ["."]
 # Web 页面、资源与元数据不在 wheel 默认的 .py 收集中，需显式纳入。
 #
-# **每条都必须带前导 `/` 锚到仓库根**：这些模式是 gitignore 语义，
-# 不带斜杠的 `LICENSE` / `README.md` / `metadata.yaml` 会在**任意深度**命中，而
-# artifacts 优先于 exclude，于是被 exclude 排掉的目录里只要存在同名文件就会被
-# 重新拉回 wheel。实测触发场景：`.scratch/` 下建了一个 venv 后，site-packages
-# 里几百个第三方 LICENSE / README.md / metadata.yaml 全部进包（wheel 213KB →
-# 547KB），打包检查报出 100+ 条泄漏。加 `/` 后这些深层路径全部不再命中，
-# 根目录的六个文件照旧命中（pathspec 实测，两组模式逐条对比）。
+# **每条都必须带前导 `/` 锚到仓库根**：这些模式是 gitignore 语义，不带斜杠的
+# `LICENSE` / `README.md` / `metadata.yaml` 会在任意深度命中，而 artifacts 优先于
+# exclude，于是被 exclude 排掉的目录里只要存在同名文件就会被重新拉回 wheel
+# （实测一个 venv 落进 .scratch/ 后，site-packages 的第三方同名文件全部进包）。
 artifacts = [
   "/metadata.yaml",
   "/_conf_schema.json",
@@ -66,23 +56,17 @@ artifacts = [
   "/logo.png",
   "/LICENSE",
   # 面向用户的两份文档必须随包：下方 exclude 的 `*.md` 会把它们一起排掉，
-  # artifacts 优先于 exclude，故这里
-  # 显式收回这两个，其余 .md（docs/ 下的维护者文档）仍被排除，
-  # 那些写的是维护者文档，对使用者无意义。
-  # 注意锚点同时修掉了另一个静默缺口：不带 `/` 时 `docs/README.md` 也会命中，
-  # 把维护者文档拉进包。
+  # artifacts 优先于 exclude，故在此显式收回；docs/ 下的维护者文档仍被排除。
   "/README.md",
   "/CHANGELOG.md",
 ]
-# 开发物不进生产 wheel（实测：整目录打包会把 tests/.scratch/scripts/docs/.github
-# 与开发配置全部打进发布包）；exclude 与 artifacts 并存时 artifacts 优先，
-# 上方显式声明的 LICENSE/metadata.yaml/logo.png 不受影响。
-# wheel 构建已不再属于发布链（发布走 git archive，见 .gitattributes 与
-# docs/DECISIONS.md），本节为将来任何本地构建保持同样干净的包形。
+# 开发物不进生产 wheel（整目录打包会把 tests/.scratch/scripts/docs/.github 与开发
+# 配置全部打进包）。exclude 与 artifacts 并存时 artifacts 优先。wheel 构建已不属于
+# 发布链（发布走 git archive，见 .gitattributes 与 docs/DECISIONS.md），
+# 本节为任何本地构建保持同样干净的包形。
 exclude = [
-  # assets/ 是 README 的图源（JPG），代码、pages/、metadata.yaml、_conf_schema.json
-  # 引用数为 0，README 全部走 raw.githubusercontent 绝对链接，运行时永不读取，
-  # 故不进分发包，仍保留在 git 仓库。
+  # assets/ 是 README 的图源（JPG），代码与 pages/、metadata.yaml 的引用数为 0，
+  # README 全部走 raw.githubusercontent 绝对链接，运行时永不读取。
   "assets/**",
   "tests/**",
   "docs/**",
@@ -97,51 +81,24 @@ exclude = [
   "uv.lock",
   "*.md",
   ".gitignore",
-  # 测试运行产物。pytest-cov 的并行数据文件名带主机名与 pid
-  # （.coverage.<host>.pid<N>.<rand>），不以固定后缀结尾，仅靠上面的
-  # 具名条目排不掉；实测它会被整目录打包收进 wheel。
+  # 覆盖率产物。pytest-cov 的并行数据文件名带主机名与 pid
+  # （.coverage.<host>.pid<N>.<rand>），不以固定后缀结尾，具名条目认不出；
+  # `coverage json` / `--cov-report=xml` 写的是不带点前缀的 coverage.json / xml。
   ".coverage",
   ".coverage.*",
-  # 不带点前缀的覆盖率产物：`coverage json` / `--cov-report=xml`
-  # 分别写 coverage.json / coverage.xml 到仓库根，上面的 .coverage* 认不出它们。
   "coverage.*",
-  "*.pyc",
   # setuptools 遗留物：本仓库用 hatchling 不生成 egg-info，
-  # 但本地环境上一次 `pip install -e .` 留下的 *.egg-info/ 会被整目录打包收进 wheel。
+  # 但本地一次 `pip install -e .` 留下的 *.egg-info/ 会被整目录打包收进 wheel。
+  "*.pyc",
   "*.egg-info/**",
-  # 任意深度的 __pycache__：`__pycache__/**` 带根锚，只排仓库根那一个目录，
-  # `**/__pycache__/**` 才能覆盖根层与嵌套层。
-  #
-  # 本条不与上方 `*.pyc` 冗余：后者只管后缀，__pycache__ 目录下的非 .pyc 文件
-  # （如 Python 未来版本的新产物）仍要靠本条排掉。
+  # 任意深度的 __pycache__：`__pycache__/**` 带根锚，只排仓库根那一个目录。
+  # 本条不与上方 `*.pyc` 冗余：后者只管后缀，该目录下的非 .pyc 文件仍要靠本条排掉。
   "**/__pycache__/**",
   ".pytest_cache/**",
   ".ruff_cache/**",
   ".mypy_cache/**",
   "dist/**",
   "data/**",
-]
-
-[tool.hatch.build.targets.sdist]
-# sdist 也必须是可复现的源码发布物；工作树中的浏览器截图、测试、缓存和构建产物
-# 不属于安装输入，尤其不能因本地未跟踪 output/ 被意外带入归档。
-exclude = [
-  "output/**",
-  "tests/**",
-  "dist/**",
-  ".coverage",
-  ".coverage.*",
-  "coverage.*",
-  "**/__pycache__/**",
-  ".pytest_cache/**",
-  ".ruff_cache/**",
-  ".mypy_cache/**",
-  "*.pyc",
-  "*.egg-info/**",
-  ".venv/**",
-  "venv/**",
-  ".tox/**",
-  ".git/**",
 ]
 
 [tool.ruff]
@@ -163,18 +120,15 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-# 覆盖率默认不开启：本地单测保持快速；跑门槛时由 CI test 作业显式加 --cov
-# （路径方式，动态加载使模块名 cov 失效，实测）。
+# 覆盖率默认不开启：本地单测保持快速；跑门槛时由 CI test 作业显式加 --cov。
 
 [tool.coverage.run]
-# 生产口径：排除测试自身与 CI 工具脚本。`--cov=.` 会把 tests/ 计入分母，
-# scripts/ 经 runpy 加载也会进入统计。
+# 生产口径：`--cov=.` 会把 tests/ 计入分母，scripts/ 经 runpy 加载也会进入统计。
 omit = ["tests/*", "scripts/*"]
 
 [tool.coverage.report]
-# 门槛 89%：生产口径（omit tests/）按“实测减 5%”留缓冲定档
-# 门槛调整一律以生产口径覆盖率工件实测为准，杜绝拍脑袋定数；口径本身为何
-# 排除 tests/ 见上方 [tool.coverage.run] 的说明。
+# 门槛 89%：生产口径（omit tests/）按"实测减 5%"留缓冲定档。
+# 调整一律以实测覆盖率工件为准，口径本身见上方 [tool.coverage.run]。
 fail_under = 89
 
 [tool.mypy]
@@ -182,11 +136,9 @@ fail_under = 89
 # astrbot/quart 缺失 stub（宿主兼容层，不设 strict 门槛）。
 explicit_package_bases = true
 ignore_missing_imports = true
-# 无注解函数的函数体默认被 mypy 跳过。打开后这些函数体也进检查，作用面是
-# 「参数与返回全无注解」的函数。当前生产代码已无此类函数，该标志为前瞻性保留：
-# 新增未注解函数时其函数体仍进检查，而不是静默跳过。别因「当前空转」删掉它。
-# 注意 ignore_missing_imports 让 astrbot.* 全部解析为 Any，
-# 故涉及宿主类型的注解只有文档价值，不产生类型检查力。
+# 打开后「参数与返回全无注解」的函数体也进检查，而不是静默跳过。当前生产代码已无
+# 此类函数，故为前瞻性保留。另：ignore_missing_imports 让 astrbot.* 全解析为 Any，
+# 涉及宿主类型的注解只有文档价值，不产生类型检查力。
 check_untyped_defs = true
 files = [
   "main.py",

@@ -42,7 +42,6 @@ from ..models import (
     MAX_IMAGE_BYTES,
     MAX_IMAGE_CACHE_BYTES,
     MAX_IMAGE_DESCRIPTION_CACHE_BYTES,
-    MIN_VISION_IMAGE_AGE_SEC,
     PLUGIN_ID,
 )
 from ..utils import redact_exc_text, redact_url, response_text
@@ -86,10 +85,8 @@ _UNABLE_PATTERNS = re.compile(
 # 阈值取两者之间并留余量：偏大压不住误杀（有效描述被丢），偏小收不进真拒答。
 # 下面这个常量是**阈值本身**（=10），不是上面那个 12。
 #
-# 为什么不再有"正文过短即拒答"的独立分支：短正文本身不是拒答证据。既有用例
-# test_parse_falls_back_to_result_chain_plain_text 的 "来自chain" 只有 7 个字符，
-# 按长度直接判拒答会连同一切简短但有效的描述一起丢掉（那是新引入的误杀，
-# 与本次修复的方向相反）。空描述由调用方的 `not description` 分支处理。
+# 不设「正文过短即拒答」的独立分支：短正文本身不是拒答证据，有效描述也可能只有
+# 七个字；空描述由调用方的 `not description` 分支处理。
 _UNABLE_RESIDUAL_MIN_LENGTH = 10
 # HTTP 状态码 >= 该值即视为下载失败（图片 URL 通常是 302 后的 CDN，4xx/5xx 一律放弃）。
 _HTTP_ERROR_STATUS_MIN = 400
@@ -438,15 +435,10 @@ class ImageParser:
                 self._source_cache_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
                 logger.warning("[%s] image cache directory unavailable: %s", PLUGIN_ID, exc)
-        # 本地读取的唯一判据：路径必须落在允许根下。
-        #
-        # 为什么不能沿用「提取层推断可信」：宿主 aiocqhttp 适配器走通用
-        # ComponentTypes[t](**m["data"]) 分支装配 Image，其 file 是对端可控的
-        # OneBot 原始值；而 Image 是 pydantic 组件、不是 Mapping，恰好满足
-        # 旧判据 `not isinstance(component, Mapping)`。preprocess_stage 只规范化
-        # Record、从不动 Image，所以被控协议端可令 file 为任意绝对路径并被判为
-        # host-trusted，绕过本 allowlist（危害被下游魔数嗅探收窄为「只能外传
-        # 真实图片文件」，但仍是任意文件读取）。
+        # 本地读取的唯一判据：路径必须落在允许根下。提取层交回的路径不可信：宿主
+        # aiocqhttp 用 `ComponentTypes[t](**m["data"])` 装配 Image，其 file 是对端可控的
+        # OneBot 原始值，而 preprocess_stage 只规范化 Record、从不动 Image，被控协议端
+        # 因此能把 file 写成任意绝对路径。
         #
         # <data> 根必须在表内：宿主合法生产者写的裸绝对路径都在它下面
         # （wecom `<data>/temp`、webchat `<data>/webchat`），只留 image_cache
@@ -656,7 +648,7 @@ class ImageParser:
         root: Path | None,
         *,
         protected_sources: set[str] | None = None,
-        max_age_sec: float = 172800.0,
+        max_age_sec: float,
         max_total_bytes: int | None = MAX_IMAGE_CACHE_BYTES,
         now: float | None = None,
     ) -> int:
@@ -666,13 +658,8 @@ class ImageParser:
         cache_root = Path(root)
         if not cache_root.is_dir():
             return 0
-        try:
-            cutoff = (time.time() if now is None else float(now)) - max(
-                float(MIN_VISION_IMAGE_AGE_SEC),
-                float(max_age_sec),
-            )
-        except (TypeError, ValueError, OverflowError):
-            return 0
+        # 保留窗口的下限夹取在 scheduler._image_age_sec，此处只按传入值执行。
+        cutoff = (time.time() if now is None else now) - max_age_sec
 
         resolved_root = cache_root.resolve()
         protected = _resolve_protected_cache_sources(resolved_root, protected_sources)
@@ -680,11 +667,7 @@ class ImageParser:
         files, directories = _scan_source_cache(cache_root, resolved_root)
         removed, survivors = _remove_expired_cache_files(files, protected, cutoff)
 
-        try:
-            quota = None if max_total_bytes is None else max(0, int(max_total_bytes))
-        except (TypeError, ValueError, OverflowError):
-            quota = None
-        removed += _remove_over_quota_cache_files(survivors, protected, quota)
+        removed += _remove_over_quota_cache_files(survivors, protected, max_total_bytes)
         _remove_empty_cache_directories(directories, resolved_root)
         return removed
 
@@ -715,8 +698,8 @@ class ImageParser:
         判定，不留任何例外分支（契约 §7.1）：``prepared_source`` 只由
         ``_materialize_data_url`` 写入、产物必在 image_cache 内，同一判据今天
         不会拒掉合法副本，但它把「路径落在允许根内」保持为唯一判据。
-        不采信提取层的可信推断，因为宿主 aiocqhttp 的 ``Image.file`` 是对端可控
-        的 OneBot 原始值，且 ``Image`` 是 pydantic 组件而非 Mapping，恰好满足旧判据。
+        不采信提取层的可信推断：宿主 aiocqhttp 的 ``Image.file`` 是对端可控的
+        OneBot 原始值，而 ``Image`` 总是非 Mapping 组件，提取层的信任推断因此可伪造。
 
         失败时：任一路仅在成功时提前返回，失败即继续下一路；全部失败返回
         ``None``（调用方据此跳过该图）。下载失败会记一条 URL 已脱敏的 INFO，
@@ -760,9 +743,8 @@ class ImageParser:
                 # 一个「填个坏掉的 file_path 即可屏蔽 url 分支」的能力。
                 logger.info("[%s] image URL download failed: %s", PLUGIN_ID, redact_url(file_value))
             path = Path(file_value)
-            # 本地路径一律走 allowlist：image_info.trusted_local_path
-            # 由提取层从「组件不是 Mapping」推断，而对端可控的 OneBot file 值
-            # 恰好装配成非 Mapping 的 pydantic Image，该推断可被伪造。
+            # 本地路径一律走 allowlist：trusted_local_path 是提取层的推断值，
+            # 可被对端伪造（判据见本方法 docstring）。
             # 相对路径经录制桥解析后同样受同一判据约束：resolver 的入参
             # 就是这里的 file_value，对端可控，`../../..` 不受 is_absolute 检查
             # 拦截，朴素拼接的 resolver 会交出媒体目录之外的路径。
