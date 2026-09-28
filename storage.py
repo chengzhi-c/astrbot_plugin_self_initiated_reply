@@ -45,9 +45,7 @@ def _config_to_dict(config_obj: Any) -> dict[str, Any]:
         try:
             return {str(key): value for key, value in config_obj.items()}
         except Exception:
-            # 宿主配置对象的形状不受本插件约束：items() 可能不是 Mapping 协议
-            # （惰性代理、属性代理等）。此处静默是为了继续走下方 dict() 兜底，
-            # 两条路都失败才返回空字典，不能在第一条失败时就中断。
+            # 宿主配置对象的形状不受本插件约束，静默继续走下方 dict() 兜底。
             pass
     try:
         return dict(config_obj)
@@ -117,10 +115,8 @@ def sessions_payload_matches(path: Path, payload: dict[str, Any]) -> bool:
 
 
 # Windows 上实时扫描/索引器会短暂持有刚写出的目标文件，``os.replace`` 随之抛
-# ``PermissionError``（[WinError 5] 拒绝访问 / 32 共享冲突）。实测：连跑
-# tests/test_main_runtime.py 20 次复现 1 次，用户侧的等价后果是一次 ``/off``
-# 直接报"配置文件写入失败"。重试几次即可穿过那个窗口。
-# 只重试 PermissionError：磁盘写满等确定性错误重试无意义，早失败早暴露。
+# ``PermissionError``。重试几次即可穿过那个窗口；只重试 PermissionError，
+# 磁盘写满等确定性错误重试无意义。
 _REPLACE_RETRY_ATTEMPTS = 5
 _REPLACE_RETRY_DELAY_SEC = 0.02
 
@@ -145,10 +141,9 @@ def write_json_atomic(
 ) -> bool:
     """原子写 JSON；``abandoned`` 在替换前复查，为真则放弃发布。
 
-    ``abandoned`` 服务插件 reload 的跨实例竞态：旧实例的最终落盘可能因磁盘慢
-    超过硬窗口而被隔离（宿主不等隔离任务就构造新实例），其慢写落地时会用陈旧
-    快照覆盖新实例刚写出的 ``state.json``（配额少计、白名单变更回退）。闸门在
-    ``os.replace`` **之前**复查，此时新实例可能已经启动，放弃的是自己的临时文件。
+    ``abandoned`` 服务插件 reload 的跨实例竞态：旧实例的最终落盘超时被隔离后，
+    其慢写落地会用陈旧快照覆盖新实例刚写出的 ``state.json``；闸门在
+    ``os.replace`` 之前复查，放弃的是自己的临时文件。
     """
     tmp_path: Path | None = None
     try:
@@ -285,22 +280,18 @@ def _load_session_record(raw: dict[Any, Any], recent_limit: int, load_now: float
 def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[str, SessionState]:
     """从 state.json 载入会话状态，只保留仍在白名单内的会话。
 
-    白名单内但文件中缺失的会话补空状态，保证调用方无需处理 KeyError。
-    ``recent`` 用 ``maxlen=recent_limit`` 的 deque 承载，配置调小后自动裁剪。
+    白名单内但文件中缺失的会话补空状态。``recent`` 用 ``maxlen=recent_limit``
+    的 deque 承载，配置调小后自动裁剪。
 
-    失败时分三层，全部不阻断插件加载（宁可丢历史，不可起不来）：
-    1. 文件损坏 / 编码错误 / 版本号不符，先备份原文件再继续（``_backup_state_file``），
-       不静默覆盖用户数据；版本不符仍尽力按当前结构解析，避免丢弃仍兼容的部分。
-    2. 单个会话条目畸形，记 warning 后跳过该条，其余会话正常载入。
-    3. 字段级异常值（NaN/负数/远未来/未知 role） 由 ``as_timestamp`` /
-       ``as_int`` 归一，不让脏值进入运行期计算。时间戳钳到
-       ``[0, now + MAX_CLOCK_SKEW_SEC]``：状态文件可被手工编辑，远未来值会让
-       ``remaining_silence_sec`` 变成数十年、该会话永久锁死（
-       危害与实测见 ``models.MAX_CLOCK_SKEW_SEC`` 的注释）。
-       ``daily_count`` 经 ``as_int`` 后带上界，不再接受任意大整数。
+    失败时全部不阻断插件加载（宁可丢历史，不可起不来）：
+    1. 文件损坏/编码错误/版本号不符，先备份原文件再继续，版本不符仍尽力解析。
+    2. 单个会话条目畸形，记 warning 后跳过该条。
+    3. 字段级异常值由 ``as_timestamp`` / ``as_int`` 归一：时间戳钳到
+       ``[0, now + MAX_CLOCK_SKEW_SEC]``，远未来值会让会话永久锁死
+       （见 ``models.MAX_CLOCK_SKEW_SEC`` 的注释）。
 
-    本次载入的所有时间戳共用同一个 ``load_now`` 上界，避免同一份文件内的条目
-    因逐条取时钟而钳到互不一致的天花板。
+    所有时间戳共用同一个 ``load_now`` 上界，避免同一份文件内的条目钳到
+    互不一致的天花板。
     """
     load_now = now_ts()
     sessions: dict[str, SessionState] = {}
@@ -332,18 +323,11 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
 def _migrate_legacy_group_keys(sessions: dict[str, SessionState], whitelist: set[str]) -> None:
     """把历史裸群号键的状态并入唯一匹配的完整 UMO。
 
-    裸群号键是最早的状态键形态。迁移必须在此一次性完成：热路径迁移在多平台
-    同群号时由**首个访问者**继承整份历史，其余平台永远拿不到；而且那是在只读
-    函数里做写操作，与 ``read_session_state`` 自陈的「不创建、不迁移」相矛盾。
-
-    能在本函数看到的裸群号键，必然同时还在白名单里（``session_whitelisted``
-    按群号通配放行）白名单若已改写成完整 UMO，裸键在载入过滤时就已被丢弃，
-    本函数无从施救。所以候选来源取「载入的会话键 ∪ 白名单里的完整 UMO」：
-    后者接住"裸键在盘、目标键尚无记录"这一形态（此时目标键只存在于白名单）。
-
-    判据：候选必须**恰好一个**才迁移。多平台同群号时保持原样，绝不猜平台。
-    目标键已有记录时只淘汰裸键、不覆盖，否则 legacy 的每日配额记账会顶掉
-    新键当日的计数。
+    迁移必须一次性在此完成：热路径迁移在多平台同群号时由首个访问者继承整份
+    历史，其余平台永远拿不到。候选来源取「载入的会话键 ∪ 白名单里的完整 UMO」
+    （后者接住"裸键在盘、目标键尚无记录"的形态）。判据：候选必须**恰好一个**
+    才迁移，多平台同群号绝不猜平台；目标键已有记录时只淘汰裸键、不覆盖，
+    否则 legacy 的当日配额会顶掉新键的计数。
     """
     candidates: set[str] = set()
     for key in (*sessions, *whitelist):

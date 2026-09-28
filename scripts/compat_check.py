@@ -121,43 +121,25 @@ DANGEROUS_TOOL_MODULES = [
 ]
 
 
-# 本检查实际能扫到的处理器数量：on_message + 9 个子指令 = 10（实测，不是推算）。
-#
-# 为什么不是 11：指令组本身（selfreply）在类属性上已被装饰器换成
-# RegisteringCommandable（宿主 star_handler.py:251，只有 group/command/
-# custom_filter/parent_group 四个属性），原函数从类属性取不到，故扫不到它。
-#
-# 这不构成盲区，两条实测理由：
-# 1. 宿主只对 CommandFilter 做注解解析（command.py:66 init_handler_md）。
-#    CommandGroupFilter 与 EventMessageTypeFilter 都没有这个方法，也没有
-# eval_str 命中，即宿主本身就不解析指令组与 on_message 的注解。本检查扫
-#    10 个是宿主那 9 个的**超集**，严于宿主而非松于宿主。
-# 2. 10 个子指令与指令组共用同一个 CommandReply 别名，别名一旦不可解析，
-#    9 个子指令会同时报错。
-#
-# 加指令时同步改这里，tests/test_runtime_adapter.py 经 import 引用本常量（单源）。
+# 本检查实际能扫到的处理器数量：on_message + 9 个子指令 = 10。
+# 指令组本身（selfreply）已被装饰器换成 RegisteringCommandable，原函数从类
+# 属性取不到，故扫不到它；这不构成盲区：宿主只对 CommandFilter 做注解解析，
+# 指令组与 on_message 的注解宿主本身就不解析。加指令时同步改这里，
+# tests/test_runtime_adapter.py 经 import 引用本常量（单源）。
 EXPECTED_HANDLER_COUNT = 10
 
 
 def _handler_signature_gaps() -> list[str]:
     """走一遍宿主注册处理器时真正做的那一步注解解析。
 
-    符号存在性检查**走不到加载路径**，因此拦不住这类安装期失败：
-    插件在 4.27.2 上装不上（``name 'CommandReply' is not defined``），而当时
-    ``host compat OK``。根因是宿主
-    ``core/star/filter/command.py::CommandFilter.init_handler_md`` 在 4.23.3 是
-    ``inspect.signature(handler)``，4.27.2 起变成 ``inspect.signature(handler,
-    eval_str=True)``，一个参数之差，让 ``from __future__ import annotations``
-    产出的字符串注解在加载期真的被 eval，于是 TYPE_CHECKING-only 的名字 NameError。
+    符号存在性检查走不到加载路径，拦不住安装期失败：宿主
+    ``CommandFilter.init_handler_md`` 自 4.27.2 起
+    ``inspect.signature(handler, eval_str=True)``，字符串注解在加载期真的被
+    eval，TYPE_CHECKING-only 的名字会 NameError。这里照抄那一步；不 import
+    宿主的 CommandFilter，用 inspect 才不受宿主内部重构影响。
 
-    这里照抄那一步（``eval_str=True``），因此任何「注解里出现运行时不存在的名字」
-    都会在此暴露，而不必等到装机。不去 import 宿主的 CommandFilter 来跑：本函数
-    要在锁定版与最新版两种宿主上都成立，直接用 inspect 才不受宿主内部重构影响。
-
-    **不允许静默空转**：处理器是按名字前缀筛的，改名或重构后前缀不再命中时，
-    循环会一个都扫不到而本函数照旧返回空列表，那是假绿，正是本函数要消灭的
-    失败模式的翻版。故先断言扫到的数量等于 ``EXPECTED_HANDLER_COUNT``
-    （见该常量上方对「为什么是 10 而不是 11」的实测说明）。
+    **不允许静默空转**：处理器按名字前缀筛，改名后一个都扫不到而本函数照旧
+    返回空列表是假绿，故先断言扫到的数量等于 ``EXPECTED_HANDLER_COUNT``。
     """
     import inspect
 

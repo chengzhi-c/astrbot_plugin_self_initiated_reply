@@ -1,18 +1,15 @@
 """主动回复投递状态机。
 
-负责一次回复投递的完整状态机：发送前门卫、装饰钩子调用与代次复核
-（前/后/发送中）、事件发送与 context 兜底发送、发送结果分类、
-UNKNOWN 语义（不自动重试、不触发 after-send 钩子、仍消耗冷却与日配额
-并推进观察窗口）、主动状态记录（冷却、日配额、观察窗口、历史条目）。
+拥有：发送前门卫、装饰钩子调用与代次复核（前/后/发送中）、事件发送与
+context 兜底发送、发送结果分类、UNKNOWN 语义（不自动重试、不触发 after-send
+钩子、仍消耗冷却与日配额并推进观察窗口）、主动状态记录。
 
-对外暴露三个入口：
-- ``deliver_reply``：投递一次回复（发送前门卫 + 状态机 + 结果分类）
-- ``send_reply``：发送一条文本回复（钩子装饰与代次复核 + 事件/context 发送）
-- ``apply_proactive_state`` / ``persist_proactive_state``：pipeline 记账入口
+对外入口：``deliver_reply``（门卫 + 状态机 + 结果分类）、``send_reply``
+（钩子装饰与代次复核 + 发送）、``apply_proactive_state`` /
+``persist_proactive_state``（pipeline 记账）。
 
-宿主交互经注入回调执行：钩子调用与 context 发送运行时查找
-（测试替换 ``main.call_event_hook`` / ``plugin.context.send_message``
-后仍指向最新实现）。
+宿主交互经注入回调执行：钩子调用与 context 发送运行时查找（测试替换
+``main.call_event_hook`` / ``plugin.context.send_message`` 后仍指向最新实现）。
 """
 
 from __future__ import annotations
@@ -43,13 +40,12 @@ from .models import (
 from .outbound import OutboundGateway
 from .utils import event_message_id, event_self_id, event_sender_id, safe_exc_text
 
-# 注入回调的类型别名。这四个全按位置调用，故用 Callable；models.py 的三个
-# Protocol 有关键字形参（limit / enabled+provider_id / force），Callable 表达不了。
-#
+# 注入回调的类型别名：这四个全按位置调用故用 Callable；models.py 的三个
+# Protocol 有关键字形参，Callable 表达不了。
 # - SaveStorageCallback：生产注入 ``_save_storage``（锁串行 + 快照 + to_thread
-#   原子写），返回即已落盘。落盘失败只影响持久化，不影响已发生的投递，故调用点兜异常。
-# - RuntimeCallback：宿主私有符号适配层获取器。用 getter 而非传值，
-#   使测试替换 ``_AGENT_RUNTIME`` 后仍指向最新实现。
+#   原子写），返回即已落盘；落盘失败不影响已发生的投递。
+# - RuntimeCallback：宿主私有符号适配层获取器；用 getter 使测试替换
+#   ``_AGENT_RUNTIME`` 后仍指向最新实现。
 SaveStorageCallback = Callable[[], Awaitable[None]]
 CallHookCallback = Callable[[Any, Any], Awaitable[None]]
 ContextSendCallback = Callable[[str, Any], Awaitable[Any]]
@@ -106,8 +102,8 @@ class DeliveryRunner:
     def _should_quote(self, model_decision: bool | None) -> bool:
         """本次是否引用。``model_decision`` 为 None 表示判断模型没给过决定。
 
-        模式语义：``off`` 从不引用；``model`` 由判断模型决定，模型未表态时（明确
-        请求直通、手动检查、判断模型关闭）按 ``quote_probability`` 兜底；``random``
+        ``off`` 从不引用；``model`` 由判断模型决定，模型未表态时（明确请求
+        直通、手动检查、判断模型关闭）按 ``quote_probability`` 兜底；``random``
         全部按概率。100 必引用、0 必不引用（随机值域为 [0, 1)）。
         """
         mode = self.settings.quote_mode
@@ -118,11 +114,8 @@ class DeliveryRunner:
         return self._probability_hit(self.settings.quote_probability)
 
     def _quote_target_id(self, umo: str) -> str:
-        """引用目标 = 该会话最后一条被插件接住的消息。
-
-        与判断提示词里的 ``{latest_message}`` 同源（两者都来自本次检查依据的那条
-        消息）；事件已被回收时返回空串，降级为不引用。
-        """
+        """引用目标 = 该会话最后一条被插件接住的消息（与判断提示词的
+        ``{latest_message}`` 同源）；事件已被回收时返回空串，降级为不引用。"""
         last_event = self._last_events.get(umo)
         if last_event is None:
             return ""
@@ -139,11 +132,8 @@ class DeliveryRunner:
 
     @staticmethod
     def _attach_quote(chain_owner: Any, message_id: str) -> bool:
-        """把 ``Reply`` 组件插到消息链首，引用 ``message_id``。
-
-        失败一律静默降级为普通发送（返回 False）：引用是装饰性组件，宿主链不可写
-        或平台不支持都不该让整次回复失败。平台差异见 ``_conf_schema`` 的 hint。
-        """
+        """把 ``Reply`` 组件插到消息链首。失败静默降级为普通发送：引用是
+        装饰性组件，宿主链不可写或平台不支持都不该让整次回复失败。"""
         try:
             chain_owner.chain.insert(0, Reply(id=message_id))
             return True
@@ -156,17 +146,12 @@ class DeliveryRunner:
     # ------------------------------------------------------------------
 
     def _should_mention(self) -> bool:
-        """本次是否 @ 对方。
+        """本次是否 @ 对方。``off`` 从不 @（默认）；``always`` 每次；``random``
+        按 ``mention_probability``。100 必 @、0 必不 @（随机值域为 [0, 1)）。
 
-        模式语义：``off`` 从不 @（默认，向后兼容）；``always`` 每次都 @；
-        ``random`` 按 ``mention_probability``。100 必 @、0 必不 @
-        （随机值域为 [0, 1)）。
-
-        与 ``_should_quote`` 的关键差异：**没有 model 模式**。是否 @ 不该由判断模型
-        决定，那是投递形态，不是"该不该接话"的判断内容；把塞进裁决 JSON 会让模型
-        多背一个与判断无关的输出字段（quote 的 model 模式是历史兼容，不扩展到这里）。
-        ``off``/``always`` 下不调用 ``_random_value()``：不消耗随机序列，
-        同批测试的随机数轨迹才可复现。
+        与 ``_should_quote`` 的关键差异：**没有 model 模式**。是否 @ 是投递
+        形态，不是"该不该接话"的判断内容。``off``/``always`` 下不调用
+        ``_random_value()``：不消耗随机序列，同批测试的随机数轨迹才可复现。
         """
         mode = self.settings.mention_mode
         if mode == "off":
@@ -176,18 +161,15 @@ class DeliveryRunner:
         return self._probability_hit(self.settings.mention_probability)
 
     def _mention_target_id(self, umo: str) -> str:
-        """@ 目标 = 本次主动回复所依据的那条消息的发送者。
+        """@ 目标 = 本次主动回复所依据的那条消息的发送者（与引用目标同源）。
 
-        与引用目标同源（都取 ``_last_events[umo]``），语义是"回应刚才说话的人"。
         **绝不**从会话历史里挑人、@ 多个或 @ Bot 自己：取不到就降级，不猜。
-        事件已被回收时返回空串，降级为不 @。
         """
         last_event = self._last_events.get(umo)
         if last_event is None:
             return ""
         sender_id = event_sender_id(last_event)
         if sender_id and sender_id == event_self_id(last_event):
-            # 自己的消息不 @（Bot 会被自己 @ 上，属明显误用）。
             return ""
         return sender_id
 
@@ -202,11 +184,7 @@ class DeliveryRunner:
 
     @staticmethod
     def _attach_mention(chain_owner: Any, sender_id: str) -> bool:
-        """把 ``At`` 组件插到消息链首，@ ``sender_id``。
-
-        失败一律静默降级为普通发送（返回 False）：@ 是装饰性组件，宿主链不可写或
-        平台不支持（部分频道/私聊形态）都不该让整次回复失败。降级纪律与引用一致。
-        """
+        """把 ``At`` 组件插到消息链首。失败静默降级为普通发送（与引用一致）。"""
         try:
             chain_owner.chain.insert(0, At(qq=sender_id))
             return True
@@ -264,30 +242,20 @@ class DeliveryRunner:
             )
             if not sent.delivered:
                 if sent.status is SendStatus.UNKNOWN:
-                    # 可能已经提交：不自动重试；消耗冷却与日配额并推进观察窗口
-                    # （视为已尝试），防止巡检或新消息立刻对同一事件重复处理。
-                    # 注意：即使工具已直发也必须记录，否则观察窗口不推进，
-                    # 同一事件会被再次处理并可能再次直发。
+                    # 可能已提交：不自动重试；仍消耗冷却与日配额并推进观察
+                    # 窗口，防止巡检或新消息立刻对同一事件重复处理。
                     return "主动发送状态未知，未自动重试。"
                 if not self._gate.is_current(umo, expected_generation):
                     return STALE_REPLY_MESSAGE
                 if sent.status is SendStatus.SUPPRESSED:
-                    # SUPPRESSED 有两类成因：代次已变与插件停止。停止成因回显
-                    # 停止文案，统一报「会话已更新」会把关停期间的抑制误导向
-                    # 排查会话代次。两类成因都不计失败、不重试。
-                    # 判据取 code 而非 detail 文案：detail 是给人看的日志文本，
-                    # 改措辞不该改变控制流。
+                    # 判据取 code 而非 detail 文案：改措辞不该改变控制流。
                     if sent.code is SuppressCode.STOPPING:
                         return STOPPING_REPLY_TEXT
                     return STALE_REPLY_MESSAGE
                 return "主动发送失败。"
-        # reply 为空（仅剩工具直发）时无需再发文本。真正的把关在 OutboundGateway：
-        # 确定未提交会退还 direct_send_count，于是 session_pipeline 的
-        # `not reply and not direct_send_count` 会先行短路，空 reply 到不了发送失败
-        # 分支。能到这里说明：reply 为空但至少有一条工具直发已提交（DELIVERED 或
-        # 状态未知），或本次文本发送已成功投递。
-        # 预览段单点拼参：开关开启且有正文才带 " text=..."，单次调用两个出口
-        # 共用同一格式串，不再各自维护一份只差 preview 参数的镜像。
+        # reply 为空（仅剩工具直发）时无需再发文本；真正的把关在 OutboundGateway：
+        # 确定未提交会退还 direct_send_count，session_pipeline 的
+        # `not reply and not direct_send_count` 会先行短路。
         preview = ""
         if self.settings.log_reply_content and reply:
             truncated = (
@@ -322,12 +290,9 @@ class DeliveryRunner:
         本方法只做「复核点 1/4 + 选路」，两条投递路径各自成方法：
         事件仍在手边走 ``_send_via_event``（复核点 2/4、3/4，可触发装饰与发送后钩子），
         否则走 ``_send_via_context``（复核点 4/4，经宿主 context 兜底发送）。
-        拆分不改语义：四个复核点的相对位置、UNKNOWN 归类方向、``_clear_result``
-        的唯一收敛点均保持原样。
         """
-        # 复核点 1/4（真实窗口）：expected_generation 是生成前 advance 拿到的 token，
-        # 到此已隔整轮 LLM 生成（多个 await），代次极可能已被新消息推进。此处尚未
-        # set_result，无需 _clear_result。
+        # 复核点 1/4（真实窗口）：expected_generation 是生成前 advance 拿到的
+        # token，到此已隔整轮 LLM 生成，代次极可能已被新消息推进。
         ledger = ledger or AttemptLedger()
         if self._is_stopping():
             logger.info(
@@ -352,11 +317,8 @@ class DeliveryRunner:
 
         last_event = self._last_events.get(umo)
         quote_id = self._resolve_quote_id(umo, quote)
-        # @ 与引用同源取目标，且同样无条件解析：``_resolve_mention_id`` 在
-        # ``last_event`` 为 None 时返回空串并记一条 "mention skipped" DEBUG
-        # （契约 §14：context 兜底路径不 @，没有 sender_id 可用）。短路掉它会
-        # 让「mention_mode=always 但事件已被回收」静默失效且无迹可查，与 quote
-        # 侧已有的 DEBUG 不对称。行为完全不变，只是补上可定位性。
+        # @ 与引用同源取目标且无条件解析：短路掉会让「mention_mode=always 但
+        # 事件已被回收」静默失效且无迹可查（契约 §14：context 兜底路径不 @）。
         mention_id = self._resolve_mention_id(umo)
         if last_event:
             return await self._send_via_event(
@@ -389,7 +351,7 @@ class DeliveryRunner:
         """事件路径投递：装饰钩子 → 代次复核 → 事件 send → 发送后钩子。
 
         仅由 ``send_reply`` 在 ``last_event`` 为真时调用，进入时复核点 1/4 已通过。
-        本方法是唯一会 ``set_result`` 的路径，故所有出口都必须经 ``_clear_result``
+        本方法是唯一会 ``set_result`` 的路径，所有出口都必须经 ``_clear_result``
         回收（防结果泄漏到宿主后续流程）。
         """
         ledger_id = ledger.ledger_id
@@ -402,8 +364,7 @@ class DeliveryRunner:
                 .set_result_content_type(self._runtime().result_llm_type)
             )
             await self._call_hook(last_event, self._runtime().event_type.OnDecoratingResultEvent)
-            # 复核点 2/4（真实窗口）：装饰钩子是 await，期间其他任务可运行、新消息
-            # 可推进代次。四处中只有此处与复核点 1 存在真实竞态窗口。
+            # 复核点 2/4（真实窗口）：装饰钩子是 await，期间新消息可推进代次。
             if not self._gate.is_current(umo, expected_generation):
                 self._clear_result(last_event)
                 logger.info(
@@ -437,12 +398,8 @@ class DeliveryRunner:
                 return SendOutcome(
                     SendStatus.FAILED_BEFORE_SUBMIT, "decorating hook produced no result"
                 )
-            # 复核点 3/4（结构防线）：与复核点 2 之间零 await（get_result 同步），
-            # 当前代码下代次不可能在此变化，覆盖靠 test_delivery_runner 的
-            # _FlipGate(true_times=2) 按调用次数翻转。保留理由是结构性：
-            # test_storage_and_umo 锁「钩子后、send 前必须有复核」（``send_reply``
-            # 拆分后该断言指向本方法），此处紧贴 outbound.send；上方一旦插入任何 await，
-            # 这道防线立即变实。
+            # 复核点 3/4（结构防线）：与复核点 2 之间零 await，当前代码下代次
+            # 不可能在此变化；上方一旦插入任何 await，这道防线立即变实。
             if not self._gate.is_current(umo, expected_generation):
                 self._clear_result(last_event)
                 logger.info(
@@ -457,15 +414,12 @@ class DeliveryRunner:
                     SuppressCode.GENERATION_CHANGED,
                 )
             if quote_id:
-                # 引用组件在装饰钩子之后插入：钩子（如文转图片）改的是链内容，
-                # 引用是本次发送的外层标注，插在链首即宿主约定的引用形态。
+                # 引用组件在装饰钩子之后插入：钩子改的是链内容，引用是外层标注。
                 self._attach_quote(result, quote_id)
             if mention_id:
-                # @ 组件同样插在装饰钩子之后。**必须插在 quote 之后**：
-                # ``insert(0)`` 让后插者位于更前，故先 Reply 后 At 才能得到
-                # [At, Reply, ...正文]，与 QuestQQ/OneBot 的 CQ 码约定一致
-                # （先点名后引用）。两步都是同步的，不新增 await 点，
-                # 「复核点 3 与 send 零 await」的结构性防线性质不变。
+                # @ 组件同样插在装饰钩子之后，且必须插在 quote 之后：
+                # ``insert(0)`` 让后插者位于更前，先 Reply 后 At 才能得到
+                # [At, Reply, ...正文]。两步同步，不新增 await 点。
                 self._attach_mention(result, mention_id)
             logger.debug(
                 "[%s] event send begin ledger_id=%s session=%s chars=%d chain_items=%d",
@@ -476,12 +430,11 @@ class DeliveryRunner:
                 len(getattr(result, "chain", []) or []),
             )
             outbound = OutboundGateway(last_event.send, ledger=ledger)
-            # 悲观默认：send 调用一旦开始，消息就可能已提交。gateway 内部虽把
+            # 悲观默认：send 调用一旦开始，消息就可能已提交。gateway 内部把
             # adapter 异常转成 UNKNOWN，但其 except 块自身仍可能抛（异常对象的
-            # ``__str__`` 坏掉时 ``str(exc)`` 二次抛），此时异常逃出 gateway 而
-            # adapter 早已调用过，下方 except 必须仍归 UNKNOWN，归
-            # FAILED_BEFORE_SUBMIT 会不消耗冷却而重发。send 正常返回后再用
-            # submitted 精确化（gateway 明确说未提交时才降为提交前失败）。
+            # ``__str__`` 坏掉时二次抛），此时异常逃出 gateway 而 adapter 早已
+            # 调用，必须仍归 UNKNOWN：记 FAILED_BEFORE_SUBMIT 会不消耗冷却而
+            # 重发。send 正常返回后再用 submitted 精确化。
             send_started = True
             send_result = await outbound.send(result)
             send_started = send_result.submitted
@@ -541,15 +494,12 @@ class DeliveryRunner:
     ) -> SendOutcome:
         """context 兜底投递：事件已不在手边时经宿主 ``Context.send_message`` 发送。
 
-        仅由 ``send_reply`` 在 ``last_event`` 为假时调用。本路径不 ``set_result``、
-        不触发装饰与发送后钩子，故无 ``_clear_result`` 义务；也不支持引用，引用需要
-        被引消息的 ID，而它只存在于事件上（``_last_events`` 为空正是走本路径的条件）。
+        不 ``set_result``、不触发装饰与发送后钩子，故无 ``_clear_result`` 义务；
+        也不支持引用（需要被引消息的 ID，而它只存在于事件上）。
         """
         ledger_id = ledger.ledger_id
-        # 复核点 4/4（结构防线）：与复核点 1 之间没有真实挂起点，
-        # ``await self._send_via_context(...)`` 只是进入协程，不向事件循环让出，
-        # 故 ``send_reply`` 的拆分没有新开竞态窗口。性质同复核点 3：
-        # 为日后此路径插入异步查询预留拦截位。此路径未 set_result，无需 _clear_result。
+        # 复核点 4/4（结构防线）：进入本协程不让出事件循环，无新竞态窗口；
+        # 为日后插入异步查询预留拦截位。
         if not self._gate.is_current(umo, expected_generation):
             logger.info(
                 "[%s] suppress stale reply before context send ledger_id=%s session=%s",
@@ -562,16 +512,11 @@ class DeliveryRunner:
                 "generation changed before context send",
                 SuppressCode.GENERATION_CHANGED,
             )
-        # send_started 取自 ``OutboundResult.submitted``（DELIVERED/UNKNOWN 为真），
-        # 与事件路径上方那处同源：是否已提交由 gateway 的分类结果决定，不靠此处
-        # 枚举失败场景。下方 ``except`` 必须条件式归类，两个方向的代价不对称，
-        # 提交前误记 UNKNOWN 会经 apply_proactive_state(confirmed=False) 白吃冷却
-        # 与日配额；已提交记 FAILED_BEFORE_SUBMIT 会不消耗冷却而重发，制造重复
-        # 消息。三条测试各钉一侧：提交前失败、提交后失败、异常逃出 gateway。
-        # OutboundGateway 会把 adapter 调用期间的 CancelledError 归类为 UNKNOWN，
-        # 让 deliver_reply 继续按不重试语义记录状态；gateway 之外的取消点无需
-        # 单独子句，CancelledError 属 BaseException，下方 except Exception 抓不到，
-        # 它自然上抛。
+        # send_started 取自 ``OutboundResult.submitted``，与事件路径同源：是否
+        # 已提交由 gateway 的分类结果决定。提交前误记 UNKNOWN 会白吃冷却与
+        # 日配额；已提交记 FAILED_BEFORE_SUBMIT 会不消耗冷却而重发，制造重复
+        # 消息。CancelledError 属 BaseException，下方 except Exception 抓不到，
+        # 自然上抛；gateway 内部已把 adapter 调用期间的取消归类为 UNKNOWN。
         send_started = False
         try:
             outbound = OutboundGateway(
@@ -631,9 +576,8 @@ class DeliveryRunner:
         at = now_ts()
         text = reply.strip() or f"[工具主动发送 x{direct_send_count}]"
         state.record_proactive_attempt(confirmed=confirmed, text=text, at=at)
-        # 推进观察窗口当且仅当本次仍属当前代，与 confirmed 无关：UNKNOWN 也可能
-        # 已送达，推进才能让后续巡检不为同一事件再生成一条回复。is_current 是纯读
-        # （session_gate.SessionGate），取一次存局部量不改变任何时序。
+        # 推进观察窗口当且仅当本次仍属当前代，与 confirmed 无关：UNKNOWN 也
+        # 可能已送达，推进才能让后续巡检不为同一事件再生成一条回复。
         current = self._gate.is_current(umo, expected_generation)
         if current:
             state.last_proactive_observed_at = (

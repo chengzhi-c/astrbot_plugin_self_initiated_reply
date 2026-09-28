@@ -84,9 +84,8 @@ class SessionScheduler:
         self._check_session = check_session
         self._clear_event = clear_event
         self._drop_older_images = drop_older_images
-        # 内部仍用各自的私有属性名：这里只是取用同一批容器对象，
-        # 名字保留是为了让既有调用点与守卫（CONTAINER_HOLDERS 按属性名枚举）
-        # 不必跟着改。
+        # 内部沿用各自的私有属性名：既有调用点与守卫（CONTAINER_HOLDERS
+        # 按属性名枚举）不必跟着改。
         self._last_events = containers.last_events
         self._last_event_at = containers.last_event_at
         self._recent_image_events = containers.recent_image_events
@@ -185,16 +184,15 @@ class SessionScheduler:
             running_task.cancel()
 
     def _discard_delay_task(self, umo: str, task: asyncio.Future[Any]) -> None:
-        """``add_done_callback`` 回调：形参收 ``Future``，``add_done_callback`` 声明
-        传入的就是 ``Future``，写窄成 ``Task`` 只能靠 ignore 绕过类型检查。"""
+        """``add_done_callback`` 回调：形参收 ``Future``，写窄成 ``Task`` 只能靠
+        ignore 绕过类型检查。"""
         if self._delay_tasks.get(umo) is task:
             self._delay_tasks.pop(umo, None)
 
     def notify_activity(self, umo: str) -> None:
         """会话活动（新消息等）：置位当前静默事件，唤醒正在静默等待的延迟检查。
 
-        等待者每次醒来都以实际会话状态复查（通知只是加速，状态才是权威）；
-        事件被消费后从表内移除，下次等待重建，无通知时由超时兜底照常推进。
+        等待者每次醒来都以实际会话状态复查（通知只是加速，状态才是权威）。
         """
         event = self._silence_events.pop(umo, None)
         if event is not None:
@@ -306,9 +304,9 @@ class SessionScheduler:
         不跳过代次校验与运行互斥。
 
         失败时：``CancelledError`` 静默返回（停止/失效路径的正常收敛）；其余异常
-        记 warning 后吞掉，不向调用方冒泡，它由 ``asyncio.Task`` 驱动，抛出只会
-        变成无人接管的任务异常。静默等待步骤的 ``finally`` 必定回收本任务创建的
-        事件，且仅在表中仍是自己时才删（交错重建时误删会让新任务丢失通知）。
+        记 warning 后吞掉（本任务由 ``asyncio.Task`` 驱动，抛出只会变成无人接管的
+        任务异常）。静默等待步骤的 ``finally`` 仅在表中仍是自己时才删事件
+        （交错重建时误删会让新任务丢失通知）。
         """
         try:
             if not await self._wait_initial_delay_and_validate(umo, delay_sec, generation):
@@ -379,8 +377,8 @@ class SessionScheduler:
         """Serialize manual and periodic cleanup requests.
 
         索引回收留在事件循环内（纯内存，且须与事件表保持同一时刻视图）；
-        磁盘遍历交由线程执行，避免阻塞事件循环。锁在此处是必需的：
-        to_thread 引入了真实 await 间隙，两次清理可能并发 unlink 同一文件。
+        磁盘遍历交由线程执行。锁是必需的：to_thread 引入了真实 await 间隙，
+        两次清理可能并发 unlink 同一文件。
         """
         async with self._image_cleanup_lock:
             current = now_ts()
@@ -418,11 +416,10 @@ class SessionScheduler:
             self._clear_event(umo, active_at)
 
         # 只做纯内存的图片索引回收：本方法由 on_message（协程）同步调用，
-        # 磁盘遍历会阻塞消息热路径。磁盘侧由 _image_cleanup_loop 经
-        # run_image_cleanup 独立承担，其周期（image_age/2，上限 1h）严于
-        # 本方法的 1h 节流，故回收不会延后。
+        # 磁盘遍历会阻塞消息热路径，磁盘侧由 _image_cleanup_loop 独立承担
+        # （其周期严于本方法的 1h 节流，回收不会延后）。
         # 此处不得调用 ensure_image_cleanup：它经 create_task 起循环，而本
-        # 方法在无事件循环的同步上下文也会被调用（实测 RuntimeError）。
+        # 方法在无事件循环的同步上下文也会被调用。
         self._prune_image_index(now)
 
         if len(self._last_events) > MAX_CACHED_EVENTS:
@@ -442,11 +439,9 @@ class SessionScheduler:
                     len(self._last_events),
                 )
 
-        # 回收长期无活动的运行时 UMO 映射，避免对白名单内会话只增不减
-        # （巡检对无事件会话会自然跳过，移除安全）。
-        # 起点直接复用 live_sessions：本方法是同步的（无 await），中间只调
-        # _clear_event（动 _events/_event_at）与 _prune_image_index（动图片表），
-        # 都不碰运行中会话与延迟任务表，故这里与上方是同一份集合。
+        # 回收长期无活动的运行时 UMO 映射，避免对白名单内会话只增不减。
+        # 起点复用 live_sessions：本方法是同步的（无 await），中间只调
+        # _clear_event 与 _prune_image_index，都不碰运行中会话与延迟任务表。
         active_umos = set(live_sessions)
         active_umos.update(
             umo for umo, at in self._last_event_at.items() if now - at < EVENT_CLEANUP_INTERVAL_SEC
@@ -536,14 +531,9 @@ class SessionScheduler:
     async def _patrol_loop(self) -> None:
         """巡检后台循环：按 ``check_interval_sec`` 轮询白名单会话并尝试主动接话。
 
-        每轮先做事件缓存清理，再遍历白名单条目展开的运行期 UMO（``seen_patrol_umos``
-        去重，防同一 UMO 被多个白名单条目重复检查）。逐会话跳过：无缓存事件、
-        超过 ``patrol_inactive_after_sec`` 未活动、已有检查在运行。
-
-        失败时分三层，保证循环不死：单会话异常 → warning 后继续下一个会话；
-        整轮异常 → warning 后退避 ``min(PATROL_BACKOFF_DELAY_SEC, check_interval_sec)``
-        再继续（避免异常态高频空转）；``CancelledError`` 向上抛出，terminate
-        才能真正停掉本任务。
+        每轮先做事件缓存清理，再遍历白名单条目展开的运行期 UMO（去重）。
+        失败分三层保证循环不死：单会话异常继续下一个；整轮异常退避后继续；
+        ``CancelledError`` 向上抛出，terminate 才能真正停掉本任务。
         """
         while self._should_run() and self.settings.enabled_patrol_trigger:
             try:
@@ -609,7 +599,6 @@ class SessionScheduler:
                 if self._quarantine_task:
                     self._quarantine_task(task, "patrol stop deadline exceeded")
                 else:
-                    # 巡检任务吞掉取消且无人登记：不记日志就只剩一个静默泄漏。
                     logger.warning(
                         "[%s] patrol task ignored stop deadline and is unregistered",
                         PLUGIN_ID,

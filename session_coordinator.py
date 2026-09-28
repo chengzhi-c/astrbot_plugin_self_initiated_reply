@@ -2,16 +2,10 @@
 
 把散落在主插件上的隐式会话状态收敛为每会话协作入口：最近事件与事件时间
 的写入、失效级联清理（事件/时间/图片/延迟任务）、图片索引写入与读取
-（过期/去重/sticker 过滤）。
+（过期/去重/sticker 过滤）。失效只有单点入口 ``invalidate``；代次单调性
+（防 ABA）与只读视图守护由 SessionGate 承担，本模块不复制。
 
-失效只有单点入口 ``invalidate``：白名单移除、手动检查、插件停止，以及开启
-``abandon_stale_on_new_message`` 时的新消息，都会级联清理该会话的全部协作
-资源。代次单调性（防 ABA）与只读视图守护仍由 SessionGate 承担，本模块不复制。
-
-状态容器经引用共享（main 的 dict 属性保持原字段名，既有调用点与测试
-不变）；延迟任务取消与代次推进经注入回调执行。
-
-运行中判定由 ``SessionGate.is_running`` 与事件表回答。
+状态容器经引用共享；延迟任务取消与代次推进经注入回调执行。
 """
 
 from __future__ import annotations
@@ -114,10 +108,9 @@ class SessionCoordinator:
     def _evict_oldest_image_event(self, *, umo: str | None = None) -> str | None:
         """弹出全局（或指定会话）最旧的图片事件，返回其会话键。
 
-        返回 ``None`` 表示无可弹出条目。**驱逐 0 字节条目是合法进展**：冻结到
-        磁盘的图与刻意入队的空占位事件都记 0 字节，调用方必须以返回值为 None
-        判停，而不是以回收字节数为 0，否则队首一个 0 字节条目就会掩盖其后仍可
-        回收的 data URL。
+        **驱逐 0 字节条目是合法进展**：冻结到磁盘的图与刻意入队的空占位事件都
+        记 0 字节，调用方必须以返回值为 None 判停，否则队首一个 0 字节条目会
+        掩盖其后仍可回收的 data URL。
         """
         candidates = []
         events = self._images.items() if umo is None else [(umo, self._images.get(umo))]
@@ -151,11 +144,9 @@ class SessionCoordinator:
     def capture_images(self, umo: str, timestamp: float, cached_images: list[Any]) -> list[Any]:
         """Write frozen images while enforcing global and per-session byte budgets.
 
-        预算判定 = 实时记账表（``_session_bytes``/``_total_bytes``，驱逐的
-        ``_debit`` 同步就在单点）+ 本批已接受字节 ``batch_bytes``。不维护
-        局部镜像：驱逐后的增减手工同步正是预算漂移的来源；本批图片在
-        批量 ``_append_image_event`` 前不入表，故同批之间是互斥判定而非
-        先来者被后来者顶替（``accepted`` 的每张图必然仍在表内）。
+        预算判定 = 实时记账表 + 本批已接受字节 ``batch_bytes``，不维护局部
+        镜像（驱逐后的增减手工同步正是预算漂移的来源）。本批图片在批量
+        ``_append_image_event`` 前不入表，故同批之间是互斥判定。
         """
         if not cached_images:
             self._append_image_event(umo, timestamp, [])

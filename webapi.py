@@ -1,19 +1,16 @@
-"""Web API：配置读写、UI 偏好与运维状态（自 main.py 拆分）。
+"""Web API：配置读写、UI 偏好与运维状态。
 
-拥有：HTTP 处理器的注册与绑定、面板配置的读视图（``panel`` 面派生 +
-``config_revision``）、配置写入的严格校验（未知键 fail loud）、CAS 前置条件
-（``base_revision``）、应用配置时的运行态快照与回滚、安全敏感键的审计日志、
-UI 偏好（主题/压暗/粗体）的原子落盘、provider 列表枚举的宿主形态归一。
+拥有：HTTP 处理器的注册与绑定、面板配置读视图（``panel`` 面派生 +
+``config_revision``）、配置写入的严格校验（未知键 fail loud）、CAS 前置条件、
+应用配置时的运行态快照与回滚、安全敏感键审计日志、UI 偏好原子落盘、
+provider 列表枚举的宿主形态归一。
 
 不拥有：配置键的机器规则（``models.ConfigSpec``）、状态文件与原子写
 （``storage``）、持久配置的真源（``plugin.settings``）、插件运行态容器
 （``main``）。
 
-分区目录：路由注册与处理器绑定 → 配置读取 → 严格校验 → 应用与回滚 → 审计 →
-UI 偏好 → 运维状态（``/status``，面板零消费）。
-
 ``SelfInitiatedReplyPlugin`` 只在 ``TYPE_CHECKING`` 下导入：运行时与 ``main``
-成环，处理器经 ``partial`` 注册（宿主不解析这些注解）。见 docs/DECISIONS.md。
+成环，处理器经 ``partial`` 注册，宿主不解析这些注解。
 """
 
 from __future__ import annotations
@@ -28,7 +25,6 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    # 运行时与 main 成环；partial 注册，宿主不解析这些注解。详见 DECISIONS.md。
     from .main import SelfInitiatedReplyPlugin
 
 from astrbot.api import logger
@@ -56,13 +52,12 @@ from .models import (
 from .storage import write_json_atomic
 from .utils import redact_exc_text
 
-# 配置 schema 全键：从 models.CONFIG_SPECS 派生（fail loud，此名单之外的
-# 提交键一律 400 拒绝，防止前端/未来代码提交新字段时被静默吞掉）。
-# 历史兼容别名由 Settings.from_config 的 legacy_keys 回退读取，不入本名单。
+# 配置 schema 全键（fail loud：名单之外的提交键一律 400 拒绝，防止提交
+# 新字段时被静默吞掉）。历史兼容别名由 Settings.from_config 的 legacy_keys
+# 回退读取，不入本名单。
 CONFIG_SCHEMA_KEYS = frozenset(spec.key for spec in CONFIG_SPECS)
 
-# UI 偏好主题取值：GET/POST ui/theme 两端各判一次，两处字面量会让"新增一种主题"
-# 只改一侧而静默拒绝另一侧。前端集合与本常量的漂移由
+# 主题合法值单点：前端集合与本常量的漂移由
 # test_config_source_of_truth.test_frontend_theme_values_match_backend 钉住。
 UI_THEME_VALUES = frozenset({"auto", "light", "dark"})
 
@@ -154,26 +149,20 @@ def _providers_from_manager(plugin: SelfInitiatedReplyPlugin) -> list[Any]:
 
 
 async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """返回当前配置。
-
-    配置键从表里 ``panel`` 面派生，不再手抄。视图字段单独列出：
-    ``enabled`` 是持久配置，``runtime_enabled`` 是当前运行态，两者不能合并。
-    """
+    """返回当前配置。``enabled`` 是持久配置，``runtime_enabled`` 是运行态，不能合并。"""
     try:
         payload: dict[str, Any] = {
             "ok": True,
             "runtime_enabled": plugin.runtime_enabled,
             "config_revision": config_revision(plugin.settings),
-            # 面板「恢复默认」填充值：与读侧落盘的默认同源于规格表
-            # （spec.reset_value），不在此处直接引用模板常量字形。
+            # 面板「恢复默认」填充值与读侧落盘同源于规格表。
             "decision_prompt_default": CONFIG_SPEC_BY_KEY["decision_prompt_template"].reset_value,
         }
         for spec in panel_config_specs():
             payload[spec.key] = spec.canonical_value(getattr(plugin.settings, spec.attr))
         return payload
     except Exception as exc:
-        # 详情只进服务端日志：异常文本可能带绝对路径、内部键名或
-        # 上游 provider 报错原文，回显给客户端等于把内部结构透给调用方。
+        # 详情只进服务端日志：异常文本可能带绝对路径、内部键名或上游报错原文。
         logger.warning("[%s] api get config failed: %s", PLUGIN_ID, exc)
         return {"ok": False, "error": "配置读取失败"}
 
@@ -183,7 +172,6 @@ async def _api_providers(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     try:
         return {"ok": True, "providers": _collect_provider_options(plugin)}
     except Exception as exc:
-        # 同上：provider 枚举失败常带上游 SDK 的内部异常原文，不回显
         logger.warning("[%s] api providers failed: %s", PLUGIN_ID, exc)
         return {"ok": False, "providers": [], "error": "Provider 列表读取失败"}
 
@@ -213,14 +201,12 @@ def _strict_bool(value: Any, field: str) -> bool:
 def load_ui_prefs(plugin: SelfInitiatedReplyPlugin) -> tuple[str, bool, bool]:
     """从 ui_prefs.json 加载主题/压暗/粗体；损坏或缺失回退 auto + 关。"""
     try:
-        # utf-8-sig 与状态文件（storage.py）同口径：BOM 头一并吞掉，
-        # 历史/外部编辑器产物不因编码差异丢用户偏好。
+        # utf-8-sig：BOM 头一并吞掉，与状态文件同口径。
         raw = json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8-sig"))
         theme = str(raw.get("theme", "auto")).strip()
         dim = raw.get("dim", False)
         bold = raw.get("bold", False)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError):
-        # 文件缺失/编码损坏/JSON 损坏/顶层非对象一律回退
         return "auto", False, False
     if theme not in UI_THEME_VALUES:
         theme = "auto"
@@ -252,27 +238,23 @@ async def _api_get_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
 
 async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """更新插件页面 UI 偏好（持久化到 ui_prefs.json）。未带的键保持原值。"""
-    # 关停中拒写：与 config/cleanup 同口径。否则 teardown 之后落盘的偏好会在
-    # 下次启动被 load_ui_prefs 读回，用户看到的是「已被丢弃」的旧设置。
+    # 关停中拒写：teardown 之后落盘的偏好会在下次启动被读回陈旧值。
     if plugin._stopping:
         return {"ok": False, "error": "插件正在关闭"}
     try:
         data = await _request_json()
     except Exception as exc:
-        # 请求体读不出（非法 JSON / 宿主 reader 不支持）与「空对象」是两回事：
-        # 吞成 {} 会报成「未提供任何字段」，把人指向字段名而不是坏掉的请求体。
-        # 详情只进服务端日志，不回显异常原文（宿主 reader 的错误文本可能含请求体）。
+        # 请求体读不出与「空对象」是两回事：吞成 {} 会把人指向字段名而非坏请求体。
+        # 详情只进服务端日志（宿主 reader 的错误文本可能含请求体）。
         logger.debug("[%s] ui/theme request body unreadable: %s", PLUGIN_ID, redact_exc_text(exc))
         return {"ok": False, "error": "请求体不是合法 JSON"}
     if not isinstance(data, dict):
         return {"ok": False, "error": "请求体必须是 JSON 对象"}
-    # 字段校验只用请求体、不读当前状态，故可留在锁外：无效输入不应当去抢锁。
+    # 字段校验只用请求体、不读当前状态，可留在锁外。不回显客户端可控输入。
     submitted: dict[str, Any] = {}
     if "theme" in data:
         theme = str(data.get("theme", "")).strip()
         if theme not in UI_THEME_VALUES:
-            # 不回显 theme 原值：那是客户端可控输入，回显等于把请求体
-            # 原文反射回响应。合法取值是固定枚举，直接告知即可，无需回放输入。
             return {"ok": False, "error": "无效主题，可选值：auto / light / dark"}
         submitted["theme"] = theme
     if "dim" in data:
@@ -285,13 +267,10 @@ async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]
         submitted["bold"] = data["bold"]
     if not submitted:
         return {"ok": False, "error": "未提供任何字段：theme / dim / bold 至少一个"}
-    # 读-改-写整块进 _config_lock（与 POST /config 同一把，锁序仍恒为
-    # _config_lock → _save_lock）：写盘含 fsync 必须进线程，同步 fsync 会阻塞
-    # 所有会话（同 storage.apersist_settings_config 口径）；而未提交字段的
-    # 基准值又快不得在锁外读，两个并发 POST 各改一个字段时，锁外取基准值再
-    # 进锁落盘会拿旧值覆盖对方的字段。锁内复查 _stopping：无锁时写入紧接在
-    # 检查后发生，等锁后不再成立，teardown 可能已跑完，此时落盘正是上面那条
-    # 检查要挡的写入。
+    # 读-改-写整块进 _config_lock（与 POST /config 同一把，锁序恒为
+    # _config_lock → _save_lock）：写盘含 fsync 必须进线程；未提交字段的基准值
+    # 也快不得在锁外读（两个并发 POST 各改一字段会互相覆盖）。锁内复查
+    # _stopping：等锁期间 teardown 可能已跑完。
     async with plugin._config_lock:
         if plugin._stopping:
             return {"ok": False, "error": "插件正在关闭"}
@@ -308,9 +287,8 @@ async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]
 
 
 def _strict_int(value: Any, field: str) -> int:
-    # 只接受真 int（bool 是 int 子类须显式排除）：int(1.5) 与 int("5") 会静默
-    # 截断/解析，前端无从得知值被改写，与同文件布尔/枚举/列表的严格 400
-    # 口径对齐。API 客户端只有本插件设置页，表单数字字段不产生浮点/数字字符串。
+    # 只接受真 int（bool 是 int 子类须显式排除）：静默截断/解析会让前端无从
+    # 得知值被改写，与同文件布尔/枚举/列表的严格 400 口径对齐。
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(f"{field} 必须是整数")
     return value
@@ -322,10 +300,8 @@ def _string_list(data: dict[str, Any], key: str) -> list[str]:
 
 
 def _strict_float(value: Any, field: str) -> float:
-    # 与 _strict_int 的口径差：JSON 数字无 int/float 之分（"9" 解析为 int），
-    # 故 int 与 float 都接受（bool 是 int 子类，显式排除）；字符串拒绝，
-    # float() 会静默解析数字字符串，让「前端只发 number」的约定在 API
-    # 直调场景静默失效，fail loud 优于静默纠偏。
+    # JSON 数字无 int/float 之分，故两者都接受（bool 显式排除）；字符串拒绝，
+    # fail loud 优于静默纠偏。
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{field} 必须是数字")
     parsed = float(value)
@@ -384,14 +360,12 @@ async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str,
             submitted=config_data,
         )
     except ValueError as exc:
-        # 校验失败的文案要回显：它由本模块自己构造，只含字段名与
-        # 规则（"cooldown_sec 必须是整数"），不含内部路径/栈信息，且前端表单
+        # 校验失败的文案要回显：由本模块构造，只含字段名与规则，前端表单
         # 依赖它定位出错字段。
         logger.warning("[%s] api post config rejected: %s", PLUGIN_ID, exc)
         return {"ok": False, "error": str(exc)}
     except Exception as exc:
-        # 内部异常一律通用文案：_apply_config_updates 会调 _save_storage，
-        # OSError 的 str() 带绝对路径（磁盘布局泄露）。详情只进服务端日志。
+        # 内部异常一律通用文案：OSError 的 str() 带绝对路径，详情只进服务端日志。
         logger.warning("[%s] api post config failed: %s", PLUGIN_ID, exc)
         return {"ok": False, "error": "配置保存失败，请查看 AstrBot 日志"}
 
@@ -399,13 +373,10 @@ async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str,
 def _parse_config_updates(data: Any) -> dict[str, Any]:
     """从请求体提取合法配置变更并做严格类型校验；非法字段抛 ValueError。
 
-    表驱动：真正的风险不是长度，而是「新增键要记得同时改这里」漏一处该键
-    就被静默丢弃：面板上能改、保存返回成功、值不生效。
-
-    与 ``Settings.from_config`` 的关键差异（不可统一，故意分开）：这里对非法
-    输入 **抛异常**，而 from_config 静默夹取。webapi 面对的是交互式提交，用户
-    需要知道"这个值不合法"；from_config 面对的是磁盘上已存在的配置，抛异常会
-    让插件整体加载失败。
+    表驱动防漏：新增键若不进规格表，这里会被静默丢弃。与
+    ``Settings.from_config`` 的关键差异：这里对非法输入抛异常（交互式提交，
+    用户需要知道值不合法），from_config 静默夹取（磁盘已存在的配置抛异常
+    会让插件加载失败）。
     """
     if not isinstance(data, dict):
         raise ValueError("请求体必须是 JSON 对象")
@@ -443,16 +414,11 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
             raise ValueError(f"{spec.key} 必须是 {'/'.join(sorted(spec.options))}")
         return value
     # kind == "text" / "str" 的兜底：只做类型与空白规范化。
-    # 拒绝 bool/dict/list：str(True)="True"、str({'a':1})="{'a': 1}" 落盘后既不是
-    # 用户输入，也永远匹配不到任何 provider 或模板，故障静默且不自愈。
-    # int/float 沿用 falsy 规范化（0→""、42→"42"，与历史面板行为一致，见
-    # test_parse_config_updates_formal_defaults）。
-    # 空提交 = 恢复内置默认（面板留空即复位，见 test_config_schema 的
-    # _INTENTIONAL_EMPTY_DEFAULT），但该复位只对 text 生效（读侧 coerce 的 text
-    # 分支 `or spec.reset_value`），str 的空值保持空串；写侧一律不回落，否则
-    # 默认口径有两处。长度上限同样只由读侧按 spec.max_len 截断。
-    # 三个 str 规格的 default 现在都是空串，故两种写法今天同值；这个区别是
-    # 给「新增一个带非空默认的 str 键」时准备的，那时它立刻可见。
+    # 拒绝 bool/dict/list：str 化的落盘值既不是用户输入也匹配不到任何
+    # provider 或模板。int/float 沿用 falsy 规范化（与历史面板行为一致，
+    # 见 test_parse_config_updates_formal_defaults）。空提交 = 恢复内置默认，
+    # 但该复位只对 text 生效（读侧 coerce 的 text 分支），写侧一律不回落，
+    # 否则默认口径有两处。长度上限同样只由读侧按 spec.max_len 截断。
     if isinstance(raw, (bool, dict, list)):
         raise ValueError(f"{spec.key} 必须是字符串")
     return str(raw or "").strip()
@@ -475,33 +441,20 @@ def _config_update_was_adjusted(
     return submitted != actual
 
 
-# 安全敏感配置键：变更记 INFO 审计日志。webapi 无独立鉴权，
-# 访问控制依赖宿主 Dashboard；留痕便于事后追溯。
-#
-# 由规格表的 audited 标记派生：手工名单会与
-# `_parse_config_updates` 分处两地，漏一处审计就静默失效。两者同源于
-# CONFIG_SPECS，前提由 tests/test_config_schema.py 的守卫强制。
-#
-# 入表理由（语义仍需人判断，故记录在此）：Provider 类键
-# （judge/vision/vision_judge）决定群聊上下文与图片发往哪个上游端点，被改指向
-# 攻击者 provider 即为持续数据外泄；vision_*_enabled 是图片外发总开关；
-# ignored_sender_ids 能静默屏蔽特定用户（含管理员），是可滥用的隐蔽开关。
+# 安全敏感配置键（规格表 audited 标记派生，手工名单会漏）：变更记 INFO
+# 审计日志。webapi 无独立鉴权，访问控制依赖宿主 Dashboard；留痕便于事后追溯。
+# Provider 类键决定上下文与图片发往哪个上游端点；vision_*_enabled 是图片
+# 外发总开关；ignored_sender_ids 能静默屏蔽特定用户。
 _AUDITED_CONFIG_KEYS = tuple(spec.key for spec in CONFIG_SPECS if spec.audited)
 
 
 def _snapshot_plugin_state(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """对应用配置前会变更的全部运行态做快照，供回滚恢复。
+    """对应配置前会变更的全部运行态做快照，供回滚恢复。
 
-    ``sessions`` 只深保护 ``recent`` 列表：它是唯一会被窗口内消息入口
-    （``plugin_state.state_for`` 按新 ``recent_message_limit`` 惰性重建）
-    **不可逆裁剪**的字段，共享引用会让回滚恢复一个已被裁小的 deque。
-    其余标量字段的窗口内变更按现行语义保留，那是对真实事件的记录，
-    回滚不应抹掉。
-
-    本快照**不足以**独立完成 §11 B2 的回滚：被白名单变更 ``pop`` 掉的会话状态
-    不在这里（快照时刻还在，但恢复时已被 ``_whitelist.replace`` 摘走）。
-    那部分由 ``_apply_config_updates`` 捕获 ``replace`` 的 ``pruned`` 返回值
-    并在恢复时先回填，见 ``_restore_plugin_state`` 的 ``pruned`` 参数。
+    ``sessions`` 只深保护 ``recent``：它是唯一会被窗口内消息入口不可逆裁剪
+    的字段。本快照不足以独立完成回滚：被白名单变更 pop 掉的会话状态不在
+    这里，那部分由 ``_apply_config_updates`` 捕获 ``replace`` 的 ``pruned``
+    并在恢复时先回填（见 ``_restore_plugin_state``）。
     """
     return {
         "settings": copy.deepcopy(plugin.settings),
@@ -519,11 +472,9 @@ def _snapshot_plugin_state(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
 def _restore_session_history(plugin: SelfInitiatedReplyPlugin, saved: dict[str, list[Any]]) -> None:
     """逐键恢复会话历史，保持 sessions dict 与存活 SessionState 的对象身份。
 
-    身份契约（B1 的对象版）：在途检查任务持有 ``SessionState`` 引用，
-    整表换对象会让它们写孤儿状态。故存活键**原地**重绑 ``recent``
-    （deque 的生产持有均为瞬时读取，重绑安全），新增键才插入新对象，
-    窗口内新增的键删除。``maxlen`` 用回滚后的 settings，快照时刻的
-    上限可能已被本次（失败的）应用改小。
+    在途检查任务持有 ``SessionState`` 引用，整表换对象会让它们写孤儿状态。
+    故存活键原地重绑 ``recent``，新增键才插新对象，窗口内新增的键删除。
+    ``maxlen`` 用回滚后的 settings（快照时刻的上限可能已被本次失败的应用改小）。
     """
     limit = plugin.settings.recent_message_limit
     for key in list(plugin.sessions):
@@ -545,24 +496,16 @@ async def _restore_plugin_state(
 ) -> None:
     """恢复配置应用前快照，重建被取消的延迟检查并恢复任务拓扑。
 
-    ``pruned`` 是 ``_whitelist.replace()`` 摘下的会话状态（键 → **原对象**）。
-    必须在 ``_restore_session_history`` **之前**回填（契约 §11 B2）：
-
-    - 不填的话，这些键在 ``snapshot["sessions"]`` 里有、在 ``plugin.sessions``
-      里没有，会走「新建 SessionState」分支，键回来了、日配额与冷却却清零，
-      且对象身份丢失（在途检查持旧引用，写回落在孤儿对象上，与 B1 同源）。
-    - 顺序不可反：``_restore_session_history`` 会删掉 ``saved`` 之外的键，
-      回填放在它之后就等于白填。``replace`` 全程同步且紧跟快照，故
-      ``pruned`` 的键必然都在快照里，回填不会引入快照外的键。
+    ``pruned`` 是 ``_whitelist.replace()`` 摘下的会话状态（键 → 原对象），
+    必须在 ``_restore_session_history`` **之前**回填：不填则这些键走新建
+    分支，日配额与冷却清零且对象身份丢失；顺序反了则回填会被随后的删键
+    抹掉。``replace`` 全程同步且紧跟快照，``pruned`` 的键必然都在快照里。
     """
-    # 原地恢复（保持 Settings 对象身份）：组件构造时各存 self.settings
-    # 引用，整体替换会让它们读到过期配置。
+    # 原地恢复（保持 Settings 与容器对象身份）：组件构造时捕获的是这些
+    # 对象本身的引用，属性重绑定会让它们继续写孤儿容器，回滚后该会话
+    # 主动回复静默停止直到重启。
     plugin.settings.apply(snapshot["settings"])
     plugin.runtime_enabled = snapshot["runtime_enabled"]
-    # 容器也必须原地恢复（B1）：scheduler/coordinator/whitelist 构造时
-    # 捕获的是这些 dict 对象本身的引用（main.py 装配段），属性重绑定会让
-    # 它们继续写孤儿容器，回滚后 main 从新 dict 读、协作对象写旧 dict，
-    # 该会话主动回复静默停止直到重启。clear+update 保持容器身份不变。
     plugin._coordinator.restore_inplace(snapshot)
     restore_container_inplace(plugin._whitelist_runtime_umos, snapshot["whitelist_runtime_umos"])
     plugin._gate.restore(snapshot["gate"])
@@ -613,9 +556,8 @@ async def _apply_config_updates(
     pruned: dict[str, Any] = {}
     try:
         candidate = plugin.settings.to_config_dict()
-        # 幂等三层（均为刻意）：_strict_value 先拒绝类型错误（400），
-        # normalize_config_updates 负责列表/集合条目规范化与容量上限，
-        # from_config 在最终合并值上做数值夹取（与磁盘加载同一套边界）。
+        # 三层分工：_strict_value 拒绝类型错误（400），normalize_config_updates
+        # 做列表/集合规范化与容量上限，from_config 做数值夹取（与磁盘加载同一套边界）。
         normalized_updates = normalize_config_updates(updates)
         for key, value in normalized_updates.items():
             candidate[key] = value
@@ -625,8 +567,8 @@ async def _apply_config_updates(
             for spec in CONFIG_SPECS
             if spec.key.startswith("vision_")
         )
-        # 原地应用（保持 Settings 对象身份）：五个组件构造时各存
-        # self.settings 引用，整体替换会造成热更新后组件读旧值。
+        # 原地应用（保持 Settings 对象身份）：组件构造时各存引用，整体替换
+        # 会造成热更新后组件读旧值。
         plugin.settings.apply(new_settings)
         if "whitelist_sessions" in updates:
             pruned = plugin._whitelist.replace(new_settings.whitelist)
@@ -636,9 +578,8 @@ async def _apply_config_updates(
             await plugin._persist_config()
             await plugin._save_storage()
 
-        # 持久 enabled 真正变化才重置运行态并同步任务拓扑；全量表单重复提交
-        # 相同值不得改动运行态。/on /off 自身已落盘，故此处两者通常同值；
-        # 本分支守的是「前端提交的 enabled 与现值不同」这一路。
+        # 持久 enabled 真正变化才重置运行态并同步任务拓扑：重复提交相同值
+        # 不得改动运行态。本分支守「前端提交的 enabled 与现值不同」这一路。
         enabled_persisted_changed = (
             "enabled" in updates and snapshot["settings"].enabled != new_settings.enabled
         )
@@ -673,16 +614,14 @@ async def _apply_config_updates(
             "ok": True,
             "config": config,
             "config_revision": config_revision(config),
-            # 面板保存后据此刷新运行态徽标：enabled 是持久配置，runtime_enabled
-            # 是本次生效后的运行态，二者在 POST 边界上可能不同（见 _api_get_config 注释）。
+            # enabled 是持久配置，runtime_enabled 是本次生效后的运行态，
+            # 二者在 POST 边界上可能不同。
             "runtime_enabled": plugin.runtime_enabled,
             "adjusted_fields": adjusted_fields,
         }
     except asyncio.CancelledError:
-        # 取消（宿主停止 / 调用方放弃）也要回滚：`CancelledError` 继承
-        # `BaseException`，不落下面的 `except Exception`，而此前的应用步骤
-        # （settings.apply / whitelist.replace / _persist_config）可能已完成，
-        # 留下"白名单已清空、磁盘已写新值、内存未回滚"的半应用态。
+        # 取消也要回滚：CancelledError 不落 except Exception，而此前的应用
+        # 步骤可能已完成，留下"磁盘已写新值、内存未回滚"的半应用态。
         # 回滚自带 await，用 shield 防止二次取消打断它。
         rollback = asyncio.ensure_future(_restore_plugin_state(plugin, snapshot, pruned=pruned))
         try:
@@ -728,16 +667,9 @@ def _log_audited_changes(
 async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """返回插件集成状态与会话级运行状态。面板零消费，运维/排障专用。
 
-    覆盖：生命周期、代次快照、运行中集合、任务数（延迟/运行中检查/后台）、
-    缓存规模（事件/图片事件/会话）、每会话最近裁决原因。
-
-    ``lifecycle`` 是承重字段：一次生成超时 + 宿主吞取消即永久 DEGRADED，此后
-    一切新工作被拒，但 ``runtime_enabled`` 读的是持久配置、仍显示 True。没有
-    这个字段，运营者只能翻日志发现插件已死。
-
-    当前虽无可达异常，仍与其它 ``_api_*`` 处理器一样兜 ``except``：不让内部
-    细节以任何形式流向调用方，且本函数会随调试面板扩字段而增长，"当前无可达
-    异常"的前提不会自动延续。
+    ``lifecycle`` 是承重字段：生成超时且宿主吞取消即永久 DEGRADED，此后一切
+    新工作被拒，而 ``runtime_enabled`` 读持久配置仍显示 True；没有这个字段
+    运营者只能翻日志才能发现插件已死。
     """
     try:
         return {

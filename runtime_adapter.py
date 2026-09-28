@@ -27,12 +27,9 @@ from .models import PLUGIN_ID
 def _require[T](value: T | None, name: str) -> T:
     """探测值兜底解包：缺失即 raise，兼作 mypy 的 Optional 收窄。
 
-    不用 assert：`python -O` 下 assert 语句被整体剥除，None 会漏进宿主
-    调用并在更深处以难诊断的形态崩溃。
-
-    ``validate()`` 只在加载期跑一次（``SelfInitiatedReplyPlugin.__init__``），各入口
-    不再逐次自校验，因此本函数是运行期唯一的 None 兜底，也防「探测表新增
-    符号但未进 _probe_problems」的漂移。
+    不用 assert：`python -O` 下 assert 被剥除，None 会漏进宿主调用并在更深处
+    以难诊断的形态崩溃。``validate()`` 只在加载期跑一次，本函数是运行期
+    唯一的 None 兜底。
     """
     if value is None:
         raise RuntimeError(f"当前 AstrBot 缺少主动回复所需的 {name}")
@@ -70,20 +67,16 @@ EVENT_TYPE_MEMBERS = (
 # 事件结果契约：实例必须可用且具备这两个链式方法（缺失参数即红）
 _EVENT_RESULT_METHODS = ("message", "set_result_content_type")
 
-# 「属性不存在」的哨兵：不能用 None 当 getattr 默认值，因为
-# 宿主 ProviderRequest.func_tool 的合法默认值**就是 None**（实测 AstrBot 4.23.3：
-# 字段存在、默认 None）。用 None 兜底会把「宿主没有这个字段」与「宿主声明本次无
-# 工具」压成同一出口，而两者该走反方向：前者读不到工具边界必须 fail closed，
-# 后者天然无工具可放行。
+# 「属性不存在」的哨兵：不能用 None 当 getattr 默认值，宿主
+# ProviderRequest.func_tool 的合法默认值就是 None。用 None 兜底会把「宿主没有
+# 这个字段」与「宿主声明本次无工具」压成同一出口，而两者该走反方向。
 _MISSING = object()
 
-# ProviderRequest 实例在 generation 中实际赋值的字段：缺失即红
-#
-# func_tool 是本清单里唯一承担安全职责的字段：它是工具边界的唯一读写点
-# （_tool_list / filter_final_tools）。加载期断言缺失即 raise，使
-# filter_final_tools 的「缺属性」分支在生产上不可达；删字段会把它复活成真实
-# fail-open。tests/test_runtime_adapter.py::test_func_tool_stays_in_load_time_contract_assertion
-# 钉住这层耦合。
+# ProviderRequest 实例在 generation 中实际赋值的字段：缺失即红。
+# func_tool 是本清单里唯一承担安全职责的字段（工具边界的唯一读写点）：
+# 加载期断言缺失即 raise，使 filter_final_tools 的「缺属性」分支在生产上
+# 不可达；删字段会把它复活成真实 fail-open，由
+# tests/test_runtime_adapter.py::test_func_tool_stays_in_load_time_contract_assertion 钉住。
 _PROVIDER_REQUEST_FIELDS = frozenset(
     {
         "prompt",
@@ -212,16 +205,11 @@ class AstrBotRuntimeAdapter:
     def validate(self, *, soft: bool = False) -> list[str]:
         """契约断言：缺失参数即红。硬模式首错 raise；软模式收集告警不阻塞。
 
-        调用时机是加载期一次：``_AGENT_RUNTIME.validate()`` 在 ``SelfInitiatedReplyPlugin.__init__``
-        首条语句执行（无条件、不被 try 包裹），宿主不兼容即拒绝加载。各入口
-        （6 个 property + ``new_event_result`` / ``new_provider_request`` /
-        ``new_build_config``）**不再逐次调本方法**：
-        ``capabilities`` 是 frozen dataclass，加载期通过之后契约不会在运行期变化，
-        逐次校验只是重复 ``inspect.signature`` 与两次宿主类实例化。运行期的 None
-        兜底由 ``_require`` 承担。
-
-        不缓存探测结论：调用点只有加载期一次 + compat_check + 测试显式调用，
-        缓存换不到收益，只多一个字段。
+        调用时机是加载期一次（``SelfInitiatedReplyPlugin.__init__`` 首条语句，
+        无条件、不被 try 包裹），宿主不兼容即拒绝加载。各入口不再逐次调用：
+        ``capabilities`` 是 frozen dataclass，加载期通过后契约不会在运行期变化；
+        运行期的 None 兜底由 ``_require`` 承担。不缓存探测结论：调用点只有
+        加载期一次 + compat_check + 测试显式调用，缓存换不到收益。
         """
         problems = self._probe_problems()
         if problems and not soft:
@@ -361,25 +349,17 @@ class AstrBotRuntimeAdapter:
 
     # 事件钩子与路径函数（config_path_fn / plugin_data_path_fn）不经本类方法出口：
     # main.py 在 import 期把 capabilities 里的这几项绑成模块级名字，测试按名字替换。
-    # 宿主 call_event_hook 本身是 async 函数，调用点直接 await，不再套一层转发。
-    # 路径解析失败由 resolve_paths 让异常传播、加载期即崩，吞异常静默回退会让状态写
-    # 到错误路径后无声丢失。结构决策见 docs/DECISIONS.md。
+    # 路径解析失败由 resolve_paths 让异常传播、加载期即崩。
 
     def _tool_list(self, req: Any) -> list[str] | None:
         """共享工具枚举前奏：哨兵/None/tools 三段判定。
 
-        AstrBot 在 reset/run 时从 ``req.func_tool`` 取工具，所以请求对象就是
-        事后的权威快照，本方法是它唯一的枚举入口。
-
-        枚举失败统一 DEBUG，决策与告警归调用方（``filter_final_tools`` 升
-        WARNING 并中止），否则单次失败会产生重复告警（实测 2 条）。返回
-        ``None`` 表示无法枚举，调用方必须各自 fail closed；返回 ``[]`` 是
-        "本次没有工具"，与"读不到工具集"方向相反，区分见下方三段判定。
-
-        ``func_tool`` 属性缺失与显式 ``None`` 分开处理：后者是宿主声明
-        「本次无工具」，枚举结果就是空列表；前者是读不到该字段本身，返回
-        ``[]`` 会把"查不到"谎报成"查过了、是空的"，故归入枚举失败返回
-        ``None``。
+        AstrBot 在 reset/run 时从 ``req.func_tool`` 取工具，请求对象就是事后的
+        权威快照。枚举失败统一 DEBUG，决策与告警归调用方。返回 ``None`` 表示
+        无法枚举（调用方必须 fail closed）；返回 ``[]`` 是"本次没有工具"，
+        与"读不到工具集"方向相反。``func_tool`` 属性缺失与显式 ``None`` 分开
+        处理：后者是宿主声明「本次无工具」，前者是读不到字段本身，返回
+        ``[]`` 会把"查不到"谎报成"查过了、是空的"。
         """
         tool_set: Any = getattr(req, "func_tool", _MISSING)  # Any：见 filter_final_tools 说明
         if tool_set is _MISSING:
@@ -431,29 +411,17 @@ class AstrBotRuntimeAdapter:
         set cannot be enumerated or a removal fails; callers must then abort
         the proactive run (fail closed).
 
-        「``func_tool`` 属性缺失」与「显式 ``None``」走反方向：显式 ``None`` 是
-        宿主声明本次无工具集，天然放行；属性缺失是读不到工具边界本身，无法枚举
-        也无法事后核验，唯一正确动作是中止。该缺属性分支在生产上**不可达**：
-        ``func_tool`` 由 ``_PROVIDER_REQUEST_FIELDS`` 加载期硬断言（缺失即拒载），
-        dataclass 实例 ``del`` 字段后仍回落类默认 ``None``；前提一旦失效（字段被
-        移出清单）分支即恢复可达，由
-        ``test_func_tool_stays_in_load_time_contract_assertion`` 守护。
-        保留分支是纵深防御，本方法是公共接缝，接受任意 ``req``。
+        「``func_tool`` 属性缺失」与「显式 ``None``」走反方向；缺属性分支在
+        生产上不可达（``func_tool`` 由 ``_PROVIDER_REQUEST_FIELDS`` 加载期硬
+        断言），保留它是纵深防御，本方法是公共接缝，接受任意 ``req``。
         """
-        # 显式 ``Any``：三参 getattr 的类型是 ``Any | _T``，
-        # 默认值换成哨兵后 ``_T`` 是 ``object``，联合坍缩成 ``object``，下面的
-        # ``tool_set.remove_tool`` 会被 mypy 判成 attr-defined 错误。宿主工具集本就
-        # 是鸭子类型（能力由 validate 在加载期核验），这里保持 ``Any``。
-        # 哨兵/None/tools 的三段判定与枚举共用 _tool_list（DEBUG 统一记在
-        # 那边）；这里的 WARNING 是"无法核验工具边界 → 中止"的唯一告警点，
-        # 缺属性/无 tools 的形状细节由 _tool_list 的 DEBUG 承载。
+        # 显式 ``Any``：默认值换成哨兵后联合类型会坍缩成 ``object``，
+        # 下面的 ``tool_set.remove_tool`` 会被 mypy 判成 attr-defined。
+        # 宿主工具集本就是鸭子类型（能力由 validate 在加载期核验）。
         tool_ids = self._tool_list(req)
         if tool_ids is None:
-            # 契约钉住：fail-closed 恰好一条 WARNING 且须点名原因，缺属性点
-            # func_tool、无 tools 点 tools（test_missing_func_tool_attribute_
-            # fails_closed_not_open / test_fail_closed_warning_names_the_reason）。
-            # 枚举期异常的形状细节由 _tool_list 的 DEBUG 承载，此处仍归入
-            # "不可枚举"出口。
+            # fail-closed 恰好一条 WARNING 且须点名原因（test_missing_func_tool_
+            # attribute_fails_closed_not_open / test_fail_closed_warning_names_the_reason）。
             tool_set: Any = getattr(req, "func_tool", _MISSING)
             if tool_set is _MISSING:
                 logger.warning(

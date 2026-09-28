@@ -22,10 +22,9 @@ from .utils import is_full_umo, session_group_id, session_whitelisted
 class WhitelistManager:
     """白名单集合的替换与增删，双写失败走单一回滚路径。
 
-    会话内存回收契约：被移出会话的完整回收由注入的 ``prune``
-    回调承担，必须从与 ``sessions`` 同一 dict 弹掉 umo 与其群组键（生产
-    注入 main._prune_session，含代次/裁决/sessions 单点回收）。本类只做
-    白名单集合本身与双写回滚，不再自行 pop。
+    会话内存回收契约：被移出会话的完整回收由注入的 ``prune`` 回调承担
+    （生产注入 main._prune_session，含代次/裁决/sessions 单点回收），
+    本类只做白名单集合本身与双写回滚，不再自行 pop。
     """
 
     def __init__(
@@ -54,9 +53,8 @@ class WhitelistManager:
     def replace(self, whitelist: set[str]) -> dict[str, Any]:
         """整表替换白名单，并回收被移出会话的内存状态。
 
-        返回被移出会话的 SessionState 快照（含群组键），供 ``commit_change``
-        失败回滚时恢复（B2）：``_prune`` 是单向销毁、不幂等，第一次 replace
-        已 pop 的会话状态若不快照，回滚后白名单回来了、配额与冷却却清零了。
+        返回被移出会话的 SessionState 快照（含群组键），供回滚时恢复：
+        ``_prune`` 是单向销毁、不幂等，不快照则回滚后配额与冷却清零。
         """
         normalized = {str(item).strip() for item in whitelist if str(item).strip()}
         tracked = set(self._tracked_umos())
@@ -76,10 +74,8 @@ class WhitelistManager:
                 if key in self._sessions:
                     pruned[key] = self._sessions[key]
             self._invalidate(umo)
-            # 代次表按 UMO 累积且从不回收；移出白名单时清理内存（含会话锁
-            # 与运行标记）。全局单调 token 保证即使会话重新加入，旧任务
-            # 持有的旧 token 也必然失效。prune 同时唤醒仍在等待运行释放的
-            # 挂起任务，由代次门使其退出，避免悬挂。
+            # 代次表按 UMO 累积且从不回收；移出白名单时清理内存。全局单调
+            # token 保证即使会话重新加入，旧任务持有的旧 token 也必然失效。
             self._prune(umo)
         for key, raw_values in list(self._runtime_umos.items()):
             values = {
@@ -102,8 +98,8 @@ class WhitelistManager:
             await self._save_storage()
         except Exception:
             self.replace(old_whitelist)
-            # 恢复被 _prune 销毁的 SessionState（B2）：成功路径按契约回收，
-            # 失败回滚必须复活，否则日配额/冷却时间戳被静默清零。
+            # 恢复被 _prune 销毁的 SessionState：失败回滚必须复活，
+            # 否则日配额/冷却时间戳被静默清零。
             self._sessions.update(pruned)
             try:
                 await self._sync_whitelist()

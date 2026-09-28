@@ -1,12 +1,10 @@
 """插件入口与装配层。
 
 拥有：唯一的 ``Star`` 子类、宿主事件接入（``on_message``）、``/selfreply``
-指令处理器、生命周期（``terminate`` 与优雅停止），以及把各协作者接线成一个
-流程的构造顺序。
-
-业务规则不在这里：是否接话属 ``decision``，正文生成属 ``generation``，发送
-状态机属 ``delivery``，定时与巡检属 ``scheduler``，会话状态属
-``session_coordinator``。本文件只回答「谁先造、谁依赖谁、事件从哪进」。
+指令处理器、生命周期（``terminate`` 与优雅停止），以及把各协作者接线成
+一个流程的构造顺序。业务规则不在这里：判断属 ``decision``，生成属
+``generation``，发送状态机属 ``delivery``，定时与巡检属 ``scheduler``，
+会话状态属 ``session_coordinator``。
 
 模块顶部的 import 被 ``_AGENT_RUNTIME`` 分成两段（故 ruff 对本文件忽略
 E402）：宿主私有符号必须先经适配层探测并绑到模块级名字，后续模块才能拿到
@@ -31,25 +29,18 @@ from .runtime_adapter import AstrBotRuntimeAdapter
 from .session_gate import SessionGate
 
 # 指令处理器的产出类型：每个 @selfreply.command 处理器都是 async generator，
-# 逐条 yield event.plain_result(...)。宿主侧契约是
-# AsyncGenerator[MessageEventResult | str | None]，本插件只 yield 前者。
+# 逐条 yield event.plain_result(...)。
 #
 # **必须是运行时可解析的名字，不能放回 TYPE_CHECKING 块**：宿主注册处理器时调
-# `inspect.signature(handler, eval_str=True)`（4.27.2 起；4.23.3 还没有该参数），
-# `eval_str=True` 会把 `from __future__ import annotations` 的字符串注解真的 eval 一遍，
-# TYPE_CHECKING-only 的名字在那一步 NameError，整个插件拒绝加载。
-# 守卫：scripts/compat_check.py::_handler_signature_gaps 照抄这一步，两个宿主版本都判红。
-#
-# 刻意不写成 AsyncGenerator[MessageEventResult, None]：那需要运行时 import 宿主符号，
-# 多一条加载期硬依赖；宿主类型在 mypy 眼里本就全是 Any，精确写法只有文档价值。
+# `inspect.signature(handler, eval_str=True)`（4.27.2 起），会把字符串注解真的
+# eval 一遍，TYPE_CHECKING-only 的名字在那一步 NameError，整个插件拒绝加载。
+# 守卫：scripts/compat_check.py::_handler_signature_gaps。
 CommandReply = AsyncGenerator[Any, None]
 
 _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
 
-# 宿主私有符号收敛：值全部来自适配层探测，本文件不再直接
-# import 宿主私有层（astrbot.core.*）；模块级名字保留供测试替换与旧引用，
-# 加载期缺失由 AstrBotRuntimeAdapter.validate() 的契约断言兜底（缺失即红，拒绝加载并
-# 提示修复方向）。
+# 宿主私有符号收敛：值全部来自适配层探测；模块级名字保留供测试替换，
+# 加载期缺失由 AstrBotRuntimeAdapter.validate() 的契约断言兜底。
 call_event_hook = _AGENT_RUNTIME.capabilities.call_event_hook
 get_astrbot_config_path = _AGENT_RUNTIME.capabilities.config_path_fn
 get_astrbot_plugin_data_path = _AGENT_RUNTIME.capabilities.plugin_data_path_fn
@@ -142,13 +133,12 @@ class SelfInitiatedReplyPlugin(Star):
         self.settings = Settings.from_config(config_data)
         self.runtime_enabled = self.settings.enabled
 
-        # 桥只作历史记录读取用；表情包与 livingmemory 走 AstrBot 正常 LLM 管线，
-        # 由宿主自动触发。
+        # 桥只作历史记录读取用；表情包与 livingmemory 走 AstrBot 正常 LLM 管线。
         self.bridge = AstrBotBridge(context)
 
-        # 首次规范化落盘的**判定**在这里，落盘本体延后到构造末尾与其余启动
-        # 磁盘 IO 一起执行：此处 `_lifecycle_state` 尚未建立，spawn 路径不可用，
-        # 而写盘含 fsync，在会话循环上就地执行会阻塞所有会话。
+        # 首次规范化落盘的判定在这里，落盘本体延后到构造末尾与其余启动
+        # 磁盘 IO 一起执行：此处 spawn 路径不可用，且写盘含 fsync，
+        # 在会话循环上就地执行会阻塞所有会话。
         self._pending_normalize_config = not config_file_matches(self._config_path, self.settings)
 
         self.sessions = load_sessions(
@@ -165,14 +155,13 @@ class SelfInitiatedReplyPlugin(Star):
         except OSError as exc:
             logger.warning("[%s] image cache directory unavailable: %s", PLUGIN_ID, exc)
         # UI 偏好：AstrBot 插件页面以 iframe 嵌入 Dashboard，localStorage
-        # 不可靠，主题/压暗/粗体写入后端 JSON（与 state.json 同目录）。
+        # 不可靠，主题/压暗/粗体写入后端 JSON。
         self._ui_prefs_path = self._storage_path.parent / "ui_prefs.json"
         self._ui_theme, self._ui_dim, self._ui_bold = load_ui_prefs(self)
         self._whitelist_runtime_umos: dict[str, set[str]] = {}
         self._delay_tasks: dict[str, asyncio.Task[Any]] = {}
         self._running_check_tasks: dict[str, asyncio.Task[Any]] = {}
-        # 全局单调代次计数器：白名单移除/重加不会再产生 ABA，旧任务持有的
-        # token 永远小于会话当前 token，任何 check 点都会拒绝它。
+        # 全局单调代次计数器：白名单移除/重加不会再产生 ABA。
         self._gate = SessionGate()
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._critical_tasks: set[asyncio.Task[Any]] = set()
@@ -190,9 +179,8 @@ class SelfInitiatedReplyPlugin(Star):
         self._last_decisions: dict[str, dict[str, Any]] = {}
         self._refresh_admin_ids()
 
-        # 共享容器收拢为一个对象后交给协作者（§11 B1：身份必须稳定）。
-        # main 侧仍保留各自的属性名：回滚路径（webapi._restore_plugin_state）
-        # 与容器身份守卫都按这些名字工作。
+        # 共享容器收拢为一个对象后交给协作者：main 侧仍保留各自的属性名，
+        # 回滚路径（webapi._restore_plugin_state）与容器身份守卫按这些名字工作。
         self._containers = SessionContainers(
             last_events=self._last_events,
             last_event_at=self._last_event_at,
@@ -205,12 +193,11 @@ class SelfInitiatedReplyPlugin(Star):
         )
         self._assemble_components()
 
-        # 启动期磁盘 IO 统一在此执行（三处：配置规范化落盘、状态落盘、图片缓存
-        # 清理）。它们都含 fsync / 大目录遍历，跑在宿主事件循环上会阻塞该进程内
+        # 启动期磁盘 IO 统一在此执行（配置规范化落盘、状态落盘、图片缓存清理）。
+        # 它们都含 fsync / 大目录遍历，跑在宿主事件循环上会阻塞该进程内
         # 所有会话与 Web 面板（契约见 tests/test_cleanup_nonblocking）。
-        # - 有运行中的循环 → 全部交后台任务（各自的磁盘部分内部走 to_thread）。
-        # - 无循环（同步加载的宿主）→ 保持原地同步执行，且**不得**在此 spawn：
-        #   ensure_* 内部会 create_task，无循环时直接抛 RuntimeError 让插件加载失败。
+        # - 有运行中的循环 → 全部交后台任务（磁盘部分内部走 to_thread）。
+        # - 无循环（同步加载的宿主）→ 原地同步执行，且**不得**在此 spawn。
         has_loop = True
         try:
             asyncio.get_running_loop()
@@ -249,18 +236,14 @@ class SelfInitiatedReplyPlugin(Star):
         register_web_apis(self)
 
     def _startup_disk_writes(self) -> Coroutine[Any, Any, None]:
-        """构造期的磁盘 IO 后台任务：配置规范化落盘 + 状态落盘 + 图片缓存清理。
-
-        三者都含 fsync / 大目录遍历，跑在宿主事件循环上会阻塞该进程内所有
-        会话与 Web 面板（契约见 ``tests/test_cleanup_nonblocking``）。
-        """
+        """构造期的磁盘 IO 后台任务：配置规范化落盘 + 状态落盘 + 图片缓存清理。"""
 
         async def run() -> None:
             if self._pending_normalize_config:
                 await self._normalize_config_off_loop()
             try:
-                # 走 sync 版（含跳写判据）：本任务已在事件循环之外的目的地，
-                # to_thread 内执行，既不阻塞循环也不失去"内容一致即跳过"的语义。
+                # 本任务已在事件循环之外的目的地，to_thread 内执行，
+                # 既不阻塞循环也不失去"内容一致即跳过"的语义。
                 await asyncio.to_thread(self._save_storage_sync)
             except Exception as exc:
                 logger.warning("[%s] startup state save failed: %s", PLUGIN_ID, exc)
@@ -454,19 +437,14 @@ class SelfInitiatedReplyPlugin(Star):
     def _can_start_tasks(self) -> bool:
         """Return whether new plugin-owned work may be scheduled.
 
-        不做隔离注册表的容量判定：首例隔离即经 ``_mark_degraded`` 把 lifecycle
-        切到 DEGRADED 且永不回退，任何"还能再接受几个任务"的容量条件都会被
-        先行短路、从未起过决定作用；留着只会让读者误以为它参与门禁。
+        不做隔离注册表的容量判定：首例隔离即永久 DEGRADED，任何容量条件
+        都会被先行短路，留着只会误导读者以为它参与门禁。
         """
         return self._lifecycle_state is PluginLifecycle.RUNNING and not self._stopping
 
     def _reject_if_not_running(self, action: str) -> None:
-        """拒绝非 RUNNING 态下的写操作，并按实际生命周期给出准确原因。
-
-        DEGRADED 与 STOPPING 都置 ``_stopping``，但含义不同：前者是隔离失败后
-        的永久降级（需重启插件恢复），后者才是真的在关闭。统一说"正在关闭"会把
-        降级误导成关停。
-        """
+        """拒绝非 RUNNING 态下的写操作，并按实际生命周期给出准确原因
+        （DEGRADED 是永久降级需重启，STOPPING 才是真的在关闭）。"""
         if self._lifecycle_state is PluginLifecycle.DEGRADED:
             raise RuntimeError(f"插件已降级，无法{action}（需重启插件恢复）")
         if self._stopping:
@@ -520,20 +498,16 @@ class SelfInitiatedReplyPlugin(Star):
 
         Without this gate any group member could send the bare word
         ``selfreply`` and make the bot emit the whole help text and then call
-        ``stop_event()``, swallowing the message for every other plugin. A
-        leading slash or an actual mention/wake word is required; anything else
-        is treated as ordinary chat text.
+        ``stop_event()``, swallowing the message for every other plugin.
         """
         if str(text or "").lstrip().startswith("/"):
             return True
         # is_explicit_direct_call 的第一判据就是宿主的 is_at_or_wake_command，
-        # 这里不再重复调一次（宿主 callable 被同一个事件跑两遍）。
+        # 不再重复调一次（宿主 callable 被同一个事件跑两遍）。
         return is_explicit_direct_call(event, text)
 
     # 只读视图：数据归属 SessionGate，以下 property 供既有调用点与测试
-    # 以原字段名访问，避免同步迁移动辄数十处引用面。回滚整表覆盖
-    # 经 SessionGate.restore 封装，不再暴露 setter；读侧返回只读视图
-    # （MappingProxyType / frozenset），外部误写会在运行时直接抛错。
+    # 以原字段名访问。读侧返回只读视图，外部误写会在运行时直接抛错。
     @property
     def _session_generation(self) -> MappingProxyType[str, int]:
         return self._gate.generation_view
@@ -549,9 +523,7 @@ class SelfInitiatedReplyPlugin(Star):
     def _prune_session(self, umo: str) -> None:
         """会话回收单点：代次/锁/运行标记/最近裁决 + 会话状态内存回收。
 
-        白名单移除（WhitelistManager.replace）与非白名单 force-check 的
-        finally 共用本入口；磁盘由 build_sessions_payload 写盘时过滤非白名单
-        条目，重启后不会复活。
+        磁盘由 build_sessions_payload 写盘时过滤非白名单条目，重启后不复活。
         """
         self._gate.prune(umo)
         self._last_decisions.pop(umo, None)
@@ -597,14 +569,12 @@ class SelfInitiatedReplyPlugin(Star):
             try:
                 event.set_result(event.plain_result(text))
             except Exception:
-                # 主动 send 已失败，set_result 是最后一层兜底；两条路都不通说明事件
-                # 已被宿主终结，此时无处投递指令回显，只能放弃（丢回显 > 抛异常打断管道）。
+                # 两条路都不通说明事件已被宿主终结，丢回显优于抛异常打断管道。
                 pass
         try:
             event.stop_event()
         except Exception:
-            # 事件可能已被宿主或上游插件终结，重复 stop 无意义；指令回显已完成，
-            # 此处失败不改变指令的执行结果。
+            # 事件可能已被宿主或上游插件终结，重复 stop 无意义。
             pass
 
     # 注意：permission_type 必须在 command_group 内层。真实宿主（4.26.8/4.27.0
@@ -687,10 +657,8 @@ class SelfInitiatedReplyPlugin(Star):
         try:
             event.set_extra(COMMAND_HANDLED_KEY, True)
         except Exception:
-            # 老宿主可能未实现 set_extra。标记丢失只会让同一事件在后续 on_message
-            # 少一层去重保护，兜底是事件自身的 stop_event/is_stopped（指令分流
-            # 出口会 stop，重入时按 is_stopped 拦下），不是指令前缀判定：
-            # 前缀判定恰恰会让同一指令再次通过。
+            # 老宿主可能未实现 set_extra。标记丢失只让同一事件在后续 on_message
+            # 少一层去重保护，兜底是事件自身的 stop_event/is_stopped。
             pass
 
     def _cancel_background_tasks(self) -> None:
@@ -727,8 +695,8 @@ class SelfInitiatedReplyPlugin(Star):
         _, pending = await asyncio.wait(tasks, timeout=TERMINATE_TASK_TIMEOUT_SEC)
         for task in pending:
             task.cancel()
-            # 超时即取消并隔离：不再有第二次等待窗口，硬窗口语义（契约 §5）
-            # 要求 terminate 有界，取消后的清理只由任务自身的 done 回调收尾。
+            # 超时即取消并隔离：terminate 有界（契约 §5），取消后的清理只由
+            # 任务自身的 done 回调收尾。
             self._quarantine_task(task, "shutdown deadline exceeded")
         self._background_tasks.difference_update(task for task in tasks if task.done())
 
@@ -739,9 +707,9 @@ class SelfInitiatedReplyPlugin(Star):
         task = self._track_critical_task(persist())
         done, _ = await asyncio.wait({task}, timeout=max(0.0, TERMINATE_TASK_TIMEOUT_SEC))
         if not done:
-            # 硬窗口耗尽：宿主不等隔离任务就构造新实例，本实例的慢写若落地会用
-            # 陈旧快照覆盖新实例刚写出的 state.json（配额少计、白名单回退）。
-            # 置位放弃标志，让仍在跑的写盘在 os.replace 之前自我放弃。
+            # 硬窗口耗尽：宿主不等隔离任务就构造新实例，本实例的慢写若落地会
+            # 用陈旧快照覆盖新实例刚写出的 state.json。置位放弃标志，让仍在跑
+            # 的写盘在 os.replace 之前自我放弃。
             self._abandon_disk_writes = True
             self._quarantine_task(task, "final state save deadline exceeded")
             return
@@ -758,16 +726,14 @@ class SelfInitiatedReplyPlugin(Star):
         )
         self._stopping = True
         # 最终落盘必须与任务收敛同处 _config_lock 内：Dashboard 的 POST /config
-        # 在同一把锁下改 settings/whitelist（webapi._apply_config_updates），
-        # 锁外快照会读到半更新的白名单，把刚加/刚删的会话错误过滤掉。
-        # 锁序恒为 _config_lock → _save_lock（两条路径一致），无反向持有。
+        # 在同一把锁下改 settings/whitelist，锁外快照会读到半更新的白名单。
+        # 锁序恒为 _config_lock → _save_lock，无反向持有。
         async with self._config_lock:
             self._cancel_delay_tasks()
             await self._scheduler.stop_patrol()
             self._cancel_background_tasks()
             await self._wait_background_tasks()
             self._coordinator.reset_all()
-            # 记录点已逐次落盘，此处兜底覆盖「最后一次记录之后又有内存
-            # 变更」（白名单回收、跨天刷新）。
+            # 记录点已逐次落盘，此处兜底覆盖「最后一次记录之后又有内存变更」。
             await self._save_final_state_with_deadline()
         logger.info("[%s] terminated", PLUGIN_ID)

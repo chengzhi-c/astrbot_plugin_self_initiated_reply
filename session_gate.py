@@ -85,9 +85,9 @@ class SessionGate:
     def snapshot(self) -> dict[str, Any]:
         """代次/运行集/锁三张表的浅拷贝快照，供配置回滚原地恢复。
 
-        release 表**刻意不快照**：等待者持有具体 Event 对象，按值恢复会
-        制造孤儿事件（永久挂起），按身份恢复又会带回陈旧的 set 状态
-        （空转饿死）。正确来源是恢复后的运行集，由 ``restore`` 反推。
+        release 表**刻意不快照**：等待者持有具体 Event 对象，按值恢复会制造
+        孤儿事件或带回陈旧的 set 状态（空转饿死）。正确来源是恢复后的运行集，
+        由 ``restore`` 反推。
         """
         return {
             "generation": dict(self._session_generation),
@@ -98,16 +98,11 @@ class SessionGate:
     def restore(self, snap: dict[str, Any]) -> None:
         """原地恢复三张表，并把 release 表校正到与恢复后运行集一致。
 
-        必须原地 clear+update、禁止属性重绑定（契约 §11 B1）：等待者与
-        运行中的 ``async with`` 持有的是容器与 Event/Lock 对象本身的引用，
-        换掉容器身份会让它们继续读写孤儿表。
-
-        release 表**不做整表恢复**：等待者持有的是具体 Event 对象，替换
-        即制造孤儿（与锁对象同一约束）。改为从恢复后的运行集反推应有状态：
-        回滚会把运行标记恢复成快照态，而支撑它的检查任务可能已经在
-        ``_save_storage()`` 的 await 窗口内结束并 ``set()`` 过事件，此时
-        若保留已 set 状态，``scheduler`` 的 ``while is_running`` 循环每轮
-        立即返回，紧密空转独占事件循环（整个 bot 卡死）。
+        必须原地 clear+update、禁止属性重绑定：等待者与运行中的
+        ``async with`` 持有容器与 Event/Lock 对象本身的引用，换掉容器身份会让
+        它们继续读写孤儿表。release 表不整表恢复，改为从恢复后的运行集反推：
+        回滚会把运行标记恢复成快照态，而支撑它的检查任务可能已在恢复前结束并
+        ``set()`` 过事件，保留已 set 状态会让等待循环紧密空转独占事件循环。
         """
         restore_container_inplace(self._session_generation, snap["generation"])
         restore_container_inplace(self._session_locks, snap["locks"])
@@ -126,8 +121,7 @@ class SessionGate:
         """会话移出白名单后回收全部映射与运行标记。"""
         self._session_generation.pop(umo, None)
         # 仍被在途检查持有的锁**不摘**：摘走后重加白名单的新检查会拿到新锁
-        # 对象，与旧检查真正并发（代次门只在 check 点兜底，锁互斥必须连续）。
-        # 锁对象每 UMO 至多一个，由该会话下一次未持锁的 prune 回收。
+        # 对象，与旧检查真正并发。锁对象由该会话下一次未持锁的 prune 回收。
         held = self._session_locks.get(umo)
         if held is not None and not held.locked():
             self._session_locks.pop(umo, None)

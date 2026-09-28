@@ -66,12 +66,8 @@ class OutboundGateway:
         """Classify one outbound call and retain its evidence in the ledger."""
         is_direct = kind == "tool_direct"
         if not self._ledger.accepts_attempts:
-            # 账本已封（生成已结束/被隔离、或在记 RECORDED）：迟到的工具直发是
-            # 可预期的时序，不是编程错误。`reserve` 的 RuntimeError 语义留给
-            # 真正的调用点错误，这里降级为闸门拒绝，被隔离的运行保留了 tracker
-            # （generation._cleanup_generation_state 的刻意取舍），其内的工具直发
-            # 必然走到这里；抛异常会让该次直发的记账整条丢失，与"继续受预算与
-            # 代次约束"的意图相反。
+            # 账本已封时收到迟到的工具直发是可预期时序（被隔离的运行保留了
+            # tracker），降级为闸门拒绝；抛异常会让该次直发的记账整条丢失。
             outcome = SendOutcome(
                 SendStatus.SUPPRESSED,
                 "ledger already sealed",
@@ -130,9 +126,9 @@ class OutboundGateway:
                     "sender returned False (definitely not submitted)",
                 )
             else:
-                # ``None`` 与真值同归 DELIVERED：event.send 正常返回 None，
-                # Context.send_message 也是（True 同样代表送达）。未抛异常即已
-                # 提交，记 DELIVERED 才会写进 assistant 历史供后续决策参考。
+                # ``None`` 与真值同归 DELIVERED：event.send / context.send_message
+                # 正常返回 None。未抛异常即已提交，记 DELIVERED 才会写进
+                # assistant 历史供后续决策参考。
                 outcome = SendOutcome(SendStatus.DELIVERED, "sender completed")
 
         if is_direct and outcome.status is SendStatus.FAILED_BEFORE_SUBMIT:

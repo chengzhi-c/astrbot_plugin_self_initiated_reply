@@ -1,15 +1,11 @@
 """主动回复正文生成管线。
 
-负责一次生成运行的全部编排：上下文/提示词组装、工具边界安装与恢复、
-构建配置组装、最终工具策略强制（fail-closed 与危险工具拒绝）、生成运行
-（超时、优雅停止、孤儿收敛）与工具直发追踪。运行期间的行为契约全部保持：
-- 工具边界安装/恢复必须成对，只触碰事件自身字段（§3）
-- 生成超时/取消/失败三类出口都不得丢失已发生的工具直发计数与文本（§3）
-- 直发预算在调用适配器之前消耗，异常发生在提交后仍算潜在投递（§2）
+一次生成运行的全部编排：上下文/提示词组装、工具边界安装与恢复、构建配置
+组装、最终工具策略强制（fail-closed 与危险工具拒绝）、生成运行（超时、优雅
+停止、孤儿收敛）与工具直发追踪。行为契约（§2/§3）由 tests 钉住。
 
 宿主交互经注入回调执行：运行时适配器经 getter 动态读取（测试替换
-``main._AGENT_RUNTIME`` 后仍生效），工具策略经回调运行时经插件实例查找
-（测试替换实例方法后仍生效）。
+``main._AGENT_RUNTIME`` 后仍生效），工具策略经回调运行时经插件实例查找。
 """
 
 from __future__ import annotations
@@ -45,13 +41,8 @@ from .utils import build_history_text, cap_context_text, clean_reply, response_t
 
 
 def _consume_task_result(task: asyncio.Task[Any]) -> None:
-    """取回已结束任务的结果，消除"异常无人取回"的循环级 ERROR。
-
-    asyncio 在任务以异常收尾且无人读取结果时，向事件循环的异常处理器投一条
-    ``Task exception was never retrieved``。那条日志没有本插件的上下文，
-    排障时无法与生成链路关联（宿主 ``run_agent`` 在 request_stop 后仍可能以
-    异常收尾）。取消与正常结束都不产生该日志，取一次结果即可消除。
-    """
+    """取回已结束任务的结果：消除"Task exception was never retrieved"循环级
+    ERROR（宿主 run_agent 在 request_stop 后仍可能以异常收尾）。"""
     if task.cancelled():
         return
     try:
@@ -61,8 +52,7 @@ def _consume_task_result(task: asyncio.Task[Any]) -> None:
         pass
 
 
-# 回复长度档位的措辞。档位值来自 _conf_schema 的 reply_length_mode；
-# 未知值按 balanced 兜底（配置漂移不应让 prompt 缺失长度约束）。
+# 回复长度档位的措辞。未知值按 balanced 兜底（配置漂移不应让 prompt 缺失长度约束）。
 _LENGTH_HINTS = {
     "short": "回复要非常简短，控制在一句话或几个字，像随口搭一句。",
     "balanced": "回复自然均衡，一两句话即可，不要长篇大论。",
@@ -79,14 +69,12 @@ _TOOL_HINT_RESTRICTED = (
     "读写文件、访问浏览器、创建定时任务、管理技能、写入记忆或向其他会话发消息。"
 )
 
-# 信封标签名只在这里出现一次：中和用的正则由它拼出，
-# 信封本身也由它拼出。若只改一处、另一处仍写死旧名，中和会静默失效，
-# 这是本类修复最典型的腐化方式，故从源头上让二者不可能不一致。
+# 信封标签名只在这里出现一次：中和用的正则与信封本身都由它拼出，二者
+# 结构上不可能不一致。
 _ENVELOPE_TAG = "recent_chat"
 
-# 匹配伪造的信封标签，容忍空白与大小写变形（``< / Recent_Chat >`` 同样拦下）。
-# 只针对信封自身的标签名，不动其他尖括号：聊天记录里的代码片段、表情
-# ``<_<``、泛型 ``List<int>`` 都应原样进入模型，全局转义会把正常内容变成噪音。
+# 匹配伪造的信封标签，容忍空白与大小写变形；只针对信封自身标签名，不动
+# 其他尖括号（聊天记录里的代码片段应原样进入模型）。
 _ENVELOPE_TAG_RE = re.compile(rf"<\s*/?\s*{_ENVELOPE_TAG}\s*>", re.IGNORECASE)
 
 
@@ -95,16 +83,11 @@ def neutralize_envelope_tags(text: str) -> str:
 
     攻击面：历史拼接把 ``MessageRecord.text`` 原样放进 ``<recent_chat>`` 信封，
     用户消息里出现 ``</recent_chat>`` 就能提前闭合信封，让其后的文字落到信封
-    **之外**、与插件自己的尾部指令同层级（tests/test_generation_runner.py 钉住）。
+    之外、与插件自己的尾部指令同层级（tests/test_generation_runner.py 钉住）。
 
-    不复用 ``sanitize_prompt_variable``：它只改写引号与控制字符，信封标签原样
-    穿透；且按 ``max_length`` 截断，会吃掉聊天记录，长度另由
-    ``recent_message_limit`` 约束。改用全角而非删除：保留攻击痕迹可读，等长、
-    不影响长度预算。
-
-    只中和信封标签、不做全局尖括号转义：信封**内部**出现伪造标签并不构成越权
-    （仍在不可信区内），真正的提权只有"闭合信封"一条路；范围收窄避免把正常
-    代码内容打成乱码。本函数是纯函数（无共享状态、无 I/O），加日志会破坏该性质。
+    不复用 ``sanitize_prompt_variable``：它不处理信封标签且会截断聊天记录。
+    改用全角而非删除：保留攻击痕迹可读、等长、不影响长度预算。本函数是
+    纯函数（无共享状态、无 I/O），加日志会破坏该性质。
     """
     return _ENVELOPE_TAG_RE.sub(
         lambda match: match.group(0).replace("<", "＜").replace(">", "＞"), text
@@ -114,19 +97,14 @@ def neutralize_envelope_tags(text: str) -> str:
 def build_proactive_prompt(
     reply_length_mode: str, context_text: str, *, inherit_tools: bool
 ) -> str:
-    """拼装主动回复的提示词（自 ``generate`` 抽出的纯函数）。
+    """拼装主动回复的提示词。
 
-    抽离理由：这段拼装无共享可变状态，与 ``generate`` 的资源获取阶梯
-    （send tracker / 工具边界 / provider_request）无耦合，独立后可直接单测文案契约。
-
-    安全契约（改文案必须同时守住这四条，见 tests/test_generation_runner.py）：
-    1. ``recent_chat`` 必须被显式声明为不可信内容，且声明在聊天记录**之前**出现；
-    2. 工具边界措辞必须随 ``inherit_tools`` 切换，继承态也要点明宿主级危险能力不可用；
+    安全契约（改文案必须守住，tests/test_generation_runner.py）：
+    1. ``recent_chat`` 必须被显式声明为不可信内容，且声明在聊天记录之前；
+    2. 工具边界措辞随 ``inherit_tools`` 切换，继承态也要点明宿主级危险能力不可用；
     3. 无可用工具时要求直接输出文本，避免模型臆造工具调用；
     4. 信封必须不可被内容闭合，``context_text`` 一律先过
-       ``neutralize_envelope_tags``。中和放在本函数内而非调用方，
-       是为了让"信封闭合不了"成为本函数的内在性质：任何新调用方都自动获得该保证，
-       不依赖各自记得先净化。
+       ``neutralize_envelope_tags``（中和放在本函数内，任何新调用方自动获得保证）。
     """
     length_hint = _LENGTH_HINTS.get(reply_length_mode, _DEFAULT_LENGTH_HINT)
     tool_hint = _TOOL_HINT_INHERIT if inherit_tools else _TOOL_HINT_RESTRICTED
@@ -227,23 +205,18 @@ class GenerationRunner:
     ) -> None:
         """request_stop 后宽限等待，超时或被再次取消才兜底取消。
 
-        取消与超时分支共用同一形状，仅取消时机不同：
         ``cancel_first=True``（调用方已取消）立即注入取消再等收敛窗口；
-        ``cancel_first=False``（超时）先给宿主 run_agent 优雅清理窗口。
-        宽限耗尽仍未收敛都注入兜底取消，避免 run_agent 吞掉取消后留下
-        孤儿任务。
-
-        ``on_quarantine`` 在**任务真正被隔离**时回调（宿主吞掉取消、任务仍
-        活着）：调用方据此保留发给它的工具直发闸门，见
-        ``_cleanup_generation_state``。收敛成功不回调。
+        ``cancel_first=False``（超时）先给宿主 run_agent 优雅清理窗口。宽限
+        耗尽仍未收敛都注入兜底取消，避免留下孤儿任务。``on_quarantine`` 在
+        任务真正被隔离时回调：调用方据此保留发给它的工具直发闸门
+        （见 ``_cleanup_generation_state``）。
         """
 
         def quarantine(task: asyncio.Task[Any], reason: str) -> None:
             if task.done():
                 return
             if self._quarantine_task is None:
-                # 与 decision 的同场景同口径：任务吞掉取消又没被隔离登记，是一条
-                # 零日志的泄漏路径（cleanup 会摘掉发给它的工具直发闸门）。
+                # 任务吞掉取消又没被隔离登记是一条零日志的泄漏路径。
                 logger.warning(
                     "[%s] agent task ignored cancellation and is unregistered: %s",
                     PLUGIN_ID,
@@ -259,8 +232,7 @@ class GenerationRunner:
             try:
                 request_stop()
             except Exception:
-                # 优雅停止是尽力而为：宿主 request_stop 的实现不受本插件约束，
-                # 失败不能阻断下方的宽限等待与兜底 cancel()，否则会留下孤儿任务。
+                # 优雅停止是尽力而为：失败不能阻断下方的宽限等待与兜底 cancel()。
                 pass
         if cancel_first:
             run_task.cancel()
@@ -272,9 +244,8 @@ class GenerationRunner:
             quarantine(run_task, "generation stop interrupted")
             raise
         if done:
-            # 收敛成功也必须取回结果：run_agent 以异常收尾时若不读，asyncio 会在
-            # 事件循环里留下无归属的 "Task exception was never retrieved" ERROR，
-            # 与本插件日志无法关联，排障方向被误导。
+            # 收敛成功也必须取回结果：以异常收尾时若不读，asyncio 会在事件
+            # 循环里留下无归属的 "Task exception was never retrieved"。
             _consume_task_result(run_task)
             return
 
@@ -402,8 +373,6 @@ class GenerationRunner:
         run.had_instance_send = "send" in event_dict
         run.original_instance_send = event_dict.get("send") if run.had_instance_send else None
         if not callable(original_send):
-            # 前置到 tracker 构造之前：本方法此后默认 original_send 可调用，
-            # 闭包里不再重复判一次。
             logger.warning(
                 "[%s] event send tracker unavailable ledger_id=%s session=%s",
                 PLUGIN_ID,
@@ -519,9 +488,9 @@ class GenerationRunner:
             raise RuntimeError("run_agent 尚未产出 build_result 就进入运行阶段")
         run_task = asyncio.ensure_future(self._drain(build_result.agent_runner))
         self._background_tasks.add(run_task)
-        # 取结果先于丢弃：宿主 run_agent 以异常收尾时，不读结果会让 asyncio
-        # 投一条无归属的 "Task exception was never retrieved"。回调按注册顺序
-        # 执行，故本回调在 _discard_background 之前跑，此时任务已定。
+        # 取结果先于丢弃：以异常收尾时不读结果会让 asyncio 投一条无归属的
+        # "Task exception was never retrieved"；回调按注册顺序执行，
+        # 本回调在 _discard_background 之前跑。
         run_task.add_done_callback(_consume_task_result)
         run_task.add_done_callback(self._discard_background)
 
@@ -529,17 +498,17 @@ class GenerationRunner:
             run.quarantined = True
 
         try:
-            # shield：超时不硬取消 run_agent，先走优雅停止，让宿主
-            # run_agent 正常清理内部任务（如 stop_watcher），避免
-            # CancelledError 注入 yield 点导致常驻轮询任务泄漏。
+            # shield：超时不硬取消 run_agent，先走优雅停止，让宿主 run_agent
+            # 正常清理内部任务，避免 CancelledError 注入 yield 点导致常驻
+            # 轮询任务泄漏。
             await asyncio.wait_for(
                 asyncio.shield(run_task),
                 timeout=self.settings.generation_timeout_sec,
             )
         except asyncio.CancelledError:
-            # 调用方取消（force cancel / terminate）时，shield 保住的
-            # run_task 不会自动停止：必须显式收敛，否则成为孤儿任务
-            # 继续在后台运行，其工具直发还会绕过预算与代次闸门。
+            # 调用方取消（force cancel / terminate）时，shield 保住的 run_task
+            # 不会自动停止：必须显式收敛，否则成为孤儿任务，其工具直发还会
+            # 绕过预算与代次闸门。
             await self._graceful_stop(
                 run_task,
                 build_result.agent_runner,
@@ -574,13 +543,10 @@ class GenerationRunner:
         """四段独立静默清理：reset → 摘 send → 工具边界 → provider_request。
 
         摘 send 一档受 ``run.quarantined`` 保护：被隔离的运行仍在后台跑，它
-        之后的工具直发必须继续经 tracker 受预算/代次/停止闸门约束。摘掉
-        tracker 等于给一个不受本插件控制的任务开放裸发通道；宁可把 tracker
-        留在那个事件实例上（它随事件对象一起被回收，会话的下一条消息会有新
-        事件、新 tracker），也不给隔离任务留裸发窗口。
+        之后的工具直发必须继续经 tracker 受预算/代次/停止闸门约束；宁可把
+        tracker 留在那个事件实例上（随事件对象一起被回收），也不给隔离任务
+        留裸发窗口。finally 是唯一回滚点，任一段失败都不得中断其余段。
         """
-        # 以下四段清理各自独立静默兜底：finally 是唯一的回滚点，任一段失败都
-        # 不能中断其余段。第一段必须排在摘除 send 之前。
         last_event = run.last_event
         try:
             if run.reset_coro is not None:
@@ -619,23 +585,9 @@ class GenerationRunner:
     async def _load_conversation_into(self, req: Any, last_event: Any, umo: str) -> None:
         """把会话历史读进 ``req``，三种失败各自降级为「无上下文回复」而非中断。
 
-        三条路径的日志级别不同，因为可行动性不同：
-
-        - 拿不到 conversation：多为宿主侧环境问题（无 provider / 建会话失败），
-          debug 级，不打扰运营者。
-        - history 解析失败（``TypeError`` / ``ValueError``）：warning 级。宿主写库走
-          ``json.dumps(content or [])``（``conversation_mgr.py:70``），空会话也是
-          ``"[]"`` 能解析成功，所以这条为真即真的数据损坏。此时 ``req.contexts``
-          静默留默认值，机器人带着空上下文接话，用户看到的是「失忆式」答复而非
-          功能缺失，无日志则无从定位。
-        - conversation 结构异常（缺 ``history`` 属性等）：warning 级但换文案，别贴
-          「损坏」标签误导排障。
-
-        本方法把 ``Exception`` 全部降级消化，历史读不到不该让这一轮回复消失，而调用方
-        ``generate`` 的外层 ``except`` 会把抛出来的东西判为整轮失败。两类仍会穿透：
-        ``BaseException`` 子类（``CancelledError`` / ``KeyboardInterrupt``）是刻意的，
-        取消必须能中断这一轮；``logger`` 自身抛异常则会被外层兜住并判整轮失败，属已知
-        窄缺口，与提取前的行为一致。
+        日志级别按可行动性分档：拿不到 conversation 多为宿主环境问题（debug）；
+        history 解析失败是真数据损坏（warning）；conversation 结构异常是另一
+        类 warning 文案。``BaseException`` 子类（取消）刻意穿透。
         """
         try:
             conversation = await self._runtime().load_session_conversation(
@@ -662,25 +614,18 @@ class GenerationRunner:
             )
 
     async def _drain(self, agent_runner: Any) -> None:
-        """跑完宿主 Agent 的产出流并丢弃中间消息。
+        """跑完宿主 Agent 的产出流并丢弃中间消息（只取最终 LLM 响应）。
 
-        主动回复只取最终 LLM 响应（``get_final_llm_resp``），中间步骤既不展示工具
-        调用也不流式外发，所以这里只需把生成器抽干。
+        参数取值都是刻意的，失效机制分两类：
 
-        每个参数的取值都是刻意的，但失效机制分两类：
+        - ``show_tool_use=False``：为真时宿主会 ``await event.send(工具状态消息)``，
+          其 type 是 ``"tool_call"``，不匹配 ``tracked_send`` 只认的
+          ``"tool_direct_result"``，会绕过预算与代次闸门直接进会话。
+        - ``stream_to_general=False`` 配 ``buffer_intermediate_messages=True``：
+          让宿主缓冲中间 ``llm_result`` 到结束才合并；任一项反向改动都会让每个
+          中间步骤各自 ``set_result``，本方法拦不住已落在事件结果上的内容。
 
-        - ``show_tool_use=False``：宿主在它为真时会 ``await event.send(工具状态消息)``。
-          那条消息的 type 是 ``"tool_call"``，不匹配 ``tracked_send`` 只认的
-          ``"tool_direct_result"``，于是被透传给原始 ``send``，绕过预算与代次闸门直接
-          进会话。``show_tool_call_result`` 单独打开无此效果：宿主要求它与
-          ``show_tool_use`` 同时为真才发。
-        - ``stream_to_general=False`` 配 ``buffer_intermediate_messages=True``：这对组合
-          让宿主 ``_should_buffer_llm_result`` 成立，中间 ``llm_result`` 缓冲到结束才合并
-          成一条。任一项反向改动都会让每个中间步骤各自 ``set_result``，中间产物经宿主管线
-          发出，本方法只丢弃 ``yield`` 出来的 chain，拦不住已经落在事件结果上的内容。
-
-        ``show_reasoning`` 只在流式分支生效，主动回复是非流式，改它无影响；``max_step``
-        是步数上限，不是开关。
+        ``show_reasoning`` 只在流式分支生效（本路径非流式）；``max_step`` 是步数上限。
         """
         async for _ in self._runtime().run(
             agent_runner,
@@ -728,13 +673,8 @@ class GenerationRunner:
         Only ``event.plugins_name`` is touched: the event object is per-message
         owned by this plugin, while ``platform_meta`` is a shared adapter
         singleton and must never be mutated. The authoritative allowlist is
-        enforced later on ``req.func_tool`` via the runtime adapter, right
-        before the agent reset and run.
-
-        When ``inherit_tools`` (the ``proactive_inherit_tools`` snapshot taken
-        at pipeline entry) is enabled the boundary is not installed at all: the
-        proactive run inherits the host tool chain the same way a normal @Bot
-        reply does (third-party plugin tools included).
+        enforced later on ``req.func_tool`` via the runtime adapter. When
+        ``inherit_tools`` is enabled the boundary is not installed at all.
         """
         if inherit_tools:
             return {}
@@ -754,9 +694,9 @@ class GenerationRunner:
             try:
                 event.plugins_name = state["plugins_name"]
             except Exception:
-                # plugins_name 在部分宿主版本是只读属性或 __slots__ 成员，赋值会抛。
-                # 本函数由 generate() 的 finally 调用，抛出会中断后续清理段，
-                # 因此只能静默；未复原仅影响该事件后续的插件归属标记。
+                # plugins_name 在部分宿主版本是只读属性或 __slots__ 成员；本函数
+                # 由 generate() 的 finally 调用，抛出会中断后续清理段。未复原仅
+                # 影响该事件后续的插件归属标记。
                 pass
 
     def main_agent_build_config(self, umo: str) -> Any:
@@ -768,15 +708,13 @@ class GenerationRunner:
                 config_obj = get_config(umo)
             provider_settings = dict(config_obj.get("provider_settings", {}) or {})
         except Exception:
-            # 会话级配置是可选能力：get_config(umo) 在旧宿主不存在，返回对象也可能
-            # 不是 Mapping。取不到时保持 provider_settings 为空字典，
-            # 下方 get() 全部落到默认值（tool_call_timeout=60），即降级为宿主默认行为。
+            # 会话级配置是可选能力：get_config(umo) 在旧宿主不存在或返回对象
+            # 不是 Mapping 时降级为宿主默认行为。
             pass
         return self._runtime().new_build_config(
             tool_call_timeout=int(provider_settings.get("tool_call_timeout", 60) or 60),
             # 强制 full：skills_like 会进入 raw/light 双工具集路径，策略清理只覆盖
-            # light 集而 runner 执行时回读 raw 集（_skill_like_raw_tool_set），
-            # 边界不可见；主动回复工具集很小，full 无额外成本且边界单一可验证。
+            # light 集，边界不可见；主动回复工具集很小，full 无额外成本。
             tool_schema_mode="full",
             provider_wake_prefix="",
             streaming_response=False,

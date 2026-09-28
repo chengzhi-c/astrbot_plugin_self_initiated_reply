@@ -64,8 +64,7 @@ class MessageRecorderBridge:
                     (item for item in image_components if str(item.get("url") or "") == image_url),
                     None,
                 )
-            # 多图记录里目标 URL 缺失或未命中时必须拒绝盲取首图：首图组件可能属于
-            # 另一张图。单图的唯一组件仍可安全回退。
+            # 多图记录里目标 URL 缺失或未命中时必须拒绝盲取首图。
             if selected is None and len(image_components) > 1:
                 logger.debug(
                     "[%s] recorder multi-image URL unavailable or unmatched; refusing to grab "

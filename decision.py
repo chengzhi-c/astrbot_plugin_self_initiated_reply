@@ -1,12 +1,8 @@
 """会话级"是否接话"裁决。
 
 只负责裁决时序与闸门：判断模型调用（超时/失败分类）、判断提示词构建与
-注入清理、局部闸门判定（免打扰/日配额/静默/冷却/观察窗口）。
-对外入口 ``decide`` 之外，``local_gate`` 也被 ``main`` 与 ``session_pipeline``
-直接调用；``ask_decision_model`` / ``build_decision_prompt`` /
-``build_recent_messages`` 供本模块内部复用，并可独立单测。
-模型解析/生成、历史读取、Vision 描述经注入回调执行，
-因此可脱离插件实例独立单测（注入假判断模型与假时钟）。
+注入清理、局部闸门判定（免打扰/日配额/静默/冷却/观察窗口）。模型解析/
+生成、历史读取、Vision 描述经注入回调执行，可脱离插件实例独立单测。
 """
 
 from __future__ import annotations
@@ -42,21 +38,18 @@ from .utils import (
     response_text,
 )
 
-# 放弃 provider 任务后给它的收敛宽限：与生成路径同值同语义（宿主 SDK 吞掉
-# CancelledError 时留下的才是孤儿）。刻意本地重声明而非引用 models 的
-# GRACEFUL_STOP_GRACE_SEC，那是生成路径的行为调参，两者可独立调整。
+# 放弃 provider 任务后给它的收敛宽限：宿主 SDK 吞掉 CancelledError 时留下的
+# 才是孤儿。与生成路径 GRACEFUL_STOP_GRACE_SEC 同值但语义独立，可各自调整。
 DECISION_CONVERGE_GRACE_SEC = 3.0
 
 DECISION_SYSTEM_PROMPT = "你是群聊主动回复时机判断器。只输出严格 JSON，不要输出解释。"
 # 裁决只输出短 JSON，120 token 足够且把判断调用成本封顶。
 DECISION_MAX_TOKENS = 120
-# 判断上下文（多行聊天记录）的字符预算：与生成路径的 MAX_GENERATION_CONTEXT_CHARS
-# 同口径但更小，判断只需回答"此刻该不该接"，输入越短越省越快。
-# 超预算时**保尾**：越新的消息越重要（默认模板明示「优先参考最近至少 8 条」），
-# 截头会先丢掉最新几条，与提示词要求相反。
+# 判断上下文（多行聊天记录）的字符预算：判断只需回答"此刻该不该接"，
+# 输入越短越省越快。超预算时保尾：越新的消息越重要。
 MAX_DECISION_CONTEXT_CHARS = 2000
 # 引用决定的可选输出约定，只在 quote_mode=model 时追加：判断模型是高频调用，
-# 不引用引用的用户不该多背一个输出字段（少一个字段就少一分跑偏机会）。
+# 不用引用的用户不该多背一个输出字段。
 QUOTE_DECISION_HINT = (
     "另请在 JSON 中给出可选字段 quote：true 表示这句回复应该引用最后一条消息"
     "（例如在回应某个人的具体问题、对话已往下走了几句、或需要点明在接谁的话时），"
@@ -65,11 +58,9 @@ QUOTE_DECISION_HINT = (
 # 免打扰时段的时/分上下界（HH:MM 解析后的合法性校验）。
 _MAX_QUIET_HOUR = 23
 _MAX_QUIET_MINUTE = 59
-# 判断路径读宿主历史的下限：默认提示词明示「优先参考最近至少 8 条当前会话历史」，
-# 读少于 8 条会让模型反复回宿主补历史。与生成路径的 models.MIN_RECENT_TEXT_RECORDS
-# （=5，且被 recent_message_limit 夹住）**故意不同源**：判断只需回答"此刻该不该接"，
-# 8 条是提示词契约；生成要产出正文，阈值跟着用户的缓存上限走。改任一侧都不得
-# 顺手统一到另一侧。
+# 判断路径读宿主历史的下限：默认提示词明示「优先参考最近至少 8 条」，读少于
+# 8 条会让模型反复回宿主补历史。与生成路径的 MIN_RECENT_TEXT_RECORDS 刻意
+# 不同源：8 条是提示词契约，生成阈值跟着用户的缓存上限走。
 DECISION_HISTORY_FLOOR = 8
 
 
@@ -108,12 +99,9 @@ class DecisionMaker:
     async def _converge_provider_task(self, task: asyncio.Task[Any], reason: str) -> None:
         """收敛一个超时/被取消的 provider 任务：取消 → 宽限 → 未退才隔离登记。
 
-        ``asyncio.wait`` 不传播调用方取消、也不在内层未结束时清除它，故放弃
-        路径必须显式取消，且**不能**取消完就立即判定为孤儿，``cancel()`` 是
-        异步投递的，刚调用时 ``task.done()`` 必然为 False。故照
-        ``generation._graceful_stop`` 的形状给一个宽限窗口，只有宽限耗尽仍未
-        收敛（宿主 provider 吞掉 CancelledError）才交隔离登记：那才是真正的
-        孤儿任务，宁可登记也不要静默留下它。
+        ``cancel()`` 是异步投递的，刚调用时 ``task.done()`` 必然为 False，
+        故照 ``generation._graceful_stop`` 的形状给一个宽限窗口，只有宽限
+        耗尽仍未收敛（宿主 provider 吞掉 CancelledError）才交隔离登记。
         """
         task.cancel()
         done, _ = await asyncio.wait({task}, timeout=DECISION_CONVERGE_GRACE_SEC)
@@ -151,23 +139,20 @@ class DecisionMaker:
             state.last_active_at if silence_active_at is None else silence_active_at
         )
         if not active_for_silence:
-            # 从未活跃与"静默中"是两回事：静默不足有明确的等待时长可展示，
-            # 无活动记录连判定基线都没有，沿用"静默时间不足"文案会让运营
-            # 误以为配置没生效而不是会话太冷清。
+            # 从未活跃与"静默中"是两回事：无活动记录连判定基线都没有，
+            # 沿用"静默不足"文案会误导运营以为配置没生效。
             return "会话暂无活动记录，无法判断静默。"
         silence_left = state.remaining_silence_sec(
             self.settings.min_silence_sec, self._clock(), active_at=active_for_silence
         )
         if silence_left > 0:
-            # max(0, ...)：silence_left 可以大于 min_silence_sec
-            # ，载入时时间戳被钳到 now + MAX_CLOCK_SKEW_SEC，最多仍能超出一个偏移量，
-            # 差值为负会向运营者显示「静默时间不足：-300s / 45s」这种自相矛盾的文案。
+            # max(0, ...)：载入时时间戳被钳到 now + MAX_CLOCK_SKEW_SEC，
+            # 差值可能为负，不能向运营者显示负的剩余静默。
             elapsed = max(0, int(self.settings.min_silence_sec - silence_left))
             return f"静默时间不足：{elapsed}s / {self.settings.min_silence_sec}s。"
         cooldown_left = self.settings.cooldown_sec - (self._clock() - state.last_proactive_at)
         if cooldown_left >= 1:
-            # 阈值取 1 秒而非 >0：亚秒剩余在文案上等于「冷却中：还剩 0s」，
-            # 语义矛盾；不足整秒直接放行，误差落在下一次触发上。
+            # 不足整秒直接放行：亚秒剩余在文案上等于「还剩 0s」，语义矛盾。
             return f"冷却中：还剩 {duration(cooldown_left)}。"
         if state.last_proactive_observed_at >= state.last_active_at:
             return "这条消息之后已经主动回复过。"
@@ -269,8 +254,7 @@ class DecisionMaker:
         try:
             provider_id = await self._resolve_provider(umo)
         except Exception as exc:
-            # provider 解析链路的业务故障（配置坏/DB 错）在此分类，避免被当作
-            # "不存在"而输出误导性的"未找到可用判断模型"。
+            # provider 解析链路的业务故障单独分类，避免被当作"未找到"误导运维。
             logger.error(
                 "[%s] resolve decision provider failed: %s",
                 PLUGIN_ID,
@@ -289,12 +273,10 @@ class DecisionMaker:
             }
         prompt = await self.build_decision_prompt(umo, state, trigger)
         response: Any = None
-        # 超时用 asyncio.wait 而非 wait_for：wait_for 的语义是"超时后取消内层并
-        # **等它真正结束**"，宿主 provider 若吞掉 CancelledError（SDK 的重试循环
-        # 或裸 except 后继续 await），判断任务永不返回 → 会话锁与运行标记永不释放，
-        # 该会话从此拒绝一切检查，terminate() 也会超时把插件拖进 DEGRADED。
-        # wait 只等待、不含取消语义，超时即返回，未收敛的任务交隔离登记。
-        # （同款取舍见 generation._graceful_stop。）
+        # 超时用 asyncio.wait 而非 wait_for：wait_for 会取消内层并**等它真正
+        # 结束**，宿主 provider 若吞掉 CancelledError，判断任务永不返回 →
+        # 会话锁与运行标记永不释放。wait 只等待、不含取消语义，未收敛的任务
+        # 交隔离登记（同款取舍见 generation._graceful_stop）。
         task = asyncio.ensure_future(self._llm_generate(provider_id, prompt))
         try:
             done, _ = await asyncio.wait({task}, timeout=self.settings.decision_timeout_sec)
@@ -307,14 +289,12 @@ class DecisionMaker:
                 }
             response = task.result()
         except asyncio.CancelledError:
-            # wait 不把调用方的取消传给内层，必须自己传：否则调用方被取消时
-            # provider 任务成了无人持有的孤儿（现状 wait_for 会自动传播）。
+            # wait 不把调用方的取消传给内层，必须自己传。
             await self._converge_provider_task(task, "decision cancelled")
             raise
         except Exception as exc:
-            # provider SDK 的异常文本常把请求 URL 整段带出来（含 api_key/Signature
-            # 等 query 凭证）。reason 不只进日志，还经 GET /status 的 last_decisions
-            # 回给任何能访问控制台的调用方，故两处共用同一脱敏口径。
+            # 异常文本常带请求 URL（含凭证），reason 会经 GET /status 出网，
+            # 与日志共用同一脱敏口径。
             detail = redact_exc_text(exc)
             logger.warning("[%s] decision model failed: %s", PLUGIN_ID, detail)
             return {
@@ -371,10 +351,9 @@ class DecisionMaker:
                 int(self._clock() - state.last_proactive_at) if state.last_proactive_at else -1
             ),
             "latest_message": sanitize_prompt_variable(latest, max_length=500),
-            # recent_messages 是多行聊天记录：保留换行才能让模型区分发言人与轮次；
-            # 超预算时保尾（越新越重要），与生成路径 cap_context_text 同口径。
-            # 不能用 sanitize_prompt_variable 自带的截断，那是保头，会先丢掉最新
-            # 几条，恰好与模板里「优先参考最近至少 8 条」的要求相反。
+            # recent_messages 是多行聊天记录：保留换行才能区分发言人与轮次；
+            # 超预算时保尾（不能用 sanitize 自带的保头截断，那会先丢最新几条，
+            # 与模板「优先参考最近至少 8 条」的要求相反）。
             "recent_messages": cap_context_text(
                 sanitize_prompt_variable(recent, max_length=None, allow_newlines=True),
                 MAX_DECISION_CONTEXT_CHARS,
@@ -382,8 +361,6 @@ class DecisionMaker:
             ),
         }
         # 回落取 ``ConfigSpec.reset_value``：与读侧落盘、面板「恢复默认」同一表达式。
-        # 若在此再写一次 ``.strip()``，模板常量字形带首尾空白时喂给模型的就是
-        # 另一副面孔的默认值。
         raw = (
             str(self.settings.decision_prompt_template or "").strip()
             or CONFIG_SPEC_BY_KEY["decision_prompt_template"].reset_value
@@ -395,9 +372,8 @@ class DecisionMaker:
         )
         if "{recent_messages}" not in raw and "{latest_message}" not in raw:
             rendered = rendered.strip() + "\n\n最近消息:\n" + values["recent_messages"]
-        # 契约是否缺失只看**模板**（``raw``），不看代入群聊内容后的 ``rendered``：
-        # 后者把不可信的 recent/latest 文本也算进来，群友只要在消息里写出
-        # "should_reply" / "reason" / "quote" 就会让契约注入被静默抑制。
+        # 契约是否缺失只看**模板**（``raw``）：看 ``rendered`` 的话，群友只要在
+        # 消息里写出 "should_reply" 就会让契约注入被静默抑制。
         if "should_reply" not in raw or "reason" not in raw:
             rendered = rendered.rstrip() + "\n\n" + DECISION_JSON_CONTRACT
         # 引用决定只在 model 模式下要求模型给出；用户模板里若已自带 quote 约定

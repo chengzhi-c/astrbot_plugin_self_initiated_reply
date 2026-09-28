@@ -36,10 +36,8 @@ def _eligible_session(plugin: SelfInitiatedReplyPlugin, event: AstrMessageEvent)
         return None
     if session_is_private(umo) and not plugin.settings.enabled_private_sessions:
         return None
-    # 索引键取白名单项的写法（完整 UMO 一条、有群号再补一条），不是状态键：
-    # scheduler 与 whitelist.replace 都按白名单项查这张表。``event_umo`` 的输出
-    # 恒为已 strip 的规范写法（raw_umo 先 strip，重建时首尾字符非空白），所以
-    # 此处直接用 umo，无需再套一次状态键派生。
+    # 索引键取白名单项的写法，不是状态键：scheduler 与 whitelist.replace
+    # 都按白名单项查这张表。``event_umo`` 的输出恒为已 strip 的规范写法。
     plugin._whitelist_runtime_umos.setdefault(umo, set()).add(umo)
     group_id = session_group_id(umo)
     if group_id:
@@ -76,10 +74,8 @@ def _accepted_content(
             state = plugin._state_for(umo)
             state.last_active_at = now_ts()
             if plugin.settings.skip_after_direct_call:
-                # 这条 @Bot/唤醒消息由 AstrBot 正常回复（不经过本插件），因此把它
-                # 记为「这条消息之后 Bot 已经回应过」：同一批消息不再触发主动回复，
-                # 避免"刚被点名答过、静默时间一到又主动接一句"。下一条新消息到达时
-                # last_active_at 前进，观察窗口自然重新打开。
+                # 这条 @Bot/唤醒消息由 AstrBot 正常回复，记为「这条消息之后
+                # Bot 已经回应过」：避免"刚被点名答过、静默时间一到又主动接一句"。
                 state.last_proactive_observed_at = state.last_active_at
         return None
     if empty:

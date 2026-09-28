@@ -6,16 +6,8 @@
 
 不拥有：图片来源的提取（``extractor``）、缓存索引与内存预算
 （``session_coordinator``）、provider 选择（``adapters``）、何时解析
-（``vision_runtime``）。
-
-分区目录：常量与 prompt 指纹 → 缓存维护纯函数 → 安全传输（DNS 校验 / TCP
-后端 / 响应流 / transport）→ ``ImageParser``（冻结 → 来源解析 → 下载 →
-解析 → 清理）。
-
-文件刻意不拆：传输层私有名被 ``tests/test_vision.py`` 直接引用并
-按本模块对象 monkeypatch，而生产侧只有一个调用方；拆出 ``transport.py`` 是纯
-文件搬迁（非新抽象），收益抵不过引用面 churn。理由与 ``models.py`` 同款，
-见 docs/DECISIONS.md。
+（``vision_runtime``）。文件刻意不拆：传输层私有名被 ``tests/test_vision.py``
+按本模块对象 monkeypatch，而生产侧只有一个调用方。
 """
 
 from __future__ import annotations
@@ -78,16 +70,10 @@ _UNABLE_PATTERNS = re.compile(
     r"无法.*获取|不能.*获取|抱歉.*图|sorry.*image",
     re.IGNORECASE,
 )
-# 命中的拒答片段之外，剩余正文短于该值才判为拒答（片段构成整句主体）。
-#
-# 实测标定（tests/test_vision.py 双向钉住，改坏任一侧即红）：
-# - 真拒答的剩余正文最长 8 字符（"无法识别这张图片的内容。" → 命中"无法识别"）；
-# - 有效描述的剩余正文最短 12 字符（"图片是一张支付失败截图，…"）。
-# 阈值取两者之间并留余量：偏大压不住误杀（有效描述被丢），偏小收不进真拒答。
-# 下面这个常量是**阈值本身**（=10），不是上面那个 12。
-#
-# 不设「正文过短即拒答」的独立分支：短正文本身不是拒答证据，有效描述也可能只有
-# 七个字；空描述由调用方的 `not description` 分支处理。
+# 命中的拒答片段之外，剩余正文短于该值才判为拒答。
+# 实测标定（tests/test_vision.py 双向钉住）：真拒答的剩余正文最长 8 字符，
+# 有效描述最短 12 字符，阈值取 10 留余量。不设「正文过短即拒答」的独立分支：
+# 有效描述也可能只有七个字，空描述由调用方处理。
 _UNABLE_RESIDUAL_MIN_LENGTH = 10
 # HTTP 状态码 >= 该值即视为下载失败（图片 URL 通常是 302 后的 CDN，4xx/5xx 一律放弃）。
 _HTTP_ERROR_STATUS_MIN = 400
@@ -123,9 +109,8 @@ def _scan_source_cache(
             if path.is_symlink():
                 continue
             # 归属校验对目录同样必需：Windows 目录联接（junction）的
-            # is_symlink() 为 False 且 rglob 会穿透，缓存外的空目录会以
-            # 「缓存内的目录」身份进入回收表并被 rmdir。判据与文件同口径，
-            # resolve() 同时覆盖 junction 与 symlink，无需平台分支。
+            # is_symlink() 为 False 且 rglob 会穿透；resolve() 同时覆盖
+            # junction 与 symlink，无需平台分支。
             resolved = path.resolve()
             resolved.relative_to(resolved_root)
             if path.is_dir():
@@ -184,8 +169,7 @@ def _remove_empty_cache_directories(directories: list[Path], resolved_root: Path
     """Remove empty directories, re-checking that each one belongs to the cache.
 
     The scan already filters by ownership; this second check is deliberate
-    defence in depth (same shape as the file path's two-layer guard) because
-    ``rmdir`` is unrecoverable once executed.
+    defence in depth, because ``rmdir`` is unrecoverable once executed.
     """
     for directory in sorted(directories, reverse=True):
         try:
@@ -245,9 +229,8 @@ def _global_addresses(host: str) -> list[str]:
         if not all(address.is_global for address in parsed):
             return []
         # IPv4 优先、组内按字符串稳定排序：纯字符串排序会把双栈域名的 IPv6
-        # 顶到首位，而运行主机 v6 无路由（Docker 常态）时调用方只连第一个地址，
-        # 等于整站下载恒失败。不轮询下一地址：每次下载只 pin 一个已校验地址，
-        # 轮询会把一次下载拖成 N 倍时延，收益不抵复杂度。
+        # 顶到首位，而运行主机 v6 无路由时调用方只连第一个地址，等于整站下载
+        # 恒失败。不轮询下一地址：每次下载只 pin 一个已校验地址。
         return [str(ip) for ip in sorted(parsed, key=lambda ip: (ip.version, str(ip)))]
     return [str(literal)] if literal.is_global else []
 
@@ -436,15 +419,13 @@ class ImageParser:
                 self._source_cache_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
                 logger.warning("[%s] image cache directory unavailable: %s", PLUGIN_ID, exc)
-        # 本地读取的唯一判据：路径必须落在允许根下。提取层交回的路径不可信：宿主
-        # aiocqhttp 用 `ComponentTypes[t](**m["data"])` 装配 Image，其 file 是对端可控的
-        # OneBot 原始值，而 preprocess_stage 只规范化 Record、从不动 Image，被控协议端
-        # 因此能把 file 写成任意绝对路径。
+        # 本地读取的唯一判据：路径必须落在允许根下。提取层交回的路径不可信：
+        # 宿主 aiocqhttp 用对端可控的 OneBot 原始值装配 Image 的 file 字段，
+        # 被控协议端能把 file 写成任意绝对路径。
         #
         # <data> 根必须在表内：宿主合法生产者写的裸绝对路径都在它下面
-        # （wecom `<data>/temp`、webchat `<data>/webchat`），只留 image_cache
-        # 会 100% 拒掉这些真图片。image_cache 本身就在 <data> 下，但仍单列，
-        # 未注入 data_root 的调用方（含既有测试）不能因此丢掉缓存根。
+        # （wecom temp、webchat 等），只留 image_cache 会拒掉这些真图片；
+        # 未注入 data_root 的调用方（含既有测试）不能丢掉缓存根。
         roots: set[Path] = set()
         for candidate in (self._source_cache_dir, Path(data_root) if data_root else None):
             if candidate is None:
@@ -469,8 +450,7 @@ class ImageParser:
         if image_info.prepared_source:
             return True
         try:
-            # _resolve_image_url 只产 data URL 或 None：不存在"拿到裸远端地址
-            # 稍后再取"的形态，所以这里不再判 scheme，冻结失败也不回退到远端。
+            # _resolve_image_url 只产 data URL 或 None；冻结失败不回退到远端。
             image_url = await self._resolve_image_url(image_info)
             if not image_url:
                 logger.info("[%s] image source unavailable during event capture", PLUGIN_ID)
@@ -498,9 +478,8 @@ class ImageParser:
     ) -> list[Any]:
         """并发执行 fn(image) 并保持输入顺序（三个批方法共用模板）。
 
-        ``return_exceptions`` 隔离单图异常：一张图的漏网异常不得取消同批
-        其余快照，那会让上层把整个识图阶段判为失败。取消（CancelledError）
-        例外，它是控制流，必须原样上抛。
+        ``return_exceptions`` 隔离单图异常：一张图的漏网异常不得取消同批其余
+        快照。取消（CancelledError）是控制流，原样上抛。
         """
         semaphore = asyncio.Semaphore(max(1, int(max_concurrent)))
 
@@ -596,9 +575,7 @@ class ImageParser:
             pending = self._inflight.get(cache_key)
             if pending is not None:
                 # 同一图片正在并发解析：共享同一次 provider 调用，避免重复计费。
-                # shield 防止等待方被取消时把取消传播到共享 Future（Task.cancel
-                # 会取消其正在等待的 Future，波及其他等待方）；等待方仍正常抛
-                # CancelledError，生产方结果不被吞掉。
+                # shield 防止等待方被取消时把取消传播到共享 Future。
                 return await asyncio.shield(pending)
             pending = asyncio.get_running_loop().create_future()
             self._inflight[cache_key] = pending
@@ -689,21 +666,16 @@ class ImageParser:
     async def _resolve_image_url(self, image_info: ImageInfo) -> str | None:
         """把一条图片记录解析成可交给 Vision 的 data URL，按可用性顺序尝试四条来源。
 
-        1. ``prepared_source``（本插件已快照/下载的副本；``data:`` 形态直接返回）；
+        1. ``prepared_source``（本插件已快照/下载的副本）；
         2. 录制桥按 message_id 找到的宿主本地文件；
         3. ``file_path``，http(s) 走下载；
         4. ``url`` 远程下载。
 
-        本地路径（含 1 与 2 与 3 的本地形态）一律由 ``_allowed_local_roots``
-        判定，不留任何例外分支（契约 §7.1）：``prepared_source`` 只由
-        ``_materialize_data_url`` 写入、产物必在 image_cache 内，同一判据今天
-        不会拒掉合法副本，但它把「路径落在允许根内」保持为唯一判据。
-        不采信提取层的可信推断：宿主 aiocqhttp 的 ``Image.file`` 是对端可控的
-        OneBot 原始值，而 ``Image`` 总是非 Mapping 组件，提取层的信任推断因此可伪造。
-
-        失败时：任一路仅在成功时提前返回，失败即继续下一路；全部失败返回
-        ``None``（调用方据此跳过该图）。下载失败会记一条 URL 已脱敏的 INFO，
-        被地址策略拒绝则记 WARNING。
+        本地路径一律由 ``_allowed_local_roots`` 判定，不留任何例外分支
+        （契约 §7.1）：不采信提取层的可信推断，宿主 aiocqhttp 的 ``Image.file``
+        是对端可控的 OneBot 原始值，提取层的信任推断可伪造。失败即继续下一路，
+        全部失败返回 ``None``；``file`` 下载失败不终局，否则对端填个坏 file_path
+        就能屏蔽 url 分支。
         """
         if image_info.prepared_source:
             prepared = str(image_info.prepared_source).strip()
@@ -720,13 +692,9 @@ class ImageParser:
                 image_info.url,
             )
             if local_path:
-                # 也走 allowlist：这条路径不是宿主自有产物。
-                # get_local_image_path 取的是记录里的 local_path，最终交给第三方
-                # recorder 插件的 get_media_absolute_path 解析（image/recorder_bridge.py），
-                # 而 local_path 源头是对端可控的 OneBot 字段。若 resolver 是朴素
-                # 拼接，`../../..` 可逃出媒体目录，与本地文件读取同一攻击面。
-                # recorder 媒体目录在 <data>/plugin_data/ 下，已被 data_root 覆盖，
-                # 合法文件不受影响。
+                # 也走 allowlist：local_path 源头是对端可控的 OneBot 字段，
+                # 朴素拼接的 resolver 可被 `../../..` 逃出媒体目录。recorder
+                # 媒体目录在 <data>/plugin_data/ 下，已被 data_root 覆盖。
                 data_url = await asyncio.to_thread(self._file_to_data_url, local_path)
                 if data_url:
                     return data_url
@@ -737,16 +705,10 @@ class ImageParser:
                 data_url = await self._fetch_image_data_url(file_value)
                 if data_url:
                     return data_url
-                # 失败不终局：继续尝试 ``url``（与 docstring 的「失败即继续下
-                # 一路」一致）。``file`` 是对端可控字段，在这里返回就等于给对端
-                # 一个「填个坏掉的 file_path 即可屏蔽 url 分支」的能力。
                 logger.info("[%s] image URL download failed: %s", PLUGIN_ID, redact_url(file_value))
             path = Path(file_value)
             # 本地路径一律走 allowlist：trusted_local_path 是提取层的推断值，
-            # 可被对端伪造（判据见本方法 docstring）。
-            # 相对路径经录制桥解析后同样受同一判据约束：resolver 的入参
-            # 就是这里的 file_value，对端可控，`../../..` 不受 is_absolute 检查
-            # 拦截，朴素拼接的 resolver 会交出媒体目录之外的路径。
+            # 可被对端伪造。相对路径经录制桥解析后同样受同一判据约束。
             if not path.is_absolute() and self._recorder_bridge:
                 resolved = await self._recorder_bridge.resolve_relative_path(file_value)
                 if resolved is not None:
@@ -827,10 +789,8 @@ class ImageParser:
     async def _fetch_image_data_url(self, url: str) -> str | None:
         """下载远程图片；整个下载（DNS+连接+读取）受单图超时约束，超限返回 None。
 
-        没有这层预算时：DNS 在线程里不受事件循环超时约束、httpx 的 timeout
-        只作用于单次操作，慢速滴流式响应体可让读取无限拖延，解析路径会一直
-        占着主动检查协程，而不是降级为"本次不带图"。取消只作用于协程：卡在
-        getaddrinfo 的线程会自然结束。
+        没有整体预算时：httpx 的 timeout 只作用于单次操作，慢速滴流式响应体
+        可让读取无限拖延，解析路径会一直占着主动检查协程。
         """
         try:
             return await asyncio.wait_for(
@@ -843,15 +803,10 @@ class ImageParser:
     async def _download_image_data_url(self, url: str) -> str | None:
         """下载远程图片并编码为 ``data:`` URL，失败返回 ``None``。
 
-        安全约束（每条都是拒绝理由，不可为兼容性放宽）：仅走固定地址传输（SSRF 防护，
-        每跳重新解析并绑定公网 IP）、TLS 证书验证、重定向上限 3 跳、体积双重设限
-        （先看 content-length，再在流式读取中累计校验，声明值不可信）、MIME 由**载荷
-        嗅探**决定而非响应头声明。
-
-        失败时全部静默返回 ``None``（调用方据此降级为"本次不带图"）：
-        URL 不安全、状态码 >= 400、超限、空响应、嗅探不出图片类型、以及任何异常。
-        地址策略拒绝记 WARNING（降级可被运营感知，契约 §9），其余异常记 DEBUG。
-        返回 ``None`` 的语义是"这张图不可用"，不是"出错了"，因此不向上抛。
+        安全约束（每条都是拒绝理由）：固定地址传输（每跳重新解析并绑定公网 IP）、
+        TLS 证书验证、重定向上限 3 跳、体积双重设限（content-length 先看，
+        流式读取再累计校验）、MIME 由载荷嗅探决定。失败时全部静默返回 ``None``
+        （语义是"这张图不可用"不是"出错了"）；地址策略拒绝记 WARNING，其余记 DEBUG。
         """
         try:
             parsed = urlparse(url)
@@ -905,8 +860,8 @@ class ImageParser:
         """正文去掉命中片段后所剩无几，才算 provider 给不出内容。
 
         只按「全文任意位置命中 pattern」判定会误杀正常描述：描述一张报错截图
-        本身就必须提到「图片加载失败」「没有图片元素」这类字样，而这类描述
-        被丢弃后既不写缓存、又会让每次触发重复调用 provider。
+        本身就必须提到「图片加载失败」这类字样，被丢弃后既不写缓存、又会让
+        每次触发重复调用 provider。
         """
         stripped = str(content or "").strip()
         match = _UNABLE_PATTERNS.search(stripped)

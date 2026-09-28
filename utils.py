@@ -30,12 +30,9 @@ from .models import (
     history_display_name,
 )
 
-# 预编译正则以避免热路径反复编译；空白类的两个（WHITESPACE_PATTERN /
-# INLINE_SPACE_PATTERN）由 models 持有，见那边的注释（依赖方向）。
-# 例外：is_explicit_direct_call 的两条「@ 提及」模式由 self_id 拼出，
-# 只能在调用点构造（模式随事件变），不在此列。
-# 只剥离 `[At:<id>]` 这一种前缀形态。宽松写法 `\[[^\]]*[Aa][Tt][^\]]*\]`
-# 命中条件只是方括号内含子串 "at"，会把 `[chat]` / `[data]` 等正文方括号块
+# 预编译正则以避免热路径反复编译；空白类两个由 models 持有（依赖方向）。
+# is_explicit_direct_call 的两条「@ 提及」模式由 self_id 拼出，只能在调用点构造。
+# 只剥离 `[At:<id>]` 这一种前缀形态：宽松写法会把 `[chat]` 等正文方括号块
 # 一并从历史文本里吃掉，用户侧表现为消息前缀静默丢失。
 _AT_MENTION_PATTERN = re.compile(r"^(?:\[At:[^\]]+\]\s*)+", re.IGNORECASE)
 _CQ_AT_PATTERN = re.compile(r"^(?:\[CQ:at,[^\]]+\]\s*)+")
@@ -52,12 +49,10 @@ _REPLY_FENCE_PATTERN = re.compile(r"^```(?:text)?\s*|\s*```$", re.IGNORECASE)
 _REPLY_PREFIX_PATTERN = re.compile(r"^(?:回复|答复)\s*[:：]\s*")
 _SENTENCE_TAIL_PATTERN = re.compile(r"^([\s\S]*[。！？.!?])[^。！？.!?]*$")
 
-# 日志/对外文本中 URL 的最大呈现长度（含脱敏标记）：与脱敏前的裸截断口径一致，
-# 避免"为了安全"反而把日志行拉宽。
+# 日志/对外文本中 URL 的最大呈现长度（含脱敏标记）。
 LOG_URL_MAX_CHARS = 80
-# 判断模型 JSON 里的布尔字面量集合。刻意窄于 models.as_bool：配置面认
-# on/启用/开启，模型侧不认，免得模型措辞变宽后更积极接话。should_reply 与
-# quote 两个字段共用这一份判定。
+# 判断模型 JSON 里的布尔字面量集合，刻意窄于 models.as_bool（配置面认
+# on/启用，模型侧不认）。should_reply 与 quote 共用这一份判定。
 MODEL_JSON_TRUE_WORDS = frozenset({"true", "yes", "1", "是"})
 MODEL_JSON_FALSE_WORDS = frozenset({"false", "no", "0", "否"})
 _REDACTED_QUERY_MARK = "?<redacted>"
@@ -74,14 +69,9 @@ _EXCEPTION_URL_PATTERN = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>)\]]+")
 def safe_exc_text(exc: BaseException) -> str:
     """异常文本提取的单点收口：``__str__`` 本身抛异常时退化为类型名。
 
-    ``str(exc)`` 不是安全的：异常对象的 ``__str__`` 可以抛（第三方 SDK 的
-    自定义异常、携带惰性格式化的异常都发生过）。实测后果不是"日志少一行"
-    它让异常**从投递路径逃出**：``delivery.send_reply`` / ``gateway.send``
-    在 ``except`` 块里构造 ``SendOutcome(status, str(exc))``，二次抛出会跳过
-    ledger 的 ``mark_recorded``，于是账本停在 sealed、``has_submission=False``
-    分支不消耗冷却与配额，消息若其实已提交，下一轮会重复发送。
-
-    故取异常文本必须防二次异常，且只在这里做：调用方不得直接 ``str(exc)``。
+    在投递路径的 ``except`` 块里构造 ``SendOutcome(status, str(exc))`` 时，
+    二次抛出会跳过账本记账，消息若已提交，下一轮会重复发送。
+    调用方不得直接 ``str(exc)``。
     """
     try:
         return str(exc)
@@ -100,11 +90,9 @@ def redact_url(value: str) -> str:
         return text[:LOG_URL_MAX_CHARS]
     if not parsed.scheme or not parsed.netloc:
         return text[:LOG_URL_MAX_CHARS]
-    # netloc 含 user:password@ 形态的 userinfo，原样输出会把 basic-auth 凭证
-    # 写进日志与 GET /status（与 query 里的签名 token 同类，必须一并去掉）。
-    # 从 netloc 尾部截取而非拼 hostname+port：后者要处理 IPv6 方括号，且
-    # `parsed.port` 对越界/非数字端口抛 ValueError，而本函数跑在异常处理
-    # 路径上，对端可控文本即可让它成为新的异常源。
+    # netloc 含 user:password@ 形态的 userinfo，必须去掉；从 netloc 尾部截取
+    # 而非拼 hostname+port：后者要处理 IPv6 方括号，且 ``parsed.port`` 对
+    # 越界/非数字端口抛 ValueError，本函数跑在异常处理路径上。
     netloc = parsed.netloc.rsplit("@", 1)[-1]
     suffix = _REDACTED_QUERY_MARK if (parsed.query or parsed.fragment) else ""
     clean = f"{parsed.scheme}://{netloc}{parsed.path}"
@@ -296,12 +284,10 @@ def event_umo(event: AstrMessageEvent) -> str:
 def is_full_umo(value: str) -> bool:
     """是否 ``platform:message_type:session_id`` **恰好三段**的完整 UMO。
 
-    判据是段数（``_UMO_PARTS``），与 :func:`session_group_id` 同源但不等价：
-    后者按 ``split(":", 2)`` 取第三段，所以会话 ID 自身含冒号（``qq:GroupMessage:x:y``）
-    时两者结论相反，本函数判 False，:func:`session_group_id` 仍返回 ``"x:y"``。
-    该分歧是良性的：入口按白名单项**逐字**登记 ``_whitelist_runtime_umos``（完整 UMO
-    一条、群号再补一条），所以走裸号分支照样能查到它（见 tests/test_storage_and_umo.py
-    的分歧守卫用例）。不要"顺手统一"成 ``>=``：那会把两段畸形条当成可直接巡检的 UMO。
+    与 :func:`session_group_id` 同源但不等价：会话 ID 自身含冒号时两者结论
+    相反。该分歧是良性的：入口按白名单项**逐字**登记 ``_whitelist_runtime_umos``，
+    走裸号分支照样能查到它（tests/test_storage_and_umo.py 的分歧守卫用例）。
+    不要"顺手统一"成 ``>=``：那会把两段畸形条当成可直接巡检的 UMO。
     """
     return str(value or "").count(":") == _UMO_PARTS - 1
 
@@ -329,13 +315,10 @@ def session_whitelisted(umo: str, whitelist: set[str]) -> bool:
 
 
 def whitelist_storage_key(umo: str) -> str:
-    """状态键就是完整 UMO 本身，本函数刻意是个恒等式（仅去空白）。
-
-    它的价值不在做了什么，而在作为**唯一命名接缝**存在：所有调用点经它取
-    状态键，「状态键 = 完整 UMO」这个决定只有一处可改。绝不能把它退化成裸
-    群号：``session_whitelisted`` 接受裸群号通配，状态键若同样退化，两个平台
-    上同号的群会共用一条状态记录，配额与冷却互相污染（``tests/test_security.py``
-    钉住）。
+    """状态键就是完整 UMO 本身（仅去空白）。价值在作为**唯一命名接缝**存在：
+    「状态键 = 完整 UMO」这个决定只有一处可改。绝不能退化成裸群号：
+    ``session_whitelisted`` 接受裸群号通配，状态键若同样退化，两个平台上
+    同号的群会共用一条状态记录，配额与冷却互相污染（tests/test_security.py 钉住）。
     """
     return str(umo or "").strip()
 
@@ -357,9 +340,8 @@ def event_self_id(event: AstrMessageEvent) -> str:
 def event_message_id(event: Any) -> str:
     """消息 ID 的唯一取值口径（图片缓存去重与主动回复引用共用）。
 
-    三层回退：事件自身字段 → ``message_obj`` 字段 → ``get_message_id()``。宿主
-    各适配器把 ID 放在不同位置（部分平台只挂 message_obj），取不到就返回空串走
-    「无 ID」路径，ID 只用于去重与引用，取不到不该中断调用方。
+    三层回退：事件自身字段 → ``message_obj`` 字段 → ``get_message_id()``；
+    取不到返回空串走「无 ID」路径，ID 只用于去重与引用。
     """
     for owner in (event, getattr(event, "message_obj", None)):
         if owner is None:
@@ -388,13 +370,10 @@ def event_sender_name(event: AstrMessageEvent) -> str:
 def event_extra(event: AstrMessageEvent, key: str, default: Any = None) -> Any:
     """读取宿主事件的 extra 字段，跨宿主签名差异做两级调用回退。
 
-    与本模块其余 ``event_*`` 同属宿主字段兼容探测。
-    本函数在消息热路径（每条进入 on_message 的事件都调一次），故不用
-    ``first_bindable_args`` 的 ``inspect.signature`` 预检，那要把签名解析
-    开销花在每条消息上。``get_extra`` 是纯读：先按双参调用，签名不兼容
-    （旧宿主单参形态）抛 TypeError 时退一次单参调用，重复读取无害。有
-    副作用风险的宿主调用（LLM、落盘）仍走 ``first_bindable_args``，那边
-    “预检绝不调用”的契约不变。
+    本函数在消息热路径上，不用 ``first_bindable_args`` 的签名预检（那要把
+    签名解析开销花在每条消息上）；``get_extra`` 是纯读，重复读取无害。
+    有副作用风险的宿主调用（LLM、落盘）仍走 ``first_bindable_args``，
+    "预检绝不调用"的契约不变。
     """
     get_extra = getattr(event, "get_extra", None)
     if not callable(get_extra):
@@ -413,10 +392,7 @@ def event_extra(event: AstrMessageEvent, key: str, default: Any = None) -> Any:
 
 def response_text(response: Any) -> str:
     """从宿主响应对象提取纯文本：completion_text 优先，result_chain.get_plain_text 兜底。
-
-    三处镜像（decision/generation/parser）统一至此；get_plain_text 异常
-    兜底为空串（原 decision 版异常会传播，统一后更稳，原因文案由调用方判定）。
-    """
+    三处镜像（decision/generation/parser）统一至此。"""
     text = str(getattr(response, "completion_text", "") or "").strip()
     if text:
         return text
@@ -438,18 +414,14 @@ def is_self_message(event: AstrMessageEvent) -> bool:
 
 def is_admin_event(event: AstrMessageEvent, admin_ids: set[str]) -> bool:
     """管理员判定：宿主 API → role 字段 → 配置白名单，三级兜底。
-
-    失败方向必须是 fail-safe（判为非管理员），不得为便利改成 ``return True``。
-    """
+    失败方向必须是 fail-safe（判为非管理员）。"""
     try:
         if event.is_admin():
             return True
     except Exception:
-        # 宿主未实现或实现异常时不在此判定结果，继续走下面的 role / admin_ids
-        # 兜底链；三级全不命中才算非管理员。降级方向是收紧权限而非放开。
+        # 继续走 role / admin_ids 兜底链，降级方向是收紧权限而非放开。
         pass
-    # 宿主 ``AstrMessageEvent`` 只有 ``role``（群管理员走 ``group.group_admins``，
-    # 与 role 无关），故不再兜 ``role_type`` 这个宿主任何版本都没有的属性。
+    # 宿主 ``AstrMessageEvent`` 只有 ``role``，不兜 ``role_type`` 这个不存在的属性。
     role = str(getattr(event, "role", "")).lower()
     if role in {"admin", "owner", "superuser"}:
         return True
@@ -478,9 +450,7 @@ def is_explicit_direct_call(event: AstrMessageEvent, text: str) -> bool:
             rf"\[CQ:at,[^\]]*(?:qq=)?(?<!\w){re.escape(self_id)}(?:\W|$)", text, re.IGNORECASE
         ):
             # (?<!\w)/(?:\W|$)：两侧都要求标识符边界。只挡数字一侧时
-            # [CQ:at,qq=456123] 会被挡住，但 [CQ:at,qq=abc123def] 仍能命中
-            # （self_id=123 误判点名，消息被 should_ignore_event 静默丢弃）。
-            # 非纯数字账号（平台 id 带字母）走的就是后一条路径。
+            # [CQ:at,qq=abc123def] 仍会以 self_id=123 误判点名。
             return True
         for comp in event_components(event):
             if isinstance(comp, At) and str(getattr(comp, "qq", "")).strip() == self_id:
@@ -537,13 +507,9 @@ def format_message_records(records: list[MessageRecord], *, limit: int) -> str:
 def cap_context_text(text: str, max_chars: int, *, marker: str) -> str:
     """总字符预算内的保尾裁剪：历史越新越重要，超限只裁更早部分。
 
-    从行边界起裁（不截半条消息），加一行 ``marker`` 提示省略；总长（含 marker）
-    不超过 ``max_chars``。短文本原样返回。
-
-    两个预算下限例外（test_generation_runner 的极小预算用例逐条钉住）：
-    ``max_chars <= 0`` 表示关闭裁剪、逐字返回；预算装不下 marker 本身
-    （``max_chars <= len(marker)``）时返回 marker、总长略超预算，空串会让调用方
-    以为没有历史，提示「内容被省略」比静默丢内容更接近事实。
+    从行边界起裁，加一行 ``marker`` 提示省略。两个例外：
+    ``max_chars <= 0`` 表示关闭裁剪；预算装不下 marker 本身时返回 marker
+    （空串会让调用方以为没有历史，提示「内容被省略」更接近事实）。
     """
     if max_chars <= 0 or len(text) <= max_chars:
         return text

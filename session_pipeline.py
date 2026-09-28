@@ -30,10 +30,9 @@ from .utils import (
 )
 
 _MAX_RECORD_SAVE_ATTEMPTS = 2
+# 真实退避间隔：sleep(0) 只让出一个事件循环 tick，磁盘瞬时故障在零退避下
+# 两次必然背靠背失败。0.5s 足以跨过瞬时占用，又不拖出 §5 的收敛边界。
 _RECORD_SAVE_RETRY_SEC = 0.5
-# 真实退避间隔：sleep(0) 只让出一个事件循环 tick，磁盘瞬时故障（Windows 文件
-# 占用、网络盘抖动）在零退避下两次必然背靠背失败，重试形同虚设。0.5s 足以跨过
-# 瞬时占用，又不会把 record task 拖出 §5 的收敛边界。
 
 
 def record_decision(
@@ -115,9 +114,8 @@ class SessionPipeline:
             collapse_whitespace(result.get("reason") or "-"),
         )
         if not result.get("should_reply"):
-            # 契约（decide 侧）：should_reply=False 时已转成字符串返回，文案单源在
-            # decision。走到这里说明该契约被破坏，静默放行会造成"判断不该回复
-            # 却仍然生成并发送"。
+            # 契约（decide 侧）：should_reply=False 时已转成字符串返回。走到
+            # 这里说明该契约被破坏，静默放行会造成"判断不该回复却仍然生成并发送"。
             raise RuntimeError("decide() must convert should_reply=False into a string")
         return result
 
@@ -134,7 +132,6 @@ class SessionPipeline:
         )
         if pre_guard is not None:
             # 锁前预检：与持锁路径同一门卫，避免为注定早退的会话创建锁表条目。
-            # 持锁后仍会复检（运行互斥的 TOCTOU），此处只做“不建锁”的快速返回。
             return pre_guard
         lock = self._gate.lock_for(umo)
         async with lock:
@@ -243,10 +240,9 @@ class SessionPipeline:
                         )
                     )
                 except RuntimeError as exc:
-                    # 任务注册被拒（停止中 / 降级 / 隔离任务超限）：协程已被
-                    # _create_critical_task 关闭，账本停在 sealed、配额不记
-                    # （test_attempt_ledger 锚定）。只留日志，若让它从 finally
-                    # 传出，会改写主链已得出的结果或在途异常。
+                    # 任务注册被拒（停止中 / 降级）：协程已被关闭，账本停在
+                    # sealed、配额不记（test_attempt_ledger 锚定）。只留日志，
+                    # 若让它从 finally 传出会改写主链已得出的结果。
                     logger.error(
                         "[%s] proactive ledger finalizer registration rejected session=%s error=%s",
                         PLUGIN_ID,
@@ -284,9 +280,8 @@ class SessionPipeline:
     ) -> None:
         """Apply one ledger outcome and retry only persistence, never state mutation.
 
-        结论只写进账本（``mark_recorded`` / ``mark_record_failed``），不返回 bool：
-        ``ledger.phase`` 是结论的唯一真相源，测试直接断言它。再返回一份 bool
-        等于让"成功"有两处可读，两处会各自漂移。
+        结论只写进账本（``mark_recorded`` / ``mark_record_failed``），不返回
+        bool：``ledger.phase`` 是结论的唯一真相源。
         """
         logger.debug(
             "[%s] record proactive ledger_id=%s session=%s submissions=%s unknown=%s",
@@ -380,13 +375,11 @@ class SessionPipeline:
     ) -> None:
         """Seal one run and await its single record task, including cancellation.
 
-        不返回 bool：调用方只等它跑完，结论由 ``ledger.phase`` 单点表达
-        （理由同 ``_record_ledger`` 的 docstring）。
+        不返回 bool：调用方只等它跑完，结论由 ``ledger.phase`` 单点表达。
+        seal() 后这支是重入终态：二次进入直接返回既有结论，不再挂第二条
+        record task（test_attempt_ledger 锚定）。
         """
         ledger.seal()
-        # seal() 只把 open→sealed，recorded / record_failed 只能从 recording 经
-        # mark_* 到达。这支是重入终态（由 test_attempt_ledger 锚定）：二次进入
-        # 直接返回既有结论，不再挂第二条 record task。
         if ledger.phase in {LedgerPhase.RECORDED, LedgerPhase.RECORD_FAILED}:
             return
         task = cast(asyncio.Task[Any] | None, ledger.record_task)

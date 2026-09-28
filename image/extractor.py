@@ -51,13 +51,8 @@ def _parse_raw_cq_components(raw: Any) -> list[dict[str, Any]]:
 
 
 def _component_field(component: Any, name: str) -> Any:
-    """读组件字段：先组件本体、再嵌套 ``data``（AstrBot 与裸 mapping 两种形状）。
-
-    与 :func:`_field_value` 不是一个抽象，勿合并：本函数处理**组件特有的两层
-    回退**（``component`` → ``component.data``），后者是通用的单层取值（任何
-    Mapping 或带 ``get`` 的对象）。合并要么让通用函数多一个仅组件用的开关，
-    要么让组件读取丢掉"带 get 的非 Mapping 对象"这条路径。
-    """
+    """读组件字段：先组件本体、再嵌套 ``data``。与 :func:`_field_value` 不是一个
+    抽象，勿合并：本函数处理组件特有的两层回退，后者是通用的单层取值。"""
     sources = [component]
     nested = (
         component.get("data") if isinstance(component, dict) else getattr(component, "data", None)
@@ -105,9 +100,8 @@ def _is_absolute_local_source(value: str) -> bool:
 def _is_sticker_marker(value: Any) -> bool:
     if isinstance(value, bool):
         return value
-    # OneBot subType 实际是 0/1 整数，str() 后为 "1"；"true" 覆盖 raw dict
-    # 显式布尔。其余写法（yes/on/sticker/emoji/face/表情…）无任何宿主样本
-    # 证据，收窄以免臆想兼容面持续膨胀。真实环境若出现漏判，带样本加回一行。
+    # OneBot subType 实际是 0/1 整数；"true" 覆盖 raw dict 显式布尔。其余写法
+    # 无宿主样本证据，收窄以免臆想兼容面持续膨胀。
     normalized = str(value or "").strip().lower()
     return normalized in {"1", "true"}
 
@@ -143,10 +137,7 @@ def _component_is_sticker(component: Any, *, raw_component: Any = None) -> bool:
 
 
 def _field_value(source: Any, name: str) -> Any:
-    """通用单层取值（Mapping → ``get`` 方法 → 属性），不查嵌套 ``data``。
-
-    组件字段请用 :func:`_component_field`：它在此基础上补了 ``data`` 回退。
-    """
+    """通用单层取值（Mapping → ``get`` 方法 → 属性），不查嵌套 ``data``。"""
     if isinstance(source, Mapping):
         return source.get(name)
     getter = getattr(source, "get", None)
@@ -154,10 +145,8 @@ def _field_value(source: Any, name: str) -> Any:
         try:
             return getter(name)
         except Exception:
-            # 消息段结构不可信：不同宿主/协议端的段对象可能提供签名不兼容的 get
-            # （如要求两个参数、或对未知键抛错）。此处静默是为了让下方 getattr
-            # 兜底路径继续生效，字段取不到应回退为 None，而不是让整条图片
-            # 提取链失败。
+            # 消息段结构不可信：不同宿主/协议端的 get 可能签名不兼容。静默让
+            # 下方 getattr 兜底路径继续生效。
             pass
     return getattr(source, name, None)
 
@@ -196,14 +185,9 @@ def _eligible_image_entries(event: Any, *, skip_stickers: bool) -> Iterator[tupl
     """产出参与判定的图片条目（``(归一化组件, 原始段)``），按需滤掉表情包。
 
     ``has_images``（是否存在图片）与 ``extract_images``（能否抽出可用来源）是
-    两个判据，不能互相替代：组件存在但 url/file 全空时前者为真、后者为空，
-    ``message_ingress._accepted_content`` 的 "[图片]" 回落正依赖这一点。
-
-    贴纸判据**只在 ``skip_stickers`` 为真时计算**：该判据要读组件字段，
-    而 ``has_images`` 把任何异常都当"没有图片"（``except Exception: False``），
-    无条件计算等于给纯图片消息新开一条被整条丢弃的路径（组件字段抛非
-    AttributeError 时）。``extract_images`` 另算一份是刻意的，它需要该值写
-    进 ``ImageInfo.is_sticker``，且自身有 try 兜底。
+    两个判据，不能互相替代：组件存在但 url/file 全空时前者为真、后者为空。
+    贴纸判据只在 ``skip_stickers`` 为真时计算：``has_images`` 把任何异常都当
+    "没有图片"，无条件计算会给纯图片消息新开一条被整条丢弃的路径。
     """
     for component, raw_component in _image_entries(event):
         if skip_stickers and _component_is_sticker(component, raw_component=raw_component):
@@ -238,20 +222,13 @@ class ImageExtractor:
     ) -> list[ImageInfo]:
         """从消息事件抽取图片来源，归一化为 ``ImageInfo`` 列表。
 
-        对每个图片组件做三件事：判定表情包（``skip_stickers`` 时跳过）、
-        在归一化组件与原始 OneBot 组件之间取回可用来源（AstrBot 可能已把 Image
-        规范化为只在当前事件阶段有效的临时文件，此时需回捞原始 URL/file）、
-        按 scheme 把 URL 与本地路径归位（``file`` 里放的 http(s) 提升为 url，
-        ``url`` 里放的非 http(s) 降级为 file）。
+        对每个图片组件：判定表情包、在归一化组件与原始 OneBot 组件之间取回
+        可用来源（AstrBot 可能已把 Image 规范化为临时文件）、按 scheme 把 URL
+        与本地路径归位。``trusted_local_path`` 只作宿主临时图的**快照分流提示**；
+        本地读取的放行判据与之无关，唯一判据是路径落在允许根内（契约 §7.1）。
 
-        ``trusted_local_path`` 只在**非 Mapping** 的归一化组件且来源是绝对本地
-        路径时为真：它只作宿主临时图的**快照分流提示**（``snapshot_local_sources``
-        据此决定是否抢在事件回收前落一份副本）。本地读取的放行判据与之无关，
-        唯一判据是路径落在允许根内（契约 §7.1，``_file_to_data_url`` 的 allowlist），
-        宿主 aiocqhttp 通用分支的 ``file`` 是对端可控值，恰好也能满足本标记。
-
-        失败时：整体 try 包裹，任何宿主结构异常只记 debug 并返回**已抽到的部分**
-        （宁少不炸，图片是增强信息，缺失只降级为纯文本主动回复）。
+        失败时整体 try 包裹，任何宿主结构异常只记 debug 并返回已抽到的部分
+        （宁少不炸，图片缺失只降级为纯文本主动回复）。
         """
         images: list[ImageInfo] = []
         try:

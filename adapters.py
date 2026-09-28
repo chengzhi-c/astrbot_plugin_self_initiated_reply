@@ -3,9 +3,8 @@
 拥有：provider 的文本生成调用与形态兼容、provider id 解析、宿主会话历史
 读取，以及这些调用在不同宿主版本上的返回形态归一。
 
-与 ``runtime_adapter`` 的分工是本文件最容易混淆的一点：这里只走
-``astrbot.api.*`` 公开层，私有层（``astrbot.core.*``）的符号探测与契约校验
-全在 ``runtime_adapter``。两者都叫「适配」，但隔离对象不同，不可合并。
+与 ``runtime_adapter`` 的分工：这里只走 ``astrbot.api.*`` 公开层，私有层
+（``astrbot.core.*``）的符号探测与契约校验全在 ``runtime_adapter``。
 """
 
 from __future__ import annotations
@@ -52,10 +51,7 @@ class AstrBotBridge:
     @staticmethod
     def _keyword_names(func: Any) -> frozenset[str] | None:
         """函数可按关键字接收的参数名集；**kwargs 形参返回 None（全部放行）。
-
-        签名探测的单一出口：宿主兼容层的 kwargs 过滤、绑定预检与候选构造
-        都以此为准，改兼容规则只动这里。
-        """
+        签名探测的单一出口：宿主兼容层各处共用。"""
         signature = AstrBotBridge._signature_or_none(func)
         if signature is None:
             return None
@@ -97,10 +93,9 @@ class AstrBotBridge:
     ) -> Any:
         call_kwargs = AstrBotBridge._supported_kwargs(func, kwargs, aliases)
         signature = AstrBotBridge._signature_or_none(func)
-        # 预校验参数绑定：只有签名可检查（无 **kwargs）且绑定失败才回退 minimal；
         if signature is not None:
-            # 函数体内部抛出的 TypeError 直接上抛，绝不重试，重试意味着
-            # 同一函数可能执行两次（对 LLM 调用即重复计费）。
+            # 绑定预检失败才回退 minimal；函数体内部抛出的 TypeError 直接上抛，
+            # 重试意味着同一函数可能执行两次（对 LLM 调用即重复计费）。
             try:
                 signature.bind(**call_kwargs)
             except TypeError as exc:
@@ -138,9 +133,7 @@ class AstrBotBridge:
 
     @staticmethod
     async def _call_first_supported(func: Any, umo: str, log_name: str) -> Any:
-        # bind 预检与候选构造共用 models.first_bindable_args（"预检绝不调用、
-        # 函数体内 TypeError 不重试"的双副作用约定锚定在那边）；这里只负责
-        # 调用与失败告警。签名不可检查时该函数回首个候选，与原回退一致。
+        # bind 预检与候选构造共用 models.first_bindable_args；这里只负责调用与失败告警。
         chosen = first_bindable_args(func, AstrBotBridge._method_call_options(func, umo))
         if chosen is None:
             logger.debug(
@@ -185,10 +178,10 @@ class AstrBotBridge:
         if image_urls:
             kwargs["image_urls"] = list(image_urls)
         # 不走 _call_compat：宿主 llm_generate 是带 **kwargs 的公开方法，无需
-        # 别名猜测与 minimal 回退；text_chat 侧兼容层在 llm_generate_direct。
+        # 别名猜测与 minimal 回退。
         call_kwargs = self._supported_kwargs(llm_generate, kwargs)
         if image_urls and "image_urls" not in call_kwargs:
-            # 图片支持是硬前提，不可静默降级成纯文本判断（看不见图还照样下结论）。
+            # 图片支持是硬前提，不可静默降级成纯文本判断。
             raise RuntimeError("当前 AstrBot Context 的 LLM 接口不支持图片输入")
         return await maybe_await(llm_generate(**call_kwargs))
 
@@ -303,14 +296,9 @@ class AstrBotBridge:
     async def read_astrbot_history(self, umo: str, *, limit: int) -> list[MessageRecord]:
         """读宿主会话历史的最后 ``limit`` 条，归一为 ``MessageRecord`` 列表。
 
-        宿主把 history 存成 JSON 字符串或已解析列表两种形态，此处都接受；
-        单条记录经 ``content_to_text`` 归一（多模态分片只取文本部分）。
-
-        失败时**一律返回空列表，从不抛出**：本方法的产出只是判断模型的补充
-        上下文，取不到应当降级为"没有历史"而不是让主动回复整体失败。因此
-        六条早退（无 conversation_manager / 无当前会话 id / 读取或 JSON 解析
-        异常 / history 非列表 / 单条非 dict / role 不在 user|assistant / 文本为空）
-        都静默跳过，只有异常路径记 debug 日志。
+        失败时**一律返回空列表，从不抛出**：产出只是判断模型的补充上下文，
+        取不到应降级为"没有历史"而不是让主动回复整体失败。各早退静默跳过，
+        异常路径记 debug（异常文本常带连接串，经脱敏）。
         """
         manager = getattr(self.context, "conversation_manager", None)
         if manager is None:

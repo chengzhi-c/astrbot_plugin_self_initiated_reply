@@ -43,10 +43,9 @@ def resolve_paths(
     """Resolve config / state.json / data-root paths from host root, with legacy fallback.
 
     第三个返回值是宿主 ``<data>`` 根，识图本地读取 allowlist 与 ``cmd_config.json``
-    热读都以它为基准，算错等于放宽或锁死安全边界。它由 ``plugin_data_path`` 的
-    构造式**正向**推出（``<data>/plugin_data/<pid>`` 的上两级）。调用方不得从
-    ``state.json`` 反向数 parents 层数，那种写法把"state.json 恰好嵌两层"变成
-    隐式前提，嵌套一改就静默算错且无任何报错。
+    热读都以它为基准。它由 ``plugin_data_path`` 的构造式**正向**推出
+    （``<data>/plugin_data/<pid>`` 的上两级）；不得从 ``state.json`` 反向数
+    parents 层数，那会把"恰好嵌两层"变成隐式前提，嵌套一改就静默算错。
     """
     configured_path = getattr(config_obj, "config_path", None)
     if configured_path:
@@ -87,12 +86,7 @@ def refresh_admin_ids(plugin: SelfInitiatedReplyPlugin) -> set[str]:
 def _register_task(
     plugin: SelfInitiatedReplyPlugin, coro: Coroutine[Any, Any, Any], *, critical: bool
 ) -> asyncio.Task[Any]:
-    """统一任务注册：建 task、入注册表、挂丢弃回调；critical 额外入关键表。
-
-    语义名（``track_critical_task``/``track_background_task``）保留给调用点，
-    这里不重造"未就绪关闭 coro"等生命周期判断，那是
-    ``track_background_task`` 的职责。
-    """
+    """统一任务注册：建 task、入注册表、挂丢弃回调；critical 额外入关键表。"""
     task: asyncio.Task[Any] = asyncio.create_task(coro)
     plugin._background_tasks.add(task)
     if critical:
@@ -110,11 +104,9 @@ def track_critical_task(
 
 
 def state_for(plugin: SelfInitiatedReplyPlugin, umo: str) -> SessionState:
-    """取（必要时创建）会话状态。**不做 legacy 迁移**，那是一次性迁移，
-    在 ``load_sessions`` 里完成；此函数在热路径上被反复调用，不做写旁路。
-
-    状态键在此派生（``whitelist_storage_key``）：调用方一律传 UMO，不各自
-    先算键再传，那样「状态键是什么」就散落在每个调用点，改口径要全仓搜。
+    """取（必要时创建）会话状态。不做 legacy 迁移（一次性迁移在
+    ``load_sessions`` 里完成）；状态键在此派生（``whitelist_storage_key``），
+    调用方一律传 UMO，键的口径不散落到调用点。
     """
     key = whitelist_storage_key(umo)
     state = plugin.sessions.get(key)
@@ -132,11 +124,8 @@ def state_for(plugin: SelfInitiatedReplyPlugin, umo: str) -> SessionState:
 def read_session_state(plugin: SelfInitiatedReplyPlugin, umo: str) -> SessionState:
     """只读取会话状态：不创建、不滞留、不做 legacy 迁移、不刷新日期。
 
-    供 status/debug 等只读指令组装参数，用 ``state_for`` 会把非白名单
-    会话的空状态隐式创建并滞留在内存（写盘侧会过滤，但条目只有
-    ``_prune_session`` 能回收）。无状态时返回一次性空对象。
-
-    与 ``state_for`` 一样收 UMO 并在内部派生键：调用方不持有键的写法。
+    供 status/debug 等只读指令组装参数；用 ``state_for`` 会把非白名单会话的
+    空状态隐式创建并滞留在内存。
     """
     return plugin.sessions.get(whitelist_storage_key(umo)) or SessionState()
 
@@ -178,12 +167,8 @@ def _build_payload(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
 def save_storage_sync(plugin: SelfInitiatedReplyPlugin) -> None:
     """启动期状态落盘：磁盘已与待写快照一致时跳过（无谓 fsync 与 mtime 扰动）。
 
-    仅 ``__init__`` 调用（含它的后台化路径）：刚从同一文件加载出的内容零变化时
-    重写是纯浪费；首启（文件不存在）与真实变更（白名单过滤、跨天）则照常写。
-
-    ``abandoned`` 闸门与 ``save_storage`` 同源：本函数跑在后台线程里，而
-    ``terminate`` 判超时可能发生在它执行期间，不复查的话，被判放弃的实例仍会在
-    替换前一刻发布陈旧快照，覆盖新实例写出的状态。
+    仅 ``__init__`` 调用：刚从同一文件加载出的内容零变化时重写是纯浪费。
+    ``abandoned`` 闸门与 ``save_storage`` 同源。
     """
     try:
         payload = _build_payload(plugin)
@@ -206,10 +191,8 @@ def save_storage_sync(plugin: SelfInitiatedReplyPlugin) -> None:
 async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
     async with plugin._save_lock:
         if plugin._abandon_disk_writes:
-            # 本实例已被判"最终落盘超时"：宿主不等隔离任务就构造了新实例，
-            # 此时任何落盘都可能用陈旧快照覆盖新实例写出的状态。放弃是主动
-            # 决策，不是失败，故不抛异常、不记错误（DEBUG：正常停机路径的
-            # 细节，运维无需关注）。
+            # 本实例已被判"最终落盘超时"：此时任何落盘都可能用陈旧快照覆盖
+            # 新实例写出的状态。放弃是主动决策，不抛异常、不记错误。
             logger.debug("[%s] state save skipped: instance abandoned", PLUGIN_ID)
             return
         payload = _build_payload(plugin)
@@ -224,9 +207,9 @@ async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
         try:
             success = await asyncio.shield(write_task)
         except asyncio.CancelledError:
-            # 等 shield 保护的那次写完，只为决定要不要留一条失败日志：取消必须
-            # 原样重放。改写成 OSError 会把「被取消」上报成「写盘失败」，调用方
-            # 因此落到 except Exception 分支，取消路径的回滚语义丢失。
+            # 等 shield 保护的那次写完只为决定要不要留失败日志；取消必须
+            # 原样重放，改写成 OSError 会把「被取消」上报成「写盘失败」，
+            # 调用方会落到 except Exception 分支，取消路径的回滚语义丢失。
             if not await write_task and not plugin._abandon_disk_writes:
                 logger.warning(
                     "[%s] state save failed while cancelled: %s", PLUGIN_ID, plugin._storage_path
