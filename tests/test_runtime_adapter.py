@@ -274,7 +274,7 @@ def test_runtime_contract_checks_listed() -> None:
 def test_command_handler_annotations_resolve_at_runtime() -> None:
     """所有宿主注册的处理器注解必须在运行时可解析。
 
-    宿主那一步的精确位置（真机读源码确证，不是推断）：
+    宿主那一步的精确位置：
     ``core/star/filter/command.py::CommandFilter.init_handler_md`` 在 4.23.3 是
     ``inspect.signature(handler)``，4.27.2 起是
     ``inspect.signature(handler, eval_str=True)``。一个参数之差，让
@@ -285,7 +285,7 @@ def test_command_handler_annotations_resolve_at_runtime() -> None:
     4.23.3 上「宿主只读 signature.parameters」曾成立，故此前把 ``CommandReply``
     放在 TYPE_CHECKING 块里是安全的；4.27.2 起该前提失效。本测试用与宿主同一个
     调用（``eval_str=True``，非"等价物"）复现那一步，把「注解必须运行时可解析」
-    钉成契约，不再依赖对宿主内部实现的假设。真机宿主上的同源守卫是
+    钉成契约，不依赖对宿主内部实现的假设。宿主上的同源守卫是
     ``scripts/compat_check.py::_handler_signature_gaps``。
 
     变异验证：把 main.py 的 ``CommandReply = AsyncGenerator[Any, None]`` 移回

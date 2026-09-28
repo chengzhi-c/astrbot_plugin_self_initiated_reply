@@ -407,7 +407,7 @@ def _permission_type(*_args: Any, **_kwargs: Any) -> Any:
     真实宿主（4.26.8/4.27.0）在装饰时会对被装饰对象调用 get_handler_full_name
     （访问 ``__name__``）。RegisteringCommandable 没有 ``__name__``，因此把
     @permission_type 叠在 @command_group 外层会在插件加载时抛 AttributeError。
-    桩复刻该行为，让这种顺序错误在测试期就炸出来，而不是留到真机安装时。
+    桩复刻该行为，让这种顺序错误在测试期就炸出来，而不是留到宿主加载插件时。
     """
 
     def decorate(obj: Any) -> Any:

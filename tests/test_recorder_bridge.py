@@ -351,6 +351,23 @@ async def test_resolve_relative_path_success(bridge_mod, tmp_path) -> None:
     assert await bridge.resolve_relative_path("ok.png") == target
 
 
+async def test_resolve_relative_path_accepts_async_resolver(bridge_mod, tmp_path) -> None:
+    """宿主 ``get_media_absolute_path`` 返回协程时也必须取到路径。
+
+    裸调用会把协程对象交给 ``Path()``，抛 TypeError 后被就地 except 吞成 DEBUG，
+    本地文件通道因此永久静默失效；本模块其余宿主调用一律经 ``maybe_await``。
+    """
+    target = tmp_path / "ok.png"
+    target.write_bytes(PNG_BYTES)
+
+    async def resolver(_value):
+        return str(target)
+
+    api = _api_with(record=None, resolver=resolver)
+    bridge = bridge_mod.MessageRecorderBridge(_context_with(api))
+    assert await bridge.resolve_relative_path("ok.png") == target
+
+
 async def test_resolve_relative_path_exception(bridge_mod) -> None:
     def boom(value):
         raise OSError("boom")

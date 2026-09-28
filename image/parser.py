@@ -244,7 +244,7 @@ def _global_addresses(host: str) -> list[str]:
         if not all(address.is_global for address in parsed):
             return []
         # IPv4 优先、组内按字符串稳定排序：纯字符串排序会把双栈域名的 IPv6
-        # 顶到首位，而本机 v6 无路由（Docker 常态）时调用方只连第一个地址，
+        # 顶到首位，而运行主机 v6 无路由（Docker 常态）时调用方只连第一个地址，
         # 等于整站下载恒失败。不轮询下一地址：每次下载只 pin 一个已校验地址，
         # 轮询会把一次下载拖成 N 倍时延，收益不抵复杂度。
         return [str(ip) for ip in sorted(parsed, key=lambda ip: (ip.version, str(ip)))]

@@ -91,7 +91,7 @@ class MessageRecorderBridge:
             resolver = getattr(self._api, "get_media_absolute_path", None)
             if not callable(resolver):
                 return None
-            path = resolver(value)
+            path = await maybe_await(resolver(value))
             path = Path(path) if path else None
             return path if path and path.exists() and path.is_file() else None
         except Exception as exc:

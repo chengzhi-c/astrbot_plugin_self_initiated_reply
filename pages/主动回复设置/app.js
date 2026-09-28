@@ -295,7 +295,8 @@ async function doRefresh() {
 	state.refreshing = true;
 	// disabled 不在这里直写：这几颗按钮的可用态只由 setSaving 判定，而它在刷新
 	// 尾段（applyConfigPayload）也会被调一次，直写会把两边规则各记一半。
-	configIo.setSaving(false);
+	// 起尾同一表达式：此刻 savingConfig 必为 false（上面的守卫），尾段则可能为真。
+	configIo.setSaving(state.savingConfig);
 	els.refreshBtn.classList.add("is-loading");
 	try {
 		const applied = await loadAll({ force: true });

@@ -69,7 +69,7 @@ def test_importing_compat_check_does_not_chdir_even_once_loaded() -> None:
 
 
 def _no_plugin_package(monkeypatch: pytest.MonkeyPatch) -> None:
-    """让 ``_bootstrap`` 走假包注册分支（无论本机是否装了真包）。"""
+    """让 ``_bootstrap`` 走假包注册分支（无论是否装了真包）。"""
     monkeypatch.setitem(sys.modules, PKG_NAME, None)
 
 

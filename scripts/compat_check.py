@@ -144,7 +144,7 @@ def _handler_signature_gaps() -> list[str]:
 
     符号存在性检查**走不到加载路径**，因此拦不住这类安装期失败：
     插件在 4.27.2 上装不上（``name 'CommandReply' is not defined``），而当时
-    ``host compat OK``。根因已在真机确证：宿主
+    ``host compat OK``。根因是宿主
     ``core/star/filter/command.py::CommandFilter.init_handler_md`` 在 4.23.3 是
     ``inspect.signature(handler)``，4.27.2 起变成 ``inspect.signature(handler,
     eval_str=True)``，一个参数之差，让 ``from __future__ import annotations``

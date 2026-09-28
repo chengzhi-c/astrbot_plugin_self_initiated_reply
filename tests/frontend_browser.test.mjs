@@ -1605,6 +1605,29 @@ test("faint hint token clears WCAG AA on both themes and both surfaces", async (
   }
 });
 
+test("both colour themes resolve the shadow tokens", async ({ page }) => {
+  // 阴影令牌是多段颜色列表，light-dark() 接不了，只能浅深各一份。少一份时该半边
+  // 所有 box-shadow 在计算值阶段落为 none，而颜色/对比度类断言看不出来。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { theme: "light" });
+  const errors = await openPage(page);
+  const read = () =>
+    page.evaluate(() => ({
+      btn: getComputedStyle(document.querySelector("#saveTopBtn")).boxShadow,
+      card: getComputedStyle(document.querySelector(".master")).boxShadow,
+      nav: getComputedStyle(document.querySelector(".sidenav")).boxShadow,
+    }));
+  for (const theme of ["light", "dark"]) {
+    if (theme === "dark") {
+      await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
+    }
+    const shadows = await read();
+    for (const [name, value] of Object.entries(shadows))
+      expect(value, `${theme} 主题下 ${name} 阴影丢失`).not.toBe("none");
+  }
+  expect(errors).toEqual([]);
+});
+
 test("mobile tab click moves both the tab and the sidenav current state", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await installBridge(page);

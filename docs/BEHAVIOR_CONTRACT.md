@@ -128,8 +128,8 @@
 - 本地图片放行的**唯一判据**是路径落在允许根内（`<data>` 与插件 image_cache），
   在 `_file_to_data_url` 一处收口。提取层的 `trusted_local_path` 只作分流提示，
   不再作为放行依据：宿主 aiocqhttp 用通用分支装配 `Image`，其 `file` 是对端
-  可控的 OneBot 原始值，而 `Image` 是 pydantic 组件（非 Mapping），恰好满足
-  旧判据，可被伪造。
+  可控的 OneBot 原始值，而 `Image` 恒为非 Mapping 组件，提取层的信任推断条件
+  因此总是成立，可被伪造。
 - 已知限制：Telegram 配了自建 Bot API 服务器（`telegram_file_base_url`）时，
   `file_path` 是本地绝对路径且不在 `<data>` 下，该场景图片被拒 →
   降级为纯文本主动回复（不崩、不静默外传）。默认 HTTPS 配置不受影响。
@@ -162,6 +162,9 @@
   会话历史 JSON 损坏 → `req.contexts` 留默认值 → 机器人带空上下文接话，
   表现为「失忆」而非报错，必须 WARNING。
   相对地，会话本身取不到属可接受降级，保持 DEBUG，避免噪音淹没告警通道。
+- 远程图片被**地址策略**主动拒绝（私有网段、非白名单端口、逐跳重解析后落回
+  内网）记 WARNING，与网络故障的 INFO 分开：前者说明有对端在敲被拦的门，运维需要
+  看得见，混在噪音里就失去意义。
 - `last_decisions` 的 reason 可含至多 200 字用户原文（运营可见）：`state.json`
   本就持久化 recent 全文，此处不是新增暴露面，取值见 `utils.DECISION_REASON_MAX_CHARS`；
   经 `/selfreply status` 呈现时折单行并截断至 60 字

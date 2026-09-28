@@ -138,9 +138,10 @@ timeout 只覆盖单次操作，慢速滴流与无响应 DNS 不得无限拖住�
 各自的准入证据。
 
 **设置页字面量 id 契约**（`tests/frontend_contract.test.mjs`）：`app.js` 的 `$("id")` 与
-`chrome.mjs` 的 `getElementById("id")` 拼错、或页面删掉对应元素，都不抛异常：调用点
-普遍有 `if (el)` 守卫，用户只是静默少一块功能。把 `whitelistSummary` 拼成
-`whitelistSummaryTYPO` 时，其余全部用例（含浏览器用例）仍然全绿。
+`chrome.mjs` 的 `getElementById("id")` 拼错、或页面删掉对应元素时，多数调用点有
+`if (el)` 守卫，因此不抛异常，用户只是静默少一块功能（Provider 控件的四个引用已改为
+必传，那几处拼错会让模块 import 抛错、boot 遮罩报「脚本加载失败」，是响的不是哑的）。
+把 `whitelistSummary` 拼成 `whitelistSummaryTYPO` 时，其余全部用例（含浏览器用例）仍然全绿。
 只做单向 JS ⊆ HTML：反向的孤儿 id 是无害死标记，且会在 `<svg><use href="#…">` 与
 `aria-*` 锚点上误报，豁免名单本身会腐烂。
 

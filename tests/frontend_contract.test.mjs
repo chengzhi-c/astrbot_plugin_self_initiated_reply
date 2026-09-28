@@ -457,8 +457,8 @@ test("theme localStorage key stays single-sourced with the HTML bootstrap", asyn
 });
 
 test("sidenav links name a mobile tab the page actually has", async () => {
-  // 归属从 chrome.mjs 的 TAB_GROUPS 表搬到了侧栏链接自己的 data-group 上：
-  // 那张表与 index.html 的 data-target 是同一事实的两份，搬完只剩一份。
+  // 归属的唯一来源是侧栏链接自己的 data-group，与它旁边的 data-target 同处一份
+  // 声明，JS 侧不再另立映射表。
   // 这里钉的是剩下的失败面：漏写或写错取值。两者都只让移动端少一个高亮，
   // 不抛异常，窄屏之外肉眼看不出来。
   const html = await readFile(join(pageDir, "index.html"), "utf8");
@@ -485,7 +485,7 @@ test("sidenav links name a mobile tab the page actually has", async () => {
 
 test("settings page scripts only look up ids that index.html declares", async () => {
   // 页面脚本按字面量取元素（app.js 的 $()、chrome.mjs 的 getElementById）。
-  // 拼错 id（或页面删掉对应元素）不抛异常：调用点普遍有 `if (el)` 守卫，用户
+  // 拼错 id（或页面删掉对应元素）时，多数调用点有 if (el) 守卫：不抛异常，用户
   // 只是静默少一块功能。实测把 whitelistSummary 拼成 whitelistSummaryTYPO 后，
   // 本文件其余契约、浏览器用例与全量 pytest 全部保持绿色（计数不写数字，
   // 写了必然随开发过时）。
@@ -581,31 +581,44 @@ test("styles do not target element ids", async () => {
   assert.deepEqual(idSelectors, [], `style.css 又用 ID 选择器做样式锚：${idSelectors}`);
 });
 
-test("the two dark shadow blocks stay token-identical", async () => {
+test("the three shadow token blocks stay token-identical", async () => {
   // 阴影是多层颜色列表，且 light/dark 两侧的模糊半径与偏移也不同，
-  // light-dark()（只接单个颜色）承载不了，故三个 --shadow-* 令牌写了两份：
-  // :root[data-theme="dark"]（显式深色）与 @media (prefers-color-scheme: dark)
-  // 下的 :root:not([data-theme])（跟随系统）。这两份必须同值，
-  // 改一处忘另一处由这条测试判红。
+  // light-dark()（只接单个颜色）承载不了，故三个 --shadow-* 令牌写了三份：
+  // :root（浅色）、:root[data-theme="dark"]（显式深色）与
+  // @media (prefers-color-scheme: dark) 下的 :root:not([data-theme])（跟随系统）。
+  // 两份深色必须同值，而浅色那份**必须存在**：漏掉它时 light-dark() 无关的
+  // box-shadow 会在计算值阶段整条落为 none，颜色类断言看不出来。
   const css = await readFile(join(pageDir, "style.css"), "utf8");
+  const light = css.match(/\n:root\s*\{([\s\S]*?)\n\}/);
   const explicit = css.match(
     /:root\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/,
   );
   const system = css.match(
     /@media \(prefers-color-scheme: dark\) \{\s*\n\t:root:not\(\[data-theme\]\) \{([\s\S]*?)\n\t\}/,
   );
-  assert.ok(explicit && system, "dark shadow blocks not found in style.css");
-  const normalize = (body) =>
+  assert.ok(light && explicit && system, "三份阴影令牌块没找齐 in style.css");
+  const names = ["--shadow-btn", "--shadow-drop", "--shadow-card"];
+  // 声明会因 Prettier 风格折行（`--x:` 与值分行），先把整块折成一行再按名取值。
+  const flatten = (body) =>
     body
-      .split("\n")
-      .map((line) => line.replace(/\s+/g, " ").trim())
-      .filter((line) => line && !line.startsWith("color-scheme"))
-      .join("\n");
-  assert.equal(
-    normalize(system[1]),
-    normalize(explicit[1]),
-    "两份深色阴影令牌漂移：改一处必须改另一处",
-  );
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const blocks = [light, explicit, system].map((block) => {
+    const flat = flatten(block[1]);
+    return Object.fromEntries(
+      names.map((name) => [name, flat.match(new RegExp(`${name}: [^;]+;`))?.[0]])
+    );
+  });
+  for (const name of names) {
+    assert.ok(blocks[0][name], `:root 缺少 ${name}：浅色下阴影会整条落为 none`);
+    assert.ok(blocks[1][name] && blocks[2][name], `${name} 的深色块缺了一份`);
+    assert.equal(
+      blocks[1][name],
+      blocks[2][name],
+      `${name} 的两份深色块漂移：改一处必须改另一处`,
+    );
+  }
 });
 
 test("page wires the manual image cache cleanup control to the API", async () => {

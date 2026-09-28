@@ -74,6 +74,16 @@
 	--stat-kicker: light-dark(#4b5780, #c89050);
 	--field-glow: light-dark(rgba(72, 84, 132, 0.2), rgba(224, 160, 64, 0.25));
 	--glass: light-dark(rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.1));
+	/* 阴影是多层颜色列表，light-dark() 只接单个颜色，因此三个阴影令牌按色向各写
+	   一份：这里是浅色份，深色两份见下方 :root[data-theme="dark"] 与
+	   prefers-color-scheme 块，同名声明必须同值，由 frontend_contract 的
+	   shadow-token 用例与浏览器侧的计算值断言共同锁定。 */
+	--shadow-btn:
+		inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 1px 3px rgba(27, 30, 46, 0.06);
+	--shadow-drop:
+		0 2px 8px -2px rgba(27, 30, 46, 0.06), 0 1px 2px rgba(27, 30, 46, 0.04);
+	--shadow-card:
+		0 4px 20px -4px rgba(27, 30, 46, 0.06), 0 1px 3px rgba(27, 30, 46, 0.04);
 	--radius: 16px;
 	--radius-sm: 12px;
 	--radius-xs: 8px;
@@ -103,9 +113,8 @@
 :root[data-theme="light"] {
 	color-scheme: light;
 }
-/* 阴影是多层颜色列表，light-dark() 只接单个颜色，因此三个阴影令牌仍按色向
-   各写一份；本块与下方 prefers-color-scheme 块的同名声明必须同值，由
-   frontend_contract 的 shadow-token 用例锁定漂移。 */
+/* 阴影令牌的深色份（浅色份在 :root 的令牌块里，理由见那条注释）：本块与下方
+   prefers-color-scheme 块的同名声明必须同值。 */
 :root[data-theme="dark"] {
 	color-scheme: dark;
 	--shadow-btn:

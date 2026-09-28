@@ -1670,7 +1670,7 @@ def test_all_host_local_image_roots_are_inside_data_root(tmp_path: Path) -> None
 
     这条守卫的价值在于「不误拒」方向：`test_forged_trusted_absolute_path_...`
     证明了 allowlist 能拦住伪造路径，但拦得太宽会让 wecom/webchat 等平台的
-    真实图片全部读不到（100% 静默失效，且只在真机上暴露）。此处按 18 家
+    真实图片全部读不到（100% 静默失效，且只在装了宿主的部署里暴露）。此处按各
     适配器的实测落盘位置逐个放行验证，任一家挪出 <data> 都会被发现。
     """
     _, image, _ = _load_modules()
@@ -1808,9 +1808,9 @@ def test_host_platform_adapters_do_not_use_system_tmp_path() -> None:
     锁定版 AstrBot 4.23.3 实测：`get_astrbot_system_tmp_path()` 只出现在
     astr_main_agent / computer_tools/fs / star.context 三处 agent 工具链里，
     没有任何 `core/platform/sources/*` 适配器用它。它一旦被用于保存入站图片，
-    真实图片会落在 <data> 之外并被 allowlist 静默拒绝（只在真机暴露）。
+    真实图片会落在 <data> 之外并被 allowlist 静默拒绝（只在装了宿主的部署里暴露）。
 
-    本机无宿主源码副本时跳过；但**不允许静默空转**：找到源码后先自证探针有效
+    未找到宿主源码副本时跳过；但**不允许静默空转**：找到源码后先自证探针有效
     （目录里确有平台适配器包，且覆盖了 `_HOST_INBOUND_IMAGE_SOURCES` 的全部
     条目），再做断言。否则「指错目录 → 扫到 0 个文件 → 绿灯」会变成假结论。
     定位方式见 `_find_host_platform_sources`：显式环境变量、已安装锁定版 astrbot、
@@ -1820,7 +1820,7 @@ def test_host_platform_adapters_do_not_use_system_tmp_path() -> None:
     if sources is None:
         import pytest
 
-        pytest.skip("本机无宿主源码副本（可用 SELFREPLY_HOST_SRC 指定）")
+        pytest.skip("未找到宿主源码副本（可用 SELFREPLY_HOST_SRC 指定）")
 
     packages = {
         path.name for path in sources.iterdir() if path.is_dir() and path.name != "__pycache__"
@@ -3404,7 +3404,7 @@ def test_fetch_client_exception_returns_none(monkeypatch) -> None:
 def test_global_addresses_prefer_ipv4(monkeypatch) -> None:
     """双栈域名必须 IPv4 优先。
 
-    纯字符串排序把 IPv6 顶到首位，而调用方只连第一个地址：本机 v6 无路由
+    纯字符串排序把 IPv6 顶到首位，而调用方只连第一个地址：运行主机 v6 无路由
     （Docker 常态）时该站下载恒失败。
     """
     _load_modules()  # -k 筛选单跑时也要先装桩，不能依赖文件内顺序
