@@ -485,7 +485,7 @@ class GenerationRunner:
         """shield + 超时/取消优雅停止。"""
         build_result = run.build_result
         if build_result is None:
-            raise RuntimeError("run_agent 尚未产出 build_result 就进入运行阶段")
+            raise RuntimeError("run_agent entered the run phase without a build_result")
         run_task = asyncio.ensure_future(self._drain(build_result.agent_runner))
         self._background_tasks.add(run_task)
         # 取结果先于丢弃：以异常收尾时不读结果会让 asyncio 投一条无归属的
@@ -528,7 +528,7 @@ class GenerationRunner:
     def _finalize_text(self, run: _GenerateRun) -> PipelineReply:
         build_result = run.build_result
         if build_result is None:
-            raise RuntimeError("run_agent 尚未产出 build_result 就进入收尾阶段")
+            raise RuntimeError("run_agent entered finalize without a build_result")
         response = build_result.agent_runner.get_final_llm_resp()
         reply_text = response_text(response)
         if reply_text:

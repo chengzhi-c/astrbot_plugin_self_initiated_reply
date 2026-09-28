@@ -1107,11 +1107,11 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
         return as_bool(raw, bool(fallback))
     if spec.kind == "int":
         if spec.minimum is None or spec.maximum is None:
-            raise RuntimeError(f"{spec.key}: int 规格缺少 minimum/maximum")
+            raise RuntimeError(f"{spec.key}: int spec missing minimum/maximum")
         return as_int(raw, int(fallback), int(spec.minimum), int(spec.maximum))
     if spec.kind == "float":
         if spec.minimum is None or spec.maximum is None:
-            raise RuntimeError(f"{spec.key}: float 规格缺少 minimum/maximum")
+            raise RuntimeError(f"{spec.key}: float spec missing minimum/maximum")
         return as_float(raw, float(fallback), float(spec.minimum), float(spec.maximum))
     if spec.kind == "enum":
         return choice(raw, set(spec.options), str(fallback))

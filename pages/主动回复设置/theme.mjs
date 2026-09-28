@@ -25,7 +25,11 @@ function cacheThemeLocally(theme) {
   }
 }
 export function applyTheme(theme, themeToggle) {
-  if (theme === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", theme);
+  if (theme === "auto") {
+    document.documentElement.removeAttribute("data-theme");
+  } else {
+    document.documentElement.setAttribute("data-theme", theme);
+  }
   cacheThemeLocally(theme);
   if (themeToggle) {
     themeToggle.setAttribute(
