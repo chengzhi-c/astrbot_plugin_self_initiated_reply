@@ -242,6 +242,9 @@ test.afterAll(async () => {
 for (const variant of [
   { name: "desktop light", viewport: { width: 1440, height: 1000 }, theme: "light" },
   { name: "desktop dark", viewport: { width: 1440, height: 1000 }, theme: "dark" },
+  // 760 落在 1024 与 720 两个断点之间：侧栏已收窄、移动端布局还没接管。
+  // 这一段既不属于 desktop 档也不属于 mobile 档，只靠两端各测一档会整体漏掉。
+  { name: "narrow tablet light", viewport: { width: 760, height: 900 }, theme: "light" },
   { name: "mobile light", viewport: { width: 360, height: 800 }, theme: "light" },
   { name: "mobile dark", viewport: { width: 360, height: 800 }, theme: "dark" },
 ]) {
@@ -1083,6 +1086,26 @@ test("a refresh withheld by pending edits says so instead of claiming success", 
   expect(errors).toEqual([]);
 });
 
+test("a refresh finishing under an in-flight save leaves the refresh held", async ({ page }) => {
+  // 刷新尾段会经 applyConfigPayload → setSaving(false) 回到这套按钮的唯一判据上；
+  // 那时 doRefresh 的 finally 若直写 disabled = false，就会在保存还在途时把刷新
+  // 放回可用，用户的下一次点击被 doRefresh 的 savingConfig 守卫静默丢弃。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { refreshConfigPending: true, saveMode: "pending" });
+  const errors = await openPage(page);
+  await page.locator("#refreshBtn").click();
+  await expect
+    .poll(() => page.evaluate(() => typeof window.__resolveRefreshConfig))
+    .toBe("function");
+  // 刷新在途时发起保存：保存 POST 挂起，savingConfig 一直保持 true。
+  await page.locator("#saveTopBtn").click();
+  await expect(page.locator("#saveTopBtn")).toBeDisabled();
+  await page.evaluate(() => window.__resolveRefreshConfig());
+  await expect(page.locator("#toast")).toHaveText("已刷新为最新配置");
+  await expect(page.locator("#refreshBtn")).toBeDisabled();
+  expect(errors).toEqual([]);
+});
+
 test("switching a provider input mode alone does not mark the form dirty", async ({ page }) => {
   // 只是换输入方式（列表 ↔ 手动）不改配置值，却留下假的未保存标记，
   // 用户被迫为一次无改动的点击保存一次。
@@ -1219,6 +1242,19 @@ test("dim and bold clicks never submit the theme field", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+test("the theme toggle announces the restored theme on a fresh load", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { theme: "auto" });
+  const errors = await openPage(page);
+  // 首屏 restoreTheme 的同值短路会跳过 applyTheme，按钮就只剩 index.html 里的
+  // 静态 aria-label，读屏听不到当前档位（点过一次才出现「当前：」）。
+  await expect(page.locator("#themeToggle")).toHaveAttribute(
+    "aria-label",
+    "切换主题，当前：跟随系统",
+  );
+  expect(errors).toEqual([]);
+});
+
 test("the theme toggle still submits the theme field", async ({ page }) => {
   // 与上一条互为对照：主题按钮是唯一该提交 theme 的入口，删掉字段即回归。
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -1295,7 +1331,7 @@ test("module load failure surfaces a refresh hint", async ({ page }) => {
   await page.clock.install();
   await page.goto(`${baseUrl}${PAGE_PATH}`);
   await page.clock.runFor(8000);
-  await expect(page.locator("body")).toHaveClass(/is-ready/);
+  await expect(page.locator("#boot")).toHaveClass(/is-failed/);
   await expect(page.locator(".boot-text")).toHaveText("脚本加载失败，请刷新");
 });
 

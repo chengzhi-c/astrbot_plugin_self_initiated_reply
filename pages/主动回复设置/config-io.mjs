@@ -163,7 +163,9 @@ export function createConfigIo(deps) {
 			btn.classList.toggle("is-loading", loading);
 			btn.disabled = blocked;
 		});
-		if (e.refreshBtn) e.refreshBtn.disabled = loading;
+		// 刷新自己也在途时不能提前放回：applyConfigPayload 会走到这里，
+		// 而 doRefresh 的尾段还没跑完。
+		if (e.refreshBtn) e.refreshBtn.disabled = loading || getState().refreshing;
 	}
 	function updateWhitelistFeedback() {
 		const e = els();

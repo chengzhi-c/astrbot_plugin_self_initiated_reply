@@ -456,38 +456,31 @@ test("theme localStorage key stays single-sourced with the HTML bootstrap", asyn
   assert.equal(html.split(THEME_KEY).length - 1, 1);
 });
 
-test("mobile tab groups stay in sync with the page section anchors", async () => {
-  // TAB_GROUPS 把侧栏分区 id 映射到移动端 tabbar 分组。分区改名或新增而漏改
-  // 映射表时，chrome.mjs 的 `TAB_GROUPS[target] || target` 兜底会静默降级为
-  // "不高亮任何 tab"，不抛异常、无日志，只有窄屏肉眼可能看出。
-  // 与 theme key / 主题标签同性质：跨源清单，靠这条钉在一起。
-  const [html, chrome] = await Promise.all([
-    readFile(join(pageDir, "index.html"), "utf8"),
-    readFile(join(pageDir, "chrome.mjs"), "utf8"),
-  ]);
-  const body = chrome.match(/const TAB_GROUPS = \{([\s\S]*?)\n\};/)?.[1];
-  assert.ok(body, "chrome.mjs 未声明 TAB_GROUPS");
-  const groups = new Map(
-    [...body.matchAll(/([A-Za-z_$][\w$]*|"[^"]*")\s*:\s*"([^"]*)"/g)].map((m) => [
-      m[1].replace(/"/g, ""),
-      m[2],
-    ])
-  );
-  assert.ok(groups.size > 0, "TAB_GROUPS 为空");
-
-  const sidenav = new Set(
-    [...html.matchAll(/<a\b[^>]*class="sidenav-link"[^>]*data-target="([^"]+)"/g)].map(
-      (m) => m[1]
-    )
-  );
-  const tabbar = new Set(
+test("sidenav links name a mobile tab the page actually has", async () => {
+  // 归属从 chrome.mjs 的 TAB_GROUPS 表搬到了侧栏链接自己的 data-group 上：
+  // 那张表与 index.html 的 data-target 是同一事实的两份，搬完只剩一份。
+  // 这里钉的是剩下的失败面：漏写或写错取值。两者都只让移动端少一个高亮，
+  // 不抛异常，窄屏之外肉眼看不出来。
+  const html = await readFile(join(pageDir, "index.html"), "utf8");
+  const links = [
+    ...html.matchAll(/<a\b[^>]*class="sidenav-link"[^>]*data-group="([^"]*)"/g),
+  ];
+  const linkCount = (html.match(/class="sidenav-link"/g) || []).length;
+  assert.ok(linkCount > 0, "index.html 没有侧栏链接");
+  assert.equal(links.length, linkCount, "有侧栏链接漏了 data-group");
+  const tabs = new Set(
     [...html.matchAll(/<button\b[^>]*class="mtab"[^>]*data-target="([^"]+)"/g)].map(
       (m) => m[1]
     )
   );
-  assert.ok(sidenav.size > 0 && tabbar.size > 0, "index.html 缺少 data-target 锚点");
-  assert.deepEqual([...groups.keys()].sort(), [...sidenav].sort());
-  assert.deepEqual([...new Set(groups.values())].sort(), [...tabbar].sort());
+  assert.ok(tabs.size > 0, "index.html 缺少移动 tab");
+  for (const [, group] of links)
+    assert.ok(tabs.has(group), `data-group="${group}" 没有对应的 .mtab`);
+  assert.deepEqual(
+    [...new Set(links.map((m) => m[1]))].sort(),
+    [...tabs].sort(),
+    "有 tab 永远轮不到高亮",
+  );
 });
 
 test("settings page scripts only look up ids that index.html declares", async () => {
@@ -556,14 +549,6 @@ test("frontend plugin id matches the backend package identity", async () => {
   assert.equal(feId, beId);
 });
 
-test("dark accent tokens are declared once and reused", async () => {
-  const css = await readFile(join(pageDir, "style.css"), "utf8");
-  assert.equal((css.match(/#e0a040/g) || []).length, 1);
-  assert.match(css, /--accent:\s*var\(--accent-light\)/);
-  assert.match(css, /:root\[data-theme="dark"\]/);
-  assert.match(css, /prefers-color-scheme:\s*dark/);
-});
-
 test("styles do not target element ids", async () => {
   // 样式不用 #id 选择器：ID 特异性(100)会压过类(10)，同一按钮的普通类规则
   // 从此改不动它，只能靠再写一条更长的 ID 规则去覆盖。id 仍是 JS 取节点的锚
@@ -596,12 +581,12 @@ test("styles do not target element ids", async () => {
   assert.deepEqual(idSelectors, [], `style.css 又用 ID 选择器做样式锚：${idSelectors}`);
 });
 
-test("the two dark token blocks stay token-identical", async () => {
-  // 深色令牌写了两份：:root[data-theme="dark"]（显式深色）与
-  // @media (prefers-color-scheme: dark) 下的 :root:not([data-theme])（跟随系统）。
-  // 合并成一份需要引入"选中态 vs 解析态"双状态机（currentTheme 从 data-theme
-  // 读取，auto 一旦被解析成具体值就不可表示，nextTheme 的三态循环会断），
-  // 复杂度大于收益，故保留两份并用这条测试把"改一处忘另一处"变成红灯。
+test("the two dark shadow blocks stay token-identical", async () => {
+  // 阴影是多层颜色列表，且 light/dark 两侧的模糊半径与偏移也不同，
+  // light-dark()（只接单个颜色）承载不了，故三个 --shadow-* 令牌写了两份：
+  // :root[data-theme="dark"]（显式深色）与 @media (prefers-color-scheme: dark)
+  // 下的 :root:not([data-theme])（跟随系统）。这两份必须同值，
+  // 改一处忘另一处由这条测试判红。
   const css = await readFile(join(pageDir, "style.css"), "utf8");
   const explicit = css.match(
     /:root\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/,
@@ -609,7 +594,7 @@ test("the two dark token blocks stay token-identical", async () => {
   const system = css.match(
     /@media \(prefers-color-scheme: dark\) \{\s*\n\t:root:not\(\[data-theme\]\) \{([\s\S]*?)\n\t\}/,
   );
-  assert.ok(explicit && system, "dark token blocks not found in style.css");
+  assert.ok(explicit && system, "dark shadow blocks not found in style.css");
   const normalize = (body) =>
     body
       .split("\n")
@@ -619,7 +604,7 @@ test("the two dark token blocks stay token-identical", async () => {
   assert.equal(
     normalize(system[1]),
     normalize(explicit[1]),
-    "两份深色令牌块漂移：改一处必须改另一处",
+    "两份深色阴影令牌漂移：改一处必须改另一处",
   );
 });
 

@@ -29,7 +29,6 @@
     <script>
       window.__selfreplyBootFailTimer = setTimeout(function () {
         if (window.__selfreplyAppStarted) return;
-        document.body.classList.add("is-ready");
         var boot = document.getElementById("boot");
         if (!boot) return;
         boot.classList.add("is-failed");
@@ -374,8 +373,15 @@
           ></span>
           <span class="sidenav-fade sidenav-fade-end" aria-hidden="true"></span>
           <ul class="sidenav-list">
+            <!-- data-group：窄屏底部 tabbar 的高亮归属（chrome.mjs syncMobileTabs），
+                 取值必须是下方某个 .mtab 的 data-target。 -->
             <li>
-              <a class="sidenav-link" href="#selfStat" data-target="selfStat">
+              <a
+                class="sidenav-link"
+                href="#selfStat"
+                data-target="selfStat"
+                data-group="selfStat"
+              >
                 <svg class="sidenav-icon" aria-hidden="true">
                   <use href="#i-power" /></svg
                 ><span class="sidenav-text">总开关</span>
@@ -383,7 +389,12 @@
             </li>
             <li class="sidenav-group">基础</li>
             <li>
-              <a class="sidenav-link" href="#sec-scope" data-target="sec-scope">
+              <a
+                class="sidenav-link"
+                href="#sec-scope"
+                data-target="sec-scope"
+                data-group="sec-scope"
+              >
                 <svg class="sidenav-icon" aria-hidden="true">
                   <use href="#i-scope" /></svg
                 ><span class="sidenav-text">生效范围</span>
@@ -394,6 +405,7 @@
                 class="sidenav-link"
                 href="#sec-triggers"
                 data-target="sec-triggers"
+                data-group="sec-scope"
               >
                 <svg class="sidenav-icon" aria-hidden="true">
                   <use href="#i-clock" /></svg
@@ -406,6 +418,7 @@
                 class="sidenav-link"
                 href="#sec-decision"
                 data-target="sec-decision"
+                data-group="sec-decision"
               >
                 <svg class="sidenav-icon" aria-hidden="true">
                   <use href="#i-brain" /></svg
@@ -418,6 +431,7 @@
                 class="sidenav-link"
                 href="#sec-runtime"
                 data-target="sec-runtime"
+                data-group="sec-runtime"
               >
                 <svg class="sidenav-icon" aria-hidden="true">
                   <use href="#i-tools" /></svg
@@ -429,6 +443,7 @@
                 class="sidenav-link"
                 href="#sec-vision"
                 data-target="sec-vision"
+                data-group="sec-runtime"
               >
                 <svg class="sidenav-icon" aria-hidden="true">
                   <use href="#i-image" /></svg

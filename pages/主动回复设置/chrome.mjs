@@ -1,15 +1,6 @@
 const MORE_ACTIONS_MEDIA = "(max-width: 460px)";
 const DIM_KEY = "selfreply-dim";
 const BOLD_KEY = "selfreply-bold";
-// Keep in sync with index.html mobile tabbar data-target values.
-const TAB_GROUPS = {
-  selfStat: "selfStat",
-  "sec-scope": "sec-scope",
-  "sec-triggers": "sec-scope",
-  "sec-decision": "sec-decision",
-  "sec-runtime": "sec-runtime",
-  "sec-vision": "sec-runtime",
-};
 const REDUCED_MOTION_MEDIA = "(prefers-reduced-motion: reduce)";
 // MediaQueryList 是活对象：`.matches` 会随环境变化，故惰性持有一份单例复用，
 // 不必每次调用都新建（旧实现每次 matchMedia，等于每处平滑滚动各建一份）。
@@ -77,7 +68,7 @@ export function updateNavFades(els) {
 }
 function syncMobileTabs(els, active) {
   if (!els.mobileTabbar || !active) return;
-  const group = TAB_GROUPS[active.dataset.target] || active.dataset.target;
+  const group = active.dataset.group;
   els.mobileTabbar.querySelectorAll(".mtab").forEach((tab) => {
     const current = tab.dataset.target === group;
     tab.classList.toggle("is-current", current);
@@ -99,7 +90,9 @@ function setCurrentNav(els, active) {
     if (linkRect.left < listRect.left + 2 || linkRect.right > listRect.right - 2) {
       const delta = linkRect.left - listRect.left - (listRect.width - linkRect.width) / 2;
       els.sidenavList.scrollTo({
-        left: els.sidenavList.scrollLeft + delta, behavior: prefersReducedMotion() ? "auto" : "smooth", });
+        left: els.sidenavList.scrollLeft + delta,
+        behavior: prefersReducedMotion() ? "auto" : "smooth",
+      });
     }
   }
   syncMobileTabs(els, active);
@@ -112,7 +105,9 @@ function jumpToSection(targetId) {
   const details = target.closest("details");
   if (details && !details.open) details.open = true;
   target.scrollIntoView({
-    behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" });
+    behavior: prefersReducedMotion() ? "auto" : "smooth",
+    block: "start",
+  });
   return true;
 }
 export function setupNav(els) {
@@ -133,14 +128,17 @@ export function setupNav(els) {
   });
   if ("IntersectionObserver" in window) {
     const sections = links.map((l) => document.getElementById(l.dataset.target)).filter(Boolean);
-    const observer = new IntersectionObserver((entries) => {
+    const observer = new IntersectionObserver(
+      (entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
             const link = byTarget.get(entry.target.id);
             if (link) setCurrentNav(els, link);
           }
         });
-      }, { rootMargin: "-28% 0px -62% 0px", threshold: 0 });
+      },
+      { rootMargin: "-28% 0px -62% 0px", threshold: 0 },
+    );
     sections.forEach((s) => observer.observe(s));
   }
   setCurrentNav(els, links[0]);
@@ -265,7 +263,4 @@ export function bindDimBoldButtons(onChange) {
 }
 export function hideBoot(els) {
   if (els.boot) els.boot.classList.add("is-hidden");
-  // 纯"模块已启动"的测试锚：样式表不消费 is-ready。改渲染时序请动 .boot 的
-  // is-hidden，不要以为这个类控制任何视觉状态。
-  document.body.classList.add("is-ready");
 }

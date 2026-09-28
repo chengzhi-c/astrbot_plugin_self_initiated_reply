@@ -257,8 +257,6 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 - **类选择器**（`.topbar` / `.sidenav-list` / `.sidenav-fade-*` / `.mtab` /
   `.sidenav-link[data-target]`）：`styles do not target element ids` 只断言 CSS 不用 id，
   不守 JS 用类锚定 DOM。类名重命名会让吸顶、导航偏移、渐隐提示静默失效。
-- **`body.is-ready`**：样式表零消费，唯一读者是浏览器用例的 `toHaveClass(/is-ready/)`，
-  是「模块已启动」的测试锚而非视觉状态。
 - **三档超时**（8s 内联 boot fail / 12s `BOOT_TIMEOUT_MS` / 15s `FETCH_TIMEOUT_MS`）：
   分散三处且语义不同（前者是脚本加载失败，后两者是配置加载 deadline 与单次 API 上限），
   不收敛。

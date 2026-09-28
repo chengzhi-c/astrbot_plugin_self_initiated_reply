@@ -4,7 +4,6 @@ import { createProviderControl } from "./providers.mjs";
 import {
 	THEME_KEY,
 	applyTheme,
-	currentTheme,
 	nextTheme,
 	normalizeTheme,
 	persistTheme,
@@ -87,6 +86,7 @@ let providerOptions = [];
 let providerListAvailable = false;
 const state = {
 	savingConfig: false,
+	refreshing: false,
 	configLoaded: false,
 	configRevision: "",
 	runtimeEnabled: false,
@@ -287,14 +287,15 @@ async function loadAll({ force = false } = {}) {
 	}
 }
 
-let refreshing = false;
 let refreshArmed = false;
 let refreshArmTimer = null;
 
 async function doRefresh() {
-	if (state.savingConfig || refreshing) return;
-	refreshing = true;
-	els.refreshBtn.disabled = true;
+	if (state.savingConfig || state.refreshing) return;
+	state.refreshing = true;
+	// disabled 不在这里直写：这几颗按钮的可用态只由 setSaving 判定，而它在刷新
+	// 尾段（applyConfigPayload）也会被调一次，直写会把两边规则各记一半。
+	configIo.setSaving(false);
 	els.refreshBtn.classList.add("is-loading");
 	try {
 		const applied = await loadAll({ force: true });
@@ -306,15 +307,16 @@ async function doRefresh() {
 	} catch (err) {
 		showToast(err.message || "刷新失败");
 	} finally {
-		refreshing = false;
-		els.refreshBtn.disabled = false;
+		state.refreshing = false;
+		// 交回唯一判据重算：保存还在途时刷新必须继续按住。
+		configIo.setSaving(state.savingConfig);
 		els.refreshBtn.classList.remove("is-loading");
 	}
 }
 
 if (els.refreshBtn) {
 	els.refreshBtn.addEventListener("click", (event) => {
-		if (refreshing) return;
+		if (state.refreshing) return;
 		if (state.isDirty && !refreshArmed) {
 			refreshArmed = true;
 			els.refreshBtn.classList.add("is-armed");
@@ -482,8 +484,9 @@ loadAll()
 	});
 
 restoreTheme(apiGet).then((prefs) => {
-	if (!themeWasTouched() && prefs.theme !== currentTheme())
-		applyTheme(prefs.theme, els.themeToggle);
+	// 同值也要走一次 applyTheme：按钮的「当前：」朗读名只由它写入，短路掉之后
+	// 首屏（尤其 auto，本地没缓存可补）只剩 index.html 的静态 aria-label。
+	if (!themeWasTouched()) applyTheme(prefs.theme, els.themeToggle);
 	if (!dimBoldWasTouched()) {
 		applyDim(prefs.dim);
 		applyBold(prefs.bold);
