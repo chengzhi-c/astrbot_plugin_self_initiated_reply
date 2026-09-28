@@ -169,7 +169,7 @@ function renderPromptPreview() {
 const providerDeps = {
 	getOptions: () => providerOptions,
 	isListAvailable: () => providerListAvailable,
-	showToast: (msg) => showToast(msg),
+	showToast,
 	onDirty: () => configIo.setDirty(true),
 };
 

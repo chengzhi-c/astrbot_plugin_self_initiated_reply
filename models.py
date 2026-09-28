@@ -1087,7 +1087,7 @@ def _truncate_text(spec: ConfigSpec, text: str) -> str:
     if spec.max_len is None or len(text) <= spec.max_len:
         return text
     logger.warning(
-        "[%s] %s 过长 (%d 字符)，已截断到 %d 字符",
+        "[%s] %s too long (%d chars), truncated to %d chars",
         PLUGIN_ID,
         spec.key,
         len(text),

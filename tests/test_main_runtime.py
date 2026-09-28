@@ -1754,7 +1754,7 @@ def test_startup_persist_failure_is_logged(tmp_path: Path, monkeypatch: Any, cap
 
     assert calls == ["persist"], "启动路径没有调用 persist_settings_config"
     errors = messages_at_least(caplog, logging.ERROR)
-    assert any("配置规范化落盘失败" in message for message in errors), (
+    assert any("config normalization write failed" in message for message in errors), (
         f"落盘失败没有记 ERROR，实际日志：{errors}"
     )
 

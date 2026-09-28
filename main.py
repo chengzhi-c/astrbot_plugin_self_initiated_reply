@@ -398,7 +398,7 @@ class SelfInitiatedReplyPlugin(Star):
         """同步的配置规范化落盘（无事件循环的宿主，或后台任务内部调用）。"""
         if not persist_settings_config(self._config_path, self.config, self.settings):
             logger.error(
-                "[%s] 配置规范化落盘失败，本次运行仍用已加载配置：%s",
+                "[%s] config normalization write failed, running with the loaded config: %s",
                 PLUGIN_ID,
                 self._config_path,
             )
@@ -409,7 +409,7 @@ class SelfInitiatedReplyPlugin(Star):
             await asyncio.to_thread(self._normalize_config_sync)
         except Exception as exc:
             logger.warning(
-                "[%s] 配置规范化落盘任务异常：%s",
+                "[%s] config normalization task error: %s",
                 PLUGIN_ID,
                 exc,
             )
