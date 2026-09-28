@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ._support import CORE_MODULES
+from ._support import CORE_MODULES, PNG_BYTES, PNG_DATA_URL, make_parser
 from .host_stubs import ROOT, capture_logs, install_astrbot_stubs, load_modules, load_package
 
 PACKAGE_NAME = "selfreply_vision_test_package"
@@ -2016,8 +2016,6 @@ async def test_freeze_images_warns_when_no_image_survives(caplog: object) -> Non
 # parser 错误分支与边界行为（DNS 与传输层守卫、物化、快照、清理配额）
 # ============================================================================
 
-PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
-PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode("ascii")
 PNG_DIGEST = hashlib.sha256(PNG_BYTES).hexdigest()
 
 
@@ -2029,10 +2027,6 @@ def _max_image_bytes() -> int:
     """从源读单图字节上限：夹具不再复制字面量（阈值单一事实源在 models.py）。"""
     _load_modules()
     return _parser_module().MAX_IMAGE_BYTES
-
-
-def _make_parser(image, tmp_path: Path, **kwargs):
-    return image.ImageParser(object(), source_cache_dir=tmp_path / "image_cache", **kwargs)
 
 
 def _png_file(tmp_path: Path, name: str = "photo.png") -> Path:
@@ -2314,7 +2308,7 @@ def test_download_warns_when_address_policy_blocks(tmp_path: Path, monkeypatch, 
     parser_mod = _parser_module()
     monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: "127.0.0.1")
 
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     with capture_logs(caplog, parser_mod.logger, logging.DEBUG):
         assert asyncio.run(parser._download_image_data_url("https://cdn.example/x.png")) is None
 
@@ -2333,13 +2327,13 @@ def test_download_warns_when_address_policy_blocks(tmp_path: Path, monkeypatch, 
 
 def test_prepare_no_source_is_false(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     assert asyncio.run(parser.prepare(image.ImageInfo())) is False
 
 
 def test_prepare_already_frozen_is_true(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     info = image.ImageInfo(url="https://x/y.png")
     info.prepared_source = PNG_DATA_URL
     assert asyncio.run(parser.prepare(info)) is True
@@ -2347,7 +2341,7 @@ def test_prepare_already_frozen_is_true(tmp_path: Path) -> None:
 
 def test_prepare_unresolvable_source_is_false(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
 
     async def no_source(_info):
         return ""
@@ -2372,7 +2366,7 @@ def test_prepare_data_url_without_cache_dir_stays_in_memory(tmp_path: Path) -> N
 
 def test_prepare_surfaces_resolve_exception_as_false(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
 
     async def boom(_info):
         raise RuntimeError("boom")
@@ -2411,7 +2405,7 @@ def test_malformed_file_path_does_not_void_url_branch() -> None:
 
 def test_snapshot_skips_prepared_source(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     info = image.ImageInfo(file_path=str(_png_file(tmp_path)), trusted_local_path=True)
     info.prepared_source = PNG_DATA_URL
     assert asyncio.run(parser._snapshot_local_source(info)) is True
@@ -2419,28 +2413,28 @@ def test_snapshot_skips_prepared_source(tmp_path: Path) -> None:
 
 def test_snapshot_requires_trusted_local_path(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     info = image.ImageInfo(file_path=str(_png_file(tmp_path)))
     assert asyncio.run(parser._snapshot_local_source(info)) is False
 
 
 def test_snapshot_rejects_http_scheme_file_path(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     info = image.ImageInfo(file_path="https://cdn.example/x.png", trusted_local_path=True)
     assert asyncio.run(parser._snapshot_local_source(info)) is False
 
 
 def test_snapshot_rejects_relative_path(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     info = image.ImageInfo(file_path="relative/photo.png", trusted_local_path=True)
     assert asyncio.run(parser._snapshot_local_source(info)) is False
 
 
 def test_snapshot_no_data_url_falls_through(tmp_path: Path, monkeypatch) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     info = image.ImageInfo(file_path=str(_png_file(tmp_path)), trusted_local_path=True)
     monkeypatch.setattr(parser, "_file_to_data_url", lambda path, **kw: None)
     assert asyncio.run(parser._snapshot_local_source(info)) is False
@@ -2448,7 +2442,7 @@ def test_snapshot_no_data_url_falls_through(tmp_path: Path, monkeypatch) -> None
 
 def test_snapshot_materialize_failure_is_false(tmp_path: Path, monkeypatch) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     info = image.ImageInfo(file_path=str(_png_file(tmp_path)), trusted_local_path=True)
     monkeypatch.setattr(parser, "_file_to_data_url", lambda path, **kw: PNG_DATA_URL)
     monkeypatch.setattr(parser, "_materialize_data_url", lambda url: None)
@@ -2457,7 +2451,7 @@ def test_snapshot_materialize_failure_is_false(tmp_path: Path, monkeypatch) -> N
 
 def test_snapshot_exception_is_handled(tmp_path: Path, monkeypatch) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     info = image.ImageInfo(file_path=str(_png_file(tmp_path)), trusted_local_path=True)
 
     def raise_runtime(path: Path, **kw):
@@ -2474,7 +2468,7 @@ def test_snapshot_exception_is_handled(tmp_path: Path, monkeypatch) -> None:
 
 def test_prepare_batch_preserves_input_order(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
 
     async def fake_resolve(_info):
         return PNG_DATA_URL
@@ -2517,7 +2511,7 @@ def test_run_concurrent_isolates_single_image_failures(tmp_path: Path) -> None:
     上层 vision_runtime 只能把整个识图阶段判失败（其余可成功的图全丢）。
     """
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
 
     async def fn(info):
         if "bad" in str(info.url):
@@ -2536,7 +2530,7 @@ def test_run_concurrent_isolates_single_image_failures(tmp_path: Path) -> None:
 def test_snapshot_local_source_swallows_unexpected_errors(tmp_path: Path) -> None:
     """快照单图的捕获面对齐 prepare()：任何异常只让该图不可用。"""
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
 
     def boom(*_args, **_kwargs):
         raise ZeroDivisionError("非 OSError 族漏网")
@@ -2553,7 +2547,7 @@ def test_snapshot_local_source_swallows_unexpected_errors(tmp_path: Path) -> Non
 
 def test_parse_no_source_returns_none(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     assert asyncio.run(parser.parse(image.ImageInfo())) is None
 
 
@@ -3099,7 +3093,7 @@ def test_resolve_recorder_miss_falls_through(tmp_path: Path, monkeypatch) -> Non
 
 def test_resolve_http_file_path_fetches(tmp_path: Path, monkeypatch) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
 
     async def fake_fetch(url):
         return PNG_DATA_URL if url == "https://x/y.png" else None
@@ -3111,7 +3105,7 @@ def test_resolve_http_file_path_fetches(tmp_path: Path, monkeypatch) -> None:
 
 def test_resolve_http_file_path_fetch_failure_returns_none(tmp_path: Path, monkeypatch) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
 
     async def fake_fetch(_url):
         return None
@@ -3130,7 +3124,7 @@ def test_resolve_http_file_path_failure_falls_back_to_url(tmp_path: Path, monkey
     2. ``file`` 是对端可控字段，提前终止等于给对端一个「屏蔽 url 分支」的能力。
     """
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     attempts: list[str] = []
 
     async def fake_fetch(url):
@@ -3208,26 +3202,26 @@ def test_recorder_resolved_path_outside_roots_is_rejected(tmp_path: Path) -> Non
 
 def test_materialize_requires_base64_data_url(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     assert parser._materialize_data_url("data:image/png;base64") is None
 
 
 def test_materialize_rejects_unknown_mime(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     encoded = base64.b64encode(PNG_BYTES).decode("ascii")
     assert parser._materialize_data_url("data:image/svg+xml;base64," + encoded) is None
 
 
 def test_materialize_rejects_bad_base64(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     assert parser._materialize_data_url("data:image/png;base64,!!!") is None
 
 
 def test_materialize_rejects_mismatched_payload(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     encoded = base64.b64encode(b"not an image at all").decode("ascii")
     assert parser._materialize_data_url("data:image/png;base64," + encoded) is None
 
@@ -3240,7 +3234,7 @@ def test_materialize_requires_cache_root(tmp_path: Path) -> None:
 
 def test_materialize_rejects_existing_non_file_target(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     target = tmp_path / "image_cache" / PNG_DIGEST[:2] / f"{PNG_DIGEST}.png"
     target.mkdir(parents=True)
     assert parser._materialize_data_url(PNG_DATA_URL) is None
@@ -3249,7 +3243,7 @@ def test_materialize_rejects_existing_non_file_target(tmp_path: Path) -> None:
 def test_materialize_publishes_with_atomic_replace(tmp_path: Path, monkeypatch) -> None:
     _, image, _ = _load_modules()
     parser_mod = _parser_module()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     calls: list[tuple[Path, Path]] = []
     original_replace = parser_mod.os.replace
 
@@ -3272,7 +3266,7 @@ def test_materialize_publishes_with_atomic_replace(tmp_path: Path, monkeypatch) 
 
 def test_file_to_data_url_rejects_missing_path(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    parser = make_parser(image, tmp_path)
     assert parser._file_to_data_url(tmp_path / "missing.png") is None
 
 

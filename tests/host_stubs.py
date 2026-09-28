@@ -739,6 +739,30 @@ class FakeContext:
         return True
 
 
+class FakeContextSend:
+    """``DeliveryRunner.context_send`` 的桩出口：只记录调用，不投递。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    async def __call__(self, umo: str, message: object) -> None:
+        self.calls.append((umo, message))
+        return None
+
+
+class FlipGate:
+    """前 true_times 次 is_current 返回 True，之后一律 False（代次翻转模拟）。"""
+
+    def __init__(self, true_times: int) -> None:
+        self.remaining = true_times
+
+    def is_current(self, umo: str, generation: object) -> bool:
+        if self.remaining > 0:
+            self.remaining -= 1
+            return True
+        return False
+
+
 def make_plugin(tmp_path: Path, **config_overrides: Any) -> tuple[Any, types.ModuleType]:
     """Instantiate the plugin against tmp paths with sane defaults."""
     main = load_main()

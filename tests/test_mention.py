@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .host_stubs import FakeEvent
+from .host_stubs import FakeContextSend, FakeEvent, FlipGate
 from .test_delivery_runner import _make_runner
 
 
@@ -125,8 +125,6 @@ async def test_mention_never_targets_the_bot_itself(tmp_path: Path) -> None:
 
 async def test_mention_degrades_when_event_already_recycled(tmp_path: Path) -> None:
     """事件已回收（_last_events 为空）：走 context 兜底，不 @（无 sender 可取）。"""
-    from .test_delivery_runner import FakeContextSend
-
     context_send = FakeContextSend()
     _mod, models, runner, _last_events = _make_runner(
         tmp_path, config={"mention_mode": "always"}, context_send=context_send
@@ -161,10 +159,8 @@ async def test_mention_and_quote_together_put_at_before_reply(tmp_path: Path) ->
 
 async def test_mention_skipped_when_generation_changed_before_send(tmp_path: Path) -> None:
     """代次在复核点 2 翻转：整条发送被抑制，@ 与正文都不出去。"""
-    from .test_delivery_runner import _FlipGate
-
     _mod, models, runner, last_events = _make_runner(tmp_path, config={"mention_mode": "always"})
-    runner._gate = _FlipGate(true_times=1)
+    runner._gate = FlipGate(true_times=1)
     event = _ChainRecordingEvent(umo="s1", sender_id="u1")
     last_events["s1"] = event
     outcome = await runner.send_reply("s1", "hello", expected_generation=7)

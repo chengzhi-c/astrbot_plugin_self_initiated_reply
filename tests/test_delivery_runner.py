@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from ._support import core_loader
-from .host_stubs import FakeEvent, capture_logs
+from .host_stubs import FakeContextSend, FakeEvent, FlipGate, capture_logs
 
 PACKAGE_NAME = "selfreply_delivery_test_package"
 _load_modules = core_loader(PACKAGE_NAME)
@@ -50,15 +50,6 @@ class FakeSender:
     ) -> object:
         self.calls.append((umo, reply, expected_generation))
         return self.outcome
-
-
-class FakeContextSend:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, object]] = []
-
-    async def __call__(self, umo: str, message: object) -> None:
-        self.calls.append((umo, message))
-        return None
 
 
 class FakeSave:
@@ -980,19 +971,6 @@ async def test_quote_skipped_without_message_id(tmp_path: Path) -> None:
 # ============================================================================
 
 
-class _FlipGate:
-    """前 true_times 次 is_current 返回 True，之后一律 False（代次翻转模拟）。"""
-
-    def __init__(self, true_times: int) -> None:
-        self.remaining = true_times
-
-    def is_current(self, umo: str, generation: object) -> bool:
-        if self.remaining > 0:
-            self.remaining -= 1
-            return True
-        return False
-
-
 class _ClearBoomEvent(FakeEvent):
     """宿主 clear_result 抛错的事件桩（回收失败不得阻断投递）。"""
 
@@ -1051,7 +1029,7 @@ async def test_send_reply_hook_empty_result_and_clear_error(tmp_path: Path) -> N
 async def test_send_reply_suppressed_after_decorating(tmp_path: Path) -> None:
     """装饰钩子后代次翻转 → SUPPRESSED（复核点 2）。"""
     _, models, runner, last_events = _make_runner(tmp_path)
-    runner._gate = _FlipGate(true_times=1)
+    runner._gate = FlipGate(true_times=1)
     last_events["s1"] = FakeEvent()
     outcome = await runner.send_reply("s1", "hello", expected_generation=7)
     assert outcome.status is models.SendStatus.SUPPRESSED
@@ -1061,7 +1039,7 @@ async def test_send_reply_suppressed_after_decorating(tmp_path: Path) -> None:
 async def test_send_reply_suppressed_before_send(tmp_path: Path) -> None:
     """发送前一刻代次翻转 → SUPPRESSED（复核点 3）。"""
     _, models, runner, last_events = _make_runner(tmp_path)
-    runner._gate = _FlipGate(true_times=2)
+    runner._gate = FlipGate(true_times=2)
     last_events["s1"] = FakeEvent()
     outcome = await runner.send_reply("s1", "hello", expected_generation=7)
     assert outcome.status is models.SendStatus.SUPPRESSED
@@ -1101,7 +1079,7 @@ async def test_send_reply_context_path_stale_gate(tmp_path: Path) -> None:
     """无缓存事件走 context 兜底前代次翻转 → SUPPRESSED。"""
     _, models, runner, _ = _make_runner(tmp_path)
     # 入口复核消耗一次 True，context 兜底前的复核才撞到翻转
-    runner._gate = _FlipGate(true_times=1)
+    runner._gate = FlipGate(true_times=1)
     outcome = await runner.send_reply("s1", "hello", expected_generation=7)
     assert outcome.status is models.SendStatus.SUPPRESSED
     assert "before context send" in outcome.detail
@@ -1245,7 +1223,7 @@ async def test_deliver_cancel_after_send_start_no_retry(tmp_path: Path) -> None:
 async def test_deliver_failure_with_directs_and_gate_flip(tmp_path: Path) -> None:
     """发送失败后代次已变：返回放弃旧回复，不改成发送失败。"""
     _, models, runner, _ = _make_runner(tmp_path, sender_status="failed_before_submit")
-    runner._gate = _FlipGate(true_times=1)
+    runner._gate = FlipGate(true_times=1)
     state = _state(models)
     result = await runner.deliver_reply(
         "s1",

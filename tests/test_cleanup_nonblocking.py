@@ -18,7 +18,19 @@ import asyncio
 import threading
 from pathlib import Path
 
+from ._support import CORE_MODULES, PNG_DATA_URL, make_parser
+from .host_stubs import load_modules
 from .test_session_scheduler import _make_scheduler
+
+PACKAGE_NAME = "selfreply_cleanup_test_package"
+
+
+def _load_image_modules():
+    return load_modules(PACKAGE_NAME, *CORE_MODULES)
+
+
+def _load_storage_modules():
+    return load_modules(PACKAGE_NAME, "models", "utils", "storage")
 
 
 def _patch_cleanup_probe(scheduler_mod, calls: list[int]):
@@ -118,10 +130,8 @@ async def test_prepare_materializes_data_url_off_the_event_loop(tmp_path: Path) 
     远程图经 _resolve_image_url 变成 data: 后走这条路径；同步解码+写盘
     会阻塞整 bot，与 cleanup 已钉死的 to_thread 契约同一类问题。
     """
-    from .test_vision import PNG_DATA_URL, _load_modules, _make_parser
-
-    _, image, _ = _load_modules()
-    parser = _make_parser(image, tmp_path)
+    _, image, _ = _load_image_modules()
+    parser = make_parser(image, tmp_path)
     threads: list[int] = []
     original = parser._materialize_data_url
 
@@ -151,9 +161,7 @@ async def test_settings_config_write_offloads_file_io_to_thread(tmp_path: Path) 
     在事件循环线程内执行会阻塞所有会话。宿主 save_config 的线程安全性未知，
     故只有纯本插件的文件写进线程，宿主同步仍在循环内。
     """
-    from .test_storage_and_umo import _load_modules
-
-    models, _, storage = _load_modules()
+    models, _, storage = _load_storage_modules()
     threads: list[int] = []
     original = storage.write_json_atomic
 
