@@ -49,10 +49,11 @@ const providerControls = (value = "") => ({
   visionJudge: { value: () => value, sync() {} },
 });
 // createConfigIo 的调桩工厂：多数用例只关心 apiPost / showToast / apiGet 三处，
-// 其余九个键（elements/state/setState/setStatState/renderPromptPreview/三个
-// Provider 控件/fmtBool）逐字相同，缺任何一个会让 saveConfig 在调用点抛 TypeError
+// 其余七个键（elements/state/setState/setStatState/renderPromptPreview/Provider
+// 控件注册表/fmtBool）逐字相同，缺任何一个会让 saveConfig 在调用点抛 TypeError
 // 而不是断言失败，所以这里给足默认值，用例只写自己的差异点。
-// judge 参数收整组控件：只有 judge 需要特定值的用例传 `providerControls("typo-id")`。
+// controls 收整组控件：三个字段成组出现，需要特定值的用例传
+// `providerControls("typo-id")` 即可让三者同时报该值。
 const makeConfigIo = ({
   elements,
   state,
@@ -61,7 +62,7 @@ const makeConfigIo = ({
   apiGet = async () => {
     throw new Error("skip refresh");
   },
-  judge = providerControls(),
+  controls = providerControls(),
   providerOptions,
   providerListAvailable,
 }) =>
@@ -74,9 +75,7 @@ const makeConfigIo = ({
     showToast,
     setStatState() {},
     renderPromptPreview() {},
-    judgeProviderControl: judge.judge,
-    visionProviderControl: judge.vision,
-    visionJudgeProviderControl: judge.visionJudge,
+    providerControls: controls,
     fmtBool: String,
     getProviderOptions: typeof providerOptions === "function" ? providerOptions : () => providerOptions ?? [],
     isProviderListAvailable:
@@ -369,10 +368,12 @@ test("page exposes the accessibility and narrow-layout contracts", async () => {
   assert.doesNotMatch(css, /\.form > \*:nth-child\([2-6]\) \{ animation-delay/);
 });
 
-test("every data-config-control in the page is registered in config-io", async () => {
+test("every data-config-control in the page is registered in PROVIDER_CONTROLS", async () => {
   // configControlValue 直接 providerControls[configControl].value()，未注册即裸
-  // TypeError。当前 HTML 声明与注册表一致故运行时不可达；这条守的是"新增控件
-  // 忘了注册"的漂移，而不是给生产路径加死检查。
+  // TypeError。注册表由 app.js 的 PROVIDER_CONTROLS 建好后整体传进 createConfigIo，
+  // 故 HTML 的声明必须与该数组的 name 集一致：漏登记则该控件不 render、不 sync
+  // （静默空白）。当前一致故运行时不可达；这条守的是"新增控件忘了登记"的漂移，
+  // 而不是给生产路径加死检查。
   const [html, configIo, appJs] = await Promise.all([
     readFile(join(pageDir, "index.html"), "utf8"),
     readFile(join(pageDir, "config-io.mjs"), "utf8"),
@@ -382,19 +383,6 @@ test("every data-config-control in the page is registered in config-io", async (
     [...html.matchAll(/data-config-control="([^"]+)"/g)].map((m) => m[1]),
   );
   assert.ok(declared.size > 0, "index.html declares no data-config-control");
-  const registry = configIo.match(/const providerControls = (?:\(\) => )?\{([\s\S]*?)\};/);
-  assert.ok(registry, "config-io.mjs providerControls registry not found");
-  const registered = new Set(
-    [...registry[1].matchAll(/(\w+):/g)].map((m) => m[1]),
-  );
-  const missing = [...declared].filter((name) => !registered.has(name));
-  assert.deepEqual(
-    missing,
-    [],
-    `data-config-control 未在 providerControls 注册：${missing}`,
-  );
-  // app.js 的 PROVIDER_CONTROLS 必须覆盖同一组名字：漏登记则该控件不 render、
-  // 不 sync（静默空白），而 config-io 只按 data-config-control 取值。
   const controlsBlock = appJs.match(/const PROVIDER_CONTROLS = \[([\s\S]*?)\n\];/);
   assert.ok(controlsBlock, "app.js PROVIDER_CONTROLS not found");
   const appNames = new Set(
@@ -905,7 +893,7 @@ test("config save path follows the form-declared writable keys", async () => {
     showToast(message) {
       lastToast = message;
     },
-    judge: controls,
+    controls,
   });
 
   await io.saveConfig({ preventDefault() {} });
@@ -984,7 +972,7 @@ test("successful save applies the returned config and clears dirty state", async
   const io = makeConfigIo({
     elements,
     state,
-    judge: controls,
+    controls,
     apiPost: async () => ({
       ok: true,
       config: {
@@ -1072,7 +1060,7 @@ test("saved whitelist count reflects the server-normalized payload", async () =>
   const io = makeConfigIo({
     elements,
     state,
-    judge: controls,
+    controls,
     // 服务端把提交的两条归一化成一条（例如去重/裁剪后仅剩 group:a）。
     apiPost: async () => ({
       ok: true,
@@ -1342,7 +1330,7 @@ test("unknown provider id warns but does not block save", async () => {
   const io = makeConfigIo({
     elements,
     state,
-    judge: providerControls("typo-id"),
+    controls: providerControls("typo-id"),
     apiPost: async () => {
       posted = true;
       return { ok: true, config: {}, adjusted_fields: [] };
@@ -1413,7 +1401,7 @@ test("the off-list warning requires a loaded list and a non-empty id", async () 
     querySelectorAll: () => fields,
   };
   // 每次都用新 state：saveConfig 会改动它，且 savingConfig 未回落时直接返回。
-  async function warnedOnSave({ judge = "", providerOptions, providerListAvailable }) {
+  async function warnedOnSave({ providerId = "", providerOptions, providerListAvailable }) {
     const toasts = [];
     const io = makeConfigIo({
       elements: { configForm: form, configSaveState: { textContent: "", classList } },
@@ -1424,7 +1412,7 @@ test("the off-list warning requires a loaded list and a non-empty id", async () 
         isDirty: false,
         requiresConfigRefresh: false,
       },
-      judge: providerControls(judge),
+      controls: providerControls(providerId),
       apiPost: async () => ({ ok: true, config: {}, adjusted_fields: [] }),
       showToast: (message) => toasts.push(message),
       providerOptions,
@@ -1441,12 +1429,12 @@ test("the off-list warning requires a loaded list and a non-empty id", async () 
     "留空的 Provider 被误报为不在列表中",
   );
   assert.equal(
-    await warnedOnSave({ ...loadedList, judge: "typo-id" }),
+    await warnedOnSave({ ...loadedList, providerId: "typo-id" }),
     true,
     "列表可用且 ID 确实不在列表中时必须报警",
   );
   assert.equal(
-    await warnedOnSave({ judge: "typo-id", providerListAvailable: false }),
+    await warnedOnSave({ providerId: "typo-id", providerListAvailable: false }),
     false,
     "列表不可用时无从比对，不得断言 ID 不在列表中",
   );

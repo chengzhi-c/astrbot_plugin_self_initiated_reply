@@ -119,14 +119,6 @@ function showToast(message, isError = false) {
 	toastTimer = window.setTimeout(() => toast.classList.remove("show"), TOAST_MS);
 }
 
-function debounce(fn, delay) {
-	let timer = null;
-	return (...args) => {
-		window.clearTimeout(timer);
-		timer = window.setTimeout(() => fn(...args), delay);
-	};
-}
-
 async function getBridge() {
 	if (!window.AstrBotPluginPage) return null;
 	// ready() 的结论必须被读出来：requestPluginApi 靠本函数的返回值决定走 bridge
@@ -228,10 +220,6 @@ const providerControlList = PROVIDER_CONTROLS.map((spec) => {
 	providerControlsByName[spec.name] = control;
 	return control;
 });
-const visionProviderControl = providerControlsByName.vision;
-const visionJudgeProviderControl = providerControlsByName.visionJudge;
-const judgeProviderControl = providerControlsByName.judge;
-
 const configIo = createConfigIo({
 	getEls: () => els,
 	getState: () => state,
@@ -241,9 +229,9 @@ const configIo = createConfigIo({
 	showToast,
 	setStatState,
 	renderPromptPreview,
-	judgeProviderControl,
-	visionProviderControl,
-	visionJudgeProviderControl,
+	// 三个 Provider 控件的唯一注册表：读写表单与保存请求共用同一映射，
+	// 键名即 index.html 的 data-config-control。
+	providerControls: providerControlsByName,
 	fmtBool,
 	getProviderOptions: () => providerOptions,
 	isProviderListAvailable: () => providerListAvailable,
@@ -374,10 +362,11 @@ if (els.resetPromptBtn) {
 }
 
 if (els.decisionPromptInput) {
-	els.decisionPromptInput.addEventListener(
-		"input",
-		debounce(renderPromptPreview, PREVIEW_DEBOUNCE_MS),
-	);
+	let previewTimer = null;
+	els.decisionPromptInput.addEventListener("input", () => {
+		window.clearTimeout(previewTimer);
+		previewTimer = window.setTimeout(renderPromptPreview, PREVIEW_DEBOUNCE_MS);
+	});
 }
 
 if (els.enabledInput) {

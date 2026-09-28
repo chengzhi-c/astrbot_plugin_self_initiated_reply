@@ -87,21 +87,12 @@ export function createConfigIo(deps) {
 		showToast,
 		setStatState,
 		renderPromptPreview,
-		judgeProviderControl,
-		visionProviderControl,
-		visionJudgeProviderControl,
+		providerControls,
 		fmtBool,
-		requestCoordinator,
 		getProviderOptions = () => [],
 		isProviderListAvailable = () => false,
 	} = deps;
-	const coordinator = requestCoordinator || createConfigRequestCoordinator();
-	// 三个 Provider 控件的唯一注册表：读写表单与保存请求共用同一映射。
-	const providerControls = {
-		judge: judgeProviderControl,
-		vision: visionProviderControl,
-		visionJudge: visionJudgeProviderControl,
-	};
+	const coordinator = createConfigRequestCoordinator();
 	let numberFields = [];
 	let saveStateKind = "";
 	function els() {
