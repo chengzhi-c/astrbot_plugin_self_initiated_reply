@@ -773,38 +773,11 @@ test("script load failure fallback does not depend on the module", async () => {
 });
 
 test("config save path follows the form-declared writable keys", async () => {
-  const expectedKeys = [
-    "abandon_stale_on_new_message",
-    "cooldown_sec",
-    "decision_history_min_messages",
-    "decision_model_enabled",
-    "decision_prompt_template",
-    "decision_temperature",
-    "decision_timeout_sec",
-    "enabled",
-    "enabled_private_sessions",
-    "judge_provider_id",
-    "mention_mode",
-    "mention_probability",
-    "message_delay_sec",
-    "min_silence_sec",
-    "proactive_inherit_tools",
-    "quote_mode",
-    "quote_probability",
-    "skip_after_direct_call",
-    "vision_image_age_sec",
-    "vision_judge_enabled",
-    "vision_judge_provider_id",
-    "vision_main_enabled",
-    "vision_max_images",
-    "vision_provider_id",
-    "vision_skip_stickers",
-    "vision_timeout_sec",
-    "whitelist_sessions",
-  ];
+  // 可写键清单只留两份：index.html 的 data-config-key 声明（页面事实）与本用例的
+  // 夹具字段。原先此处还有第三份手抄名单，改一个键要同步三处；跨语言那一头由
+  // tests/test_config_source_of_truth.py 的 CONFIG_SPECS 对照守着。
   const html = await readFile(join(pageDir, "index.html"), "utf8");
   const htmlKeys = [...html.matchAll(/data-config-key="([a-z0-9_]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(htmlKeys.sort(), expectedKeys);
 
   const classList = { add() {}, remove() {}, toggle() {} };
   const fields = [
@@ -861,7 +834,7 @@ test("config save path follows the form-declared writable keys", async () => {
     vision: provider("vision"),
     visionJudge: provider("vision-judge"),
   };
-  assert.deepEqual(configSaveKeys(form).sort(), expectedKeys);
+  assert.deepEqual(configSaveKeys(form).sort(), htmlKeys.sort());
   assert.deepEqual(buildConfigSaveBody(form, controls).whitelist_sessions, ["group:a", "group:b"]);
   const io = makeConfigIo({
     elements,

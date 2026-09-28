@@ -1114,10 +1114,10 @@ async def test_build_context_text_caps_history_at_budget(tmp_path: Path) -> None
 
 
 def test_cap_context_text_degrades_gracefully_at_tiny_budgets() -> None:
-    """预算退化边界：非正预算原样返回，预算装不下一行时只留标记。
+    """预算退化边界：非正预算原样返回，预算装不下一行或装不下标记时留住标记。
 
-    这两支在唯一调用点（6000 字符预算）不可达，但函数是 utils 的导出工具，
-    调用方变预算时不能静默截出空串或把标记也吃掉。
+    唯一调用点传 6000 常量，这些区间今天不可达；但函数是 utils 的导出工具，
+    调用方改预算时不能静默截出空串或把标记也吃掉。
     """
     # 先装载动态包：-k 单跑时模块未注册，直接 import_module 会 ModuleNotFoundError。
     _load_modules()
@@ -1130,32 +1130,14 @@ def test_cap_context_text_degrades_gracefully_at_tiny_budgets() -> None:
     assert utils.cap_context_text(body, -1, marker=marker) == body
     # 未超限原样返回
     assert utils.cap_context_text(body, len(body), marker=marker) == body
-    # 预算装不下任何一行：仍返回标记本身，不返回空串
+    # 预算容不下标记本身：宁可总长略超预算，也不返回空串或丢标记。空串会让调用方
+    # 以为没有历史，提示「内容被省略」比静默丢内容更接近事实。
+    for budget in (1, len(marker) - 1, len(marker)):
+        assert utils.cap_context_text(body, budget, marker=marker) == marker, f"预算 {budget}"
+    # 预算刚够标记加一点：仍以标记开头
     tiny = utils.cap_context_text(body, len(marker) + 1, marker=marker)
     assert tiny.startswith(marker)
     assert len(tiny) <= len(marker) + 1
-    # 预算放不下一整行但为正：按字符保尾，且总长不超预算
-    tail_only = utils.cap_context_text(body, len(marker) + 2, marker=marker)
-    assert tail_only.endswith("条")
-    assert len(tail_only) <= len(marker) + 2
-
-
-def test_cap_context_text_keeps_marker_when_budget_cannot_hold_it() -> None:
-    """预算比 marker 还小时仍返回 marker（总长略超预算），不得返回空串。
-
-    这是 docstring 里声明的第二个预算下限例外：`cap_context_text` 的承诺是"总长不超
-    预算"，但该区间容不下 marker 本身；宁可总长略超也不返回空串，空串会让调用方
-    以为没有历史，提示「内容被省略」比静默丢内容更接近事实。唯一调用点传 6000
-    常量，所以该区间不可达，但函数是 utils 的导出工具。
-    """
-    _load_modules()
-    utils = importlib.import_module(f"{PACKAGE_NAME}.utils")
-    marker = "…省略"
-    body = "第一条\n第二条"
-
-    for budget in (1, len(marker) - 1, len(marker)):
-        cramped = utils.cap_context_text(body, budget, marker=marker)
-        assert cramped == marker, f"预算 {budget}：必须保留省略标记，不得返回空串或丢标记"
     # 预算放不下一整行但为正：按字符保尾，且总长不超预算
     tail_only = utils.cap_context_text(body, len(marker) + 2, marker=marker)
     assert tail_only.endswith("条")

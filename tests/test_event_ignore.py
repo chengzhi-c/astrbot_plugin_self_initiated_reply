@@ -105,36 +105,39 @@ def test_cq_at_requires_digit_boundary() -> None:
     assert events.is_explicit_direct_call(event, "[At:456123]") is False
 
 
-def test_handle_incoming_message_edge_branches(tmp_path) -> None:
-    """覆盖 message_ingress: 指令消息直接返回、忽略消息时更新活跃时间/作废旧任务。"""
+def test_handle_incoming_message_skips_events_the_command_path_already_took(tmp_path) -> None:
+    """extra 里的 COMMAND_HANDLED_KEY 是入口的第一道闸：已接住的事件不再进主动链。
+
+    读取走 ``utils.event_extra``（宿主的 ``get_extra``），不是事件属性：写成属性时
+    这道闸形同虚设，而装饰器路径与内联路径的重复回复守卫全靠它。
+    """
     from .host_stubs import with_plugin
 
     async def scenario(plugin, main):
         from .test_main_runtime import _make_event
 
         ingress = sys.modules[f"{main.__package__}.message_ingress"]
+        utils = sys.modules[f"{main.__package__}.utils"]
+        scheduled: list[str] = []
+        plugin._scheduler.schedule_delayed_check = lambda umo, **_kw: scheduled.append(umo)
 
-        # 1. 已处理的指令事件直接返回
-        handled_event = _make_event(message_str="anything")
-        setattr(handled_event, main.COMMAND_HANDLED_KEY, True)
+        # 1. 已被指令路径接住的事件直接返回，不排延迟检查
+        handled_event = _make_event(message_str="出来聊聊")
+        handled_event.set_extra(main.COMMAND_HANDLED_KEY, True)
         await ingress.handle_incoming_message(plugin, handled_event)
+        assert scheduled == []
 
-        # 2. 内联指令解析并处理
-        cmd_event = _make_event(message_str="/selfreply status")
-        await ingress.handle_incoming_message(plugin, cmd_event)
+        # 对照：去掉标志位的同一事件必须真的排上一次检查，否则上一条永不变红
+        await ingress.handle_incoming_message(plugin, _make_event(message_str="出来聊聊"))
+        assert scheduled
 
-        # 3. 开启 abandon_stale_on_new_message 时收到 @Bot 直接点名
+        # 2. 开启 abandon_stale_on_new_message 时收到 @Bot 直接点名：推进活跃时间
         plugin.settings.abandon_stale_on_new_message = True
         direct_event = _make_event(message_str="@Bot 出来聊聊")
         direct_event.is_at_or_wake_command = True
         await ingress.handle_incoming_message(plugin, direct_event)
-        utils = sys.modules[f"{main.__package__}.utils"]
         state = plugin._state_for(utils.whitelist_storage_key(utils.event_umo(direct_event)))
         assert state.last_active_at > 0
-
-        # 4. 开启 abandon_stale_on_new_message 且纯空格消息
-        empty_event = _make_event(message_str="   ")
-        await ingress.handle_incoming_message(plugin, empty_event)
 
     with_plugin(tmp_path, scenario)
 

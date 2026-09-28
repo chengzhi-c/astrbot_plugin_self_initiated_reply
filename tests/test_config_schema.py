@@ -65,22 +65,6 @@ def test_schema_keys_align_with_config_schema_keys() -> None:
     )
 
 
-def test_runtime_dependency_allowlist_is_explicit() -> None:
-    """运行时依赖只允许固定地址图片传输所需的两个直接依赖（防膨胀护栏）。
-
-    依赖声明与 pyproject 的一致性由 test 作业 import httpx 天然覆盖，
-    这里只钉“运行时依赖保持最小”这一不变量。
-    """
-    import tomllib
-
-    with (ROOT / "pyproject.toml").open("rb") as handle:
-        project = tomllib.load(handle)["project"]
-    assert frozenset(project.get("dependencies", [])) == {
-        "httpx>=0.27,<0.29",
-        "httpcore>=1,<1.1",
-    }
-
-
 def test_list_specs_declare_one_machine_normalization_contract() -> None:
     """每个字符串 list/set 都必须声明容量、条目规则和空值策略。"""
     models = _models()

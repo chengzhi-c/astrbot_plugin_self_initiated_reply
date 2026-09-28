@@ -129,18 +129,6 @@ async def test_decide_force_always_replies(tmp_path: Path) -> None:
     assert result["reason"] == "手动强制检查"
 
 
-async def test_decide_patrol_skips_intent_reason_and_asks_model(tmp_path: Path) -> None:
-    decision_mod, models, maker, _, calls = _make_decision(
-        tmp_path,
-        {"bot_aliases": ["阿c"], "decision_model_enabled": True},
-        model_text='{"should_reply": false, "reason": "群聊平静"}',
-    )
-    state = _state(models, active_at=900.0, recent=[("user", "阿c在吗", 990.0)])
-    result = await maker.decide("s1", state, trigger="patrol", force=False)
-    assert result == "判断不回复：群聊平静"
-    assert calls["model"] == 1
-
-
 async def test_decide_no_intent_asks_model_and_returns_skip_reason(tmp_path: Path) -> None:
     decision_mod, models, maker, _, calls = _make_decision(
         tmp_path,

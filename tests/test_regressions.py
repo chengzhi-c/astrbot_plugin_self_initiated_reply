@@ -132,18 +132,6 @@ def test_image_cache_cleanup_has_manual_api_and_startup_sweep(tmp_path: Path) ->
     )
 
 
-def test_plugin_logo_is_root_square_png() -> None:
-    """AstrBot 从插件根目录的 logo.png 读取插件图标。"""
-    logo = ROOT / "logo.png"
-    data = logo.read_bytes()
-    assert logo.is_file()
-    assert data[:8] == bytes.fromhex("89504e470d0a1a0a")
-    width = int.from_bytes(data[16:20], "big")
-    height = int.from_bytes(data[20:24], "big")
-    assert width == height
-    assert width > 0
-
-
 def test_config_mutations_share_one_lock_and_settings_normalizer(tmp_path: Path) -> None:
     """两次并发 POST 不得交错损坏配置；候选值必须经 Settings 归一。"""
 

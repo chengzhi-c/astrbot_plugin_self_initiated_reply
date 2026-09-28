@@ -578,7 +578,7 @@ def _decorated_command_handlers() -> dict[str, str]:
 
 
 def test_decorated_commands_delegate_to_the_shared_dispatch(tmp_path: Path) -> None:
-    """9 个子指令出口一律经 ``_command_text`` 并传自己的 canonical 动作名。
+    """每个子指令出口一律经 ``_command_text`` 并传自己的 canonical 动作名。
 
     装饰器出口在生产不可达（priority=1000 的内联拦截先返回），于是它的形状漂移
     无人可见：``selfreply_list`` 曾经直连 ``list_text()`` 而不经分派，把它的参数
@@ -588,9 +588,16 @@ def test_decorated_commands_delegate_to_the_shared_dispatch(tmp_path: Path) -> N
     与写法（直连 / 委托 / 再加一层）无关。只读动作另有出口文本等价断言。
     """
     handlers = _decorated_command_handlers()
-    assert len(handlers) == 9, f"main.py 里解析出 {len(handlers)} 个子指令（期望 9）"
 
     async def scenario(plugin, main):
+        commands = importlib.import_module(f"{main.__package__}.commands")
+        # 指令集与别名表同源核对：AST 解析失效（装饰器写法变了）时 handlers 为空，
+        # 下面那个循环会一句断言都不跑就绿灯，此处就是挡这一手。
+        assert set(handlers) == set(commands.COMMAND_ALIASES), (
+            f"装饰器出口与 COMMAND_ALIASES 漂移："
+            f"只在装饰器 {sorted(set(handlers) - set(commands.COMMAND_ALIASES))}，"
+            f"只在别名表 {sorted(set(commands.COMMAND_ALIASES) - set(handlers))}"
+        )
         event = _make_event(umo=UMO)
         original = plugin._command_text
         calls: list[tuple[str, str]] = []

@@ -792,10 +792,8 @@ def test_resolve_paths_data_root_tracks_host_answer(tmp_path: Path) -> None:
     """data 根的语义契约：等于宿主 plugin_data 答案的上一级。
 
     识图本地读取 allowlist 与 cmd_config.json 热读都以 data 根为基准，算错等于
-    静默放宽或锁死安全边界。此前 main.py 用 ``storage_path.parents[2]`` 反推，把
-    "state.json 恰好嵌两层"变成隐式前提；现由 resolve_paths 正向构造，本用例把
-    语义钉成契约。诚实说明：在 state.json 深度不变时新旧实现结果恒等，故这条不是
-    "能捕获 parents 崩溃"的红灯，而是防止未来改存储布局时 data 根语义漂移的守卫。
+    静默放宽或锁死安全边界。resolve_paths 正向构造 data 根，不从 state.json 的
+    深度反推；本用例把「宿主挪位则 data 根跟着挪」钉成契约。
     """
     ps = _load_plugin_state()
     data = tmp_path / "data"
