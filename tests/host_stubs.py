@@ -498,6 +498,8 @@ async def _fake_build_main_agent(
     config: Any,
     provider: Any = None,
     req: Any = None,
+    # 桩不实现 reset 语义，但 runtime_adapter._BUILD_REQUIRED 要求该形参存在
+    # （生产 generation.py 以关键字传入），缺一个签名就不兼容。
     apply_reset: bool = True,
 ) -> Any | None:
     if req is None:
@@ -506,7 +508,7 @@ async def _fake_build_main_agent(
         agent_runner=_FakeAgentRunner(),
         provider_request=req,
         provider=provider,
-        reset_coro=None if apply_reset else None,
+        reset_coro=None,
     )
 
 

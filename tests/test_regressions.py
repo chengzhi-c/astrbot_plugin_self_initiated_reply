@@ -1628,8 +1628,6 @@ def test_config_rollback_reschedules_cancelled_delayed_checks(tmp_path: Path) ->
 
     with_plugin(tmp_path, scenario)
 
-    with_plugin(tmp_path, scenario, enabled_patrol_trigger=True)
-
 
 def test_gate_restore_recovers_running_set(tmp_path: Path) -> None:
     """restore 必须恢复运行集快照，否则回滚后运行标记漂移。

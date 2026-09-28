@@ -1275,8 +1275,14 @@ def test_version_consistency_across_metadata() -> None:
     assert released.group(1) == version, (
         f"CHANGELOG 最新发布版本 {released.group(1)!r} 与 PLUGIN_VERSION={version!r} 不一致"
     )
-    # 宿主下限声明保持一致
-    assert '">=4.23.3,<5"' in metadata
+    # 宿主下限只钉形状不钉版本：正当抬下限（4.23.3 → 4.24.0）不该判红。
+    # 格式却必须在这里钉住，因为它的动态消费者 test_vision._locked_host_version
+    # 解析失败时返回空串，_find_host_platform_sources 随之返回 None，
+    # 宿主漂移守卫整条 pytest.skip 而不是判红。
+    assert re.search(r'astrbot_version:\s*">=\d+\.\d+\.\d+,<5"', metadata), (
+        "metadata.yaml 的 astrbot_version 下限形状不符，"
+        "test_vision 的宿主漂移守卫会静默跳过而非判红"
+    )
 
 
 # ============================================================================
