@@ -260,7 +260,8 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 `background` 表达。**不得**在 `.is-stuck` 里改 `padding`、`margin`、`height` 等任何
 影响占位高度的属性。
 
-原因：粘附阈值在 `chrome.mjs` 是 `window.scrollY > 8`。用 `padding` 一类占位属性表达
+原因：粘附阈值在 `chrome.mjs` 是「`window.scrollY || documentElement.scrollTop` 兜底」后
+超过 8。用 `padding` 一类占位属性表达
 "变矮"时，占位高度随之变化；浏览器滚动锚定为保持视觉锚点会补偿 `scrollY`，而
 `scrollY` 又决定 `is-stuck` 是否保留，高度差一旦超过阈值就自激，表现为页面接近最顶部时
 持续抖动。
@@ -321,7 +322,8 @@ KB 级估算（`sys.getsizeof` 深度求和）不写成文档也不补公式测�
 
 `whitelist.commit_change` 的双写失败回滚只恢复**它自己拥有的状态**：白名单集合、
 `sessions`（含 `pruned` 快照）、`_runtime_umos`。调度器侧由引用持有的三张表
-（`main._last_events` / `main._delay_tasks` / `running_sessions` 相关集合）不在其中：
+（`main._last_events` / `main._delay_tasks` / `SessionGate._running_sessions`，对外经
+`running_sessions_view`）不在其中：
 它们由 `scheduler` 通过构造期注入的引用直接操作，`whitelist.py` 拿不到，也不该
 反向依赖。
 
