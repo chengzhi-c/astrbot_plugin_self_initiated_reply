@@ -493,6 +493,7 @@ class SelfInitiatedReplyPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     @filter.platform_adapter_type(filter.PlatformAdapterType.ALL)
     async def on_message(self, event: AstrMessageEvent) -> None:
+        """事件监听器：收集白名单会话消息，驱动主动回复的判断与调度。"""
         await handle_incoming_message(self, event)
 
     @staticmethod
