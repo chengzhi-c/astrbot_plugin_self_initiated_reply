@@ -348,3 +348,45 @@ def test_history_read_failure_log_drops_credentials() -> None:
     assert lines, "未捕获历史读取失败日志"
     for secret in SECRETS:
         assert secret not in lines[-1], f"日志泄漏凭证 {secret}：{lines}"
+
+
+def test_webapi_failure_log_drops_url_credentials() -> None:
+    """webapi 失败日志与 decision/adapters 同口径，必须经 redact_exc_text。
+
+    缺陷形态：``_api_get_config`` 等六个失败分支直打 ``exc`` 原文，而触发
+    异常的宿主对象（provider 枚举、配置读取）异常串可能带请求 URL 的 query
+    凭证。该路径此前没有任何脱敏测试覆盖：日志全绿不代表无害。
+
+    变异锚定：把该处 ``redact_exc_text(exc)`` 换回裸 ``exc``，本用例红。
+    """
+    install_astrbot_stubs()
+    webapi = load_package(f"{PACKAGE_NAME}_webapi", "webapi")
+
+    class BoomSettings:
+        def __getattr__(self, _name):
+            raise RuntimeError(f"Client error '401' for url '{SIGNED_URL}'")
+
+    class _Plugin:
+        runtime_enabled = True
+        settings = BoomSettings()
+
+    lines: list[str] = []
+
+    class _Recorder:
+        def warning(self, template: str, *args: object) -> None:
+            lines.append(template % args if args else template)
+
+        def __getattr__(self, _name):
+            return lambda *a, **k: None
+
+    original_logger = webapi.logger
+    webapi.logger = _Recorder()
+    try:
+        result = asyncio.run(webapi._api_get_config(_Plugin()))
+    finally:
+        webapi.logger = original_logger
+
+    assert result["ok"] is False, "异常路径必须返回失败载荷"
+    assert lines, "未捕获 webapi 失败日志，用例已失去覆盖对象"
+    for secret in SECRETS:
+        assert secret not in lines[-1], f"webapi 失败日志泄漏凭证 {secret}：{lines}"

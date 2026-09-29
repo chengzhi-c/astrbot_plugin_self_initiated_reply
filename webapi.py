@@ -120,7 +120,7 @@ def _collect_provider_options(plugin: SelfInitiatedReplyPlugin) -> list[dict[str
         try:
             providers = _provider_items(get_all())
         except Exception as exc:
-            logger.debug("[%s] get_all_providers failed: %s", PLUGIN_ID, exc)
+            logger.debug("[%s] get_all_providers failed: %s", PLUGIN_ID, redact_exc_text(exc))
 
     if not providers:
         providers = _providers_from_manager(plugin)
@@ -163,7 +163,7 @@ async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
         return payload
     except Exception as exc:
         # 详情只进服务端日志：异常文本可能带绝对路径、内部键名或上游报错原文。
-        logger.warning("[%s] api get config failed: %s", PLUGIN_ID, exc)
+        logger.warning("[%s] api get config failed: %s", PLUGIN_ID, redact_exc_text(exc))
         return {"ok": False, "error": "配置读取失败"}
 
 
@@ -172,7 +172,7 @@ async def _api_providers(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     try:
         return {"ok": True, "providers": _collect_provider_options(plugin)}
     except Exception as exc:
-        logger.warning("[%s] api providers failed: %s", PLUGIN_ID, exc)
+        logger.warning("[%s] api providers failed: %s", PLUGIN_ID, redact_exc_text(exc))
         return {"ok": False, "providers": [], "error": "Provider 列表读取失败"}
 
 
@@ -188,7 +188,7 @@ async def _api_cleanup_image_cache(plugin: SelfInitiatedReplyPlugin) -> dict[str
             "max_age_sec": int(plugin.settings.vision_image_age_sec),
         }
     except Exception as exc:
-        logger.warning("[%s] manual image cache cleanup failed: %s", PLUGIN_ID, exc)
+        logger.warning("[%s] manual image cache cleanup failed: %s", PLUGIN_ID, redact_exc_text(exc))
         return {"ok": False, "error": "图片缓存清理失败"}
 
 
@@ -362,11 +362,11 @@ async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str,
     except ValueError as exc:
         # 校验失败的文案要回显：由本模块构造，只含字段名与规则，前端表单
         # 依赖它定位出错字段。
-        logger.warning("[%s] api post config rejected: %s", PLUGIN_ID, exc)
+        logger.warning("[%s] api post config rejected: %s", PLUGIN_ID, redact_exc_text(exc))
         return {"ok": False, "error": str(exc)}
     except Exception as exc:
         # 内部异常一律通用文案：OSError 的 str() 带绝对路径，详情只进服务端日志。
-        logger.warning("[%s] api post config failed: %s", PLUGIN_ID, exc)
+        logger.warning("[%s] api post config failed: %s", PLUGIN_ID, redact_exc_text(exc))
         return {"ok": False, "error": "配置保存失败，请查看 AstrBot 日志"}
 
 
