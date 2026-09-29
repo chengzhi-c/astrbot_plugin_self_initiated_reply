@@ -220,14 +220,17 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 拆文件要同步改这两处引用面，属高 churn、零行为收益的纯搬迁。文件顶部的
 「拥有 / 不拥有 + 分区目录」结构说明与其余模块同款，阅读定位靠它而不是文件边界。
 
-## 前端契约的已知无守卫面
+## 前端契约的守卫面
 
 契约覆盖面见两个前端测试文件的用例清单（条数会随用例增删腐烂，不在此复述）。
-以下几类**刻意**不守，改动前请自行评估后果，不要误以为有网兜住：
 
 - **类选择器**（`.topbar` / `.sidenav-list` / `.sidenav-fade-*` / `.mtab` /
-  `.sidenav-link[data-target]`）：`styles do not target element ids` 只断言 CSS 不用 id，
-  不守 JS 用类锚定 DOM。类名重命名会让吸顶、导航偏移、渐隐提示静默失效。
+  `.sidenav-link[data-target]`）：已由 `frontend_contract.test.mjs` 的整词校验
+  （`class names referenced by scripts exist in the page or stylesheet`）收编，
+  `styles do not target element ids` 仍只断言 CSS 不用 id。重命名类名会红在契约层。
+
+以下几类**刻意**不守，改动前请自行评估后果，不要误以为有网兜住：
+
 - **三档超时**（8s 内联 boot fail / 12s `BOOT_TIMEOUT_MS` / 15s `FETCH_TIMEOUT_MS`）：
   分散三处且语义不同（前者是脚本加载失败，后两者是配置加载 deadline 与单次 API 上限），
   不收敛。
