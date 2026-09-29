@@ -1649,3 +1649,52 @@ test("boot watchdog yields to in-flight first load instead of failing early", as
   assert.match(app, /let bootTimeout = window\.setTimeout\(function checkBoot/);
   assert.match(app, /bootTimeout = window\.setTimeout\(checkBoot, FETCH_TIMEOUT_MS\);/);
 });
+
+test("class names referenced by scripts exist in the page or stylesheet", async () => {
+  // 与上方 id 契约同构：脚本清单由目录派生，只认字面量引用，只做前向 JS ⊆ 页面。
+  // 类与 id 的差异在于 JS 会"凭空造类"（is-stuck、manual、is-saving 等由 JS 挂上、
+  // CSS 定义），核对对象因此是 index.html ∪ style.css 的并集而非单一文件。
+  // 反向不查：孤儿类与孤儿 id 同属无害死标记（同一裁决，豁免名单只会腐烂）。
+  // DECISIONS「前端契约的已知无守卫面」曾把类选择器列为刻意不守的面，本用例以
+  // 零豁免整词校验把它收编：类名拼错时这里变红，而不是吸顶/导航/渐隐静默失效。
+  const names = (await readdir(pageDir)).filter((name) => /\.(js|mjs)$/.test(name)).sort();
+  const [html, css] = await Promise.all([
+    readFile(join(pageDir, "index.html"), "utf8"),
+    readFile(join(pageDir, "style.css"), "utf8"),
+  ]);
+  const known = new Set([
+    ...[...html.matchAll(/\bclass\s*=\s*"([^"]+)"/g)].flatMap((m) => m[1].split(/\s+/)),
+    ...[...css.matchAll(/\.(-?[A-Za-z_][\w-]*)(?![\w-])/g)].map((m) => m[1]),
+  ]);
+  assert.ok(known.size > 0, "页面与样式表未声明任何类：守卫已失去对象");
+
+  const missing = [];
+  let refs = 0;
+  for (const name of names) {
+    const source = await readFile(join(pageDir, name), "utf8");
+    const tokens = new Set();
+    for (const m of source.matchAll(/classList\.\w+\(\s*["']([^"']+)["']/g)) {
+      tokens.add(m[1]);
+    }
+    for (const m of source.matchAll(/className\s*=\s*["']([^"']+)["']/g)) {
+      for (const token of m[1].trim().split(/\s+/)) tokens.add(token);
+    }
+    for (const m of source.matchAll(
+      /(?:querySelector|querySelectorAll|closest|matches)\(\s*["']([^"']+)["']/g,
+    )) {
+      for (const part of m[1].split(",")) {
+        for (const sel of part.matchAll(/\.([A-Za-z_][\w-]*)/g)) tokens.add(sel[1]);
+      }
+    }
+    refs += tokens.size;
+    for (const token of tokens) {
+      if (!known.has(token)) missing.push(`${name} -> .${token}`);
+    }
+  }
+  assert.ok(refs > 0, "页面脚本未按字面量引用任何类：守卫已失去对象");
+  assert.deepEqual(
+    missing.sort(),
+    [],
+    `index.html 与 style.css 缺少脚本引用的类：${missing.join(", ")}`,
+  );
+});
