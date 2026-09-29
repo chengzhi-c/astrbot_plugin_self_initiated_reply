@@ -37,20 +37,13 @@ from .models import (
     Settings,
 )
 from .outbound import OutboundGateway
-from .utils import build_history_text, cap_context_text, clean_reply, response_text
-
-
-def _consume_task_result(task: asyncio.Task[Any]) -> None:
-    """取回已结束任务的结果：消除"Task exception was never retrieved"循环级
-    ERROR（宿主 run_agent 在 request_stop 后仍可能以异常收尾）。"""
-    if task.cancelled():
-        return
-    try:
-        task.exception()
-    except Exception:
-        # 取结果本身不应成为新的失败源
-        pass
-
+from .utils import (
+    build_history_text,
+    cap_context_text,
+    clean_reply,
+    consume_task_result,
+    response_text,
+)
 
 # 回复长度档位的措辞。未知值按 balanced 兜底（配置漂移不应让 prompt 缺失长度约束）。
 _LENGTH_HINTS = {
@@ -246,7 +239,7 @@ class GenerationRunner:
         if done:
             # 收敛成功也必须取回结果：以异常收尾时若不读，asyncio 会在事件
             # 循环里留下无归属的 "Task exception was never retrieved"。
-            _consume_task_result(run_task)
+            consume_task_result(run_task)
             return
 
         run_task.cancel()
@@ -257,7 +250,7 @@ class GenerationRunner:
             quarantine(run_task, "generation cancellation interrupted")
             raise
         if done:
-            _consume_task_result(run_task)
+            consume_task_result(run_task)
         if not done:
             quarantine(run_task, "agent runner ignored cancellation")
 
@@ -491,7 +484,7 @@ class GenerationRunner:
         # 取结果先于丢弃：以异常收尾时不读结果会让 asyncio 投一条无归属的
         # "Task exception was never retrieved"；回调按注册顺序执行，
         # 本回调在 _discard_background 之前跑。
-        run_task.add_done_callback(_consume_task_result)
+        run_task.add_done_callback(consume_task_result)
         run_task.add_done_callback(self._discard_background)
 
         def mark_quarantined() -> None:

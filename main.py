@@ -90,6 +90,7 @@ from .storage import (
     persist_settings_config,
 )
 from .utils import (
+    consume_task_result,
     event_umo,
     is_admin_event,
     is_explicit_direct_call,
@@ -465,6 +466,9 @@ class SelfInitiatedReplyPlugin(Star):
 
     def _release_quarantined_task(self, task: asyncio.Task[Any]) -> None:
         """Remove a quarantined task after it finally exits."""
+        # 隔离任务常以真实异常（而非取消）收尾：显式消费一次，避免任务
+        # 回收时打无归属的 "Task exception was never retrieved"。
+        consume_task_result(task)
         reason = self._quarantined_tasks.pop(task, "")
         logger.warning(
             "[%s] quarantined task exited reason=%s remaining=%d",

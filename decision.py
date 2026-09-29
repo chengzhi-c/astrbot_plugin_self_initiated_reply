@@ -32,6 +32,7 @@ from .models import (
 from .utils import (
     build_history_text,
     cap_context_text,
+    consume_task_result,
     latest_user_text,
     parse_decision_json,
     redact_exc_text,
@@ -106,6 +107,9 @@ class DecisionMaker:
         task.cancel()
         done, _ = await asyncio.wait({task}, timeout=DECISION_CONVERGE_GRACE_SEC)
         if done or task.done():
+            # 宽限窗口内收敛的任务：吃掉以异常收尾者的异常，避免任务回收时
+            # 以无归属的循环级 ERROR 出现（generation 侧同语义）。
+            consume_task_result(task)
             return
         if self._quarantine_task is not None:
             self._quarantine_task(task, reason)

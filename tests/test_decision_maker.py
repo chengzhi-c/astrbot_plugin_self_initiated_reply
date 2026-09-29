@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import importlib
 import time
 from pathlib import Path
@@ -41,6 +42,7 @@ def _make_decision(
     image_context: str = "",
     quarantine: list | None = None,
     swallowing: bool = False,
+    raising_after_cancel: Exception | None = None,
 ):
     _, _, models = _load_modules()
     decision_mod = _decision_module()
@@ -72,6 +74,17 @@ def _make_decision(
             await asyncio.sleep(30.0)
         return SimpleNamespace(completion_text=model_text, result_chain=None)
 
+    async def raising_generate(provider_id, prompt):
+        """取消后以真实异常收尾的 provider：宽限窗口内一定收敛但不是正常取消。"""
+        calls["model"] += 1
+        calls["task"] = asyncio.current_task()
+        try:
+            await asyncio.sleep(model_sleep or 30.0)
+        except asyncio.CancelledError:
+            if raising_after_cancel is not None:
+                raise raising_after_cancel from None
+            raise
+
     async def read_history(umo, limit):
         calls["history"] += 1
         if history_error is not None:
@@ -88,7 +101,11 @@ def _make_decision(
         clock=lambda: clock_value[0],
         minutes_now=lambda: minutes_now if minutes_now is not None else 60,
         resolve_provider=resolve_provider,
-        llm_generate=swallowing_generate if swallowing else llm_generate,
+        llm_generate=(
+            raising_generate
+            if raising_after_cancel is not None
+            else (swallowing_generate if swallowing else llm_generate)
+        ),
         read_history=read_history,
         build_image_context=build_image_context,
         quarantine_task=(lambda task, reason: quarantine.append((task, reason)))
@@ -269,6 +286,46 @@ async def test_timeout_returns_promptly_when_provider_honors_cancellation(tmp_pa
     assert result["reason"] == "判断模型超时"
     assert elapsed < grace, f"守规矩的 provider 不该被宽限拖慢，耗时 {elapsed:.2f}s"
     assert not quarantined, "响应取消的 provider 任务不得被隔离登记"
+
+
+async def test_timeout_task_finishing_with_exception_consumes_it(tmp_path: Path) -> None:
+    """超时收敛路径必须消费以异常收尾的任务（Bug 形态见下）。
+
+    缺陷形态：provider 在 ``cancel()`` 后以真实异常（而非 CancelledError）
+    收尾时，``_converge_provider_task`` 的宽限窗口会等到它结束并直接返回。
+    若无人调用 ``task.exception()``，该任务被回收时事件循环会打出
+    "Task exception was never retrieved" 循环级 ERROR，掩盖真实故障来源。
+
+    修法：宽限窗口内收敛的分支显式消费一次任务结果，语义与
+    ``generation._consume_task_result`` 一致。
+    """
+    loop = asyncio.get_running_loop()
+    handler_calls: list = []
+    loop.set_exception_handler(lambda _loop, ctx: handler_calls.append(ctx))
+    try:
+        _, models, maker, _, calls = _make_decision(
+            tmp_path,
+            {"decision_model_enabled": True, "decision_timeout_sec": 0.05},
+            model_sleep=30.0,
+            raising_after_cancel=RuntimeError("sdk crashed after cancel"),
+        )
+        state = _state(models)
+        result = await asyncio.wait_for(
+            maker.ask_decision_model("s1", state, trigger="message_delay"), timeout=10.0
+        )
+        assert result["should_reply"] is False
+        assert result["reason"] == "判断模型超时"
+        task = calls["task"]
+        assert task.done() and not task.cancelled()
+        # 丢失全部强引用并强制回收：异常若未被消费，Task.__del__ 会经
+        # 循环异常处理器打 "Task exception was never retrieved"。
+        del calls["task"]
+        del task
+        await asyncio.sleep(0)
+        gc.collect()
+        assert not handler_calls, f"未消费的任务异常触发了循环级告警: {handler_calls}"
+    finally:
+        loop.set_exception_handler(None)
 
 
 async def test_model_generate_exception_reason(tmp_path: Path) -> None:

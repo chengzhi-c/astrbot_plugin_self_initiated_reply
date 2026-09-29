@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import re
@@ -115,6 +116,21 @@ async def maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def consume_task_result(task_or_future: asyncio.Future[Any]) -> None:
+    """取回已结束 future 的结果，抑制 "Task exception was never retrieved"。
+
+    超时/取消路径里由收敛方显式消费一次：任务若以异常收尾，异常会被记账
+    到该路径的日志，而不是在垃圾回收时以无归属的循环级 ERROR 出现。
+    """
+    if task_or_future.cancelled():
+        return
+    try:
+        task_or_future.exception()
+    except Exception:
+        # 取结果本身不应成为新的失败源
+        pass
 
 
 async def build_history_text(
