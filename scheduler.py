@@ -255,13 +255,12 @@ class SessionScheduler:
             max_rounds=MAX_RELEASE_WAIT_ROUNDS,
             # 每轮等待后重验运行资格与代次：任一失效即放弃，白名单移除后
             # 不得再跑一次检查。
-            on_round_expired=lambda: (
-                self._should_run() and self._gate.is_current(umo, generation)
-            ),
+            on_round_expired=lambda: self._should_run() and self._gate.is_current(umo, generation),
         )
-        # 轮数耗尽才告警：调用方主动放弃（插件停用/代次已变）是正常路径，
-        # 而 release 事件迟迟不来意味着门与运行集脱同步，必须留痕。
-        if not released and self._gate.is_running(umo):
+        # 轮数耗尽才告警：调用方主动放弃（插件停用/代次已变）是正常路径且
+        # 原 release 等待实现静默返回，而 release 事件迟迟不来意味着门与
+        # 运行集脱同步，必须留痕。以「仍具备运行资格」区分两种归因。
+        if not released and self._should_run() and self._gate.is_current(umo, generation):
             logger.warning(
                 "[%s] release gate desynced, drop check session=%s trigger=%s rounds=%d",
                 PLUGIN_ID,

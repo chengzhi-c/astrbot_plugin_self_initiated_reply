@@ -31,9 +31,8 @@ def _delivery_module():
 class _CountingGate:
     """前 true_times 次 is_current 返回 True，之后一律 False，并记录调用次数。"""
 
-    def __init__(self, *, true_times: int, fallback: bool) -> None:
+    def __init__(self, *, true_times: int) -> None:
         self.remaining = true_times
-        self.fallback = fallback
         self.calls = 0
 
     def is_current(self, umo: str, generation: object) -> bool:
@@ -41,7 +40,7 @@ class _CountingGate:
         if self.remaining > 0:
             self.remaining -= 1
             return True
-        return self.fallback
+        return False
 
 
 class FakeHook:
@@ -1060,7 +1059,7 @@ async def test_send_reply_no_gate_recheck_between_check_and_send(tmp_path: Path)
     只应是入口一次 + 装饰钩子后一次。
     """
     _, models, runner, last_events = _make_runner(tmp_path)
-    gate = _CountingGate(true_times=2, fallback=False)
+    gate = _CountingGate(true_times=2)
     runner._gate = gate
     last_events["s1"] = FakeEvent()
     outcome = await runner.send_reply("s1", "hello", expected_generation=7)
@@ -1106,7 +1105,7 @@ async def test_send_reply_context_path_queries_gate_once(tmp_path: Path) -> None
     防止日后有人把 await 塞进那段同步区却忘了补复核。
     """
     _, models, runner, _ = _make_runner(tmp_path)
-    gate = _CountingGate(true_times=1, fallback=False)
+    gate = _CountingGate(true_times=1)
     runner._gate = gate
     outcome = await runner.send_reply("s1", "hello", expected_generation=7)
     assert gate.calls == 1, "context 兜底路径不得在入口复核之外再查代次"

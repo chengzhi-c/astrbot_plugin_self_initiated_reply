@@ -333,9 +333,7 @@ async def test_generate_leaves_third_party_send_wrapper_intact(tmp_path: Path) -
     _, models, runner, runtime, _, _ = _make_runner(tmp_path, runtime=ThirdPartyHijackRuntime())
     event = FakeEvent()
     runner._last_events["s1"] = event
-    text, _ledger = await runner.generate(
-        "s1", _state(models), expected_generation=1, force=True
-    )
+    text, _ledger = await runner.generate("s1", _state(models), expected_generation=1, force=True)
 
     assert text == "你好呀"
     # 第三方的包装必须还在原位，而不是被本插件的回滚抹掉
@@ -362,9 +360,7 @@ async def test_generate_does_not_overwrite_third_party_send_over_instance_send(
 
     event.send = preexisting_instance_send  # 实例上已有 send（宿主或更早的插件装的）
     runner._last_events["s1"] = event
-    text, _ledger = await runner.generate(
-        "s1", _state(models), expected_generation=1, force=True
-    )
+    text, _ledger = await runner.generate("s1", _state(models), expected_generation=1, force=True)
 
     assert text == "你好呀"
     assert event.__dict__.get("send") is runtime.third_party_send
@@ -384,9 +380,7 @@ async def test_generate_inherit_tools_skips_boundary(tmp_path: Path) -> None:
 async def test_generate_no_last_event_returns_empty(tmp_path: Path) -> None:
     _, models, runner, _, _, _ = _make_runner(tmp_path)
     ledger = models.AttemptLedger()
-    text, returned_ledger = await runner.generate(
-        "s1", _state(models), ledger=ledger, force=True
-    )
+    text, returned_ledger = await runner.generate("s1", _state(models), ledger=ledger, force=True)
     assert text == ""
     assert returned_ledger is ledger
 
@@ -498,9 +492,7 @@ async def test_generate_tracks_tool_direct_evidence_in_pipeline_ledger(tmp_path:
         return gen()
 
     runtime.run = run_with_direct
-    _text, returned_ledger = await runner.generate(
-        "s1", _state(models), ledger=ledger, force=True
-    )
+    _text, returned_ledger = await runner.generate("s1", _state(models), ledger=ledger, force=True)
 
     assert returned_ledger is ledger
     assert returned_ledger.direct_send_count == 1

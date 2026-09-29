@@ -10,6 +10,7 @@ import asyncio
 import importlib
 import logging
 import os
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -127,6 +128,41 @@ def test_schedule_skips_when_should_run_false(tmp_path: Path) -> None:
     umo = "s1"
     scheduler.schedule_delayed_check(umo, delay_sec=0, trigger="message_delay", force=False)
     assert umo not in scheduler._delay_tasks
+
+
+async def test_wait_release_gives_up_silently_when_run_eligibility_lost(
+    tmp_path: Path, caplog, monkeypatch
+) -> None:
+    """运行资格（should_run/代次）失效时,等待立即放弃且不打脱同步告警。
+
+    守护的承重行为:每轮等待后重验运行资格与代次,它只存在于
+    ``on_round_expired`` 实参中,删掉该实参不会让既有任何用例变红。本用例
+    锚定两面:立即返回 False,以及「调用方主动放弃」不得被误报为
+    ``release gate desynced``（那是门与运行集真脱同步才该有的告警）。
+    """
+    scheduler_mod, _, scheduler, _, _ = _make_scheduler(tmp_path)
+    monkeypatch.setattr(scheduler_mod, "RELEASE_WAIT_TIMEOUT_SEC", 0.05)
+    gate = scheduler._gate
+    umo = "s1"
+    generation = gate.advance(umo)
+    gate.mark_running(umo)
+    # 等待进行中插件被停用:上一检查仍占用运行标记,但本协作者已无资格运行。
+    scheduler._should_run = lambda: False
+
+    started = time.monotonic()
+    with capture_logs(caplog, scheduler_mod.logger) as logs:
+        released = await scheduler._wait_for_previous_check_release(
+            umo, "message_delay", generation
+        )
+    elapsed = time.monotonic() - started
+
+    assert released is False, "运行资格失效后必须放弃等待"
+    # 一轮 0.05s 内放弃;若 on_round_expired 判定被移除,等待会耗满
+    # 20 轮上限（约 1s）才返回,时序差 20 倍,断言据此捕获该回归。
+    assert elapsed < 0.5, f"运行资格失效应在一轮内放弃,实际耗时 {elapsed:.2f}s"
+    assert not messages_at_least(logs, logging.WARNING), (
+        "调用方主动放弃是正常路径,不得打 release gate desynced 告警"
+    )
 
 
 async def test_cancel_delay_non_force_leaves_running_check_alive(tmp_path: Path) -> None:

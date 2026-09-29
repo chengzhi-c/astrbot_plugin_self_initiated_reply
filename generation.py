@@ -426,9 +426,7 @@ class GenerationRunner:
             return run.partial_reply()
         return None
 
-    async def _build_and_bound_tools(
-        self, run: _GenerateRun
-    ) -> tuple[str, AttemptLedger] | None:
+    async def _build_and_bound_tools(self, run: _GenerateRun) -> tuple[str, AttemptLedger] | None:
         """build + 双 enforce + hook + reset；早退返回空回复。"""
         last_event = run.last_event
         inherit_tools = run.inherit_tools
