@@ -29,7 +29,6 @@ from .models import (
     RELEASE_WAIT_TIMEOUT_SEC,
     TERMINATE_TASK_TIMEOUT_SEC,
     CheckTrigger,
-    SessionContainers,
     SessionState,
     Settings,
     now_ts,
@@ -72,7 +71,13 @@ class SessionScheduler:
         check_session: CheckSessionCallback,
         clear_event: Callable[[str, float], None],
         drop_older_images: Callable[[float], None],
-        containers: SessionContainers,
+        last_events: dict[str, Any],
+        last_event_at: dict[str, float],
+        recent_image_events: dict[str, Any],
+        whitelist_runtime_umos: dict[str, set[str]],
+        delay_tasks: dict[str, asyncio.Task[Any]],
+        running_check_tasks: dict[str, asyncio.Task[Any]],
+        background_tasks: set[asyncio.Task[Any]],
         quarantine_task: Callable[[asyncio.Task[Any], str], None] | None = None,
     ) -> None:
         self.settings = settings
@@ -86,13 +91,13 @@ class SessionScheduler:
         self._drop_older_images = drop_older_images
         # 内部沿用各自的私有属性名：既有调用点与守卫（CONTAINER_HOLDERS
         # 按属性名枚举）不必跟着改。
-        self._last_events = containers.last_events
-        self._last_event_at = containers.last_event_at
-        self._recent_image_events = containers.recent_image_events
-        self._whitelist_runtime_umos = containers.whitelist_runtime_umos
-        self._delay_tasks = containers.delay_tasks
-        self._running_check_tasks = containers.running_check_tasks
-        self._background_tasks = containers.background_tasks
+        self._last_events = last_events
+        self._last_event_at = last_event_at
+        self._recent_image_events = recent_image_events
+        self._whitelist_runtime_umos = whitelist_runtime_umos
+        self._delay_tasks = delay_tasks
+        self._running_check_tasks = running_check_tasks
+        self._background_tasks = background_tasks
         self._quarantine_task = quarantine_task
         self._silence_events: dict[str, asyncio.Event] = {}
         self._leak_warned: set[str] = set()
@@ -243,33 +248,28 @@ class SessionScheduler:
     async def _wait_for_previous_check_release(
         self, umo: str, trigger: str, generation: int | None
     ) -> bool:
-        release_rounds = 0
-        while self._gate.is_running(umo):
-            logger.debug(
-                "[%s] wait for previous check to finish session=%s trigger=%s",
+        released = await self._gate.await_release(
+            umo,
+            trigger=trigger,
+            timeout_sec=RELEASE_WAIT_TIMEOUT_SEC,
+            max_rounds=MAX_RELEASE_WAIT_ROUNDS,
+            # 每轮等待后重验运行资格与代次：任一失效即放弃，白名单移除后
+            # 不得再跑一次检查。
+            on_round_expired=lambda: (
+                self._should_run() and self._gate.is_current(umo, generation)
+            ),
+        )
+        # 轮数耗尽才告警：调用方主动放弃（插件停用/代次已变）是正常路径，
+        # 而 release 事件迟迟不来意味着门与运行集脱同步，必须留痕。
+        if not released and self._gate.is_running(umo):
+            logger.warning(
+                "[%s] release gate desynced, drop check session=%s trigger=%s rounds=%d",
                 PLUGIN_ID,
                 umo,
                 trigger,
+                MAX_RELEASE_WAIT_ROUNDS,
             )
-            try:
-                await asyncio.wait_for(
-                    self._gate.release_event(umo).wait(), timeout=RELEASE_WAIT_TIMEOUT_SEC
-                )
-            except TimeoutError:
-                pass
-            if not self._should_run() or not self._gate.is_current(umo, generation):
-                return False
-            release_rounds += 1
-            if release_rounds >= MAX_RELEASE_WAIT_ROUNDS:
-                logger.warning(
-                    "[%s] release gate desynced, drop check session=%s trigger=%s rounds=%d",
-                    PLUGIN_ID,
-                    umo,
-                    trigger,
-                    release_rounds,
-                )
-                return False
-        return True
+        return released
 
     async def _run_registered_check(
         self, umo: str, *, trigger: str, force: bool, generation: int | None

@@ -235,6 +235,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
             result = await plugin._generation.generate(
                 UMO, state, expected_generation=token, force=True
             )
+            text, returned_ledger = result
 
             # 两次 enforce 都执行且都清空（hook 注入的工具也被第二次清掉）
             assert len(enforce_tool_snapshots) == 2
@@ -243,9 +244,9 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
             # run 结束时 req.func_tool 保持为空
             assert main._AGENT_RUNTIME._tool_list(ctrl["req_holder"]["req"]) == []
             # 直发计数：前 2 次被接受，第 3 次超预算抑制
-            assert result.direct_send_count == 2
-            assert len(result.direct_texts) == 2
-            assert result.text == "你好呀"
+            assert returned_ledger.direct_send_count == 2
+            assert len(returned_ledger.direct_texts) == 2
+            assert text == "你好呀"
             # finally 恢复：实例 send 已清除（回到类级 send），plugins_name 复原
             assert "send" not in event.__dict__
             assert event.plugins_name == original_plugins_name
@@ -304,9 +305,10 @@ def test_pipeline_hook_early_exit_still_restores_event(tmp_path: Path) -> None:
             result = await plugin._generation.generate(
                 UMO, state, expected_generation=token, force=True
             )
+            text, returned_ledger = result
             assert ran == [True]
-            assert result.text == ""
-            assert result.direct_send_count == 0
+            assert text == ""
+            assert returned_ledger.direct_send_count == 0
             assert "send" not in event.__dict__
             assert event.plugins_name == original_plugins_name
             assert event.get_extra("provider_request") is None
@@ -1512,7 +1514,7 @@ def test_period_during_generation_does_not_silence_skip_when_abandon_off(
         async def fake_generate(_umo, _state, **kwargs):
             await plugin.on_message(make_event(message_str="。"))
             ledger = kwargs.get("ledger") or models.AttemptLedger()
-            return models.PipelineReply(text="一直在呢", ledger=ledger)
+            return "一直在呢", ledger
 
         plugin._decision.decide = fake_decide
         plugin._generation.generate = fake_generate
@@ -1533,7 +1535,7 @@ def _arrange_reply_flow(plugin, main, models):
 
     async def fake_generate(_umo, _state, **kwargs):
         ledger = kwargs.get("ledger") or models.AttemptLedger()
-        return models.PipelineReply(text="在呢", ledger=ledger)
+        return "在呢", ledger
 
     plugin.settings.cooldown_sec = 0
     plugin._decision.decide = fake_decide
@@ -1622,7 +1624,7 @@ def test_check_session_rejects_foreign_ledger(tmp_path: Path) -> None:
         foreign = models.AttemptLedger()
 
         async def fake_generate(_umo, _state, **_kwargs):
-            return models.PipelineReply(text="在呢", ledger=foreign)
+            return "在呢", foreign
 
         plugin._generation.generate = fake_generate
         with pytest.raises(RuntimeError, match="different attempt ledger"):

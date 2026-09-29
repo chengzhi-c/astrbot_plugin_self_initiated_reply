@@ -49,6 +49,7 @@ from .models import (
     panel_config_specs,
     restore_container_inplace,
 )
+from .plugin_state import apply_enabled_topology
 from .storage import write_json_atomic
 from .utils import redact_exc_text
 
@@ -188,7 +189,9 @@ async def _api_cleanup_image_cache(plugin: SelfInitiatedReplyPlugin) -> dict[str
             "max_age_sec": int(plugin.settings.vision_image_age_sec),
         }
     except Exception as exc:
-        logger.warning("[%s] manual image cache cleanup failed: %s", PLUGIN_ID, redact_exc_text(exc))
+        logger.warning(
+            "[%s] manual image cache cleanup failed: %s", PLUGIN_ID, redact_exc_text(exc)
+        )
         return {"ok": False, "error": "图片缓存清理失败"}
 
 
@@ -325,49 +328,45 @@ async def _request_json() -> Any:
 
 
 async def _api_post_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
+    """更新配置，并在锁内执行可选的 revision 前置条件。"""
     async with plugin._config_lock:
         if plugin._stopping:
             return {"ok": False, "error": "插件正在关闭"}
-        return await _api_post_config_locked(plugin)
-
-
-async def _api_post_config_locked(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """更新配置，并在锁内执行可选的 revision 前置条件。"""
-    try:
-        data = await _request_json()
-        if not isinstance(data, dict):
-            raise ValueError("请求体必须是 JSON 对象")
-        base_revision = data.get("base_revision")
-        if base_revision is not None and (
-            not isinstance(base_revision, str) or not base_revision.strip()
-        ):
-            raise ValueError("base_revision 必须是非空字符串")
-        config_data = {key: value for key, value in data.items() if key != "base_revision"}
-        current_revision = config_revision(plugin.settings)
-        # 比较前 strip：与入参校验（非空字符串）同口径，避免仅因首尾空白
-        # 被判 STALE_WRITE，让用户看到一次无意义的刷新要求。
-        if base_revision is not None and base_revision.strip() != current_revision:
-            return {
-                "ok": False,
-                "error_code": "STALE_WRITE",
-                "error": "配置已被其他请求修改",
-                "config_revision": current_revision,
-            }
-        updates = _parse_config_updates(config_data)
-        return await _apply_config_updates(
-            plugin,
-            updates,
-            submitted=config_data,
-        )
-    except ValueError as exc:
-        # 校验失败的文案要回显：由本模块构造，只含字段名与规则，前端表单
-        # 依赖它定位出错字段。
-        logger.warning("[%s] api post config rejected: %s", PLUGIN_ID, redact_exc_text(exc))
-        return {"ok": False, "error": str(exc)}
-    except Exception as exc:
-        # 内部异常一律通用文案：OSError 的 str() 带绝对路径，详情只进服务端日志。
-        logger.warning("[%s] api post config failed: %s", PLUGIN_ID, redact_exc_text(exc))
-        return {"ok": False, "error": "配置保存失败，请查看 AstrBot 日志"}
+        try:
+            data = await _request_json()
+            if not isinstance(data, dict):
+                raise ValueError("请求体必须是 JSON 对象")
+            base_revision = data.get("base_revision")
+            if base_revision is not None and (
+                not isinstance(base_revision, str) or not base_revision.strip()
+            ):
+                raise ValueError("base_revision 必须是非空字符串")
+            config_data = {key: value for key, value in data.items() if key != "base_revision"}
+            current_revision = config_revision(plugin.settings)
+            # 比较前 strip：与入参校验（非空字符串）同口径，避免仅因首尾空白
+            # 被判 STALE_WRITE，让用户看到一次无意义的刷新要求。
+            if base_revision is not None and base_revision.strip() != current_revision:
+                return {
+                    "ok": False,
+                    "error_code": "STALE_WRITE",
+                    "error": "配置已被其他请求修改",
+                    "config_revision": current_revision,
+                }
+            updates = _parse_config_updates(config_data)
+            return await _apply_config_updates(
+                plugin,
+                updates,
+                submitted=config_data,
+            )
+        except ValueError as exc:
+            # 校验失败的文案要回显：由本模块构造，只含字段名与规则，前端表单
+            # 依赖它定位出错字段。
+            logger.warning("[%s] api post config rejected: %s", PLUGIN_ID, redact_exc_text(exc))
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            # 内部异常一律通用文案：OSError 的 str() 带绝对路径，详情只进服务端日志。
+            logger.warning("[%s] api post config failed: %s", PLUGIN_ID, redact_exc_text(exc))
+            return {"ok": False, "error": "配置保存失败，请查看 AstrBot 日志"}
 
 
 def _parse_config_updates(data: Any) -> dict[str, Any]:
@@ -585,12 +584,7 @@ async def _apply_config_updates(
         )
         if enabled_persisted_changed:
             plugin.runtime_enabled = new_settings.enabled
-            if plugin.runtime_enabled:
-                plugin._scheduler.ensure_patrol()
-                plugin._scheduler.ensure_image_cleanup()
-            else:
-                plugin._cancel_delay_tasks()
-                await plugin._scheduler.stop_patrol()
+            await apply_enabled_topology(plugin, enabled=new_settings.enabled)
         elif plugin.runtime_enabled:
             plugin._scheduler.ensure_image_cleanup()
         # 影响后台任务拓扑的**其余**配置键也要重算注册：POST /config 是运行期

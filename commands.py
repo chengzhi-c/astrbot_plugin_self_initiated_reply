@@ -6,13 +6,12 @@ check/on/off 等有副作用分支，经 plugin 回调访问状态（测试可�
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 from astrbot.api.event import AstrMessageEvent
 
 from .models import CheckTrigger, SessionState, Settings, fmt_ts, now_ts
-from .plugin_state import append_recent_user_message, read_session_state
+from .plugin_state import append_recent_user_message, apply_enabled_topology, read_session_state
 from .utils import (
     clean_chat_text,
     collapse_whitespace,
@@ -31,8 +30,13 @@ from .utils import (
 # 手动检查前等待上一轮检查释放运行标记的预算。取消是异步投递的，正常情况
 # 下一个事件循环轮次即释放；预算只防「旧任务卡在不可取消的步骤里」，超时后
 # 照旧走既有「已有判断任务在运行」文案，不无限挂住指令回执。
+# 等待骨架与调度路径共用（SessionGate.await_release），故总预算按单步轮询
+# 折算成轮数：改单步或总预算都由这一句推出，不存在第二处手写份数。
 _MANUAL_CHECK_RELEASE_WAIT_SEC = 2.0
 _MANUAL_CHECK_RELEASE_POLL_SEC = 0.05
+_MANUAL_CHECK_RELEASE_ROUNDS = max(
+    1, round(_MANUAL_CHECK_RELEASE_WAIT_SEC / _MANUAL_CHECK_RELEASE_POLL_SEC)
+)
 
 if TYPE_CHECKING:
     from .main import SelfInitiatedReplyPlugin
@@ -189,20 +193,16 @@ async def _await_previous_check_release(plugin: SelfInitiatedReplyPlugin, umo: s
 
     ``/selfreply check`` 先 ``invalidate(force_cancel=True)``，但取消是异步
     投递的，旧任务要到下一个 await 点才退出并 ``unmark_running``；立即进
-    pipeline 会撞上「已有判断任务在运行」。预算耗尽仍被占用时照旧返回，
+    pipeline 会撞上「已有判断任务在运行」。等待骨架与调度路径同源
+    （``SessionGate.await_release``），预算耗尽仍被占用时照旧返回，
     由 pipeline 给出既有文案。
     """
-    deadline = _MANUAL_CHECK_RELEASE_WAIT_SEC
-    waited = 0.0
-    step = _MANUAL_CHECK_RELEASE_POLL_SEC
-    while waited < deadline and plugin._gate.is_running(umo):
-        event = plugin._gate.release_event(umo)
-        try:
-            await asyncio.wait_for(event.wait(), timeout=step)
-        except TimeoutError:
-            waited += step
-            continue
-        break
+    await plugin._gate.await_release(
+        umo,
+        trigger=str(CheckTrigger.MANUAL),
+        timeout_sec=_MANUAL_CHECK_RELEASE_POLL_SEC,
+        max_rounds=_MANUAL_CHECK_RELEASE_ROUNDS,
+    )
 
 
 def _lifecycle_reject_text(plugin: SelfInitiatedReplyPlugin, action: str) -> str:
@@ -309,14 +309,12 @@ async def dispatch_command_action(
             return _lifecycle_reject_text(plugin, "启用")
         async with plugin._config_lock:
             await plugin._persist_enabled(True)
-            plugin._scheduler.ensure_patrol()
-            plugin._scheduler.ensure_image_cleanup()
+            await apply_enabled_topology(plugin, enabled=True)
         return "主动回复插件已启用（重启后保持）。"
     if action == "off":
         async with plugin._config_lock:
             await plugin._persist_enabled(False)
-            plugin._cancel_delay_tasks()
-            await plugin._scheduler.stop_patrol()
+            await apply_enabled_topology(plugin, enabled=False)
         return "主动回复插件已暂停（重启后保持）。"
     if action == "debug":
         return debug_text(

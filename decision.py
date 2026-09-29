@@ -56,9 +56,6 @@ QUOTE_DECISION_HINT = (
     "（例如在回应某个人的具体问题、对话已往下走了几句、或需要点明在接谁的话时），"
     "false 表示不必引用。"
 )
-# 免打扰时段的时/分上下界（HH:MM 解析后的合法性校验）。
-_MAX_QUIET_HOUR = 23
-_MAX_QUIET_MINUTE = 59
 # 判断路径读宿主历史的下限：默认提示词明示「优先参考最近至少 8 条」，读少于
 # 8 条会让模型反复回宿主补历史。与生成路径的 MIN_RECENT_TEXT_RECORDS 刻意
 # 不同源：8 条是提示词契约，生成阈值跟着用户的缓存上限走。
@@ -182,12 +179,8 @@ class DecisionMaker:
             self._warn_invalid_quiet_hour(raw)
             return None
         sh, sm, eh, em = (int(part) for part in match.groups())
-        if (
-            sh > _MAX_QUIET_HOUR
-            or eh > _MAX_QUIET_HOUR
-            or sm > _MAX_QUIET_MINUTE
-            or em > _MAX_QUIET_MINUTE
-        ):
+        # 免打扰时段的时/分合法上界（HH:MM 解析后的边界校验）。
+        if sh > 23 or eh > 23 or sm > 59 or em > 59:
             self._warn_invalid_quiet_hour(raw)
             return None
         return sh * 60 + sm, eh * 60 + em

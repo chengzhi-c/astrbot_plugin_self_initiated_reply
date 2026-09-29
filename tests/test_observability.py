@@ -45,16 +45,13 @@ def _make_scheduler(tmp_path: Path, scheduler, models):
         check_session=check_session,
         clear_event=lambda _umo, _active_at: None,
         drop_older_images=lambda cutoff: None,
-        containers=models.SessionContainers(
-            last_events={},
-            last_event_at={},
-            recent_image_events={},
-            whitelist_runtime_umos={},
-            delay_tasks=delay_tasks,
-            running_check_tasks=running_check_tasks,
-            background_tasks=background_tasks,
-            sessions={},
-        ),
+        delay_tasks=delay_tasks,
+        running_check_tasks=running_check_tasks,
+        background_tasks=background_tasks,
+        last_events={},
+        last_event_at={},
+        recent_image_events={},
+        whitelist_runtime_umos={},
     )
     # 生产侧构造即起 1h 节流（SessionScheduler.__init__），这里清零让首轮清理立即触发。
     instance._last_cleanup = 0.0

@@ -203,8 +203,8 @@ def test_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> None
         ctrl = install_tool_injecting_pipeline(plugin, main, event=event, run_effect=run_effect)
         enforce_snapshots = ctrl["enforce_snapshots"]
         try:
-            result = await _run_pipeline(plugin)
-            assert result.text == "你好呀"
+            text, _ledger = await _run_pipeline(plugin)
+            assert text == "你好呀"
             # 快照为 False：即使运行中 settings 变为 True，enforce 仍按 False 清理
             assert enforce_snapshots == [[], []]
             assert main._AGENT_RUNTIME._tool_list(ctrl["req_holder"]["req"]) == []
@@ -225,8 +225,8 @@ def test_second_enforce_happens_before_reset(tmp_path: Path) -> None:
 
         ctrl = _install_tool_injecting_pipeline(plugin, main, event=event)
         try:
-            result = await _run_pipeline(plugin)
-            assert result.text == "你好呀"
+            text, _ledger = await _run_pipeline(plugin)
+            assert text == "你好呀"
             assert ctrl["enforce_snapshots"] == [[], []]
             # reset 执行时工具集为空：第二次清理在 reset 之前完成
             assert ctrl["reset_snapshots"] == [[]]
@@ -379,10 +379,10 @@ def test_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
         )
         enforce_snapshots = ctrl["enforce_snapshots"]
         try:
-            result = await plugin._generation.generate(
+            text, _ledger = await plugin._generation.generate(
                 UMO, plugin._state_for(UMO), expected_generation=1, force=True
             )
-            assert result.text == "你好呀"
+            assert text == "你好呀"
             # 修复前：继承分支直接 return True → 危险工具残留
             assert enforce_snapshots[0] == ["send_image"]
             assert enforce_snapshots[1] == ["send_image", "third_party_weather"]
@@ -638,12 +638,12 @@ def test_timeout_requests_graceful_stop(tmp_path: Path) -> None:
         original_grace = main.GRACEFUL_STOP_GRACE_SEC
         main.GRACEFUL_STOP_GRACE_SEC = 0.05
         try:
-            result = await plugin._generation.generate(
+            text, _ledger = await plugin._generation.generate(
                 UMO, plugin._state_for(UMO), expected_generation=1, force=True
             )
             # 修复前：wait_for 直接取消 run_agent → request_stop 从未被调
             assert stop_called == [True]
-            assert result.text == ""
+            assert text == ""
         finally:
             main.GRACEFUL_STOP_GRACE_SEC = original_grace
             main._AGENT_RUNTIME = original_runtime

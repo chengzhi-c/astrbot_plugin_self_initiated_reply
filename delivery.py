@@ -121,24 +121,44 @@ class DeliveryRunner:
             return ""
         return event_message_id(last_event)
 
+    def _resolve_component_id(
+        self,
+        umo: str,
+        *,
+        wanted: bool,
+        target_id: Callable[[str], str],
+        skip_log: str,
+    ) -> str:
+        """装饰性组件 ID 的单一解析形状：不需要就返回空串，取不到返回空串并留痕。
+
+        quote 与 mention 只在这里分叉（判定开关、目标取值、跳过日志各不同），
+        骨架（不插 await、两级降级）由本方法收口，两条路径行为完全一致。
+        """
+        if not wanted:
+            return ""
+        component_id = target_id(umo)
+        if not component_id:
+            logger.debug(skip_log, PLUGIN_ID, umo)
+        return component_id
+
     def _resolve_quote_id(self, umo: str, model_decision: bool | None) -> str:
         """本次发送要引用的消息 ID；不需要引用或取不到 ID 时返回空串。"""
-        if not self._should_quote(model_decision):
-            return ""
-        quote_id = self._quote_target_id(umo)
-        if not quote_id:
-            logger.debug("[%s] quote skipped: no message id for session=%s", PLUGIN_ID, umo)
-        return quote_id
+        return self._resolve_component_id(
+            umo,
+            wanted=self._should_quote(model_decision),
+            target_id=self._quote_target_id,
+            skip_log="[%s] quote skipped: no message id for session=%s",
+        )
 
     @staticmethod
-    def _attach_quote(chain_owner: Any, message_id: str) -> bool:
-        """把 ``Reply`` 组件插到消息链首。失败静默降级为普通发送：引用是
+    def _attach_chain_prefix(chain_owner: Any, component: Any, *, kind: str) -> bool:
+        """把装饰性组件插到消息链首。失败静默降级为普通发送：引用与 @ 都是
         装饰性组件，宿主链不可写或平台不支持都不该让整次回复失败。"""
         try:
-            chain_owner.chain.insert(0, Reply(id=message_id))
+            chain_owner.chain.insert(0, component)
             return True
         except Exception as exc:
-            logger.debug("[%s] quote component skipped: %s", PLUGIN_ID, exc)
+            logger.debug("[%s] %s component skipped: %s", PLUGIN_ID, kind, exc)
             return False
 
     # ------------------------------------------------------------------
@@ -175,22 +195,12 @@ class DeliveryRunner:
 
     def _resolve_mention_id(self, umo: str) -> str:
         """本次发送要 @ 的发送者 ID；不需要 @ 或取不到 ID 时返回空串。"""
-        if not self._should_mention():
-            return ""
-        mention_id = self._mention_target_id(umo)
-        if not mention_id:
-            logger.debug("[%s] mention skipped: no sender id for session=%s", PLUGIN_ID, umo)
-        return mention_id
-
-    @staticmethod
-    def _attach_mention(chain_owner: Any, sender_id: str) -> bool:
-        """把 ``At`` 组件插到消息链首。失败静默降级为普通发送（与引用一致）。"""
-        try:
-            chain_owner.chain.insert(0, At(qq=sender_id))
-            return True
-        except Exception as exc:
-            logger.debug("[%s] mention component skipped: %s", PLUGIN_ID, exc)
-            return False
+        return self._resolve_component_id(
+            umo,
+            wanted=self._should_mention(),
+            target_id=self._mention_target_id,
+            skip_log="[%s] mention skipped: no sender id for session=%s",
+        )
 
     async def deliver_reply(
         self,
@@ -287,11 +297,11 @@ class DeliveryRunner:
     ) -> SendOutcome:
         """Send one proactive reply without retrying an unknown submission.
 
-        本方法只做「复核点 1/4 + 选路」，两条投递路径各自成方法：
-        事件仍在手边走 ``_send_via_event``（复核点 2/4、3/4，可触发装饰与发送后钩子），
-        否则走 ``_send_via_context``（复核点 4/4，经宿主 context 兜底发送）。
+        本方法只做「复核点 1/2 + 选路」，两条投递路径各自成方法：
+        事件仍在手边走 ``_send_via_event``（复核点 2/2，可触发装饰与发送后钩子），
+        否则走 ``_send_via_context``（经宿主 context 兜底发送）。
         """
-        # 复核点 1/4（真实窗口）：expected_generation 是生成前 advance 拿到的
+        # 复核点 1/2（真实窗口）：expected_generation 是生成前 advance 拿到的
         # token，到此已隔整轮 LLM 生成，代次极可能已被新消息推进。
         ledger = ledger or AttemptLedger()
         if self._is_stopping():
@@ -350,7 +360,7 @@ class DeliveryRunner:
     ) -> SendOutcome:
         """事件路径投递：装饰钩子 → 代次复核 → 事件 send → 发送后钩子。
 
-        仅由 ``send_reply`` 在 ``last_event`` 为真时调用，进入时复核点 1/4 已通过。
+        仅由 ``send_reply`` 在 ``last_event`` 为真时调用，进入时复核点 1/2 已通过。
         本方法是唯一会 ``set_result`` 的路径，所有出口都必须经 ``_clear_result``
         回收（防结果泄漏到宿主后续流程）。
         """
@@ -364,7 +374,7 @@ class DeliveryRunner:
                 .set_result_content_type(self._runtime().result_llm_type)
             )
             await self._call_hook(last_event, self._runtime().event_type.OnDecoratingResultEvent)
-            # 复核点 2/4（真实窗口）：装饰钩子是 await，期间新消息可推进代次。
+            # 复核点 2/2（真实窗口）：装饰钩子是 await，期间新消息可推进代次。
             if not self._gate.is_current(umo, expected_generation):
                 self._clear_result(last_event)
                 logger.info(
@@ -398,29 +408,14 @@ class DeliveryRunner:
                 return SendOutcome(
                     SendStatus.FAILED_BEFORE_SUBMIT, "decorating hook produced no result"
                 )
-            # 复核点 3/4（结构防线）：与复核点 2 之间零 await，当前代码下代次
-            # 不可能在此变化；上方一旦插入任何 await，这道防线立即变实。
-            if not self._gate.is_current(umo, expected_generation):
-                self._clear_result(last_event)
-                logger.info(
-                    "[%s] suppress stale reply before event send ledger_id=%s session=%s",
-                    PLUGIN_ID,
-                    ledger_id,
-                    umo,
-                )
-                return SendOutcome(
-                    SendStatus.SUPPRESSED,
-                    "generation changed before send",
-                    SuppressCode.GENERATION_CHANGED,
-                )
             if quote_id:
                 # 引用组件在装饰钩子之后插入：钩子改的是链内容，引用是外层标注。
-                self._attach_quote(result, quote_id)
+                self._attach_chain_prefix(result, Reply(id=quote_id), kind="quote")
             if mention_id:
                 # @ 组件同样插在装饰钩子之后，且必须插在 quote 之后：
                 # ``insert(0)`` 让后插者位于更前，先 Reply 后 At 才能得到
                 # [At, Reply, ...正文]。两步同步，不新增 await 点。
-                self._attach_mention(result, mention_id)
+                self._attach_chain_prefix(result, At(qq=mention_id), kind="mention")
             logger.debug(
                 "[%s] event send begin ledger_id=%s session=%s chars=%d chain_items=%d",
                 PLUGIN_ID,
@@ -498,20 +493,6 @@ class DeliveryRunner:
         也不支持引用（需要被引消息的 ID，而它只存在于事件上）。
         """
         ledger_id = ledger.ledger_id
-        # 复核点 4/4（结构防线）：进入本协程不让出事件循环，无新竞态窗口；
-        # 为日后插入异步查询预留拦截位。
-        if not self._gate.is_current(umo, expected_generation):
-            logger.info(
-                "[%s] suppress stale reply before context send ledger_id=%s session=%s",
-                PLUGIN_ID,
-                ledger_id,
-                umo,
-            )
-            return SendOutcome(
-                SendStatus.SUPPRESSED,
-                "generation changed before context send",
-                SuppressCode.GENERATION_CHANGED,
-            )
         # send_started 取自 ``OutboundResult.submitted``，与事件路径同源：是否
         # 已提交由 gateway 的分类结果决定。提交前误记 UNKNOWN 会白吃冷却与
         # 日配额；已提交记 FAILED_BEFORE_SUBMIT 会不消耗冷却而重发，制造重复

@@ -201,10 +201,10 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
   已不运行的 `set()`（唤醒，避免等一个不会到来的信号）。任务其实已结束的情况由
   §5 的超时与轮次上限兜底。
 
-容器在装配时收进 `models.SessionContainers`（frozen dataclass）再交给需要多个容器的
-协作者（scheduler / session_coordinator / whitelist）。它只是**同一批容器对象的命名
-视图**：`frozen` 锁的是字段重绑，容器内容仍按 B1 原地改；`SessionGate` 的三张表刻意
-不在其中（release 表按 B3 不参与恢复，混进来会诱导"整对象恢复"这种错误写法）。
+共享容器由插件侧按名逐个直传给协作者（scheduler / session_coordinator /
+whitelist），协作者各自存私有引用：`frozen` 视图层不存在，容器内容仍按 B1 原地改；
+`SessionGate` 的三张表刻意不参与传递（release 表按 B3 不参与恢复，混进同一对象会
+诱导"整对象恢复"这种错误写法）。
 
 守卫方式：`tests/test_config_hot_reload.py` 按 `CONTAINER_HOLDERS` 表逐个断言回滚后
 容器身份不变（`is` 比较）；同文件的装配用例反查各持有者的实例属性，把这张手写表与
@@ -262,8 +262,9 @@ main 在装配段把若干可变容器（dict/set）的**引用**交给协作对
   失败一律静默降级为普通发送，不得影响投递结果（DELIVERED/UNKNOWN 分类）与
   ledger 记账。
 - **context 兜底路径不 @**：该路径的前提就是事件已不在手边，没有 sender_id 可用。
-- 插在装饰钩子**之后**、复核点 3/4 通过的同一位置：两步插入都是同步的，
-  **不得新增 await 点**：「复核点 3 与 send 零 await」的结构性防线性质不变。
+- 插在装饰钩子**之后**、最后一次代次复核（复核点 2/2）通过的同一位置：两步插入都是
+  同步的，**不得新增 await 点**：「代次复核与 send 零 await」这条纪律不变：
+  从最后一次复核到 send 之间插入 await 会新开竞态窗口，届时就地补一道复核。
 
 ### 14.3 其他
 

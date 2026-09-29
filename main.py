@@ -64,7 +64,6 @@ from .models import (
     SESSION_CANCEL_COMMAND_ACTIONS,
     TERMINATE_TASK_TIMEOUT_SEC,
     PluginLifecycle,
-    SessionContainers,
     SessionState,
     Settings,
     now_ts,
@@ -180,18 +179,6 @@ class SelfInitiatedReplyPlugin(Star):
         self._last_decisions: dict[str, dict[str, Any]] = {}
         self._refresh_admin_ids()
 
-        # 共享容器收拢为一个对象后交给协作者：main 侧仍保留各自的属性名，
-        # 回滚路径（webapi._restore_plugin_state）与容器身份守卫按这些名字工作。
-        self._containers = SessionContainers(
-            last_events=self._last_events,
-            last_event_at=self._last_event_at,
-            recent_image_events=self._recent_image_events,
-            whitelist_runtime_umos=self._whitelist_runtime_umos,
-            delay_tasks=self._delay_tasks,
-            running_check_tasks=self._running_check_tasks,
-            background_tasks=self._background_tasks,
-            sessions=self.sessions,
-        )
         self._assemble_components()
 
         # 启动期磁盘 IO 统一在此执行（配置规范化落盘、状态落盘、图片缓存清理）。
@@ -199,11 +186,9 @@ class SelfInitiatedReplyPlugin(Star):
         # 所有会话与 Web 面板（契约见 tests/test_cleanup_nonblocking）。
         # - 有运行中的循环 → 全部交后台任务（磁盘部分内部走 to_thread）。
         # - 无循环（同步加载的宿主）→ 原地同步执行，且**不得**在此 spawn。
-        has_loop = True
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            has_loop = False
             if self._pending_normalize_config:
                 self._normalize_config_sync()
             self._save_storage_sync()
@@ -213,7 +198,6 @@ class SelfInitiatedReplyPlugin(Star):
                 logger.warning("[%s] startup image cache cleanup failed: %s", PLUGIN_ID, exc)
         else:
             self._track_background_task(self._startup_disk_writes())
-        if has_loop:
             self._scheduler.ensure_patrol()
             self._scheduler.ensure_image_cleanup()
         logger.info(
@@ -237,7 +221,13 @@ class SelfInitiatedReplyPlugin(Star):
         register_web_apis(self)
 
     def _startup_disk_writes(self) -> Coroutine[Any, Any, None]:
-        """构造期的磁盘 IO 后台任务：配置规范化落盘 + 状态落盘 + 图片缓存清理。"""
+        """构造期磁盘 IO 的就绪协程：配置规范化落盘 + 状态落盘 + 图片缓存清理。
+
+        只构造、**不** spawn：调用方拿到协程后自行决定交给
+        ``_track_background_task``（有循环）还是关闭（同步加载路径不会走到这里）。
+        构造即就绪，离开本方法前无人 await 它，未消费就是"从未开始的协程"，
+        调用方若丢弃必须 close。
+        """
 
         async def run() -> None:
             if self._pending_normalize_config:
@@ -258,7 +248,9 @@ class SelfInitiatedReplyPlugin(Star):
     def _assemble_components(self) -> None:
         """接线协作对象。须在 gate/状态容器就绪之后、ensure_task 之前调用。"""
         self._coordinator = SessionCoordinator(
-            containers=self._containers,
+            last_events=self._last_events,
+            last_event_at=self._last_event_at,
+            recent_image_events=self._recent_image_events,
             gate=self._gate,
             cancel_delay=lambda umo, force: self._scheduler.cancel_delay(umo, force=force),
             notify_silence=lambda umo: self._scheduler.notify_activity(umo),
@@ -291,7 +283,13 @@ class SelfInitiatedReplyPlugin(Star):
             ),
             clear_event=self._coordinator.clear_event,
             drop_older_images=self._coordinator.drop_older_than,
-            containers=self._containers,
+            last_events=self._last_events,
+            last_event_at=self._last_event_at,
+            recent_image_events=self._recent_image_events,
+            whitelist_runtime_umos=self._whitelist_runtime_umos,
+            delay_tasks=self._delay_tasks,
+            running_check_tasks=self._running_check_tasks,
+            background_tasks=self._background_tasks,
             quarantine_task=self._quarantine_task,
         )
 
@@ -349,7 +347,8 @@ class SelfInitiatedReplyPlugin(Star):
             ensure_state=lambda umo: self._state_for(umo),
             invalidate=lambda umo: self._coordinator.invalidate(umo),
             prune=lambda umo: self._prune_session(umo),
-            containers=self._containers,
+            sessions=self.sessions,
+            whitelist_runtime_umos=self._whitelist_runtime_umos,
             tracked_umos=lambda: (
                 set(self._last_events)
                 | set(self._delay_tasks)

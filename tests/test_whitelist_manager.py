@@ -73,9 +73,8 @@ class FakeCtx:
                 or self.sessions.pop(umo, None)
                 or self.sessions.pop(_group_key(umo), None)
             ),
-            containers=SimpleNamespace(
-                sessions=self.sessions, whitelist_runtime_umos=self.runtime_umos
-            ),
+            sessions=self.sessions,
+            whitelist_runtime_umos=self.runtime_umos,
             tracked_umos=lambda: set(self.tracked),
         )
 

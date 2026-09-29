@@ -282,8 +282,9 @@ async def test_generate_installs_and_restores_tool_boundary(tmp_path: Path) -> N
     runner._last_events["s1"] = event
     state = _state(models)
     result = await runner.generate("s1", state, expected_generation=1, force=True)
+    text, _ledger = result
 
-    assert result.text == "你好呀"
+    assert text == "你好呀"
     # 边界安装：build 时 plugins_name 已被清空
     assert runtime.build_kwargs[0]["req"].func_tool is not None
     assert event.plugins_name == ["other_plugin"]  # 恢复
@@ -332,9 +333,11 @@ async def test_generate_leaves_third_party_send_wrapper_intact(tmp_path: Path) -
     _, models, runner, runtime, _, _ = _make_runner(tmp_path, runtime=ThirdPartyHijackRuntime())
     event = FakeEvent()
     runner._last_events["s1"] = event
-    result = await runner.generate("s1", _state(models), expected_generation=1, force=True)
+    text, _ledger = await runner.generate(
+        "s1", _state(models), expected_generation=1, force=True
+    )
 
-    assert result.text == "你好呀"
+    assert text == "你好呀"
     # 第三方的包装必须还在原位，而不是被本插件的回滚抹掉
     assert event.__dict__.get("send") is runtime.third_party_send
     # 其余三段回滚不受影响：identity 守卫只跳过 send 这一段
@@ -359,9 +362,11 @@ async def test_generate_does_not_overwrite_third_party_send_over_instance_send(
 
     event.send = preexisting_instance_send  # 实例上已有 send（宿主或更早的插件装的）
     runner._last_events["s1"] = event
-    result = await runner.generate("s1", _state(models), expected_generation=1, force=True)
+    text, _ledger = await runner.generate(
+        "s1", _state(models), expected_generation=1, force=True
+    )
 
-    assert result.text == "你好呀"
+    assert text == "你好呀"
     assert event.__dict__.get("send") is runtime.third_party_send
     assert event.__dict__.get("send") is not preexisting_instance_send
 
@@ -371,18 +376,19 @@ async def test_generate_inherit_tools_skips_boundary(tmp_path: Path) -> None:
     event = FakeEvent()
     runner._last_events["s1"] = event
     state = _state(models)
-    result = await runner.generate("s1", state, force=True)
-    assert result.text == "你好呀"
+    text, _ledger = await runner.generate("s1", state, force=True)
+    assert text == "你好呀"
     assert event.plugins_name == ["other_plugin"]  # 未被清空
 
 
 async def test_generate_no_last_event_returns_empty(tmp_path: Path) -> None:
     _, models, runner, _, _, _ = _make_runner(tmp_path)
     ledger = models.AttemptLedger()
-    result = await runner.generate("s1", _state(models), ledger=ledger, force=True)
-    assert result.text == ""
-    assert result.ledger is ledger
-    assert result.direct_send_count == 0
+    text, returned_ledger = await runner.generate(
+        "s1", _state(models), ledger=ledger, force=True
+    )
+    assert text == ""
+    assert returned_ledger is ledger
 
 
 async def test_install_boundary_raises_without_plugins_name(tmp_path: Path) -> None:
@@ -449,10 +455,10 @@ async def test_generate_suppresses_direct_send_after_stop(tmp_path: Path) -> Non
 
     runner._is_stopping = lambda: stopped
     runtime.run = run_with_late_direct
-    result = await runner.generate("s1", state, force=True)
+    _text, returned_ledger = await runner.generate("s1", state, force=True)
 
-    assert result.direct_send_count == 1
-    assert result.direct_texts == ("before stop",)
+    assert returned_ledger.direct_send_count == 1
+    assert returned_ledger.direct_texts == ("before stop",)
     assert len(sent) == 1
 
 
@@ -471,10 +477,10 @@ async def test_generate_tracks_direct_sends_within_budget(tmp_path: Path) -> Non
         return gen()
 
     runtime.run = run_with_directs
-    result = await runner.generate("s1", state, force=True)
-    assert result.direct_send_count == 2
-    assert result.text == "你好呀"
-    assert len(result.direct_texts) == 2
+    text, returned_ledger = await runner.generate("s1", state, force=True)
+    assert returned_ledger.direct_send_count == 2
+    assert text == "你好呀"
+    assert len(returned_ledger.direct_texts) == 2
 
 
 async def test_generate_tracks_tool_direct_evidence_in_pipeline_ledger(tmp_path: Path) -> None:
@@ -492,11 +498,13 @@ async def test_generate_tracks_tool_direct_evidence_in_pipeline_ledger(tmp_path:
         return gen()
 
     runtime.run = run_with_direct
-    result = await runner.generate("s1", _state(models), ledger=ledger, force=True)
+    _text, returned_ledger = await runner.generate(
+        "s1", _state(models), ledger=ledger, force=True
+    )
 
-    assert result.ledger is ledger
-    assert result.direct_send_count == 1
-    assert result.direct_texts == ("ledger direct",)
+    assert returned_ledger is ledger
+    assert returned_ledger.direct_send_count == 1
+    assert returned_ledger.direct_texts == ("ledger direct",)
     assert ledger.attempts[0].state is models.AttemptState.DELIVERED
 
 
@@ -545,13 +553,13 @@ async def test_generate_passes_non_tool_messages_through_untouched(tmp_path: Pat
         return gen()
 
     runtime.run = run_with_plain_message
-    result = await runner.generate("s1", state, force=True)
+    _text, returned_ledger = await runner.generate("s1", state, force=True)
 
     assert len(received) == 1, f"普通消息未到达宿主 original_send：{received}"
     assert received[0].get_plain_text() == "普通消息"
     assert returned == [sentinel], "宿主返回值未原样回传（少写 return 或改了返回值）"
-    assert result.direct_send_count == 0, "透传的普通消息不应计入工具直发预算"
-    assert result.direct_texts == ()
+    assert returned_ledger.direct_send_count == 0, "透传的普通消息不应计入工具直发预算"
+    assert returned_ledger.direct_texts == ()
 
     # 顺带钉住 tracker 摘除的**恢复**分支（generation.py 的 had_instance_send 侧）。
     # 本用例把 send 设成了实例属性，故 finally 该走「恢复原值」而非「delattr」。
@@ -579,9 +587,9 @@ async def test_generate_gate_suppresses_direct_send(tmp_path: Path) -> None:
         return gen()
 
     runtime.run = run_with_directs
-    result = await runner.generate("s1", state, force=True)
-    assert result.direct_send_count == 0
-    assert result.direct_texts == ()
+    _text, returned_ledger = await runner.generate("s1", state, force=True)
+    assert returned_ledger.direct_send_count == 0
+    assert returned_ledger.direct_texts == ()
 
 
 # ============================================================================
@@ -604,10 +612,10 @@ async def test_generate_timeout_requests_graceful_stop_keeps_directs(tmp_path: P
         return gen()
 
     runtime.run = hanging_run
-    result = await runner.generate("s1", state, force=True)
-    assert result.text == ""
-    assert result.direct_send_count == 1  # 超时出口不丢直发
-    assert result.direct_texts == ("超时前直发",)
+    text, returned_ledger = await runner.generate("s1", state, force=True)
+    assert text == ""
+    assert returned_ledger.direct_send_count == 1  # 超时出口不丢直发
+    assert returned_ledger.direct_texts == ("超时前直发",)
 
 
 async def test_graceful_stop_ignores_request_stop_failure(tmp_path: Path) -> None:
@@ -831,9 +839,9 @@ async def test_generate_fail_closed_aborts_run_keeps_directs(tmp_path: Path) -> 
     event = FakeEvent()
     runner._last_events["s1"] = event
     state = _state(models)
-    result = await runner.generate("s1", state, force=True)
-    assert result.text == ""
-    assert result.direct_send_count == 0
+    text, returned_ledger = await runner.generate("s1", state, force=True)
+    assert text == ""
+    assert returned_ledger.direct_send_count == 0
     assert runtime.build_kwargs  # build 已发生，但 run 未发生
     assert runtime.run_started.is_set() is False
 
@@ -845,9 +853,9 @@ async def test_generate_build_none_returns_directs(tmp_path: Path) -> None:
     event = FakeEvent()
     runner._last_events["s1"] = event
     state = _state(models)
-    result = await runner.generate("s1", state, force=True)
-    assert result.text == ""
-    assert result.direct_send_count == 0
+    text, returned_ledger = await runner.generate("s1", state, force=True)
+    assert text == ""
+    assert returned_ledger.direct_send_count == 0
 
 
 async def test_generate_hook_early_exit_restores_event(tmp_path: Path) -> None:
@@ -860,8 +868,9 @@ async def test_generate_hook_early_exit_restores_event(tmp_path: Path) -> None:
     event = FakeEvent()
     runner._last_events["s1"] = event
     state = _state(models)
-    result = await runner.generate("s1", state, force=True)
-    assert result.text == ""
+    text, returned_ledger = await runner.generate("s1", state, force=True)
+    assert text == ""
+    assert returned_ledger.direct_send_count == 0
     assert event.plugins_name == ["other_plugin"]
     assert event.get_extra("provider_request") is None
     assert runtime.run_started.is_set() is False
@@ -894,9 +903,10 @@ async def test_generate_closes_reset_coro_when_hook_raises(tmp_path: Path) -> No
     runner._last_events["s1"] = event
     state = _state(models)
 
-    result = await runner.generate("s1", state, force=True)
+    text, returned_ledger = await runner.generate("s1", state, force=True)
 
-    assert result.text == ""  # 异常被吞成空回复，不外抛
+    assert text == ""  # 异常被吞成空回复，不外抛
+    assert returned_ledger.direct_send_count == 0
     assert inspect.getcoroutinestate(runtime.reset_coro) == "CORO_CLOSED"  # 修复前 CORO_CREATED
     assert runtime.run_started.is_set() is False
     assert event.get_extra("provider_request") is None  # 其余三段清理未被新增段打断
@@ -921,9 +931,10 @@ async def test_generate_closes_reset_coro_when_hook_raises_timeout(tmp_path: Pat
     runner._last_events["s1"] = event
     state = _state(models)
 
-    result = await runner.generate("s1", state, force=True)
+    text, returned_ledger = await runner.generate("s1", state, force=True)
 
-    assert result.text == ""
+    assert text == ""
+    assert returned_ledger.direct_send_count == 0
     assert inspect.getcoroutinestate(runtime.reset_coro) == "CORO_CLOSED"
     assert runtime.run_started.is_set() is False
 
@@ -951,10 +962,10 @@ async def test_generate_second_enforcement_aborts_and_closes_reset(tmp_path: Pat
     runner._last_events["s1"] = event
     state = _state(models)
 
-    result = await runner.generate("s1", state, force=True)
+    text, _returned_ledger = await runner.generate("s1", state, force=True)
 
     assert calls["n"] == 2  # 两道闸门都跑到了
-    assert result.text == ""
+    assert text == ""
     assert runtime.run_started.is_set() is False  # 拒绝后绝不进 run
     assert inspect.getcoroutinestate(runtime.reset_coro) == "CORO_CLOSED"
 
@@ -1318,9 +1329,10 @@ async def test_corrupted_history_logs_warning_and_keeps_replying(
     with caplog.at_level(logging.WARNING):
         caplog.clear()
         result = await runner.generate("s1", _state(models), expected_generation=1, force=True)
+    text, _ledger = result
 
     # 降级而非中断：回复照发
-    assert result.text == "你好呀"
+    assert text == "你好呀"
     # 上下文留默认值（这正是"失忆"的机制，需要日志把它显性化）
     assert runtime.built_reqs[0].contexts == []
 
@@ -1339,8 +1351,9 @@ async def test_missing_conversation_stays_debug(tmp_path: Path, caplog: object) 
     with caplog.at_level(logging.DEBUG):
         caplog.clear()
         result = await runner.generate("s1", _state(models), expected_generation=1, force=True)
+    text, _ledger = result
 
-    assert result.text == "你好呀"
+    assert text == "你好呀"
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert not any("history corrupted" in m for m in warnings), (
         "会话缺失被误报成历史损坏，两类失败必须分开"

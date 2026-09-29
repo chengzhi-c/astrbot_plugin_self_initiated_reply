@@ -187,7 +187,7 @@ class SessionPipeline:
             if isinstance(decision, str):
                 return decision
 
-            pipeline_reply = await self._generation.generate(
+            reply_text, reply_ledger = await self._generation.generate(
                 umo,
                 state,
                 expected_generation=expected_generation,
@@ -195,9 +195,9 @@ class SessionPipeline:
                 force=force,
                 silence_active_at=observed_active_at,
             )
-            if pipeline_reply.ledger is not None and pipeline_reply.ledger is not ledger:
+            if reply_ledger is not None and reply_ledger is not ledger:
                 raise RuntimeError("generation returned a different attempt ledger")
-            effective_reply = pipeline_reply.text.strip()
+            effective_reply = reply_text.strip()
             direct_send_count = ledger.direct_send_count
             if effective_reply and ledger.direct_texts:
                 normalized_reply = collapse_whitespace(effective_reply)

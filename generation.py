@@ -31,7 +31,6 @@ from .models import (
     AttemptLedger,
     ImageContextCallback,
     LocalGateCallback,
-    PipelineReply,
     ReadHistoryCallback,
     SessionState,
     Settings,
@@ -175,10 +174,10 @@ class _GenerateRun:
         # tracker，否则存活 agent 的工具直发变成裸发（绕过预算/代次/停止闸门）。
         self.quarantined = False
 
-    def partial_reply(self) -> PipelineReply:
-        return PipelineReply(ledger=self.ledger)
+    def partial_reply(self) -> tuple[str, AttemptLedger]:
+        return "", self.ledger
 
-    def abort(self, pending: Any = None) -> PipelineReply:
+    def abort(self, pending: Any = None) -> tuple[str, AttemptLedger]:
         """中止生成：eager close reset，带回已发生直发计数（finally 仍会兜底）。"""
         if pending is not None:
             pending.close()
@@ -296,7 +295,7 @@ class GenerationRunner:
         ledger: AttemptLedger | None = None,
         force: bool = False,
         silence_active_at: float | None = None,
-    ) -> PipelineReply:
+    ) -> tuple[str, AttemptLedger]:
         """Run AstrBot's main Agent and account for tool-side direct sends."""
         ledger = ledger or AttemptLedger()
         last_event = self._last_events.get(umo)
@@ -307,7 +306,7 @@ class GenerationRunner:
                 ledger.ledger_id,
                 umo,
             )
-            return PipelineReply(ledger=ledger)
+            return "", ledger
 
         # 一次运行一个工具语义：入口快照，避免运行中改配置导致 install 与
         # enforce 读到不同开关值（False→True 方向会留下未清理的工具集）。
@@ -358,7 +357,7 @@ class GenerationRunner:
         finally:
             self._cleanup_generation_state(run)
 
-    def _prepare_outbound_tracker(self, run: _GenerateRun) -> PipelineReply | None:
+    def _prepare_outbound_tracker(self, run: _GenerateRun) -> tuple[str, AttemptLedger] | None:
         """安装工具直发 tracker；不可用时返回空回复（非异常路径）。"""
         last_event = run.last_event
         original_send = getattr(last_event, "send", None)
@@ -427,8 +426,10 @@ class GenerationRunner:
             return run.partial_reply()
         return None
 
-    async def _build_and_bound_tools(self, run: _GenerateRun) -> PipelineReply | None:
-        """build + 双 enforce + hook + reset；早退返回 partial PipelineReply。"""
+    async def _build_and_bound_tools(
+        self, run: _GenerateRun
+    ) -> tuple[str, AttemptLedger] | None:
+        """build + 双 enforce + hook + reset；早退返回空回复。"""
         last_event = run.last_event
         inherit_tools = run.inherit_tools
         req = self._runtime().new_provider_request()
@@ -518,7 +519,7 @@ class GenerationRunner:
             )
             raise
 
-    def _finalize_text(self, run: _GenerateRun) -> PipelineReply:
+    def _finalize_text(self, run: _GenerateRun) -> tuple[str, AttemptLedger]:
         build_result = run.build_result
         if build_result is None:
             raise RuntimeError("run_agent entered finalize without a build_result")
@@ -530,7 +531,7 @@ class GenerationRunner:
                 allow_multiline=self.settings.allow_multiline_reply,
                 max_chars=self.settings.max_reply_chars,
             )
-        return PipelineReply(text=reply_text, ledger=run.ledger)
+        return reply_text, run.ledger
 
     def _cleanup_generation_state(self, run: _GenerateRun) -> None:
         """四段独立静默清理：reset → 摘 send → 工具边界 → provider_request。

@@ -5,11 +5,13 @@
 
 import asyncio
 import itertools
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from types import MappingProxyType
 from typing import Any
 
-from .models import restore_container_inplace
+from astrbot.api import logger
+
+from .models import PLUGIN_ID, restore_container_inplace
 
 
 class SessionGate:
@@ -81,6 +83,48 @@ class SessionGate:
     def release_event(self, umo: str) -> asyncio.Event:
         """等待该会话当前运行结束的惰性事件（等完后再查 is_running）。"""
         return self._session_release.setdefault(umo, asyncio.Event())
+
+    async def await_release(
+        self,
+        umo: str,
+        *,
+        trigger: str,
+        timeout_sec: float,
+        max_rounds: int,
+        on_round_expired: Callable[[], bool] | None = None,
+    ) -> bool:
+        """有界等待该会话当前运行让出标记；成功释放或调用方放弃返回 True。
+
+        ``max_rounds`` 轮都耗尽仍未释放返回 False，由调用方决定是告警丢弃还是
+        静默继续（调度路径与手动指令路径的既有语义不同，日志分层见各自调用点）。
+
+        ``on_round_expired`` 在每轮等待结束后调用：返回 False 表示调用方判定
+        目标已失效（插件不再运行、代次已变），立即停止等待并返回 False；
+        不传则只受运行标记与轮数约束。
+
+        单把等待骨架收敛到此的意义：``force_cancel`` 是异步投递的，取消后旧
+        任务要到下一个 await 点才 ``unmark_running``；两处调用点（调度路径与
+        ``/selfreply check``）都要等同一件事，各自手写一遍必然漂移。
+        """
+        rounds = 0
+        while self.is_running(umo):
+            logger.debug(
+                "[%s] wait for previous check to finish session=%s trigger=%s",
+                PLUGIN_ID,
+                umo,
+                trigger,
+            )
+            event = self.release_event(umo)
+            try:
+                await asyncio.wait_for(event.wait(), timeout=timeout_sec)
+            except TimeoutError:
+                pass
+            if on_round_expired is not None and not on_round_expired():
+                return False
+            rounds += 1
+            if rounds >= max_rounds:
+                return False
+        return True
 
     def snapshot(self) -> dict[str, Any]:
         """代次/运行集/锁三张表的浅拷贝快照，供配置回滚原地恢复。

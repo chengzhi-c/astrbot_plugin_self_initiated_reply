@@ -249,6 +249,21 @@ async def persist_enabled(plugin: SelfInitiatedReplyPlugin, enabled: bool) -> No
         raise
 
 
+async def apply_enabled_topology(plugin: SelfInitiatedReplyPlugin, *, enabled: bool) -> None:
+    """enabled 切换后的任务拓扑单源：开则起巡检与图片清理，关则停。
+
+    ``enabled`` 是调用方已判定"本次生效值真正变化"后的结果（webapi 传新的
+    持久值，指令路径传落盘后的当前值）：本函数不再自行比较新旧，重复提交相同
+    值的短路判定留在调用方，两处路径因此共享同一段拓扑动作。
+    """
+    if enabled:
+        plugin._scheduler.ensure_patrol()
+        plugin._scheduler.ensure_image_cleanup()
+    else:
+        plugin._cancel_delay_tasks()
+        await plugin._scheduler.stop_patrol()
+
+
 def track_background_task(
     plugin: SelfInitiatedReplyPlugin, coro: Coroutine[Any, Any, Any]
 ) -> asyncio.Task[Any] | None:

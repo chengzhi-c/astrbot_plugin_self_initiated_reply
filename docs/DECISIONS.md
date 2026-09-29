@@ -169,9 +169,9 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 
 以下形态看着能删、能收，实为刻意。改动前先读理由。
 
-- **`PipelineReply.direct_send_count` / `direct_texts`（`models.py`）**：对
-  `AttemptLedger` 的视图式读取，测试以 `result` 直读它。改写成 `.ledger.*` 只是把测试
-  更深地绑到内存结构上，生产侧零收益。
+- **`PipelineReply` 已删除（`models.py`）**：该 dataclass 只是 `(text, ledger)`
+  的搬运壳，`generation.generate` 现在直接返回 `tuple[str, AttemptLedger]`，
+  直发计数与文案改从返回的 `AttemptLedger` 上读，第二个转发壳层随之消失。
 - **`MessageRecord.sender_id`**：消息记录的固有字段，也是去重语义用例的证据标记。
   会话级的纯中转字段（`SessionState.last_active_sender_id`）不在其列：状态加载按
   `raw.get` 取键，旧文件里的多余键被自然忽略，不需要 `STATE_VERSION` 迁移。

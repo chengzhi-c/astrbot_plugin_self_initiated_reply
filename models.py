@@ -391,22 +391,6 @@ class LocalGateCallback(Protocol):
     ) -> str: ...
 
 
-@dataclass(frozen=True)
-class PipelineReply:
-    """Result of one main-Agent run with its outbound evidence ledger."""
-
-    text: str = ""
-    ledger: AttemptLedger | None = None
-
-    @property
-    def direct_send_count(self) -> int:
-        return self.ledger.direct_send_count if self.ledger is not None else 0
-
-    @property
-    def direct_texts(self) -> tuple[str, ...]:
-        return self.ledger.direct_texts if self.ledger is not None else ()
-
-
 class CheckTrigger(StrEnum):
     """会话检查触发名。拼错在加载期变成 AttributeError，不再静默漏判。"""
 
@@ -633,26 +617,6 @@ class AttemptLedger:
                 attempt.state = AttemptState.UNKNOWN
         self.phase = LedgerPhase.SEALED
         return self.attempts
-
-
-@dataclass(frozen=True)
-class SessionContainers:
-    """main 侧共享容器的收拢视图（按名字交给需要多个容器的协作者）。
-
-    存在的理由是把「这些集合必须始终保持同一身份」这条承重契约变成一个
-    有名字的实体。``frozen=True`` 只阻止字段重绑；容器内容仍原地修改。
-    **不**把 ``SessionGate`` 的三张表收进来：release 表刻意不参与快照恢复，
-    混进同一对象会诱导"整对象恢复"的错误写法。
-    """
-
-    last_events: dict[str, Any]
-    last_event_at: dict[str, float]
-    recent_image_events: dict[str, Any]
-    whitelist_runtime_umos: dict[str, set[str]]
-    delay_tasks: dict[str, Any]
-    running_check_tasks: dict[str, Any]
-    background_tasks: set[Any]
-    sessions: dict[str, Any]
 
 
 @dataclass(frozen=True)

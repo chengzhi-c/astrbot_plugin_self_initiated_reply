@@ -15,7 +15,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .models import PLUGIN_ID, SessionContainers, Settings
+from .models import PLUGIN_ID, Settings
 from .utils import is_full_umo, session_group_id, session_whitelisted
 
 
@@ -37,7 +37,8 @@ class WhitelistManager:
         invalidate: Callable[[str], int],
         # 回收契约：须从 sessions 同一 dict 弹掉 umo 与群组键（见类 docstring）
         prune: Callable[[str], None],
-        containers: SessionContainers,
+        sessions: dict[str, Any],
+        whitelist_runtime_umos: dict[str, set[str]],
         tracked_umos: Callable[[], set[str]],
     ) -> None:
         self.settings = settings
@@ -46,9 +47,9 @@ class WhitelistManager:
         self._ensure_state = ensure_state
         self._invalidate = invalidate
         self._prune = prune
-        self._sessions = containers.sessions
+        self._sessions = sessions
         self._tracked_umos = tracked_umos
-        self._runtime_umos = containers.whitelist_runtime_umos
+        self._runtime_umos = whitelist_runtime_umos
 
     def replace(self, whitelist: set[str]) -> dict[str, Any]:
         """整表替换白名单，并回收被移出会话的内存状态。

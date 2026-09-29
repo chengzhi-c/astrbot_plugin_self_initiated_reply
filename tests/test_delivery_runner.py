@@ -28,6 +28,22 @@ def _delivery_module():
     return importlib.import_module(f"{PACKAGE_NAME}.delivery")
 
 
+class _CountingGate:
+    """前 true_times 次 is_current 返回 True，之后一律 False，并记录调用次数。"""
+
+    def __init__(self, *, true_times: int, fallback: bool) -> None:
+        self.remaining = true_times
+        self.fallback = fallback
+        self.calls = 0
+
+    def is_current(self, umo: str, generation: object) -> bool:
+        self.calls += 1
+        if self.remaining > 0:
+            self.remaining -= 1
+            return True
+        return self.fallback
+
+
 class FakeHook:
     def __init__(self) -> None:
         self.calls: list[tuple[object, object]] = []
@@ -1027,7 +1043,7 @@ async def test_send_reply_hook_empty_result_and_clear_error(tmp_path: Path) -> N
 
 
 async def test_send_reply_suppressed_after_decorating(tmp_path: Path) -> None:
-    """装饰钩子后代次翻转 → SUPPRESSED（复核点 2）。"""
+    """装饰钩子后代次翻转 → SUPPRESSED（复核点 2，唯一的 await 窗口）。"""
     _, models, runner, last_events = _make_runner(tmp_path)
     runner._gate = FlipGate(true_times=1)
     last_events["s1"] = FakeEvent()
@@ -1036,14 +1052,21 @@ async def test_send_reply_suppressed_after_decorating(tmp_path: Path) -> None:
     assert "after decorating" in outcome.detail
 
 
-async def test_send_reply_suppressed_before_send(tmp_path: Path) -> None:
-    """发送前一刻代次翻转 → SUPPRESSED（复核点 3）。"""
+async def test_send_reply_no_gate_recheck_between_check_and_send(tmp_path: Path) -> None:
+    """代次复核到 send 之间零 await：中间不再插一道复核。
+
+    删除依据：两个相邻复核点之间的同步段里没有任何协程能推进代次，那道复核
+    恒为假，属于死分支。本条把这条结构钉住：同一 gate 实例被查询的次数
+    只应是入口一次 + 装饰钩子后一次。
+    """
     _, models, runner, last_events = _make_runner(tmp_path)
-    runner._gate = FlipGate(true_times=2)
+    gate = _CountingGate(true_times=2, fallback=False)
+    runner._gate = gate
     last_events["s1"] = FakeEvent()
     outcome = await runner.send_reply("s1", "hello", expected_generation=7)
-    assert outcome.status is models.SendStatus.SUPPRESSED
-    assert "before send" in outcome.detail
+
+    assert gate.calls == 2, "复核点到 send 之间不得再有代次查询"
+    assert outcome.status is models.SendStatus.DELIVERED
 
 
 async def test_send_reply_outbound_not_submitted(tmp_path: Path) -> None:
@@ -1075,14 +1098,19 @@ async def test_send_reply_decorating_hook_error_before_submit(tmp_path: Path) ->
 # ============================================================================
 
 
-async def test_send_reply_context_path_stale_gate(tmp_path: Path) -> None:
-    """无缓存事件走 context 兜底前代次翻转 → SUPPRESSED。"""
+async def test_send_reply_context_path_queries_gate_once(tmp_path: Path) -> None:
+    """context 兜底路径不再自建第二道复核：入口复核就是唯一一道。
+
+    删除依据：入口复核到 ``_send_via_context`` 之间只有同步解析（quote/@ 目标），
+    没有任何协程能推进代次，兜底入口那道复核恒为真。这条把查询次数钉住，
+    防止日后有人把 await 塞进那段同步区却忘了补复核。
+    """
     _, models, runner, _ = _make_runner(tmp_path)
-    # 入口复核消耗一次 True，context 兜底前的复核才撞到翻转
-    runner._gate = FlipGate(true_times=1)
+    gate = _CountingGate(true_times=1, fallback=False)
+    runner._gate = gate
     outcome = await runner.send_reply("s1", "hello", expected_generation=7)
-    assert outcome.status is models.SendStatus.SUPPRESSED
-    assert "before context send" in outcome.detail
+    assert gate.calls == 1, "context 兜底路径不得在入口复核之外再查代次"
+    assert outcome.status is models.SendStatus.DELIVERED
 
 
 async def test_send_reply_context_send_unknown(tmp_path: Path) -> None:
