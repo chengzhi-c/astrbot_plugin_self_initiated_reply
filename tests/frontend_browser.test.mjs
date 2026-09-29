@@ -1644,18 +1644,22 @@ test("hint tokens clear WCAG AA on both themes and every surface", async ({ page
     for (const theme of ["light", "dark"]) {
       document.documentElement.setAttribute("data-theme", theme);
       const faint = probe("--faint", "color");
+      // --muted 是 13px 正文（.muted），按正文级 AA 4.5:1 一并实测：
+      // 它不在 --faint 的 11-12px 手算口径内，遗漏会让调暗一档静默跌破。
+      const muted = probe("--muted", "color");
       const warn = probe("--warn", "color");
       const warnSoft = probe("--warn-soft", "background-color");
       for (const surface of surfaces) {
         const background = probe(surface, "background-color");
         push(theme, "--faint", faint, background);
+        push(theme, "--muted", muted, background);
         push(theme, "--warn", warn, composite(warnSoft, background));
       }
     }
     return rows;
   });
 
-  expect(measured).toHaveLength(16);
+  expect(measured).toHaveLength(24);
   for (const { theme, token, ratio } of measured) {
     // 4.5:1 是正文级 AA（11-12px 提示文字与武装态按钮文字都属于正文级）。
     expect(ratio, `${theme} 主题 ${token} 的对比度`).toBeGreaterThanOrEqual(4.5);
