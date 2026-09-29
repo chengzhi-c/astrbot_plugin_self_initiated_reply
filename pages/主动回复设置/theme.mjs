@@ -10,9 +10,15 @@ export function normalizeTheme(value) {
 }
 const THEME_LABELS = {
   auto: "跟随系统",
-  light: "浅色 · 慈爱之惠",
-  dark: "深色 · 审判之司",
+  light: "慈爱之惠",
+  dark: "审判之司",
 };
+// 读屏播报需要色向：短标签本身不含浅/深，凭 aria-label 才知道当前是哪一档。
+const THEME_ARIA_PREFIX = { light: "浅色 · ", dark: "深色 · " };
+function themeAriaLabel(theme) {
+  const label = THEME_LABELS[theme] || THEME_LABELS.auto;
+  return `切换主题，当前：${THEME_ARIA_PREFIX[theme] || ""}${label}`;
+}
 export function currentTheme() {
   return normalizeTheme(document.documentElement.getAttribute("data-theme"));
 }
@@ -31,12 +37,12 @@ export function applyTheme(theme, themeToggle) {
     document.documentElement.setAttribute("data-theme", theme);
   }
   cacheThemeLocally(theme);
-  if (themeToggle) {
-    themeToggle.setAttribute(
-      "aria-label",
-      `切换主题，当前：${THEME_LABELS[theme] || THEME_LABELS.auto}`
-    );
-  }
+  if (!themeToggle) return;
+  themeToggle.setAttribute("aria-label", themeAriaLabel(theme));
+  // 主题名的唯一副本在本映射里：按钮里的可见文字也由这里写，CSS 不再用
+  // content 声明标签，否则两侧文案各自漂移而无人报错。
+  const label = themeToggle.querySelector(".theme-label");
+  if (label) label.textContent = THEME_LABELS[theme] || THEME_LABELS.auto;
 }
 export async function persistTheme(theme, apiPost) {
   // 三个字段各自只在「用户真的动过它」时才提交：后端对未提交的键保持原值，

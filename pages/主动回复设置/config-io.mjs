@@ -5,11 +5,11 @@ import {
 	uniqueWhitelistItems,
 	validateWhitelistLines,
 } from "./config-form.mjs";
+import { providerNeedsManualInput } from "./providers.mjs";
 import {
 	createConfigRequestCoordinator,
 	isSuccessfulConfigPayload,
 	missingConfigPayloadKeys,
-	providerNeedsManualInput,
 } from "./frontend-core.mjs";
 const CONFIG_CONTROL_SELECTOR = "[data-config-key]";
 
@@ -95,9 +95,6 @@ export function createConfigIo(deps) {
 	const coordinator = createConfigRequestCoordinator();
 	let numberFields = [];
 	let saveStateKind = "";
-	function els() {
-		return getEls();
-	}
 	// 「保存状态未知」的单点：POST 抛错与响应体校验失败是同一语义（无法确认服务
 	// 端是否已写入），状态、toast 文案与保存前置守卫同进同退，否则三处文案会各自漂移。
 	const SAVE_UNKNOWN_MESSAGE = "保存状态未知，请刷新配置后重试";
@@ -108,7 +105,7 @@ export function createConfigIo(deps) {
 	}
 	function setSaveState(message, state) {
 		saveStateKind = state;
-		const e = els();
+		const e = getEls();
 		if (!e.configSaveState) return;
 		e.configSaveState.textContent = message;
 		e.configSaveState.classList.remove("is-pending", "is-ok", "is-error");
@@ -128,7 +125,7 @@ export function createConfigIo(deps) {
 	function setDirty(dirty = true) {
 		if (dirty) coordinator.markEdited();
 		setState({ isDirty: dirty });
-		const e = els();
+		const e = getEls();
 		// 四个脏值入口同源：桌面顶栏、移动端保存按钮、底部保存按钮与侧栏圆点。
 		// saveMobileBtn 必须在内，否则窄屏下唯一可见的保存入口没有未保存角标。
 		[e.saveTopBtn, e.saveMobileBtn, e.saveBottomBtn, e.navSaveDot].forEach((btn) => {
@@ -141,7 +138,7 @@ export function createConfigIo(deps) {
 		else if (!dirty && saveStateKind === "dirty") setSaveState("", "");
 	}
 	function attachDirtyListeners() {
-		const e = els();
+		const e = getEls();
 		if (!e.configForm) return;
 		e.configForm.addEventListener("change", () => setDirty(true));
 		e.configForm.addEventListener("input", (ev) => {
@@ -150,7 +147,7 @@ export function createConfigIo(deps) {
 		});
 	}
 	function setSaving(loading) {
-		const e = els();
+		const e = getEls();
 		const { configLoaded, requiresConfigRefresh } = getState();
 		const blocked = loading || !configLoaded || requiresConfigRefresh;
 		const buttons = [
@@ -168,7 +165,7 @@ export function createConfigIo(deps) {
 		if (e.refreshBtn) e.refreshBtn.disabled = loading || getState().refreshing;
 	}
 	function updateWhitelistFeedback() {
-		const e = els();
+		const e = getEls();
 		if (!e.whitelistInput) return;
 		const text = e.whitelistInput.value;
 		// 只 parse 一次：计数与摘要共用同一结果（两者共用同一套分隔/去重规则，
@@ -185,7 +182,7 @@ export function createConfigIo(deps) {
 			e.whitelistSummary.textContent = summarizeWhitelist(text, parsed);
 	}
 	function formatWhitelist() {
-		const e = els();
+		const e = getEls();
 		if (!e.whitelistInput) return;
 		const unique = uniqueWhitelistItems(e.whitelistInput.value);
 		e.whitelistInput.value = unique.join("\n");
@@ -197,7 +194,7 @@ export function createConfigIo(deps) {
 		);
 	}
 	function setupValidation() {
-		const e = els();
+		const e = getEls();
 		if (!e.configForm) return;
 		numberFields = [];
 		e.configForm.querySelectorAll('input[type="number"]').forEach((input) => {
@@ -282,7 +279,7 @@ export function createConfigIo(deps) {
 		return true;
 	}
 	function validateWhitelist({ focus = false } = {}) {
-		const e = els();
+		const e = getEls();
 		if (!e.whitelistInput || !e.whitelistError) return true;
 		const errors = validateWhitelistLines(e.whitelistInput.value);
 		if (errors.length > 0) {
@@ -301,7 +298,7 @@ export function createConfigIo(deps) {
 		return true;
 	}
 	function applyConfigPayload(config) {
-		const e = els();
+		const e = getEls();
 		loadConfigControls(e.configForm, config, providerControls);
 		// 只有 GET /config 携带 decision_prompt_default（面板视图键）；POST 返回的
 		// config 是持久配置，不含它。此处若用 decision_prompt_template 兜底，会把用户
@@ -337,7 +334,7 @@ export function createConfigIo(deps) {
 	}
 
 	async function loadConfig({ force = false } = {}) {
-		const e = els();
+		const e = getEls();
 		const requestEpoch = coordinator.beginLoad(getState().isDirty);
 		const initialLoad = !getState().configLoaded;
 		if (initialLoad && e.configForm) e.configForm.inert = true;
@@ -365,7 +362,7 @@ export function createConfigIo(deps) {
 		}
 	}
 	function adjustedFieldLabels(keys) {
-		const form = els().configForm;
+		const form = getEls().configForm;
 		return keys.map((key) => {
 			const control = configControls(form).find(
 				(item) => item.dataset.configKey === key,
@@ -408,7 +405,7 @@ export function createConfigIo(deps) {
 			showToast("部分数值超出允许范围，请检查标红字段");
 			return;
 		}
-		const e = els();
+		const e = getEls();
 		setState({ savingConfig: true });
 		setSaving(true);
 		e.configForm.inert = true;
@@ -533,7 +530,7 @@ export function createConfigIo(deps) {
 			: "响应未应用，已保留当前内容";
 	}
 	async function cleanupImageCache() {
-		const e = els();
+		const e = getEls();
 		if (!e.cleanupImageCacheBtn) return;
 		e.cleanupImageCacheBtn.disabled = true;
 		if (e.cleanupImageCacheState)

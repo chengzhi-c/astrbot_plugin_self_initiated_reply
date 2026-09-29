@@ -521,19 +521,10 @@ details.panel {
 	height: 16px;
 	display: none;
 }
-.theme-label::after {
-	content: "跟随系统";
-}
 :root:not([data-theme]) .theme-toggle .icon-auto,
 :root[data-theme="light"] .theme-toggle .icon-light,
 :root[data-theme="dark"] .theme-toggle .icon-dark {
 	display: block;
-}
-:root[data-theme="light"] .theme-label::after {
-	content: "慈爱之惠";
-}
-:root[data-theme="dark"] .theme-label::after {
-	content: "审判之司";
 }
 html::after {
 	content: "";

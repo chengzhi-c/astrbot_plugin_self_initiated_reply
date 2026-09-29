@@ -58,12 +58,13 @@ export function setupMoreActionsMenu(els) {
 export function updateNavFades(els) {
   if (!els.sidenavList) return;
   const list = els.sidenavList;
-  const startFade = document.querySelector(".sidenav-fade-start");
-  const endFade = document.querySelector(".sidenav-fade-end");
-  if (startFade) startFade.classList.toggle("is-hidden", list.scrollLeft <= 4);
-  if (endFade) {
+  // 渐隐元素在 setup 阶段随 els 一次性解析（scroll/resize 每次都要读它们，
+  // 现查会把两次 DOM 查询塞进滚动热路径）。元素同一且无动态增删，存引用安全。
+  if (els.sidenavFadeStart)
+    els.sidenavFadeStart.classList.toggle("is-hidden", list.scrollLeft <= 4);
+  if (els.sidenavFadeEnd) {
     const atEnd = list.scrollLeft + list.clientWidth >= list.scrollWidth - 4;
-    endFade.classList.toggle("is-hidden", atEnd);
+    els.sidenavFadeEnd.classList.toggle("is-hidden", atEnd);
   }
 }
 function syncMobileTabs(els, active) {
@@ -193,9 +194,18 @@ export function createScrollHandler(els) {
     });
   };
 }
+/* 压暗/粗体开关的引用一次解析后缓存：applyDim/applyBold 会被 restoreDimBold、
+   restoreTheme 与点击回调各自调到，每次都 getElementById 是重复查询（元素
+   同一且无动态增删）。与 reducedMotionQuery 同款惰性缓存，不引入新的 init 阶段。
+   查不到时不进缓存：那意味着页面还没渲染出这两个按钮，后续调用仍要重查。 */
+const dimBoldButtons = {};
+function dimBoldButton(id) {
+  if (!dimBoldButtons[id]) dimBoldButtons[id] = document.getElementById(id);
+  return dimBoldButtons[id];
+}
 export function applyDim(on) {
   document.documentElement.classList.toggle("dimmed", on);
-  const btn = document.getElementById("dimBtn");
+  const btn = dimBoldButton("dimBtn");
   if (btn) setPressed(btn, on);
   try {
     localStorage.setItem(DIM_KEY, on ? "1" : "0");
@@ -205,7 +215,7 @@ export function applyDim(on) {
 }
 export function applyBold(on) {
   document.documentElement.classList.toggle("bold-text", on);
-  const btn = document.getElementById("boldBtn");
+  const btn = dimBoldButton("boldBtn");
   if (btn) setPressed(btn, on);
   try {
     localStorage.setItem(BOLD_KEY, on ? "1" : "0");
@@ -244,8 +254,8 @@ export function restoreDimBold() {
   }
 }
 export function bindDimBoldButtons(onChange) {
-  const dimBtn = document.getElementById("dimBtn");
-  const boldBtn = document.getElementById("boldBtn");
+  const dimBtn = dimBoldButton("dimBtn");
+  const boldBtn = dimBoldButton("boldBtn");
   if (dimBtn) {
     dimBtn.addEventListener("click", () => {
       markDimBoldTouched();

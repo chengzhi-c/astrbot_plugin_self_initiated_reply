@@ -132,8 +132,3 @@ export async function requestPluginApi({
     throw normalizeApiError(error);
   }
 }
-export function providerNeedsManualInput(providerId, providers, listAvailable) {
-  if (!listAvailable) return true;
-  const value = String(providerId || "").trim();
-  return value !== "" && !providers.some((provider) => provider?.id === value);
-}

@@ -1,4 +1,3 @@
-import { providerNeedsManualInput } from "./frontend-core.mjs";
 /**
  * @param {{field: HTMLElement, select: HTMLSelectElement,
  *          input: HTMLInputElement, button: HTMLButtonElement,
@@ -75,4 +74,12 @@ export function createProviderControl(refs, deps) {
     if (value() !== before) onDirty();
   });
   return { value, render, sync };
+}
+/* Provider 手动态的判定：列表不可用时无从比对，恒为真（各控件自行决定兜底
+   文案）；列表可用时才做 id 成员检查。原在 frontend-core.mjs，只因该文件不能
+   import 本模块（config-io 与 providers 都依赖它，反向依赖会成环）。 */
+export function providerNeedsManualInput(providerId, providers, listAvailable) {
+  if (!listAvailable) return true;
+  const value = String(providerId || "").trim();
+  return value !== "" && !providers.some((provider) => provider?.id === value);
 }

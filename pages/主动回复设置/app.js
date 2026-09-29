@@ -41,6 +41,8 @@ function getEls() {
 	els = {
 		topbar: document.querySelector(".topbar"),
 		sidenavList: document.querySelector(".sidenav-list"),
+		sidenavFadeStart: document.querySelector(".sidenav-fade-start"),
+		sidenavFadeEnd: document.querySelector(".sidenav-fade-end"),
 		navSaveDot: $("navSaveDot"),
 		navSaveState: $("navSaveState"),
 		refreshBtn: $("refreshBtn"),
@@ -221,7 +223,10 @@ const providerControlList = PROVIDER_CONTROLS.map((spec) => {
 	return control;
 });
 const configIo = createConfigIo({
-	getEls: () => els,
+	// getEls 直传：它自带惰性初始化（首次调用时建 els 并缓存），包一层
+	// () => els 会把首次调用提前到本行执行，缓存 null。state 两个键保留箭头，
+	// 它们是对模块内对象的读写，没有可直传的函数引用。
+	getEls,
 	getState: () => state,
 	setState: (patch) => Object.assign(state, patch),
 	apiGet,

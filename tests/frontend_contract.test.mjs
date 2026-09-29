@@ -8,7 +8,6 @@ import {
   createConfigRequestCoordinator,
   isSuccessfulConfigPayload,
   normalizeApiError,
-  providerNeedsManualInput,
   requestPluginApi,
 } from "../pages/主动回复设置/frontend-core.mjs";
 import {
@@ -23,6 +22,9 @@ import {
   uniqueWhitelistItems,
   validateWhitelistLines,
 } from "../pages/主动回复设置/config-form.mjs";
+import {
+  providerNeedsManualInput,
+} from "../pages/主动回复设置/providers.mjs";
 import { THEME_KEY } from "../pages/主动回复设置/theme.mjs";
 import { configPayload } from "./fixtures/config-payload.mjs";
 // 表单控件工厂：四个 helper 被多个用例复用，提到模块作用域只留一份实现。
@@ -752,27 +754,26 @@ test("topbar height writeback stays single-sourced and guarded", async () => {
   assert.match(app, /syncTopbarHeight\(els\);/);
 });
 
-test("theme label names match between CSS content and JS labels", async () => {
-  // 主题名（跟随系统/慈爱之惠/审判之司）写了两处：style.css 的 .theme-label::after
-  // content（短标签）与 theme.mjs 的 THEME_LABELS（带"浅色 ·"/"深色 ·"前缀，用于
-  // aria-label）。改一处忘另一处会让可见文字与读屏播报不一致，且无人报错。
-  // 这条守的是"CSS 短标签必须是 JS 完整标签的子串"，不要求字面相等。
+test("theme label names are single-sourced in theme.mjs and written by applyTheme", async () => {
+  // 主题名（跟随系统/慈爱之惠/审判之司）曾经写了两处：style.css 的
+  // .theme-label::after content（可见短标签）与 theme.mjs 的 THEME_LABELS
+  //（读屏用的完整标签）。改一处忘另一处会让可见文字与播报不一致而无人报错。
+  // 现在可见文字由 applyTheme 写入 .theme-label，CSS 只保留图标切换等纯样式，
+  // 这条钉住三点：THEME_LABELS 恰有三档、CSS 不再声明主题名、写盘的调用点
+  // 仍在 applyTheme 内（搬回 CSS 或搬到调用方都会变红）。
   const [css, theme] = await Promise.all([
     readFile(join(pageDir, "style.css"), "utf8"),
     readFile(join(pageDir, "theme.mjs"), "utf8"),
   ]);
-  const cssLabels = [...css.matchAll(/\.theme-label::after \{\s*\n\s*content: "([^"]+)"/g)].map(
-    (m) => m[1],
-  );
-  assert.equal(cssLabels.length, 3, "expected 3 theme-label content rules");
-  const jsLabels = [...theme.matchAll(/(?:auto|light|dark): "([^"]+)"/g)].map((m) => m[1]);
+  const jsLabels = [
+    ...theme.matchAll(/const THEME_LABELS = \{([\s\S]*?)\}/g),
+  ].flatMap((m) => [...m[1].replace(/\/\/[^\n]*/g, "").matchAll(/(?:auto|light|dark): "([^"]+)"/g)].map((x) => x[1]));
   assert.equal(jsLabels.length, 3, "expected 3 THEME_LABELS entries");
-  for (const cssLabel of cssLabels) {
-    assert.ok(
-      jsLabels.some((js) => js.includes(cssLabel)),
-      `CSS 主题标签 "${cssLabel}" 未出现在任何 JS THEME_LABELS 中`,
-    );
-  }
+  assert.deepEqual(jsLabels.sort(), ["审判之司", "慈爱之惠", "跟随系统"].sort());
+  // 无脚本时的兜底：JS 未加载时按钮里不应残留任何主题名，由 aria-label 承担。
+  assert.doesNotMatch(css, /\.theme-label[^{]*\{[^}]*content:/);
+  assert.match(theme, /querySelector\("\.theme-label"\)/);
+  assert.match(theme, /label\.textContent = THEME_LABELS\[theme\]/);
 });
 
 test("script load failure fallback does not depend on the module", async () => {

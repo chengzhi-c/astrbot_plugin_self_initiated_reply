@@ -1255,6 +1255,43 @@ test("the theme toggle announces the restored theme on a fresh load", async ({ p
   expect(errors).toEqual([]);
 });
 
+test("the theme toggle names each of the three theme states in the label", async ({ page }) => {
+  // 可见标签文本曾由 style.css 的 .theme-label::after content 提供（第二份副本），
+  // 与 theme.mjs 的 THEME_LABELS 各自漂移而无人报错。现在单源在 JS，这条钉住
+  // 三态各自的显示文本与 aria-label 一字不差，并保证首帧（JS 接管前的
+  // localStorage 还原路径）也走到同一条写盘函数。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const errors = await openPage(await installThemeCyclePage(page));
+  const label = page.locator("#themeToggle .theme-label");
+  const cases = [
+    { theme: "auto", text: "跟随系统", aria: "切换主题，当前：跟随系统" },
+    { theme: "light", text: "慈爱之惠", aria: "切换主题，当前：浅色 · 慈爱之惠" },
+    { theme: "dark", text: "审判之司", aria: "切换主题，当前：深色 · 审判之司" },
+  ];
+  for (const [index, expectation] of cases.entries()) {
+    if (index > 0) await page.locator("#themeToggle").click();
+    await expect(page.locator("#themeToggle .theme-label")).toHaveText(expectation.text);
+    await expect(page.locator("#themeToggle")).toHaveAttribute(
+      "aria-label",
+      expectation.aria,
+    );
+    // data-theme 与标签同源：属性正确而标签滞后说明两条路径分叉了。
+    const attribute = await page.evaluate(() =>
+      document.documentElement.getAttribute("data-theme"),
+    );
+    expect(attribute).toBe(expectation.theme === "auto" ? null : expectation.theme);
+  }
+  expect(errors).toEqual([]);
+});
+
+// 安装一个由 localStorage 决定首帧主题的桥：首帧 HTML 只还原 localStorage，
+// 剩余档位由 applyTheme 写入，正好覆盖冷启动与点击两条路径。
+async function installThemeCyclePage(page) {
+  await installBridge(page, { theme: "auto", dim: false, bold: false });
+  await page.addInitScript(() => localStorage.setItem("selfreply-theme", "auto"));
+  return page;
+}
+
 test("the theme toggle still submits the theme field", async ({ page }) => {
   // 与上一条互为对照：主题按钮是唯一该提交 theme 的入口，删掉字段即回归。
   await page.setViewportSize({ width: 1440, height: 1000 });
