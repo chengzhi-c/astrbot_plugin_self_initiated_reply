@@ -50,6 +50,9 @@
 - `proactive_inherit_tools` 继承宿主工具链，但宿主级危险能力（cron、浏览器/
   电脑使用、文件提取、知识库 agentic）在任何模式下永远拒绝；denylist 无法
   强制时同样终止运行。
+- `proactive_preserve_tool_schema` 仅在继承模式下生效：保留危险工具的
+  name/description/parameters，用拒绝 handler 替换可执行 handler；复制、替换或
+  核验失败时终止运行。该模式不改变实际可执行权限。
 - 工具边界安装/恢复必须成对；只触碰事件自身字段，绝不修改共享宿主单例。
 - 生成超时/取消/失败三类出口都不得丢失已发生的工具直发计数与文本。
 

@@ -27,6 +27,7 @@ export function configPayload(overrides = {}) {
     decision_temperature: 0.2,
     decision_timeout_sec: 20,
     proactive_inherit_tools: false,
+    proactive_preserve_tool_schema: false,
     vision_judge_enabled: false,
     vision_main_enabled: false,
     vision_provider_id: "",

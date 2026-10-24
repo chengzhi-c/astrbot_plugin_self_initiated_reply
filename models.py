@@ -292,6 +292,7 @@ def proactive_build_config_kwargs(
     provider_settings: dict[str, Any] | None = None,
     *,
     fallback_provider_ids: Any = None,
+    persona_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """主动运行传给宿主 ``MainAgentBuildConfig`` 的键集合（唯一来源）。
 
@@ -301,6 +302,9 @@ def proactive_build_config_kwargs(
     TypeError（一条回复都产不出，且只在真实宿主上可见）。
     """
     settings = provider_settings or {}
+    persona = persona_config or {}
+    safety_default = as_bool(persona.get("safety_mode", True), True)
+    strategy_default = str(persona.get("safety_mode_strategy", "system_prompt") or "system_prompt")
     return {
         # 夹取必须能防抛：provider_settings 是宿主配置里可手改的外部输入，
         # "60s" 之类的非数字串若在 try 之外 int() 抛出，会让所有主动生成
@@ -318,9 +322,12 @@ def proactive_build_config_kwargs(
         ),
         "kb_agentic_mode": False,
         "file_extract_enabled": False,
-        "llm_safety_mode": bool(settings.get("llm_safety_mode", True)),
+        "llm_safety_mode": as_bool(
+            settings.get("llm_safety_mode", safety_default),
+            safety_default,
+        ),
         "safety_mode_strategy": str(
-            settings.get("safety_mode_strategy", "system_prompt") or "system_prompt"
+            settings.get("safety_mode_strategy", strategy_default) or "system_prompt"
         ),
         "computer_use_runtime": "none",
         "add_cron_tools": False,
@@ -1010,6 +1017,7 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
     ConfigSpec("enabled_patrol_trigger", "bool", False),
     ConfigSpec("generation_timeout_sec", "float", 60.0, 1, 300, step=1),
     ConfigSpec("proactive_inherit_tools", "bool", False, audited=True, surfaces=_PANEL),
+    ConfigSpec("proactive_preserve_tool_schema", "bool", False, audited=True, surfaces=_PANEL),
     ConfigSpec(
         "vision_judge_enabled",
         "bool",
@@ -1297,6 +1305,7 @@ class Settings:
     patrol_inactive_after_sec: int
     generation_timeout_sec: float
     proactive_inherit_tools: bool
+    proactive_preserve_tool_schema: bool
     vision_judge_enabled: bool
     vision_main_enabled: bool
     vision_provider_id: str

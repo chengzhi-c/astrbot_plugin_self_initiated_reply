@@ -124,6 +124,7 @@ const makeSaveFixture = ({
     number("vision_image_age_sec", "301"),
     number("vision_timeout_sec", "22"),
     checkbox("proactive_inherit_tools", true),
+    checkbox("proactive_preserve_tool_schema", true),
     ...extraFields,
     field("whitelist_sessions", whitelist, { configTransform: "whitelist" }),
   ];

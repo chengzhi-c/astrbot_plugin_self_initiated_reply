@@ -137,6 +137,7 @@ class _GenerateRun:
         "state",
         "last_event",
         "inherit_tools",
+        "preserve_tool_schema",
         "prompt",
         "expected_generation",
         "force",
@@ -159,6 +160,7 @@ class _GenerateRun:
         state: SessionState,
         last_event: Any,
         inherit_tools: bool,
+        preserve_tool_schema: bool,
         prompt: str,
         expected_generation: int | None,
         force: bool,
@@ -169,6 +171,7 @@ class _GenerateRun:
         self.state = state
         self.last_event = last_event
         self.inherit_tools = inherit_tools
+        self.preserve_tool_schema = preserve_tool_schema
         self.prompt = prompt
         self.expected_generation = expected_generation
         self.force = force
@@ -357,6 +360,7 @@ class GenerationRunner:
         # 一次运行一个工具语义：入口快照，避免运行中改配置导致 install 与
         # enforce 读到不同开关值（False→True 方向会留下未清理的工具集）。
         inherit_tools = self.settings.proactive_inherit_tools
+        preserve_tool_schema = self.settings.proactive_preserve_tool_schema
         context_text = await self.build_context_text(umo, state)
         prompt = build_proactive_prompt(
             self.settings.reply_length_mode, context_text, inherit_tools=inherit_tools
@@ -366,6 +370,7 @@ class GenerationRunner:
             state=state,
             last_event=last_event,
             inherit_tools=inherit_tools,
+            preserve_tool_schema=preserve_tool_schema,
             prompt=prompt,
             expected_generation=expected_generation,
             force=force,
@@ -500,7 +505,7 @@ class GenerationRunner:
         run.build_result = build_result
         run.reset_coro = build_result.reset_coro
 
-        if not self.enforce_final_tool_policy(req, inherit_tools):
+        if not self.enforce_final_tool_policy(req, inherit_tools, run.preserve_tool_schema):
             return run.abort(run.reset_coro)
 
         if await self._call_hook(
@@ -514,7 +519,7 @@ class GenerationRunner:
         # request between build and reset. Enforce BEFORE reset so that any
         # tool set the host copies into the runner during reset is already
         # clean; the runner only ever sees the allowlisted set.
-        if not self.enforce_final_tool_policy(req, inherit_tools):
+        if not self.enforce_final_tool_policy(req, inherit_tools, run.preserve_tool_schema):
             return run.abort(run.reset_coro)
         if run.reset_coro:
             await run.reset_coro
@@ -720,17 +725,27 @@ class GenerationRunner:
         ):
             pass
 
-    def enforce_final_tool_policy(self, req: Any, inherit_tools: bool) -> bool:
+    def enforce_final_tool_policy(
+        self,
+        req: Any,
+        inherit_tools: bool,
+        preserve_tool_schema: bool = False,
+    ) -> bool:
         """Enforce the proactive tool allowlist; abort the run when unverifiable.
 
         The default allowlist is empty, so every tool the host injected during
         build or through hooks is removed. Returns ``False`` (fail closed) when
         the final tool set cannot be enumerated or cleaned. ``inherit_tools``
-        does not skip the policy: it switches from allowlist mode to denylist
-        mode, so host-dangerous capabilities stay refused even when a hook
-        injects them after build.
+        switches from allowlist mode to denylist mode. When
+        ``preserve_tool_schema`` is also true, dangerous tools keep their schema
+        but receive a refusing handler, preserving the prompt-cache prefix
+        without granting execution.
         """
         if inherit_tools:
+            if preserve_tool_schema:
+                if self._runtime().guard_final_tools(req, block=HOST_DANGEROUS_TOOL_IDS):
+                    return True
+                return False
             # 继承模式：放行宿主/插件工具链，但宿主级危险能力（cron、浏览器/
             # 电脑使用、文件提取、知识库 agentic）仍永远拒绝，build config 的
             # 硬关闭之外，这里是拦截 hook 在 build 后注入危险工具的最终防线。
@@ -784,21 +799,19 @@ class GenerationRunner:
     def main_agent_build_config(self, umo: str) -> Any:
         provider_settings = {}
         fallback_provider_ids: Any = None
+        persona_config: dict[str, Any] = {}
         try:
             config_obj = getattr(self._context, "astrbot_config", {})
             get_config = getattr(self._context, "get_config", None)
             if umo and callable(get_config):
                 config_obj = get_config(umo)
             provider_settings = dict(config_obj.get("provider_settings", {}) or {})
+            agent_config = config_obj.get("agent_runner", {}).get("config", {}) or {}
+            persona_config = dict(agent_config.get("persona", {}) or {})
             # 宿主三处自己的 MainAgentBuildConfig 构造点都取这个路径
             # （``agent_runner.config.model.fallback_provider_ids``），主动回复
             # 漏传就只剩单个候选，模型报错时不回退。
-            fallback_provider_ids = (
-                config_obj.get("agent_runner", {})
-                .get("config", {})
-                .get("model", {})
-                .get("fallback_provider_ids", [])
-            )
+            fallback_provider_ids = agent_config.get("model", {}).get("fallback_provider_ids", [])
         except Exception as exc:
             # 会话级配置是可选能力：get_config(umo) 在旧宿主不存在或返回对象
             # 不是 Mapping 时降级为宿主默认行为。必须是 DEBUG 而非静默——降级后
@@ -812,7 +825,9 @@ class GenerationRunner:
         # 键集合与加载期探针单源（models.proactive_build_config_kwargs）。
         return self._runtime().new_build_config(
             **proactive_build_config_kwargs(
-                provider_settings, fallback_provider_ids=fallback_provider_ids
+                provider_settings,
+                fallback_provider_ids=fallback_provider_ids,
+                persona_config=persona_config,
             )
         )
 

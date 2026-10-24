@@ -102,6 +102,9 @@ def test_filter_final_tools_modes() -> None:
     class Tool:
         def __init__(self, name: str):
             self.name = name
+            self.description = ""
+            self.parameters = {}
+            self.handler = None
 
     class ToolSet:
         def __init__(self):
@@ -139,6 +142,58 @@ def test_filter_final_tools_modes() -> None:
         is True
     )
     assert [t.name for t in tool_set2.tools] == ["third_party_weather"]
+
+
+async def test_guard_final_tools_preserves_schema_and_blocks_handler() -> None:
+    """Schema 保留模式只替换 handler，不删除工具或修改缓存字段。"""
+    runtime = _load_adapter()
+    adapter = runtime.AstrBotRuntimeAdapter(base_runtime_capabilities(runtime))
+
+    class ToolSet:
+        def __init__(self):
+            self.tools = []
+
+        def add_tool(self, tool):
+            for index, existing in enumerate(self.tools):
+                if existing.name == tool.name:
+                    self.tools[index] = tool
+                    return
+            self.tools.append(tool)
+
+    called = False
+
+    async def original_handler(_event, **_kwargs):
+        nonlocal called
+        called = True
+        return "executed"
+
+    dangerous = SimpleNamespace(
+        name="future_task",
+        description="schedule work",
+        parameters={"type": "object", "properties": {}},
+        handler=original_handler,
+    )
+    safe = SimpleNamespace(
+        name="send_message_to_user",
+        description="send",
+        parameters={"type": "object", "properties": {}},
+        handler=original_handler,
+    )
+    tool_set = ToolSet()
+    tool_set.add_tool(dangerous)
+    tool_set.add_tool(safe)
+    req = SimpleNamespace(func_tool=tool_set)
+
+    assert adapter.guard_final_tools(req, block=frozenset({"future_task"})) is True
+    assert [tool.name for tool in tool_set.tools] == ["future_task", "send_message_to_user"]
+    guarded = tool_set.tools[0]
+    assert guarded is not dangerous
+    assert guarded.description == dangerous.description
+    assert guarded.parameters == dangerous.parameters
+    assert callable(guarded.handler)
+    assert "disabled during proactive replies" in await guarded.handler(None)
+    assert called is False
+    assert tool_set.tools[1] is safe
 
 
 # ============================================================================

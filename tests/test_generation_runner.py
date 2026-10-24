@@ -39,6 +39,10 @@ class FakeToolSet:
         self.tools: list[SimpleNamespace] = []
 
     def add_tool(self, tool: SimpleNamespace) -> None:
+        for index, existing in enumerate(self.tools):
+            if existing.name == tool.name:
+                self.tools[index] = tool
+                return
         self.tools.append(tool)
 
     def ids(self) -> list[str]:
@@ -107,6 +111,7 @@ class FakeRuntime:
     def __init__(self, *, build_results: list | None = None, hang: bool = False) -> None:
         self.tool_set_snapshots: list[list[str]] = []
         self.filter_calls: list[tuple[object, object]] = []
+        self.guard_calls: list[frozenset[str]] = []
         self.build_kwargs: list[dict] = []
         self.built_reqs: list[object] = []
         self.build_results = build_results if build_results is not None else []
@@ -147,6 +152,26 @@ class FakeRuntime:
             tool_set.tools = [t for t in tool_set.tools if t.name in keep]
         else:
             tool_set.tools = [t for t in tool_set.tools if t.name not in drop]
+        return True
+
+    def guard_final_tools(self, req, *, block):
+        self.guard_calls.append(block)
+        if not hasattr(req, "func_tool"):
+            return False
+        tool_set = req.func_tool
+        if tool_set is None:
+            return True
+        if not hasattr(tool_set, "tools"):
+            return False
+        for tool in list(tool_set.tools):
+            if tool.name in block:
+                guarded = SimpleNamespace(**vars(tool))
+
+                async def blocked_handler() -> str:
+                    return "blocked"
+
+                guarded.handler = blocked_handler
+                tool_set.add_tool(guarded)
         return True
 
     async def load_session_conversation(self, event, context):
@@ -1202,7 +1227,7 @@ async def test_generate_second_enforcement_aborts_and_closes_reset(tmp_path: Pat
 
     calls = {"n": 0}
 
-    def enforce_second_time_fails(req, inherit_tools):
+    def enforce_second_time_fails(req, inherit_tools, *args, **kwargs):
         calls["n"] += 1
         return calls["n"] == 1  # 第一道放行，第二道拒绝
 
@@ -1252,6 +1277,24 @@ async def test_enforce_policy_drop_mode_removes_dangerous(tmp_path: Path) -> Non
     req = SimpleNamespace(func_tool=tool_set)
     assert runner.enforce_final_tool_policy(req, True) is True
     assert tool_set.ids() == ["web_search"]  # 危险工具被 drop
+
+
+async def test_enforce_policy_preserve_mode_guards_without_removing(tmp_path: Path) -> None:
+    """Schema 保留模式必须保留全部工具名，并把危险工具交给运行时守卫。"""
+    _, _, runner, runtime, _, _ = _make_runner(
+        tmp_path,
+        {"proactive_inherit_tools": True, "proactive_preserve_tool_schema": True},
+    )
+    tool_set = FakeToolSet()
+    tool_set.add_tool(SimpleNamespace(name="web_search", handler=object()))
+    tool_set.add_tool(SimpleNamespace(name="future_task", handler=object()))
+    req = SimpleNamespace(func_tool=tool_set)
+
+    assert runner.enforce_final_tool_policy(req, True, True) is True
+    assert tool_set.ids() == ["web_search", "future_task"]
+    assert runtime.guard_calls
+    assert "future_task" in runtime.guard_calls[0]
+    assert callable(tool_set.tools[1].handler)
 
 
 # ============================================================================
@@ -1342,6 +1385,35 @@ async def test_main_agent_build_config_prefers_session_provider_settings(tmp_pat
     not_mapping = runner.main_agent_build_config("s1")
     assert not_mapping.kwargs["tool_call_timeout"] == 60
     assert not_mapping.kwargs["provider_settings"] == {}
+
+
+async def test_main_agent_build_config_inherits_persona_safety_mode(tmp_path: Path) -> None:
+    """未显式配置安全模式时，主动 Agent 跟随普通人格，避免 system 前缀漂移。"""
+    _, _, runner, runtime, _, _ = _make_runner(tmp_path)
+
+    class BuildConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    runtime.new_build_config = lambda **kwargs: BuildConfig(**kwargs)
+    runner._context = SimpleNamespace(
+        astrbot_config={},
+        get_config=lambda _umo: {
+            "provider_settings": {"tool_call_timeout": 7},
+            "agent_runner": {
+                "config": {
+                    "persona": {
+                        "safety_mode": False,
+                        "safety_mode_strategy": "system_prompt",
+                    }
+                }
+            },
+        },
+    )
+
+    config = runner.main_agent_build_config("s1")
+    assert config.kwargs["llm_safety_mode"] is False
+    assert config.kwargs["safety_mode_strategy"] == "system_prompt"
 
 
 async def test_main_agent_build_config_survives_non_numeric_tool_call_timeout(

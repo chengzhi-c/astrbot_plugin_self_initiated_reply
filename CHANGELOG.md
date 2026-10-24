@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式。
 
+## [Unreleased]
+
+- 主动回复未单独配置安全模式时，跟随普通人格的 `safety_mode` 与
+  `safety_mode_strategy`，避免两条 Agent 路径产生不同的 system 前缀。
+- 新增 `proactive_preserve_tool_schema`：继承工具时可保留危险工具 schema，
+  在实际调用阶段拒绝执行，从而复用普通回复的工具缓存前缀。
+
 ## [1.5.1]
 
 - 修复主动回复的 @ 缺少显示名，按该字段渲染的平台会显示为空 @。

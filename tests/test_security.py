@@ -912,6 +912,7 @@ def test_is_admin_event_trusts_host_api_success_path() -> None:
 _REQUIRED_AUDITED_KEYS = {
     "enabled",  # 插件总开关
     "proactive_inherit_tools",  # 工具继承：放大宿主能力面
+    "proactive_preserve_tool_schema",  # 保留危险工具 schema，必须可审计
     "whitelist_sessions",  # 生效范围
     "judge_provider_id",  # 裁决上游：群聊上下文的去向
     "vision_provider_id",  # 视觉上游：图片的去向

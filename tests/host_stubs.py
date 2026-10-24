@@ -499,6 +499,10 @@ class FakeToolSet:
         self.tools: list[Any] = []
 
     def add_tool(self, tool: Any) -> None:
+        for index, existing in enumerate(self.tools):
+            if getattr(existing, "name", "") == getattr(tool, "name", ""):
+                self.tools[index] = tool
+                return
         self.tools.append(tool)
 
     def remove_tool(self, name: str) -> None:
@@ -589,8 +593,8 @@ def make_counting_enforce(
     hook 在两次 enforce 之间注入正是被测语义，不可省。
     """
 
-    def counting_enforce(req: Any, inherit_tools: Any) -> bool:
-        ok = original_enforce(req, inherit_tools)
+    def counting_enforce(req: Any, inherit_tools: Any, *args: Any, **kwargs: Any) -> bool:
+        ok = original_enforce(req, inherit_tools, *args, **kwargs)
         snapshots.append(sorted(runtime._tool_list(req) or []))
         if len(snapshots) == 1:
             for name in first_enforce_tools:

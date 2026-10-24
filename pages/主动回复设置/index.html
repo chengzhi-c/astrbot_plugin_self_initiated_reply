@@ -939,6 +939,17 @@
               <p class="muted">
                 默认关闭：主动回复只允许内置低副作用能力，第三方插件工具、Shell/Python、文件读写、浏览器、定时任务、技能管理和跨会话发送一律不可用。开启后，群聊里的普通消息可能间接触发插件能力（如发图、记忆、搜索），仅在你信任群聊环境并确认插件工具副作用可控时开启。
               </p>
+              <label class="toggle-row">
+                <input
+                  type="checkbox"
+                  id="proactivePreserveToolSchemaInput"
+                  data-config-key="proactive_preserve_tool_schema"
+                />
+                <span>保留工具定义并在调用时拒绝危险能力</span>
+              </label>
+              <p class="muted">
+                仅在继承插件工具时生效。危险工具仍会出现在请求中，但实际调用会返回拒绝结果。这项开关可让普通回复与主动回复使用相同的工具前缀，改善提示缓存复用。
+              </p>
             </div>
           </details>
 

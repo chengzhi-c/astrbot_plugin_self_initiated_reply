@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib
 import inspect
 from collections.abc import AsyncIterator, Callable
@@ -566,6 +567,97 @@ class AstrBotRuntimeAdapter:
                 "in denylist mode; aborting proactive run",
                 PLUGIN_ID,
                 unnamed,
+            )
+            return False
+        return True
+
+    def guard_final_tools(self, req: Any, *, block: frozenset[str]) -> bool:
+        """Keep tool schemas while blocking selected calls at execution time.
+
+        The replacement copies each blocked tool, preserves its name, description and
+        parameters, and installs a handler that returns a refusal string. The host's
+        tool executor prioritizes ``handler`` over ``call`` and ``run``, so the
+        original capability never executes.
+
+        Returns ``False`` when any tool cannot be copied, guarded or verified.
+        Callers must then abort the proactive run.
+        """
+        tool_ids = self._tool_list(req)
+        if tool_ids is None:
+            logger.warning(
+                "[%s] tool runtime guard fail-closed: tool enumeration unavailable; "
+                "aborting proactive run",
+                PLUGIN_ID,
+            )
+            return False
+        if not tool_ids:
+            return True
+        tool_set: Any = self._read_func_tool(req)
+        if tool_set is _MISSING or tool_set is None:
+            logger.warning(
+                "[%s] tool runtime guard fail-closed: req.func_tool became unreadable; "
+                "aborting proactive run",
+                PLUGIN_ID,
+            )
+            return False
+        try:
+            for tool in list(tool_set.tools):
+                name = str(getattr(tool, "name", "") or "").strip()
+                if not name:
+                    logger.warning(
+                        "[%s] tool runtime guard fail-closed: unnamed tool cannot be "
+                        "classified; aborting proactive run",
+                        PLUGIN_ID,
+                    )
+                    return False
+                if name not in block:
+                    continue
+                guarded = copy.copy(tool)
+
+                async def blocked_handler(
+                    _event: Any,
+                    _tool_name: str = name,
+                    **_kwargs: Any,
+                ) -> str:
+                    return f"error: tool '{_tool_name}' is disabled during proactive replies"
+
+                blocked_handler.__selfreply_blocked_tool__ = True  # type: ignore[attr-defined]
+                guarded.handler = blocked_handler
+                tool_set.add_tool(guarded)
+        except Exception as exc:
+            logger.warning(
+                "[%s] tool runtime guard fail-closed: copy or replacement failed (%s); "
+                "aborting proactive run",
+                PLUGIN_ID,
+                redact_exc_text(exc),
+            )
+            return False
+        try:
+            unguarded = sorted(
+                {
+                    str(getattr(tool, "name", "") or "").strip()
+                    for tool in tool_set.tools
+                    if str(getattr(tool, "name", "") or "").strip() in block
+                    and not getattr(
+                        getattr(tool, "handler", None),
+                        "__selfreply_blocked_tool__",
+                        False,
+                    )
+                }
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] tool runtime guard fail-closed: post-guard verification failed (%s); "
+                "aborting proactive run",
+                PLUGIN_ID,
+                redact_exc_text(exc),
+            )
+            return False
+        if unguarded:
+            logger.warning(
+                "[%s] tool runtime guard fail-closed: unguarded tools remain: %s",
+                PLUGIN_ID,
+                ", ".join(unguarded),
             )
             return False
         return True

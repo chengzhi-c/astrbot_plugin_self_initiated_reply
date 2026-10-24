@@ -143,20 +143,38 @@ def test_inherit_tools_mode_keeps_plugin_names_and_ordinary_tools(tmp_path: Path
 
 
 def test_inherit_tools_default_off_and_persisted_via_api(tmp_path: Path) -> None:
-    """开关默认关闭；API 可持久化开启并回读。"""
+    """工具继承与 schema 保留开关默认关闭，均可持久化回读。"""
 
     async def scenario(plugin, main):
         assert plugin.settings.proactive_inherit_tools is False
+        assert plugin.settings.proactive_preserve_tool_schema is False
 
-        await _post_config(plugin, main, {"proactive_inherit_tools": True})
+        await _post_config(
+            plugin,
+            main,
+            {
+                "proactive_inherit_tools": True,
+                "proactive_preserve_tool_schema": True,
+            },
+        )
         assert plugin.settings.proactive_inherit_tools is True
+        assert plugin.settings.proactive_preserve_tool_schema is True
 
         config = await webapi_module(main)._api_get_config(plugin)
         assert config.get("proactive_inherit_tools") is True
+        assert config.get("proactive_preserve_tool_schema") is True
 
         # 非法类型必须拒绝
-        await _post_config(plugin, main, {"proactive_inherit_tools": "yes"})
+        await _post_config(
+            plugin,
+            main,
+            {
+                "proactive_inherit_tools": "yes",
+                "proactive_preserve_tool_schema": "yes",
+            },
+        )
         assert plugin.settings.proactive_inherit_tools is True  # 未变化
+        assert plugin.settings.proactive_preserve_tool_schema is True  # 未变化
 
     with_plugin(tmp_path, scenario)
 
@@ -193,6 +211,43 @@ def test_enforce_final_tool_policy_inherit_mode_fails_closed(tmp_path: Path) -> 
         assert plugin._generation.enforce_final_tool_policy(bad_req, True) is False
 
     with_plugin(tmp_path, scenario)
+
+
+def test_enforce_final_tool_policy_preserve_schema_blocks_call(tmp_path: Path) -> None:
+    """Schema 保留模式不删工具，但危险 handler 必须替换成拒绝结果。"""
+
+    async def scenario(plugin, main):
+        called = False
+
+        async def original_handler(_event, **_kwargs):
+            nonlocal called
+            called = True
+            return "executed"
+
+        dangerous = type(
+            "Tool",
+            (),
+            {
+                "name": "future_task",
+                "description": "schedule work",
+                "parameters": {"type": "object", "properties": {}},
+                "handler": original_handler,
+            },
+        )()
+        tool_set = FakeToolSet()
+        tool_set.add_tool(dangerous)
+        req = type("Req", (), {"func_tool": tool_set})()
+
+        assert plugin._generation.enforce_final_tool_policy(req, True, True) is True
+        assert [tool.name for tool in tool_set.tools] == ["future_task"]
+        guarded = tool_set.tools[0]
+        assert guarded is not dangerous
+        assert guarded.description == "schedule work"
+        assert guarded.parameters == {"type": "object", "properties": {}}
+        assert "disabled during proactive replies" in await guarded.handler(None)
+        assert called is False
+
+    with_plugin(tmp_path, scenario, proactive_inherit_tools=True)
 
 
 def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> None:
