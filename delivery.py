@@ -74,10 +74,15 @@ class _NamedAt(At):
     """
 
     def toDict(self) -> dict[str, Any]:
+        # 本方法在**投递时**由适配器序列化阶段调用，晚于 _attach_chain_prefix 的
+        # 构造保护：这里抛出去会被 outbound 归成 UNKNOWN（状态未知、消耗冷却与
+        # 日配额、不重试），一条普通发送就变成「提交状态未知」——正是契约 §14
+        # 禁止的「装饰性组件影响投递分类」。宿主换结构时静默降级为裸 at。
         data = super().toDict()
         name = getattr(self, "name", "")
-        if name:
-            data["data"]["name"] = str(name)
+        section = data.get("data") if isinstance(data, dict) else None
+        if name and isinstance(section, dict):
+            section["name"] = str(name)
         return data
 
 
@@ -140,10 +145,11 @@ class DeliveryRunner:
             return bool(model_decision)
         return self._probability_hit(self.settings.quote_probability)
 
-    def _quote_target_id(self, umo: str) -> str:
-        """引用目标 = 该会话最后一条被插件接住的消息（与判断提示词的
-        ``{latest_message}`` 同源）；事件已被回收时返回空串，降级为不引用。"""
-        last_event = self._last_events.get(umo)
+    @staticmethod
+    def _quote_target_id(last_event: Any) -> str:
+        """引用目标 = 本次生成所依据的那条消息（与生成上下文的末条同源，由
+        pipeline 在调用生成前冻结后经 ``target_event`` 传入）；取不到 ID 时返回空串，
+        降级为不引用。"""
         if last_event is None:
             return ""
         return event_message_id(last_event)
@@ -153,7 +159,7 @@ class DeliveryRunner:
         umo: str,
         *,
         wanted: bool,
-        target_id: Callable[[str], str],
+        target_id: str,
         skip_log: str,
     ) -> str:
         """装饰性组件 ID 的单一解析形状：不需要就返回空串，取不到返回空串并留痕。
@@ -163,17 +169,17 @@ class DeliveryRunner:
         """
         if not wanted:
             return ""
-        component_id = target_id(umo)
+        component_id = target_id
         if not component_id:
             logger.debug(skip_log, PLUGIN_ID, umo)
         return component_id
 
-    def _resolve_quote_id(self, umo: str, model_decision: bool | None) -> str:
+    def _resolve_quote_id(self, umo: str, model_decision: bool | None, last_event: Any) -> str:
         """本次发送要引用的消息 ID；不需要引用或取不到 ID 时返回空串。"""
         return self._resolve_component_id(
             umo,
             wanted=self._should_quote(model_decision),
-            target_id=self._quote_target_id,
+            target_id=self._quote_target_id(last_event),
             skip_log="[%s] quote skipped: no message id for session=%s",
         )
 
@@ -190,7 +196,7 @@ class DeliveryRunner:
             chain_owner.chain.insert(0, factory())
             return True
         except Exception as exc:
-            logger.debug("[%s] %s component skipped: %s", PLUGIN_ID, kind, exc)
+            logger.debug("[%s] %s component skipped: %s", PLUGIN_ID, kind, redact_exc_text(exc))
             return False
 
     # ------------------------------------------------------------------
@@ -212,12 +218,12 @@ class DeliveryRunner:
             return True
         return self._probability_hit(self.settings.mention_probability)
 
-    def _mention_target_id(self, umo: str) -> str:
+    @staticmethod
+    def _mention_target_id(last_event: Any) -> str:
         """@ 目标 = 本次主动回复所依据的那条消息的发送者（与引用目标同源）。
 
         **绝不**从会话历史里挑人、@ 多个或 @ Bot 自己：取不到就降级，不猜。
         """
-        last_event = self._last_events.get(umo)
         if last_event is None:
             return ""
         sender_id = event_sender_id(last_event)
@@ -225,12 +231,12 @@ class DeliveryRunner:
             return ""
         return sender_id
 
-    def _resolve_mention_id(self, umo: str) -> str:
+    def _resolve_mention_id(self, umo: str, last_event: Any) -> str:
         """本次发送要 @ 的发送者 ID；不需要 @ 或取不到 ID 时返回空串。"""
         return self._resolve_component_id(
             umo,
             wanted=self._should_mention(),
-            target_id=self._mention_target_id,
+            target_id=self._mention_target_id(last_event),
             skip_log="[%s] mention skipped: no sender id for session=%s",
         )
 
@@ -247,8 +253,16 @@ class DeliveryRunner:
         trigger: str,
         silence_active_at: float | None = None,
         quote: bool | None = None,
+        target_event: Any | None = None,
     ) -> str:
-        """发送前门卫与发送状态机；返回结果消息。记账由 pipeline 的 ledger 收口。"""
+        """发送前门卫与发送状态机；返回结果消息。记账由 pipeline 的 ledger 收口。
+
+        ``target_event`` 是生成实际读到的那条消息，由 pipeline 在调用生成前冻结。
+        装饰与发送通道都用它：引用/@ 只有锚在同一条消息上才不会指错对象，而它的
+        结果槽早已结算——拿此刻最新到达的消息当通道，等于往宿主仍在处理的另一条
+        消息上写 ``_result``（并发写槽会互相覆盖）。事件被回收时引用仍在手边，
+        照旧从该事件发；真正没有事件可用的时机才回落 context。
+        """
         ledger_id = ledger.ledger_id
         if self._is_stopping():
             logger.info(
@@ -286,6 +300,7 @@ class DeliveryRunner:
                 ledger=ledger,
                 expected_generation=expected_generation,
                 quote=quote,
+                target_event=target_event,
             )
             if not sent.delivered:
                 if sent.status is SendStatus.UNKNOWN:
@@ -335,6 +350,7 @@ class DeliveryRunner:
         ledger: AttemptLedger | None = None,
         expected_generation: int | None = None,
         quote: bool | None = None,
+        target_event: Any | None = None,
     ) -> SendOutcome:
         """Send one proactive reply without retrying an unknown submission.
 
@@ -366,11 +382,12 @@ class DeliveryRunner:
                 SuppressCode.GENERATION_CHANGED,
             )
 
-        last_event = self._last_events.get(umo)
-        quote_id = self._resolve_quote_id(umo, quote)
+        # 装饰与通道同一个事件：冻结目标的结果槽已结算，不会与宿主在途消息抢槽。
+        last_event = target_event if target_event is not None else self._last_events.get(umo)
+        quote_id = self._resolve_quote_id(umo, quote, last_event)
         # @ 与引用同源取目标且无条件解析：短路掉会让「mention_mode=always 但
         # 事件已被回收」静默失效且无迹可查（契约 §14：context 兜底路径不 @）。
-        mention_id = self._resolve_mention_id(umo)
+        mention_id = self._resolve_mention_id(umo, last_event)
         # 显示名与目标同源，都取本次依据消息的发送者；理由见 _NamedAt。
         mention_name = event_sender_name(last_event) if mention_id and last_event else ""
         if last_event:

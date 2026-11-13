@@ -8,27 +8,23 @@
  *          不再逐处判空降级。``field`` 是包裹层，手动/列表切换由 ``setManual``
  *          在它上面挂 ``manual`` 类。
  * @param {{ getOptions: () => any[], isListAvailable: () => boolean,
- *           showToast: (msg: string) => void, onDirty: () => void,
- *           onModeChange?: (manual: boolean) => void }} deps
+ *           showToast: (msg: string) => void, onDirty: () => void }} deps
  */
 export function createProviderControl(refs, deps) {
   let manual = false;
-  const { getOptions, isListAvailable, showToast, onDirty, onModeChange } = deps;
+  const { getOptions, isListAvailable, showToast, onDirty } = deps;
   function setManual(enabled, focusInput = false) {
     manual = Boolean(enabled);
-    // 容器类由本函数统一负责：三个 Provider 控件（judge / vision / visionJudge）
-    // 共用这一处实现。只让 judge 的 onModeChange 加类时，vision 两个字段切手动
-    // 后容器类恒为空，于是基类 `.provider-control` 的两列定义继续生效，按钮被拉成
-    // 整行宽（实测 373px，judge 同态 78px）。
-    // 注意这是「类没挂上」而不是 CSS 优先级问题：`.provider-field.manual
-    // .provider-control` 含 3 个类（0,3,0），本就压过基类 `.provider-control`
-    // （0,1,0），无需为 vision 另写规则。
+    // 容器类由本函数统一负责，三个 Provider 控件（judge / vision / visionJudge）
+    // 共用这一处实现。缺少这个类时基类 `.provider-control` 的两列定义仍生效，
+    // 按钮会被拉成整行宽（实测 373px，正常 78px）。这是「类没挂上」而不是 CSS
+    // 优先级问题：`.provider-field.manual .provider-control` 含 3 个类（0,3,0），
+    // 本就压过基类 `.provider-control`（0,1,0）。
     refs.field.classList.toggle("manual", manual);
     refs.button.textContent = manual ? "使用列表" : "手动输入";
     refs.button.setAttribute("aria-expanded", String(manual));
     refs.select.hidden = manual;
     refs.input.hidden = !manual;
-    onModeChange?.(manual);
     if (manual && focusInput) refs.input.focus();
   }
   function value() {

@@ -556,6 +556,112 @@ async def test_generate_passes_non_tool_messages_through_untouched(tmp_path: Pat
     assert returned_ledger.direct_send_count == 0, "透传的普通消息不应计入工具直发预算"
     assert returned_ledger.direct_texts == ()
 
+
+async def test_graceful_stop_second_wait_lets_cooperative_runner_converge(
+    tmp_path: Path,
+) -> None:
+    """兜底取消后的第二段等待被取消时，也要给合作 runner 收敛的机会。
+
+    缺陷形态：第二段 asyncio.wait 的 except 分支直接 quarantine。兜底 cancel()
+    注入的取消可能正好在这一刻生效，下一个 tick 就会收敛的合作任务仍被登记隔离
+    → _mark_degraded 单向永久，一次例行指令即可把主动回复永久停摆。
+
+    变异锚定：把第二个 except 改回「立即 quarantine」本用例红。
+    """
+    _, _, runner, _, _, _ = _make_runner(tmp_path, grace_sec=0.5)
+    quarantined: dict[str, object] = {}
+
+    async def converge_after_cancel() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.1)  # 兜底取消后仍在第二段宽限内收敛
+
+    def quarantine(task: asyncio.Task, reason: str) -> None:
+        quarantined["task"] = task
+        quarantined["reason"] = reason
+
+    run_task = asyncio.create_task(converge_after_cancel())
+    runner._quarantine_task = quarantine
+    stopping = asyncio.create_task(runner._graceful_stop(run_task, object(), cancel_first=False))
+    await asyncio.sleep(0.55)  # 第一段宽限耗尽，兜底 cancel() 已注入
+    stopping.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+
+    assert "task" not in quarantined, f"合作 runner 收敛前就被隔离：{quarantined}"
+    # 第二段 except 会再注入一次取消，合作 runner 以 CancelledError 收尾也算收敛
+    await asyncio.wait_for(asyncio.gather(run_task, return_exceptions=True), timeout=1)
+    assert run_task.done()
+
+
+async def test_prompt_build_failure_returns_empty_reply_instead_of_raising(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    """上下文/提示词组装失败要 fail-closed 返回空回复，别穿成 delayed check failed。
+
+    last_decisions 已记下 should_reply=True，异常穿出 generate() 后调度器只报一条与
+    原因无关的 delayed check failed，排障者看到的是「决定接话」加一条笼统失败。
+
+    变异锚定：把两步构建移出 try，本用例红。
+    """
+    generation_mod, models, runner, _, _, _ = _make_runner(tmp_path)
+    runner._last_events["s1"] = FakeEvent()
+
+    async def boom(umo, state):
+        raise RuntimeError("data root unavailable")
+
+    runner.build_context_text = boom
+    with capture_logs(caplog, generation_mod.logger, logging.WARNING):
+        caplog.clear()
+        reply, ledger = await runner.generate("s1", _state(models), force=True)
+
+    assert reply == ""
+    assert ledger.ledger_id
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("proactive prompt build failed" in message for message in messages), (
+        f"构建失败没有留下告警：{messages}"
+    )
+
+
+async def test_host_tool_status_messages_never_reach_the_chat(tmp_path: Path) -> None:
+    """宿主直发的工具状态消息必须被挡在会话之外。
+
+    AstrBot 在 webchat 平台无视 show_tool_use / show_tool_call_result，直接发送
+    tool_call 与 tool_call_result（astr_agent_run_util）。放行等于把主动运行的中间
+    过程（工具名、入参、原始结果）发进群聊。
+
+    变异锚定：删掉 _HOST_TOOL_STATUS_TYPES 分支，本用例红。
+    """
+    from types import SimpleNamespace
+
+    _, models, runner, runtime, _, _ = _make_runner(tmp_path)
+    event = FakeEvent()
+    received: list[Any] = []
+
+    async def recording_send(message: Any) -> Any:
+        received.append(message)
+        return True
+
+    event.send = recording_send
+    runner._last_events["s1"] = event
+    returned: list[Any] = []
+
+    def run_with_tool_status(_runner, **_kwargs):
+        async def gen():
+            returned.append(await event.send(SimpleNamespace(type="tool_call")))
+            returned.append(await event.send(SimpleNamespace(type="tool_call_result")))
+            yield None
+
+        return gen()
+
+    runtime.run = run_with_tool_status
+    await runner.generate("s1", _state(models), force=True)
+
+    assert received == [], f"工具状态消息进了会话：{received}"
+    assert returned == [None, None], f"拦截分支没有返回 None：{returned}"
+
     # 顺带钉住 tracker 摘除的**恢复**分支（generation.py 的 had_instance_send 侧）。
     # 本用例把 send 设成了实例属性，故 finally 该走「恢复原值」而非「delattr」。
     # 这条此前无人断言：test_generate_installs_and_restores_tool_boundary 只钉了

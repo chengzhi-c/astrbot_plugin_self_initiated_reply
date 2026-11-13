@@ -95,18 +95,36 @@ class DecisionMaker:
 
         ``cancel()`` 是异步投递的，刚调用时 ``task.done()`` 必然为 False，
         故照 ``generation._graceful_stop`` 的形状给一个宽限窗口，只有宽限
-        耗尽仍未收敛（宿主 provider 吞掉 CancelledError）才交隔离登记；
-        宽限窗口内再次收到取消也隔离登记后原样重放，与 ``_graceful_stop``
-        的 ``except asyncio.CancelledError`` 分支同形。
+        耗尽仍未收敛（宿主 provider 吞掉 CancelledError）才交隔离登记。宽限
+        窗口内再收到取消时同样把剩余宽限用完再判定，与 generation 侧同口径。
         """
         task.cancel()
+        grace_sec = max(0.0, DECISION_CONVERGE_GRACE_SEC)
+        # 宽限窗口的统一截止时刻：被取消后重入等待时只能用剩余额度，否则一次
+        # 取消就把总收敛时间放大一倍。
+        deadline = asyncio.get_running_loop().time() + grace_sec
         try:
-            done, _ = await asyncio.wait({task}, timeout=DECISION_CONVERGE_GRACE_SEC)
+            done, _ = await asyncio.wait({task}, timeout=grace_sec)
         except asyncio.CancelledError:
-            # 宽限窗口内又收到取消：``cancel()`` 已投递但没人等它收敛，宿主
-            # 吞掉 CancelledError 时即成零日志孤儿（真实 HTTP 请求挂在后台）。
-            # 隔离登记后原样重放，与 generation._graceful_stop 同口径。
-            self._quarantine_or_warn(task, reason)
+            # 宽限窗口内又收到取消（/off、/check、/add、POST /config、terminate）。
+            # 不能据此判定 provider 成了孤儿：取消是异步投递的，它可能正在自行
+            # 收敛，而隔离登记 → _mark_degraded 是单向永久的——一次例行指令就能
+            # 把主动回复永久停摆到重载为止（契约 §5 把 DEGRADED 留给真的超出
+            # 硬停止窗口的任务）。把剩余宽限用完再决定。
+            task.cancel()
+            try:
+                done, _ = await asyncio.wait(
+                    {task},
+                    timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                )
+            except asyncio.CancelledError:
+                # 二次取消：停止意图明确，保守隔离后原样重放。
+                self._quarantine_or_warn(task, reason)
+                raise
+            if done or task.done():
+                consume_task_result(task)
+            else:
+                self._quarantine_or_warn(task, reason)
             raise
         if done or task.done():
             # 宽限窗口内收敛的任务：吃掉以异常收尾者的异常，避免任务回收时
@@ -365,6 +383,17 @@ class DecisionMaker:
 
     async def build_decision_prompt(self, umo: str, state: SessionState, trigger: str) -> str:
         aliases = "、".join(self.settings.bot_aliases) or "未配置"
+        # 快照必须早于任何 await：build_recent_messages 会等宿主历史与识图（最长
+        # 2×vision_timeout_sec）。在它们之后读 state.recent 时，期间到达的新消息会
+        # 让「最后一条消息」与「最近消息列表」指向不同时刻，提示词自相矛盾。
+        latest = latest_user_text(list(state.recent))
+        # 年龄钳到非负：as_timestamp 允许 persisted 时间戳超前 now +
+        # MAX_CLOCK_SKEW_SEC，手工编辑过的 state.json 会算出负年龄，提示词里出现
+        # "-300" 只会让判断模型困惑（local_gate 已对同一输入类做 max(0, …)）。
+        last_message_age_sec = max(0, int(state.age_sec(self._clock())))
+        last_reply_age_sec = (
+            max(0, int(self._clock() - state.last_proactive_at)) if state.last_proactive_at else -1
+        )
         recent = await self.build_recent_messages(
             umo,
             state,
@@ -378,23 +407,15 @@ class DecisionMaker:
         )
         if image_context:
             recent = f"{recent}\n\n{image_context}" if recent else image_context
-        latest = latest_user_text(list(state.recent))
 
         # 清理所有用户输入变量，防止提示词注入
         values = {
             "session": sanitize_prompt_variable(umo, max_length=200),
             "trigger": sanitize_prompt_variable(trigger, max_length=50),
             "bot_aliases": sanitize_prompt_variable(aliases, max_length=200),
-            # 年龄钳到非负：``as_timestamp`` 允许 persisted 时间戳超前
-            # now + MAX_CLOCK_SKEW_SEC，手工编辑过的 state.json 会算出负年龄，
-            # 提示词里出现 "-300" 只会让判断模型困惑（local_gate 已对同一
-            # 输入类做 max(0, …)，这里补同一道）。
-            "last_message_age_sec": str(max(0, int(state.age_sec(self._clock())))),
-            "last_reply_age_sec": str(
-                max(0, int(self._clock() - state.last_proactive_at))
-                if state.last_proactive_at
-                else -1
-            ),
+            # 年龄已在快照处钳到非负，理由见上方 last_message_age_sec 的注释。
+            "last_message_age_sec": str(last_message_age_sec),
+            "last_reply_age_sec": str(last_reply_age_sec),
             "latest_message": sanitize_prompt_variable(latest, max_length=500),
             # recent_messages 是多行聊天记录：保留换行才能区分发言人与轮次；
             # 超预算时保尾（不能用 sanitize 自带的保头截断，那会先丢最新几条，

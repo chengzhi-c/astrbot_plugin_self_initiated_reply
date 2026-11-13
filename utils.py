@@ -228,8 +228,18 @@ async def build_history_text(
         try:
             records = (await read_history(umo, limit=limit)) + records
         except Exception as exc:
-            logger.debug("[%s] host history unavailable session=%s error=%s", PLUGIN_ID, umo, exc)
-    return format_message_records(dedupe_message_records(records), limit=limit)
+            logger.debug(
+                "[%s] host history unavailable session=%s error=%s",
+                PLUGIN_ID,
+                umo,
+                redact_exc_text(exc),
+            )
+    # 先按时间取窗口、再去重：dedupe 把重复文本合并到**最早**出现的位置，先去重
+    # 会让最新一条（内容与更早某条重复时，聊天里"1"/"哈哈"极常见）被抬到列表
+    # 前部、随后被尾部截断丢掉——判断与生成共用这条路径，最新消息因此从提示词里
+    # 消失（契约 §14.3 的"保尾"要求）。
+    windowed = records[-limit:] if limit > 0 else []
+    return format_message_records(dedupe_message_records(windowed), limit=limit)
 
 
 def parse_json(text: str) -> Any:
@@ -587,7 +597,9 @@ def dedupe_message_records(records: list[MessageRecord]) -> list[MessageRecord]:
 
 
 def format_message_records(records: list[MessageRecord], *, limit: int) -> str:
-    rows = records[-limit:]
+    # limit <= 0 时 records[-0:] 是全量而不是空表（adapters 的同形状分支已显式
+    # 兜住，此处同口径）。
+    rows = records[-limit:] if limit > 0 else []
     if not rows:
         return "(无)"
     lines = []
@@ -717,3 +729,17 @@ def clean_reply(text: str, *, allow_multiline: bool, max_chars: int) -> str:
         text = (match.group(1) if match else clipped).strip()
 
     return text
+
+
+async def await_rollback(restore: asyncio.Future[None]) -> None:
+    """等回滚任务跑完再返回，取消期间也不放弃。
+
+    ``done()`` 是退出条件而不是 ``break``：调用方已被取消过一次，之后每次
+    await 都可能立刻再抛 CancelledError，包括回滚已经跑完的那一刻。enabled 双写、
+    白名单、配置整包应用三条回滚路径共用这一条等待纪律。
+    """
+    while not restore.done():
+        try:
+            await asyncio.shield(restore)
+        except asyncio.CancelledError:
+            continue

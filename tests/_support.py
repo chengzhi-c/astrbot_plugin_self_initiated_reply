@@ -46,6 +46,29 @@ def make_event(umo: str = UMO, **kwargs: Any) -> FakeEvent:
     return FakeEvent(umo=umo, **kwargs)
 
 
+def shorten_shutdown_windows(main: Any, seconds: float = 0.02) -> Callable[[], None]:
+    """把关停期的两个硬窗口压到测试尺度，返回恢复回调。
+
+    ``TERMINATE_TASK_TIMEOUT_SEC`` 管最终落盘，``SHUTDOWN_TASK_DRAIN_TIMEOUT_SEC``
+    管后台任务收敛。漏掉任一个，用例要么等满 9s，要么被等的任务先自然结束、
+    "已隔离"断言永远不成立。
+    """
+    names = ("TERMINATE_TASK_TIMEOUT_SEC", "SHUTDOWN_TASK_DRAIN_TIMEOUT_SEC")
+    saved = {name: getattr(main, name, None) for name in names}
+    for name in names:
+        setattr(main, name, seconds)
+
+    def restore() -> None:
+        for name, value in saved.items():
+            if value is None:
+                if hasattr(main, name):
+                    delattr(main, name)
+            else:
+                setattr(main, name, value)
+
+    return restore
+
+
 def make_parser(image: ModuleType, tmp_path: Path, **kwargs: Any) -> Any:
     """识图解析器夹具：缓存目录固定在 ``tmp_path/image_cache``。
 

@@ -24,11 +24,23 @@ function whitelistGroupId(item) {
   }
   return "";
 }
+// UMO 是 platform:消息类型:会话 ID；单 token 是裸群键（Telegram 负数 chat_id、
+// 飞书 oc_ 开头的会话 ID 都靠它命中），两段或含空白在运行期一定匹配不到。
+const BARE_KEY_RE = /^[^\s:]+$/;
+const FULL_UMO_RE = /^[^\s:]+:[^\s:]+:[^\s]+$/;
+export function whitelistKind(item) {
+  if (/^\d+$/.test(item)) return "number";
+  if (FULL_UMO_RE.test(item)) return "umo";
+  if (BARE_KEY_RE.test(item)) return "key";
+  return "unknown";
+}
 export function uniqueWhitelistItems(text, parsedItems = null) {
   // ``parsedItems`` 是可选优化口：``summarizeWhitelist`` 已 parse 过时直接复用，
   // 避免对同一份文本重复切分（输入事件每键触发一次，白名单几百行时不浪费）。
   const items = parsedItems || parseWhitelist(text);
-  const bareIds = new Set(items.filter((item) => /^\d+$/.test(item)));
+  // 裸群键（纯群号或非数字会话键）与它的群 UMO 是同一个会话，后端按 group_id
+  // 精确匹配，所以折叠集合必须包含两类而不只是纯数字。
+  const bareIds = new Set(items.filter((item) => ["number", "key"].includes(whitelistKind(item))));
   const seen = new Set();
   const unique = [];
   for (const item of items) {
@@ -44,15 +56,26 @@ export function summarizeWhitelist(text, parsedItems = null) {
   const items = parsedItems || parseWhitelist(text);
   const unique = uniqueWhitelistItems(text, items);
   if (unique.length === 0) return "未配置会话（留空则不主动回复任何会话）";
-  const pureNumbers = unique.filter((i) => /^\d+$/.test(i)).length;
-  const umos = unique.length - pureNumbers;
+  let pureNumbers = 0;
+  let keys = 0;
+  let umos = 0;
+  let unknown = 0;
+  for (const item of unique) {
+    const kind = whitelistKind(item);
+    if (kind === "number") pureNumbers += 1;
+    else if (kind === "key") keys += 1;
+    else if (kind === "umo") umos += 1;
+    else unknown += 1;
+  }
   const parts = [];
   if (pureNumbers > 0) parts.push(`${pureNumbers} 个纯群号`);
+  if (keys > 0) parts.push(`${keys} 个群键`);
   if (umos > 0) parts.push(`${umos} 个完整 UMO`);
+  if (unknown > 0) parts.push(`${unknown} 条格式无法识别`);
   const dupText = items.length > unique.length ? ` · 存在 ${items.length - unique.length} 处重复` : "";
-  // 说「已识别」不说「有效」：这里不校验字符集与长度，
-  // 保存时会被后端拦下的非法条目一样被计数。用「有效」会让运营者以为这些会话真的生效了。
-  const base = `已识别 ${unique.length} 条（${parts.join("，")}）${dupText}`;
+  // 说「共 N 条」不说「有效」：这里不校验字符集与长度，保存时会被后端拦下的
+  // 非法条目一样被计数。用「有效」会让运营者以为这些会话真的生效了。
+  const base = `共 ${unique.length} 条（${parts.join("，")}）${dupText}`;
   if (unique.length > WHITELIST_MAX_COUNT)
     return `${base} · 超过 ${WHITELIST_MAX_COUNT} 条上限，多余条目会被截断或拒绝`;
   return base;
@@ -113,6 +136,12 @@ export function validateWhitelistLines(text) {
         line: i + 1,
         item,
         reason: `超出 ${WHITELIST_ITEM_MAX_LEN} 字符上限`,
+      });
+    } else if (whitelistKind(item) === "unknown") {
+      errors.push({
+        line: i + 1,
+        item,
+        reason: "不是群号、群键或完整 UMO（含空白或缺段）",
       });
     }
   }

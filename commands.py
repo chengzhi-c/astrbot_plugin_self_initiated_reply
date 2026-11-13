@@ -283,7 +283,13 @@ async def dispatch_command_action(
     if action == "add":
         if not plugin._can_start_tasks():
             return _lifecycle_reject_text(plugin, "修改白名单")
-        added = await plugin._add_whitelist_session(umo)
+        try:
+            added = await plugin._add_whitelist_session(umo)
+        except RuntimeError:
+            # 锁内复查才失败：等 _config_lock 期间 terminate/DEGRADED 可能已发生。
+            # 与 on/off 同一文案，否则管理员收到的是"写盘失败、内存已回滚"的
+            # 谎报——实际什么都没写，也没有回滚。
+            return _lifecycle_reject_text(plugin, "修改白名单")
         if added:
             return f"已将当前会话加入主动回复白名单：{umo}"
         if session_whitelisted(umo, plugin.settings.whitelist):
@@ -297,7 +303,10 @@ async def dispatch_command_action(
     if action == "remove":
         if not plugin._can_start_tasks():
             return _lifecycle_reject_text(plugin, "修改白名单")
-        removed = await plugin._remove_whitelist_session(umo)
+        try:
+            removed = await plugin._remove_whitelist_session(umo)
+        except RuntimeError:
+            return _lifecycle_reject_text(plugin, "修改白名单")
         return f"已移出主动回复白名单：{umo}" if removed else f"当前会话本不在主动回复白名单：{umo}"
     if action == "check":
         if not plugin._can_start_tasks():
@@ -368,7 +377,10 @@ async def dispatch_command_action(
             except RuntimeError:
                 return _lifecycle_reject_text(plugin, "暂停")
             await plugin._persist_enabled(False)
-            await apply_enabled_topology(plugin, enabled=False)
+        # 拓扑收敛在锁外：stop_patrol 最长等 PATROL_STOP_TIMEOUT_SEC（9s），持锁
+        # 会把这段时间里每一次 Dashboard 配置写一起阻塞（terminate 对同一段等待
+        # 给出了同样的结论）。
+        await apply_enabled_topology(plugin, enabled=False)
         return "主动回复插件已暂停（重启后保持）。"
     if action == "debug":
         return debug_text(

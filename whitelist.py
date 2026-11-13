@@ -23,7 +23,7 @@ from .models import (
     Settings,
     normalize_string_list,
 )
-from .utils import is_full_umo, session_group_id, session_whitelisted
+from .utils import await_rollback, is_full_umo, session_group_id, session_whitelisted
 
 
 class WhitelistManager:
@@ -156,26 +156,20 @@ class WhitelistManager:
         try:
             await self._sync_whitelist()
             await self._save_storage()
-        except asyncio.CancelledError:
-            # 取消同样要回滚：CancelledError 不落 except Exception，而 replace 早已
-            # 单向前进（代次已推进、会话状态已摘下、磁盘未写）。少了这一步，
-            # 内存白名单与会话配额永久偏离磁盘（契约 §11 B2）。
-            # 回滚自带 await，用 shield 防二次取消打断它。
-            restore = asyncio.ensure_future(rollback())
+        except BaseException:
+            # 取消与普通失败必须同一形状。CancelledError 不落 except Exception，
+            # 而 replace 早已单向前进（代次已推进、会话状态已摘下、磁盘未写）：
+            # 少了一次回滚，内存白名单与会话配额永久偏离磁盘（契约 §11 B2）。
+            # 反过来，裸 await rollback() 又会被取消打断，磁盘上留下被驳回的
+            # 白名单，重启后 load_config_data 直接把它复活（契约 §6）。
+            #
             # 回滚必须**跑完**才算数：单次 shield 在取消瞬间就抛，rollback 成
             # 游离任务在 _config_lock 之外继续，能拿到锁并完整落盘的一次后续
             # add/remove 或 POST /config 随后被它用旧值撤销。
             #
-            # ``restore.done()`` 是退出条件而不是 ``break``：已被取消过一次之后
-            # 每次 await 都可能立刻再抛 CancelledError，包括回滚已跑完的那一刻。
-            while not restore.done():
-                try:
-                    await asyncio.shield(restore)
-                except asyncio.CancelledError:
-                    continue
-            raise
-        except Exception:
-            await rollback()
+            # restore.done() 是退出条件而不是 break：已被取消过一次之后每次
+            # await 都可能立刻再抛 CancelledError，包括回滚已跑完的那一刻。
+            await await_rollback(asyncio.ensure_future(rollback()))
             raise
 
     async def _commit_and_audit(

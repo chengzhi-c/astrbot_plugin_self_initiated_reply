@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from ._support import UMO, make_event
+from ._support import UMO, make_event, shorten_shutdown_windows
 from .host_stubs import (
     FakeToolSet,
     PipelineTestAdapter,
@@ -453,6 +453,47 @@ def test_off_rolls_back_memory_when_config_write_is_cancelled(tmp_path: Path) ->
     with_plugin(tmp_path, scenario)
 
 
+def test_ordinary_failure_rollback_runs_to_completion_when_cancelled(tmp_path: Path) -> None:
+    """普通异常的回滚同样要跑完：取消打断回滚会留下内存与磁盘反向偏离。
+
+    rollback 先翻内存再重写磁盘，取消落在第二次写盘上就只剩内存那半：磁盘留着新
+    值，重启后 /off 复活、/on 回落，而管理员既没收到失败回显（CancelledError 是
+    BaseException，main 的 except Exception 接不住）也看不到任何异常。
+
+    变异锚定：把该分支改回裸 await rollback()，本用例红。
+    """
+
+    async def scenario(plugin, main):
+        original_persist = plugin._persist_config
+        calls: list[str] = []
+        persisted: list[bool] = []
+
+        async def failing_then_slow_rollback():
+            calls.append("persist")
+            if len(calls) == 1:
+                raise OSError("disk unavailable")
+            await asyncio.sleep(0.05)  # 回滚写盘：取消就落在这段上
+            persisted.append(plugin.settings.enabled)
+
+        plugin._persist_config = failing_then_slow_rollback
+        try:
+            task = asyncio.create_task(plugin._persist_enabled(False))
+            while len(calls) < 2:
+                await asyncio.sleep(0.001)
+            task.cancel()
+            # 取消被盾牌挡住、回滚跑完之后，原始 OSError 原样上抛（不被 CancelledError
+            # 顶替）——与 storage 的「取消必须原样重放」同一纪律。
+            with pytest.raises(OSError):
+                await task
+            assert persisted == [True], f"回滚写盘被取消打断：{persisted}"
+            assert plugin.settings.enabled is True
+            assert plugin.runtime_enabled is True
+        finally:
+            plugin._persist_config = original_persist
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_on_persists_enabled_across_restart(tmp_path: Path) -> None:
     """``/on`` 同样落盘：否则 ``/off`` 持久化后就再也开不回来（跨重启）。"""
     import json
@@ -861,8 +902,7 @@ def test_terminate_quarantines_noncooperative_runner(tmp_path: Path) -> None:
         task = plugin._track_background_task(noncooperative())
         assert task is not None
         await asyncio.sleep(0)
-        original_timeout = getattr(main, "TERMINATE_TASK_TIMEOUT_SEC", None)
-        main.TERMINATE_TASK_TIMEOUT_SEC = 0.02
+        restore_windows = shorten_shutdown_windows(main)
         termination = asyncio.create_task(plugin.terminate())
         try:
             # 等到 terminate 真正返回再断言：固定 sleep 在机器被占满时会把
@@ -876,10 +916,108 @@ def test_terminate_quarantines_noncooperative_runner(tmp_path: Path) -> None:
             if not termination.done():
                 await asyncio.wait_for(termination, timeout=1)
             await asyncio.wait_for(task, timeout=1)
-            if original_timeout is None:
-                del main.TERMINATE_TASK_TIMEOUT_SEC
-            else:
-                main.TERMINATE_TASK_TIMEOUT_SEC = original_timeout
+            restore_windows()
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_terminate_cancelled_keeps_the_instance_from_publishing(tmp_path: Path) -> None:
+    """terminate() 被取消后，本实例同样不得再发布落盘。
+
+    缺陷形态：_terminated 只在顺利跑完时置位。取消落在任一 await 上时旧实例保留
+    写权限，而账本终态任务刻意绕过停止闸门（track_critical_task 的契约就是
+    「关停中也照常登记」）：它迟到的 os.replace 会用陈旧快照覆盖新实例刚写出的
+    state.json——冷却与日配额倒流，下次触发立刻重发同一会话。
+
+    变异锚定：把 _terminated = True 移出 finally，本用例红。
+    """
+
+    async def scenario(plugin, main):
+        release = asyncio.Event()
+
+        async def stuck() -> None:
+            while not release.is_set():
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    continue
+
+        task = plugin._track_background_task(stuck())
+        assert task is not None
+        termination = asyncio.create_task(plugin.terminate())
+        try:
+            await asyncio.sleep(0.05)
+            termination.cancel()
+            try:
+                await termination
+            except asyncio.CancelledError:
+                pass
+            assert plugin._terminated is True, "取消后旧实例仍保留落盘权限"
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_terminate_bounds_the_wait_for_the_config_lock(tmp_path: Path) -> None:
+    """取 _config_lock 也要有上界，不能跟着锁持有时间一起涨。
+
+    Dashboard 保存在这把锁下的最长路径是「启停拓扑收敛（stop_patrol 9s）+ 两次
+    落盘」，而无上界地等会让宿主 reload 被拖住数秒——此刻插件已 STOPPING、拒绝
+    一切写，契约 §5 的「终止有界」在最需要它的时候不成立。超窗与写超时同口径：
+    放弃本次最终落盘，不隔离、不 DEGRADED。
+
+    变异锚定：把 wait_for 换成直接 await acquire，本用例在 0.3s 预算上红。
+    """
+
+    async def scenario(plugin, main):
+        release = asyncio.Event()
+        restore = shorten_shutdown_windows(main, seconds=0.05)
+        try:
+
+            async def hold() -> None:
+                async with plugin._config_lock:
+                    await release.wait()
+
+            holder = asyncio.create_task(hold())
+            while not plugin._config_lock.locked():
+                await asyncio.sleep(0.001)
+            # 变异版本会等满 0.4s 再返回，靠这一定时器避免用例挂死。
+            asyncio.get_running_loop().call_later(0.4, release.set)
+            started = asyncio.get_running_loop().time()
+            await plugin.terminate()
+            elapsed = asyncio.get_running_loop().time() - started
+            release.set()
+            await asyncio.wait_for(holder, timeout=5)
+            assert elapsed < 0.3, f"terminate 被配置锁拖住：{elapsed:.3f}s"
+            assert plugin._abandon_disk_writes is True
+        finally:
+            restore()
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_shutdown_drain_window_covers_the_graceful_stop_grace(tmp_path: Path) -> None:
+    """关停收敛窗口必须覆盖被等待方自己的优雅停止宽限。
+
+    缺陷形态：_wait_background_tasks 曾复用 TERMINATE_TASK_TIMEOUT_SEC（3s），而被
+    取消的检查任务自带两段 GRACEFUL_STOP_GRACE_SEC 的收敛等待：合作任务必然超窗，
+    被判「吞掉取消」隔离登记 → _mark_degraded 永久 DEGRADED，一次例行 reload 就够了。
+    PATROL_STOP_TIMEOUT_SEC 已按同一理由取三段，后台任务收敛窗口必须同源。
+
+    变异锚定：把该常量改回 TERMINATE_TASK_TIMEOUT_SEC，本用例红。
+    """
+
+    async def scenario(plugin, main):
+        import sys
+
+        models = sys.modules[f"{main.__package__}.models"]
+        assert models.SHUTDOWN_TASK_DRAIN_TIMEOUT_SEC >= models.GRACEFUL_STOP_GRACE_SEC * 2, (
+            "关停收敛窗口不覆盖被等待方的两段优雅停止过渡"
+        )
 
     with_plugin(tmp_path, scenario)
 
@@ -938,7 +1076,7 @@ def test_terminate_quarantines_stuck_final_save(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         release = asyncio.Event()
         original_save = plugin._save_storage
-        original_timeout = getattr(main, "TERMINATE_TASK_TIMEOUT_SEC", None)
+        restore_windows = shorten_shutdown_windows(main)
 
         async def stuck_save() -> None:
             while not release.is_set():
@@ -948,7 +1086,6 @@ def test_terminate_quarantines_stuck_final_save(tmp_path: Path) -> None:
                     continue
 
         plugin._save_storage = stuck_save
-        main.TERMINATE_TASK_TIMEOUT_SEC = 0.02
         termination = asyncio.create_task(plugin.terminate())
         try:
             # 同上：等 terminate 真正返回，不用固定 sleep 赌 0.08s 足够。
@@ -966,10 +1103,7 @@ def test_terminate_quarantines_stuck_final_save(tmp_path: Path) -> None:
                 await asyncio.wait_for(termination, timeout=1)
             for task in list(plugin._quarantined_tasks):
                 await asyncio.wait_for(task, timeout=1)
-            if original_timeout is None:
-                del main.TERMINATE_TASK_TIMEOUT_SEC
-            else:
-                main.TERMINATE_TASK_TIMEOUT_SEC = original_timeout
+            restore_windows()
 
     with_plugin(tmp_path, scenario)
 
@@ -979,7 +1113,7 @@ def test_wait_background_tasks_spares_critical_persistence_tasks(tmp_path: Path)
 
     缺陷形态：``_wait_background_tasks`` 只排除 quarantine 表，不排除 critical
     表。而 ``_register_task`` 把 critical 任务**同时**放进 ``_background_tasks``，
-    于是最终落盘超过 ``TERMINATE_TASK_TIMEOUT_SEC`` 时，记账任务被取消**并**隔离
+    于是等待超过 ``SHUTDOWN_TASK_DRAIN_TIMEOUT_SEC`` 时，记账任务被取消**并**隔离
     → ``_mark_degraded`` → 插件永久 DEGRADED、需重载，只因为落盘慢。那时
     ``apply_proactive_state`` 已改过内存，账本还会停在 RECORD_FAILED。
 
@@ -988,7 +1122,7 @@ def test_wait_background_tasks_spares_critical_persistence_tasks(tmp_path: Path)
     """
 
     async def scenario(plugin, main):
-        original_timeout = getattr(main, "TERMINATE_TASK_TIMEOUT_SEC", None)
+        restore_windows = shorten_shutdown_windows(main)
         entered = asyncio.Event()
 
         async def slow_persist() -> None:
@@ -1010,7 +1144,6 @@ def test_wait_background_tasks_spares_critical_persistence_tasks(tmp_path: Path)
         ordinary = plugin._track_background_task(slow_persist())
         assert ordinary is not None
         await entered.wait()
-        main.TERMINATE_TASK_TIMEOUT_SEC = 0.02
         try:
             await plugin._wait_background_tasks()
             # 只断言真正修的那一行对 critical 任务的处理：构造期起的图片清理
@@ -1023,10 +1156,7 @@ def test_wait_background_tasks_spares_critical_persistence_tasks(tmp_path: Path)
             assert ordinary in {task for task, _ in quarantined}, "普通后台任务仍应被隔离"
         finally:
             plugin._quarantine_task = original_quarantine
-            if original_timeout is None:
-                del main.TERMINATE_TASK_TIMEOUT_SEC
-            else:
-                main.TERMINATE_TASK_TIMEOUT_SEC = original_timeout
+            restore_windows()
 
     with_plugin(tmp_path, scenario)
 
@@ -1089,7 +1219,7 @@ def test_state_save_double_cancel_keeps_lock_until_write_lands(tmp_path: Path) -
 
     缺陷形态：``except CancelledError`` 里裸 ``await write_task``，第二次
     cancel()（terminate 的 ``_cancel_background_tasks`` 调两次；
-    ``_wait_background_tasks`` 对超过 ``TERMINATE_TASK_TIMEOUT_SEC`` 的任务
+    ``_wait_background_tasks`` 对超过 ``SHUTDOWN_TASK_DRAIN_TIMEOUT_SEC`` 的任务
     再调一次）会落到写盘任务上，CancelledError 从 except 块穿出 → 提前放开
     ``_save_lock`` 而写盘线程还在跑。它随后 ``os.replace`` 的陈旧快照会覆盖
     这期间更新的落盘（terminate 的最终落盘、乃至新实例刚写出的 state.json），

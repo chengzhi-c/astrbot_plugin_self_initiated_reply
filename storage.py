@@ -121,7 +121,7 @@ _REPLACE_RETRY_ATTEMPTS = 5
 _REPLACE_RETRY_DELAY_SEC = 0.02
 
 
-def _replace_with_retry(src: Path, dst: Path) -> None:
+def replace_with_retry(src: Path, dst: Path) -> None:
     """``os.replace`` 的瞬时占用重试包装；重试次数与间隔见上方常量。"""
     for attempt in range(_REPLACE_RETRY_ATTEMPTS):
         try:
@@ -184,7 +184,7 @@ def write_json_atomic(
         if abandoned is not None and abandoned():
             logger.debug("[%s] abandoned write dropped path=%s", PLUGIN_ID, path)
             return False
-        _replace_with_retry(tmp_path, path)
+        replace_with_retry(tmp_path, path)
         fsync_dir(path)
         return True
     except (OSError, UnicodeEncodeError, TypeError, ValueError) as exc:
@@ -217,9 +217,14 @@ def load_config_data(path: Path, config_obj: Any) -> dict[str, Any]:
 
 def _backup_state_file(path: Path) -> None:
     """Move a damaged/incompatible state file aside so the cause is recoverable."""
+    if not path.exists():
+        # 版本不符分支已把文件移走，调用方随后的解析失败会再进来一次；第二次
+        # replace 必抛 FileNotFoundError，落进下面的 OSError 分支打出一条
+        # "损坏文件将被覆盖"的假告警，把真实的备份成功记录成失败。
+        return
     try:
         backup = path.with_name(f"{path.name}.corrupt-{time.time_ns()}")
-        _replace_with_retry(path, backup)
+        replace_with_retry(path, backup)
         logger.error("[%s] state file backed up to %s", PLUGIN_ID, backup.name)
     except OSError:
         # 备份失败时不阻断加载，但必须说清后果：损坏文件没被移走，后续任何一次
@@ -455,6 +460,11 @@ async def apersist_settings_config(path: Path, config_obj: Any, settings: Settin
                 success = await asyncio.shield(write_task)
                 break
             except asyncio.CancelledError:
+                if write_task.done():
+                    # 被取消的是写盘任务本身（事件循环收尾会取消循环内全部任务），
+                    # 没有"等它落地"可言。继续循环会在已完成的 Future 上空转：
+                    # await 一个 done 的 Future 不再让出事件循环，进程卡死到强杀。
+                    raise
                 continue
         raise
     if not success:

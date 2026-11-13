@@ -25,6 +25,7 @@ from .storage import (
     write_json_atomic,
 )
 from .utils import (
+    await_rollback,
     event_sender_id,
     event_sender_name,
     whitelist_storage_key,
@@ -243,7 +244,7 @@ async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
             #
             # 等待必须继续经 shield：裸 ``await write_task`` 时第二次 cancel()
             # （terminate 对 _cancel_background_tasks 调两次；_wait_background
-            # _tasks 对超过 TERMINATE_TASK_TIMEOUT_SEC 的任务再调一次）会落到
+            # _tasks 对超过 SHUTDOWN_TASK_DRAIN_TIMEOUT_SEC 的任务再调一次）会落到
             # 写盘任务上，CancelledError 从本块穿出 → **提前放开 _save_lock**，
             # 而写盘线程还在跑。它随后 os.replace 的陈旧快照会覆盖这期间更新的
             # 一次落盘（terminate 的最终落盘、乃至新实例刚写出的 state.json），
@@ -254,6 +255,11 @@ async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
                     success = await asyncio.shield(write_task)
                     break
                 except asyncio.CancelledError:
+                    if write_task.done():
+                        # 写盘任务本身被取消（如事件循环收尾统一取消）：没有
+                        # "等它落地"可言。继续循环会在已完成的 Future 上空转，
+                        # 且不再让出事件循环——整个进程卡死。
+                        raise
                     continue
             if not success and not abandoned():
                 logger.warning(
@@ -296,22 +302,15 @@ async def persist_enabled(plugin: SelfInitiatedReplyPlugin, enabled: bool) -> No
     except asyncio.CancelledError:
         # 取消同样要回滚：CancelledError 不落 except Exception，而 enabled 已在
         # 内存翻面。少了这一步，§6.1 承诺的「重启后保持」反向变成「重启后回落」。
-        restore = asyncio.ensure_future(rollback())
-        # 回滚必须**跑完**才算数：单次 shield 在取消瞬间就抛，rollback 成游离
-        # 任务在锁外继续，能拿到锁并完整落盘的一次后续写入随后被它用旧值撤销。
-        # 与 webapi._apply_config_updates 的回滚等待同形。
-        #
-        # ``restore.done()`` 是退出条件而不是 ``break``：我们已被取消过一次，
-        # 之后每次 await 都可能立刻再抛 CancelledError，包括回滚任务已经跑完
-        # 的那一刻——只靠 break 会永远等下去。
-        while not restore.done():
-            try:
-                await asyncio.shield(restore)
-            except asyncio.CancelledError:
-                continue
+        # 回滚必须跑完才算数：单次 shield 在取消瞬间就抛，rollback 成游离任务在
+        # 锁外继续，能拿到锁并完整落盘的一次后续写入随后被它用旧值撤销。
+        await await_rollback(asyncio.ensure_future(rollback()))
         raise
     except Exception:
-        await rollback()
+        # 回滚同样必须跑完：rollback 先在内存翻回旧值再重写磁盘，取消若落在第二次
+        # 写盘上就只剩内存那半，磁盘留着新值——重启后 /off 复活。与上方取消分支、
+        # whitelist 的回滚同一纪律。
+        await await_rollback(asyncio.ensure_future(rollback()))
         raise
 
 

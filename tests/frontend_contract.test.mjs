@@ -429,7 +429,6 @@ test("page exposes the accessibility and narrow-layout contracts", async () => {
   );
   assert.match(html, /id="moreActionsBtn"[^>]*aria-controls="moreActionsMenu"[^>]*aria-expanded="false"/);
   assert.match(html, /id="judgeProviderInput"[^>]*hidden/);
-  assert.match(html, /超时则本次不主动回应/);
   assert.doesNotMatch(html, /超时按默认放行/);
   assert.match(fe, /isSuccessfulConfigPayload\(/);
   assert.match(fe, /btn\.disabled = blocked/);
@@ -468,14 +467,14 @@ test("every data-config-control in the page is registered in PROVIDER_CONTROLS",
   assert.doesNotMatch(configIo, /PROVIDER_CONFIG_KEYS/);
 });
 
-test("context-history setting describes its fallback behavior", async () => {
+test("context-history setting states its zero behavior", async () => {
   const html = await readFile(join(pageDir, "index.html"), "utf8");
 
   assert.match(html, /判断时参考的聊天记录/);
   assert.match(html, /少于多少条时补读历史/);
   assert.match(
     html,
-    /本插件记录的文字消息少于此数时，会尝试读取同一会话的旧消息，帮助判断要不要接话。设为\s+0 时，只看插件已记录的消息。/
+    /0 只用已记录的消息/
   );
   assert.doesNotMatch(html, /上下文至少几条消息才判断接话/);
 });
@@ -704,9 +703,9 @@ test("page wires the manual image cache cleanup control to the API", async () =>
 });
 
 test("number inputs keep their hint in aria-describedby", async () => {
-  // 校验错误若独占 aria-describedby，读屏用户聚焦输入框时听不到"建议 30-120
-  // 秒"这类操作必需提示。这条守两件事：HTML 里 hint 有 id 且被 input 引用；
-  // config-io 合并而非覆盖 aria-describedby。
+  // 校验错误若独占 aria-describedby，读屏用户聚焦输入框时听不到非显然语义
+  // （如「0 不限制」）。这条守三件事：aria 引用不悬空；hint 有 id 且被 input
+  // 引用；config-io 合并而非覆盖 aria-describedby。
   const [html, configIo] = await Promise.all([
     readFile(join(pageDir, "index.html"), "utf8"),
     readFile(join(pageDir, "config-io.mjs"), "utf8"),
@@ -714,21 +713,39 @@ test("number inputs keep their hint in aria-describedby", async () => {
   const blocks = [...html.matchAll(/<label class="field">([\s\S]*?)<\/label>/g)].map(
     (m) => m[1],
   );
+  // 悬空引用是最容易在删改文案时留下的缺陷（读屏读到空描述），且不依赖
+  // hint 类名，故先做一遍全局校验。
+  const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
+  const refNames = [
+    ...html.matchAll(/\baria-(?:describedby|labelledby|controls|owns)="([^"]+)"/g),
+  ].flatMap((m) => m[1].split(/\s+/));
+  assert.deepEqual(
+    [...new Set(refNames)].filter((name) => !ids.has(name)),
+    [],
+    "aria 引用指向不存在的 id",
+  );
   let checked = 0;
+  let hints = 0;
   for (const block of blocks) {
     const inputTag = block.match(/<input\b[\s\S]*?\/>/);
     if (!inputTag || !/type="number"/.test(inputTag[0])) continue;
     const id = inputTag[0].match(/id="(\w+)"/);
     const described = inputTag[0].match(/aria-describedby="([^"]+)"/);
-    const hint = block.match(/<p class="field-hint" id="(\w+)"/);
+    const hintTag = block.match(/<p class="field-hint"[^>]*>/);
     assert.ok(id, `number input without id: ${inputTag[0].slice(0, 40)}`);
-    assert.ok(hint, `number ${id[1]} has a field-hint with no id`);
-    assert.ok(
-      described && described[1].split(" ").includes(hint[1]),
-      `number ${id[1]} aria-describedby 未引用其 hint`,
-    );
+    // hint 可省略（标签已自解释的字段不再挂说明），但挂了就必须有 id 且被引用。
+    if (hintTag) {
+      const hint = hintTag[0].match(/id="(\w+)"/);
+      assert.ok(hint, `number ${id[1]} 的 field-hint 缺 id`);
+      assert.ok(
+        described && described[1].split(" ").includes(hint[1]),
+        `number ${id[1]} aria-describedby 未引用其 hint`,
+      );
+      hints += 1;
+    }
     checked += 1;
   }
+  assert.ok(hints > 0, "没有任何 number 输入仍挂 field-hint，本用例已空转");
   // 与全文独立计数交叉比对：label 块正则一旦失配（改结构、换 class），
   // checked 会静默变小甚至归零而测试仍绿。不写死字段个数，新增字段自动纳入。
   const totalNumberInputs = (html.match(/type="number"/g) || []).length;
@@ -765,7 +782,10 @@ test("field labels and aria wiring follow the single-source declarations", async
     );
   }
   assert.match(html, /id="mentionModeInput"[^>]*aria-describedby="mentionModeHint"/);
-  assert.match(html, /id="judgeProviderInput"[^>]*aria-describedby="providerHint"/);
+  assert.match(
+    html,
+    /id="judgeProviderInput"[^>]*aria-description="留空表示使用当前会话默认模型"/,
+  );
   assert.match(html, /id="dimBtn"[^>]*aria-pressed="false"/);
   assert.match(html, /id="boldBtn"[^>]*aria-pressed="false"/);
 });
@@ -1083,7 +1103,7 @@ test("non-whitelist illegal-char save errors do not paint the whitelist field", 
     toggle() {},
   };
   const fields = [
-    { dataset: { configKey: "whitelist_sessions", configTransform: "whitelist" }, value: "ok" },
+    { dataset: { configKey: "whitelist_sessions", configTransform: "whitelist" }, value: "12345" },
     { dataset: { configKey: "judge_provider_id", configControl: "judge" } },
   ];
   const form = {
@@ -1143,7 +1163,7 @@ test("whitelist illegal-char save errors still paint the whitelist field", async
     toggle() {},
   };
   const fields = [
-    { dataset: { configKey: "whitelist_sessions", configTransform: "whitelist" }, value: "ok" },
+    { dataset: { configKey: "whitelist_sessions", configTransform: "whitelist" }, value: "12345" },
   ];
   const form = {
     classList,
@@ -1338,6 +1358,67 @@ test("the off-list warning requires a loaded list and a non-empty id", async () 
   );
 });
 
+test("provider controls resolve the sibling field label", async () => {
+  // 识图两个 Provider 的 .field-label 是 [data-config-key] 容器的**兄弟**节点
+  //（判断模型那个在自己内部）。只在本层 querySelector 会一路回退到内部 schema
+  // 键，把 vision_provider_id 显示给运营者——手动态填错拼写时这是唯一的提示。
+  const classList = { add() {}, remove() {}, toggle() {} };
+  const label = { textContent: "识图模型 Provider" };
+  const visionField = {
+    dataset: { configKey: "vision_provider_id", configControl: "vision" },
+    id: "visionProviderField",
+    querySelector: () => null,
+    parentElement: {
+      querySelector: (selector) => (selector === ".field-label" ? label : null),
+    },
+    closest: () => visionField,
+  };
+  const form = {
+    classList,
+    inert: false,
+    querySelector: () => null,
+    querySelectorAll: () => [visionField],
+  };
+  const elements = { configForm: form, configSaveState: { textContent: "", classList } };
+  const state = {
+    configLoaded: true,
+    savingConfig: false,
+    configRevision: TEST_REVISION,
+    isDirty: false,
+    requiresConfigRefresh: false,
+  };
+  const toasts = [];
+  const savedKeys = Object.fromEntries(configSaveKeys(form).map((key) => [key, true]));
+  const io = makeConfigIo({
+    elements,
+    state,
+    controls: providerControls(""),
+    apiPost: async () => ({
+      ok: true,
+      config: {
+        ...savedKeys,
+        ok: true,
+        enabled: true,
+        whitelist_sessions: [],
+        config_revision: TEST_REVISION,
+      },
+      config_revision: TEST_REVISION,
+      runtime_enabled: true,
+      adjusted_fields: ["vision_provider_id"],
+    }),
+    showToast: (message) => toasts.push(message),
+    providerOptions: [],
+    providerListAvailable: true,
+  });
+
+  await io.saveConfig({ preventDefault() {} });
+
+  const normalized = toasts.find((message) => message.includes("已规范化"));
+  assert.ok(normalized, `未出现规范化提示：${toasts}`);
+  assert.ok(normalized.includes("识图模型 Provider"), `未取到字段标签：${normalized}`);
+  assert.ok(!normalized.includes("vision_provider_id"), `内部 schema 键泄漏：${normalized}`);
+});
+
 test("undici failures map to the connection hint", () => {
   const hint = "无法连接插件 API，请重载页面或重启 AstrBot 后重试";
   assert.equal(normalizeApiError(new Error("fetch failed")).message, hint);
@@ -1364,22 +1445,44 @@ test("whitelist format collapses a group UMO onto its bare group id", () => {
   ]);
   assert.equal(
     summarizeWhitelist(raw),
-    "已识别 4 条（3 个纯群号，1 个完整 UMO） · 存在 1 处重复",
+    "共 4 条（3 个纯群号，1 个完整 UMO） · 存在 1 处重复",
   );
 });
 
 test("summarizeWhitelist does not call unvalidated entries valid", () => {
   // 计数不校验字符集/长度：保存时会被后端拦下的非法条目一样被计入。
-  // 文案说「已识别」不说「有效」——后者会让运营者以为这些会话真的生效了。
+  // 文案说「共 N 条」不说「有效」——后者会让运营者以为这些会话真的生效了。
   assert.ok(
-    summarizeWhitelist('bad"quote').startsWith("已识别 1 条"),
+    summarizeWhitelist('bad"quote').startsWith("共 1 条"),
     `摘要把非法条目说成了有效会话：${summarizeWhitelist('bad"quote')}`,
   );
   assert.ok(!summarizeWhitelist('bad"quote').includes("有效"));
 });
 
+test("whitelist separates pure group ids, bare keys and full UMOs", () => {
+  // 裸群键：非 QQ 平台的会话 ID 不是纯数字（Telegram 负数 chat_id、飞书 oc_
+  // 前缀），后端按 group_id 精确匹配，前端必须与纯群号同等对待。
+  for (const key of ["-1001234567890", "oc_7f3a9c", "GROUP_ID", "abc"]) {
+    assert.ok(summarizeWhitelist(key).includes("1 个群键"), key);
+    assert.ok(!summarizeWhitelist(key).includes("纯群号"), key);
+    assert.equal(validateWhitelistLines(key).length, 0, key);
+  }
+  // 裸群键与它的群 UMO 是同一个会话：去重与顶栏计数都要折叠。
+  assert.deepEqual(
+    uniqueWhitelistItems("-1001234567890\ntelegram:GroupMessage:-1001234567890"),
+    ["-1001234567890"],
+  );
+  // 会话 ID 自带冒号的 UMO 仍是完整 UMO。
+  assert.ok(summarizeWhitelist("qq:GroupMessage:x:y").includes("1 个完整 UMO"));
+  // 缺段/含空白在运行期匹配不到，摘要单列且保存前拦下。
+  assert.ok(summarizeWhitelist("123456 abc").includes("1 条格式无法识别"));
+  const segmentErrors = validateWhitelistLines("qq:GroupMessage");
+  assert.equal(segmentErrors.length, 1);
+  assert.ok(segmentErrors[0].reason.includes("完整 UMO"));
+});
+
 test("validateWhitelistLines splits on commas like the save path", () => {
-  const errors = validateWhitelistLines('ok1,bad"q');
+  const errors = validateWhitelistLines('12345,bad"q');
   assert.equal(errors.length, 1);
   assert.equal(errors[0].line, 2);
   assert.ok(errors[0].reason.includes("非法字符"));
@@ -1405,9 +1508,9 @@ test("integer number controls reject fractional input before save", () => {
 
 test("validateWhitelistLines reports line numbers and reasons for malformed whitelist input", () => {
   const input = [
-    "valid_session_1",
-    'illegal_session_"with_quotes"',
-    "valid_session_2",
+    "100001",
+    'illegal_"with_quotes"',
+    "100002",
     "x".repeat(205),
   ].join("\n");
   const errors = validateWhitelistLines(input);

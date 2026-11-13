@@ -3878,3 +3878,77 @@ def test_relative_source_cache_dir_resolves_to_absolute(tmp_path: Path, monkeypa
     assert prepared.is_absolute(), f"prepared_source 仍是相对路径：{prepared}"
     assert prepared.is_file()
     assert asyncio.run(parser._resolve_image_url(info)) is not None
+
+
+def test_raw_cq_parsing_stays_linear_on_pathological_input() -> None:
+    """缺右括号的 CQ 串不得让解析退化成 O(n²)。
+
+    缺陷形态：原正则的两段字符类（类型段与正文段）在同一段输入上竞争，缺右括号时
+    每个 [CQ: 起点都要逐字符回退。16 KB 的畸形 raw 串实测要 3.6 秒，而 has_images
+    与 extract_images 在消息热路径上各跑一遍，全插件共享同一事件循环。
+
+    变异锚定：改回 re.finditer，本用例在 0.5s 预算上红。
+    """
+    import time
+
+    _load_modules()
+
+    extractor = load_package(PACKAGE_NAME, "image.extractor")
+
+    started = time.monotonic()
+    assert extractor._parse_raw_cq_components("[CQ:" * 4000) == []
+    assert time.monotonic() - started < 0.5, "畸形 CQ 串的解析耗时随长度平方增长"
+
+    parsed = extractor._parse_raw_cq_components("[CQ:image,file=A.png,url=http://x/y]")
+    assert parsed == [
+        {
+            "type": "image",
+            "data": {"file": "A.png", "url": "http://x/y"},
+        }
+    ]
+
+
+def test_shared_ssl_context_is_built_once() -> None:
+    """图片下载的 TLS 上下文必须复用，不得按请求重建。
+
+    缺陷形态：每次下载都 ssl.create_default_context()——实测 24ms 的同步开销，且每份
+    上下文各自持有证书链与会话缓存。图片查询在判断/生成两条热路径上串行触发。
+
+    变异锚定：把 _shared_ssl_context 改成每次返回新上下文，本用例红。
+    """
+    _load_modules()
+    parser = load_package(PACKAGE_NAME, "image.parser")
+    first = parser._shared_ssl_context()
+    assert parser._shared_ssl_context() is first
+    assert first.check_hostname is True
+
+
+def test_atomic_write_retries_transient_replace_failure(tmp_path: Path) -> None:
+    """原子发布的替换要重试：Windows 上 AV/索引器会短暂持有目标文件。
+
+    缺陷形态：os.replace 撞上 PermissionError 就直接上抛，已冻结的图片缓存写入静默
+    失败，prepare 退化成内存 data URL 后被会话预算拒掉——用户看到的是「这张图没被
+    识别」，而磁盘完全正常。
+
+    变异锚定：去掉重试循环，本用例红。
+    """
+    _load_modules()
+    parser = load_package(PACKAGE_NAME, "image.parser")
+    target = tmp_path / "atomic.bin"
+    attempts = {"count": 0}
+    real_replace = parser.os.replace
+
+    def flaky_replace(source, destination):
+        attempts["count"] += 1
+        if attempts["count"] <= 2:
+            raise PermissionError("held by indexer")
+        return real_replace(source, destination)
+
+    parser.os.replace = flaky_replace
+    try:
+        parser._atomic_write(target, b"payload")
+    finally:
+        parser.os.replace = real_replace
+
+    assert target.read_bytes() == b"payload"
+    assert attempts["count"] == 3, f"没有重试：{attempts}"

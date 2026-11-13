@@ -1040,3 +1040,26 @@ async def test_cancel_delay_spares_running_check_and_yields_queued_one(tmp_path:
                 await task
             except asyncio.CancelledError:
                 pass
+
+
+def test_cleanup_events_treats_a_zero_patrol_window_as_unbounded(tmp_path: Path) -> None:
+    """patrol_inactive_after_sec 取 0（不截断）时事件不得按 1 小时回收。
+
+    缺陷形态：陈旧阈值写成 max(EVENT_CLEANUP_INTERVAL_SEC, 0)，面板承诺的
+    「不截断」实际只有一小时：静默一小时以上的会话事件先被回收，巡检随后因
+    「没有可用的最近消息事件」永久跳过它。
+
+    变异锚定：把 or 折算回裸 max()，本用例红。
+    """
+    _, _, scheduler, _, _ = _make_scheduler(tmp_path, {"patrol_inactive_after_sec": 0})
+    scheduler._last_cleanup = 0.0
+    now = scheduler_mod_now()
+    umo = "g1:user:a"
+    scheduler._last_events[umo] = object()
+    scheduler._last_event_at[umo] = now - 7200.0
+
+    scheduler.cleanup_events_if_needed()
+
+    assert umo in scheduler._last_events, (
+        "「不截断」被折成 1 小时：事件在 2h 时就被回收了，该会话将永久跳过巡检"
+    )

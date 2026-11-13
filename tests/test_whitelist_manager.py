@@ -38,6 +38,8 @@ class FakePersistence:
         # 取消只注入一次：回滚期的重写必须能正常完成，否则测的是「回滚也失败」
         # 那条既有路径，而非「取消也要回滚」本身。
         self.sync_cancel = False
+        self.save_gate: asyncio.Event | None = None
+        self.gate_waiters = 0
 
     async def sync(self) -> bool:
         self.sync_calls += 1
@@ -50,8 +52,13 @@ class FakePersistence:
 
     async def save(self) -> None:
         self.save_calls += 1
-        if self.save_fail:
+        # 只让第一次写失败：回滚的重写要能正常完成，才测得到「回滚被取消打
+        # 断」本身；回滚也失败的路径由 sync_fail 那个用例覆盖。
+        if self.save_fail and self.save_calls == 1:
             raise RuntimeError("storage write failed")
+        if self.save_gate is not None:
+            self.gate_waiters += 1
+            await self.save_gate.wait()
 
 
 class FakeCtx:
@@ -435,8 +442,8 @@ async def test_remove_rollback_runs_when_persist_is_cancelled(tmp_path: Path) ->
     磁盘却仍写着它在白名单里，重启即复活；同时该会话的配额与冷却被清零。
     add 侧则相反：内存里会话已加入，磁盘没有，重启后不再命中白名单。
 
-    变异锚定：删掉 ``commit_change`` 里的 ``except asyncio.CancelledError``
-    分支（只留 ``except Exception``），本用例红。
+    变异锚定：把 ``commit_change`` 的 ``except BaseException`` 改回
+    ``except Exception``，本用例红。
     """
     _, _, models = _load_modules()
     umo = _umo_with_group()
@@ -480,3 +487,42 @@ async def test_replace_returns_pruned_state_snapshot(tmp_path: Path) -> None:
     assert pruned[umo] == {"daily_count": 3}
     assert pruned[group] == {"daily_count": 9}
     assert umo not in ctx.sessions and group not in ctx.sessions
+
+
+async def test_remove_rollback_finishes_when_the_caller_is_cancelled(tmp_path: Path) -> None:
+    """B2 回归：普通失败的回滚被取消打断时仍要跑完，磁盘不能停在被驳回的白名单。
+
+    缺陷形态：``except Exception: await rollback()``。``replace`` 早已单向前进
+    （代次推进、会话状态摘下），回滚只来得及恢复内存——取消落在回滚的 await 上
+    就跳出，磁盘仍是驳回后的白名单，重启后 ``load_config_data`` 直接把它复活
+    （契约 §6），同时该会话的配额与冷却被清零（契约 §11 B2）。
+
+    变异锚定：把 shield 等待循环改回裸 ``await rollback()``，本用例红。
+    """
+    _, _, models = _load_modules()
+    umo = _umo_with_group()
+    group = _group_key(umo)
+    ctx = FakeCtx(models, whitelist={umo, group})
+    manager = ctx.make_manager()
+    ctx.persistence.save_fail = True
+    gate = asyncio.Event()
+    ctx.persistence.save_gate = gate
+
+    task = asyncio.ensure_future(manager.remove(umo))
+    for _ in range(500):
+        if ctx.persistence.gate_waiters:
+            break
+        await asyncio.sleep(0.01)
+    assert ctx.persistence.gate_waiters, "回滚的重写没有开始，前提不成立"
+
+    task.cancel()
+    # 取消送达后本调用不得先结束：结束就意味着回滚成了游离任务，等它跑完
+    # 已经与调用方无关，磁盘上留下被驳回的白名单。
+    await asyncio.sleep(0.05)
+    assert not task.done(), "取消已送达就让 remove() 返回：回滚被放弃"
+    gate.set()
+    with pytest.raises(RuntimeError):
+        await task
+
+    assert ctx.persistence.save_calls == 2, "取消打断后回滚的重写没有跑完"
+    assert ctx.settings.whitelist == {umo, group}, "回滚后内存白名单未恢复"

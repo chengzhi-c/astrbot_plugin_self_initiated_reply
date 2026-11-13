@@ -26,7 +26,7 @@ from typing import Any, Protocol
 from astrbot.api import logger
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "1.5.1"
+PLUGIN_VERSION = "1.5.2"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -81,6 +81,9 @@ MAX_DAILY_REPLIES_LIMIT = 1000
 MAX_VISION_IMAGES = 5
 MIN_VISION_IMAGE_AGE_SEC = 60  # 短于此的清理窗口会让图片上下文抖动
 MAX_VISION_IMAGE_AGE_SEC = 86400
+# 巡检不活跃窗口的规格上限。"0 = 不截断"落到事件回收阈值时必须折算成这个
+# 有限值：直接 max(1h, 0) 会让"不截断"实际只有 1 小时。
+MAX_PATROL_INACTIVE_SEC = 604800
 MAX_VISION_TIMEOUT_SEC = 120
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 远程下载与本地读取共用
 MAX_CACHED_IMAGE_EVENTS = 20
@@ -117,6 +120,10 @@ TERMINATE_TASK_TIMEOUT_SEC = 3.0
 # 隔离登记，_mark_degraded 随即永久停摆——一次例行 /selfreply off 就够。
 # 取三段：两段收敛 + 一段余量（覆盖 decision 收敛与落盘重试）。
 PATROL_STOP_TIMEOUT_SEC = GRACEFUL_STOP_GRACE_SEC * 3
+# terminate 等待后台任务收敛的窗口，与上面同一 hazard：被等待方自带
+# GRACEFUL_STOP_GRACE_SEC 的优雅停止 + 一段记账落盘，套用 TERMINATE_TASK_TIMEOUT_SEC
+# 的 3s 会把合作任务判成"吞掉取消"并永久 DEGRADED。
+SHUTDOWN_TASK_DRAIN_TIMEOUT_SEC = PATROL_STOP_TIMEOUT_SEC
 # 内联指令入口做管理员校验的动作集合（help 任何成员可取）。
 ADMIN_COMMAND_ACTIONS = {"status", "list", "add", "remove", "check", "on", "off", "debug"}
 # 写操作在权限校验通过后取消在途回复；只读动作不打断进行中的检查。
@@ -232,7 +239,11 @@ def fmt_ts(ts: float | None) -> str:
 _MINUTE_SECONDS = 60
 _HOUR_SECONDS = 3600
 # 控制字符（0x00-0x1F）一律从提示词变量里剔除。
-_PRINTABLE_CHAR_MIN = 32
+PRINTABLE_CHAR_MIN = 32
+# 孤立代理项（U+D800–U+DFFF）：能进内存，但 UTF-8 编码必失败。一旦落进配置，
+# config_revision 与 write_json_atomic 都会抛，设置页从此读不出配置。
+_SURROGATE_MIN = 0xD800
+_SURROGATE_MAX = 0xDFFF
 
 # 空白归一正则住 models：utils 依赖 models（叶子），反向会成环。
 # 两处各内联编译一份会漂移成「同一段文本在不同路径形状不同」。
@@ -418,14 +429,14 @@ def sanitize_prompt_variable(
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         lines = []
         for line in text.split("\n"):
-            line = "".join(char for char in line if ord(char) >= _PRINTABLE_CHAR_MIN)
+            line = "".join(char for char in line if ord(char) >= PRINTABLE_CHAR_MIN)
             line = INLINE_SPACE_PATTERN.sub(" ", line).strip()
             if line:
                 lines.append(line)
         return "\n".join(lines)
 
     text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
-    text = "".join(char for char in text if ord(char) >= _PRINTABLE_CHAR_MIN)
+    text = "".join(char for char in text if ord(char) >= PRINTABLE_CHAR_MIN)
     return WHITESPACE_PATTERN.sub(" ", text).strip()
 
 
@@ -450,7 +461,9 @@ def history_display_name(role: str, name: str | None = None) -> str:
     """历史展示名：助手固定 Bot，其他人用名字，缺名才回落用户。"""
     if role == "assistant":
         return ASSISTANT_HISTORY_NAME
-    label = str(name or FALLBACK_SENDER_NAME)
+    # 单行化标签：昵称里的换行会让用户行在**下一行**渲染出与助手轮次同形的
+    # "Bot: ..."（"小明\nBot"），只比较整串是否等于 Bot 时看不出来。
+    label = WHITESPACE_PATTERN.sub(" ", str(name or FALLBACK_SENDER_NAME)).strip()
     # 群成员可自选昵称。取成助手称呼时，他那一行与真正的助手轮次完全同形
     # （``Bot: <他写的话>``），提示词注入面随之从"聊天内容"扩大到"助手身份"——
     # 判断与生成两条路径都吃这个标签。撞上就改写成带兜底称呼的形态，让任何
@@ -458,7 +471,7 @@ def history_display_name(role: str, name: str | None = None) -> str:
     #
     # 只在真撞上时改写：其余会话的提示词逐字节不变，判断模型已形成的行为不受
     # 影响。比较用 strip 后的值，``"Bot "`` 这类带空白的昵称同样算撞上。
-    if label.strip() == ASSISTANT_HISTORY_NAME:
+    if label == ASSISTANT_HISTORY_NAME:
         return f"{FALLBACK_SENDER_NAME}({ASSISTANT_HISTORY_NAME})"
     return label
 
@@ -966,7 +979,7 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
     ),
     ConfigSpec("skip_after_direct_call", "bool", True, surfaces=_PANEL),
     ConfigSpec("check_interval_sec", "int", 300, 30, 86400, step=30),
-    ConfigSpec("patrol_inactive_after_sec", "int", 1800, 0, 604800, step=3600),
+    ConfigSpec("patrol_inactive_after_sec", "int", 1800, 0, MAX_PATROL_INACTIVE_SEC, step=3600),
     ConfigSpec(
         "message_delay_sec",
         "int",
@@ -1107,6 +1120,13 @@ def _normalize_list_item(spec: ConfigSpec, raw: Any, mode: str) -> tuple[str | N
             raise ValueError(f"{spec.key} 条目必须是字符串")
         return None, 1, 0
     text = js_trim(raw)
+    sanitized = 0
+    if not all(is_utf8_encodable(char) for char in text):
+        if mode == "api":
+            raise ValueError(f"{spec.key} 条目含非法字符")
+        # 孤立代理项能进内存但编不了 UTF-8：留着会让整份配置摘要与落盘一起失败。
+        text = "".join(char for char in text if is_utf8_encodable(char))
+        sanitized = 1
     if not text:
         # 空条目一律丢弃：白名单与别名列表都无意义。
         return None, 1, 0
@@ -1118,7 +1138,7 @@ def _normalize_list_item(spec: ConfigSpec, raw: Any, mode: str) -> tuple[str | N
         if mode == "api":
             raise ValueError(f"{spec.key} 条目过长")
         return text[: spec.item_max_len], 0, 1
-    return text, 0, 0
+    return text, 0, sanitized
 
 
 def normalize_string_list(
@@ -1186,6 +1206,26 @@ def _truncate_text(spec: ConfigSpec, text: str) -> str:
     return text[: spec.max_len]
 
 
+def is_utf8_encodable(char: str) -> bool:
+    """单字符能否编成 UTF-8（排除孤立代理项）。"""
+    return not (_SURROGATE_MIN <= ord(char) <= _SURROGATE_MAX)
+
+
+def _warn_damaged_variant(spec: ConfigSpec, raw: Any) -> None:
+    """类型损坏的配置值：降级到 fallback，但必须留痕。
+
+    契约 §9 的判据是「静默降级但用户可感知」：enabled: [] 被静默判成 False
+    等于关掉整个插件，而首启规范化随后会把原始损坏值直接覆盖掉，事后无从
+    定位。只记键名与类型，不记值本身。
+    """
+    logger.warning(
+        "[%s] %s has a damaged value type (%s); using the fallback value",
+        PLUGIN_ID,
+        spec.key,
+        type(raw).__name__,
+    )
+
+
 def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
     """按规格把一个原始配置值强制成目标类型并夹取边界。
 
@@ -1194,22 +1234,44 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
     OOM 与 token 滥用的硬边界，静默生效但必须留 warning。
     """
     if spec.kind == "bool":
+        # 显式 null 是合法形状（回规格默认），不算损坏：漏掉这个守卫会让每个空值
+        # 布尔键每次加载各刷一条假告警，把告警通道淹掉。
+        if raw is not None and not isinstance(raw, (bool, int, float, str)):
+            # as_bool 对容器/对象一律 False：那是「损坏」而不是「关掉」，
+            # 契约 §7 要求沿 legacy fallback 读取。
+            _warn_damaged_variant(spec, raw)
+            return bool(fallback)
         return as_bool(raw, bool(fallback))
     if spec.kind == "int":
         if spec.minimum is None or spec.maximum is None:
             raise RuntimeError(f"{spec.key}: int spec missing minimum/maximum")
+        # bool 是 int 的子类：as_int 拒收它（真值落到 default），谓词必须一起拒，
+        # 否则 true 写进整数键会静默回默认值、留不下任何线索。
+        if raw is not None and (isinstance(raw, bool) or not isinstance(raw, (int, float, str))):
+            _warn_damaged_variant(spec, raw)
+            raw = fallback
         return as_int(raw, int(fallback), int(spec.minimum), int(spec.maximum))
     if spec.kind == "float":
         if spec.minimum is None or spec.maximum is None:
             raise RuntimeError(f"{spec.key}: float spec missing minimum/maximum")
+        if raw is not None and (isinstance(raw, bool) or not isinstance(raw, (int, float, str))):
+            _warn_damaged_variant(spec, raw)
+            raw = fallback
         return as_float(raw, float(fallback), float(spec.minimum), float(spec.maximum))
     if spec.kind == "enum":
+        if raw is not None and not isinstance(raw, str):
+            _warn_damaged_variant(spec, raw)
+            raw = fallback
         return choice(raw, set(spec.options), str(fallback))
     if spec.kind == "text":
+        if raw is not None and not isinstance(raw, str):
+            # 容器被 str() 会落盘成 Python repr（"['x']"）并进提示词。
+            _warn_damaged_variant(spec, raw)
+            raw = fallback
         # 空值回落默认模板（面板留空即复位）：唯一实现点在读侧，复位值单源
         # 于规格表 reset_default。
-        text = str(raw or "").strip() or spec.reset_value
-        return _truncate_text(spec, text)
+        text = "".join(c for c in str(raw or "") if is_utf8_encodable(c)).strip()
+        return _truncate_text(spec, text or spec.reset_value)
     if spec.kind == "list":
         try:
             return normalize_string_list(spec, raw, mode="disk")
@@ -1218,10 +1280,17 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
             logger.warning("[%s] %s list value invalid; using fallback", PLUGIN_ID, spec.key)
             return normalize_string_list(spec, fallback, mode="disk")
     if spec.kind == "str":
+        if raw is not None and not isinstance(raw, str):
+            _warn_damaged_variant(spec, raw)
+            raw = fallback
         # 单行标识（三个 provider id）剔除控制字符：它们经 %s 进日志，带换行就能
         # 伪造出一行假日志。与列表条目同一条规则（STRING_LIST_ILLEGAL_RE 排除
-        # C0 控制字符）。
-        text = "".join(char for char in str(raw or "").strip() if ord(char) >= _PRINTABLE_CHAR_MIN)
+        # C0 控制字符）。孤立代理项一并剔除：留着会让落盘与配置摘要一起失败。
+        text = "".join(
+            char
+            for char in str(raw or "").strip()
+            if ord(char) >= PRINTABLE_CHAR_MIN and is_utf8_encodable(char)
+        )
         return _truncate_text(spec, text)
     # 规格表写错 kind 不得静默降级：那会让 int/bool 键带着非法值落盘并显示成
     # 正常值。与上面缺边界的自检同口径，加载期响。

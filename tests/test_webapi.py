@@ -864,16 +864,21 @@ def test_cancelled_post_config_write_does_not_land_after_rollback(tmp_path) -> N
         storage = importlib.import_module(main.__package__ + ".storage")
         original_write = storage.write_json_atomic
         entered = threading.Event()
+        landed = threading.Event()
         calls = {"n": 0}
 
         def held_write(path: Path, data: dict[str, Any], *, abandoned: Any = None) -> bool:
             calls["n"] += 1
-            if calls["n"] == 1:
+            first = calls["n"] == 1
+            if first:
                 # 让写盘线程确实进入 os.replace 之前的临界区，调用方再取消——
                 # 这正是"取消落在 to_thread 上"的真实形态
                 entered.set()
                 time.sleep(0.3)
-            return original_write(path, data, abandoned=abandoned)
+            result = original_write(path, data, abandoned=abandoned)
+            if first:
+                landed.set()
+            return result
 
         storage.write_json_atomic = held_write
         original_persist = plugin._persist_config
@@ -897,16 +902,9 @@ def test_cancelled_post_config_write_does_not_land_after_rollback(tmp_path) -> N
                 await webapi_module(main)._api_post_config(plugin)
             except asyncio.CancelledError:
                 pass
-            # 等回滚的写盘与被取消的那次都落地，再比对
-            for _ in range(600):
-                await asyncio.sleep(0.01)
-                pending = [
-                    t
-                    for t in asyncio.all_tasks()
-                    if not t.done() and t is not asyncio.current_task()
-                ]
-                if not pending:
-                    break
+            # 被取消的那次写盘必须真的落地再断言：裸 await 的旧实现里线程仍在跑，
+            # 断言会在它 os.replace 之前通过，变异就守不住了。
+            await until(lambda: landed.is_set())
         finally:
             plugin._persist_config = original_persist
             storage.write_json_atomic = original_write
@@ -990,13 +988,8 @@ def test_rollback_completes_before_the_config_lock_is_released(tmp_path) -> None
             await asyncio.wait_for(asyncio.shield(task_a), timeout=20)
         except (asyncio.CancelledError, TimeoutError):
             pass
-        for _ in range(600):
-            await asyncio.sleep(0.01)
-            pending = [
-                t for t in asyncio.all_tasks() if not t.done() and t is not asyncio.current_task()
-            ]
-            if not pending:
-                break
+        # task_a 收尾时回滚已经写完（取消分支等回滚跑完才重放），无需再轮询
+        # asyncio.all_tasks()——插件常驻的图片清理任务让那个条件永远为假。
 
         disk = json.loads(plugin._config_path.read_text(encoding="utf-8"))
         memory = plugin.settings.to_config_dict()
@@ -1346,3 +1339,27 @@ def test_cancelled_config_apply_rolls_back(tmp_path) -> None:
         assert plugin.sessions[umo].daily_count == 3, "取消回滚丢了日配额"
 
     with_plugin(tmp_path, scenario)
+
+
+def test_unknown_config_key_error_is_sanitized() -> None:
+    """未知键名进错误文本前必须去掉控制字符。
+
+    缺陷形态：键名是客户端可控输入，原样拼进「未知配置键: ...」后既进响应也进
+    服务端日志。带换行的键名能伪造日志行（含 ANSI 转义），键多/键长时一行能写出
+    数 KB 的假日志。
+
+    变异锚定：去掉 shown 的字符过滤，本用例红。
+    """
+    webapi = _webapi()
+    with pytest.raises(ValueError) as excinfo:
+        webapi._parse_config_updates({"evil\n[astrbot_plugin] fake: enabled=False": 1})
+    message = str(excinfo.value)
+    assert "\n" not in message, f"未知键名把换行带进了错误文本：{message!r}"
+    assert "[astrbot_plugin]" in message, "过滤后仍要保留可见键名，便于定位"
+    assert "未知配置键" in message
+
+    # JSON 允许 \ud800 这类孤立代理项直接充当键名：它编不了 UTF-8，留着会让严格的
+    # 日志 sink 丢掉整条拒绝记录、宿主在 ensure_ascii=False 下序列化响应时抛异常。
+    with pytest.raises(ValueError) as surrogate:
+        webapi._parse_config_updates({"evil\ud800key": 1})
+    assert surrogate.value.args[0].encode("utf-8")

@@ -2,7 +2,7 @@
 
 与 quote（引用）正交：@ 的是「本次回复依据的那条消息的发送者」，插在链首 At 位置。
 覆盖：三模式语义、random 模式的概率边界与随机源注入、无 sender_id / 自己发自己 /
-事件已回收三级降级、与 quote 同开时的插入顺序、context 兜底路径不 @、
+完全无事件可用的降级、与 quote 同开时的插入顺序、context 兜底路径不 @、
 代次已变时不插、以及 off/always 模式不消耗随机数。
 
 @ 组件能否被断言取决于 ``host_stubs`` 的 ``At`` 桩（空壳 type 会让 ``At(qq=...)``
@@ -53,6 +53,33 @@ async def test_mention_off_never_mentions(tmp_path: Path) -> None:
     assert outcome.status is models.SendStatus.DELIVERED
     assert event.sent_chains, "发送未被记录"
     assert not _at_items(event.sent_chains[0]), "off 模式不得插入 @"
+
+
+async def test_mentions_follow_the_pinned_target_event(tmp_path: Path) -> None:
+    """@ 必须锚在本次依据的那条消息的发送者上，而不是投递时刻的最新消息。
+
+    缺陷形态：``send_reply`` 现读 ``_last_events``。判断与生成期间新消息会把
+    该表换人——群里 A 提问、B 插话后，回复 @ 到了 B（「引用错对象」）。
+
+    变异锚定：``send_reply`` 改回现读 ``_last_events``，本用例红。
+    """
+    _mod, models, runner, last_events = _make_runner(
+        tmp_path, config={"mention_mode": "always"}, random_value=lambda: 0.99
+    )
+    original = _ChainRecordingEvent(umo="s1", sender_id="u-orig")
+    newcomer = _ChainRecordingEvent(umo="s1", sender_id="u-new")
+    last_events["s1"] = newcomer  # 判断/生成期间到达的新消息抢走了 _last_events
+
+    outcome = await runner.send_reply(
+        "s1", "hello", expected_generation=None, target_event=original
+    )
+
+    assert outcome.status is models.SendStatus.DELIVERED
+    # 通道与 @ 都用冻结目标：“最新消息”事件是宿主仍在处理的槽。
+    assert not newcomer.sent_chains, "发送走了生成期间新到达的消息事件"
+    at_items = _at_items(original.sent_chains[0])
+    assert len(at_items) == 1, original.sent_chains[0]
+    assert getattr(at_items[0], "qq", None) == "u-orig", "@ 指向了插话者"
 
 
 async def test_mention_always_inserts_at_for_message_sender(tmp_path: Path) -> None:
@@ -140,8 +167,8 @@ async def test_mention_never_targets_the_bot_itself(tmp_path: Path) -> None:
     assert not _at_items(event.sent_chains[0])
 
 
-async def test_mention_degrades_when_event_already_recycled(tmp_path: Path) -> None:
-    """事件已回收（_last_events 为空）：走 context 兜底，不 @（无 sender 可取）。"""
+async def test_mention_degrades_when_no_event_is_available(tmp_path: Path) -> None:
+    """完全没有事件可用（无冻结目标、表项也为空）：走 context 兜底，不 @。"""
     context_send = FakeContextSend()
     _mod, models, runner, _last_events = _make_runner(
         tmp_path, config={"mention_mode": "always"}, context_send=context_send

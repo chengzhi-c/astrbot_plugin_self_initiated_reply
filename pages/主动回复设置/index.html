@@ -506,7 +506,6 @@
                   <use href="#i-scope" /></svg
                 >生效范围
               </h2>
-              <span class="muted">只在这些会话里主动开口（保存后按字典序重排）</span>
             </div>
             <div class="field">
               <div class="field-label-row">
@@ -555,10 +554,6 @@
               />
               <span>允许私聊主动回复</span>
             </label>
-            <p class="muted">
-              默认开启。关闭后只对群聊主动开口；私聊仍可用
-              <code>/selfreply check</code> 手动测试。
-            </p>
             <label class="toggle-row">
               <input
                 type="checkbox"
@@ -567,9 +562,6 @@
               />
               <span>新消息到达时放弃未发出的旧回复</span>
             </label>
-            <p class="muted">
-              默认关闭。开启后，同一会话里任何新消息都会让正在生成、尚未发出的主动回复作废（包括表情包、单独符号）。关闭后旧回复仍会发出，新消息只刷新延迟与下一轮静默计时。白名单移除、手动检查和插件停止仍会作废旧任务。
-            </p>
             <label class="toggle-row">
               <input
                 type="checkbox"
@@ -578,13 +570,6 @@
               />
               <span>被点名后本批消息不再主动接话</span>
             </label>
-            <p class="muted">
-              默认开启。有人 @Bot 或唤醒 Bot 时，这条消息由 AstrBot 正常回复，本插件只把它记为「已回应」，同一批消息不再触发主动回复；下一条新消息到达后即恢复正常，因此不会长期限制。关闭后，@Bot 之后的静默期仍可能追加一次主动回复。
-            </p>
-            <p class="muted">
-              日常建议用 <code>/selfreply add</code> 和
-              <code>/selfreply remove</code> 管理当前会话，这里适合批量编辑。
-            </p>
           </section>
 
           <!-- 第三层：什么时候开口。按「量的是什么」分组，显式标注起算点 -->
@@ -595,14 +580,12 @@
                   <use href="#i-clock" /></svg
                 >触发条件
               </h2>
-              <span class="muted">四个阈值互不影响，各自独立生效</span>
             </div>
 
             <div class="origin-groups">
               <fieldset class="origin">
                 <legend class="origin-head">
                   <span class="origin-title">自最近一条消息起算</span>
-                  <code>last_message_age_sec</code>
                 </legend>
                 <div class="field-grid">
                   <label class="field">
@@ -615,11 +598,7 @@
                       min="5"
                       max="86400"
                       step="5"
-                      aria-describedby="messageDelayHint"
                     />
-                    <p class="field-hint" id="messageDelayHint">
-                      消息后等待多久才开口，建议 30-120 秒
-                    </p>
                   </label>
                   <label class="field">
                     <span class="field-label" id="minSilenceInputLabel">最小静默<em>秒</em></span>
@@ -633,7 +612,7 @@
                       step="10"
                       aria-describedby="minSilenceHint"
                     />
-                    <p class="field-hint" id="minSilenceHint">连续静默多久才允许触发；设为 0 表示不要求静默</p>
+                    <p class="field-hint" id="minSilenceHint">0 不要求静默</p>
                   </label>
                 </div>
               </fieldset>
@@ -641,7 +620,6 @@
               <fieldset class="origin">
                 <legend class="origin-head">
                   <span class="origin-title">自上次主动回复起算</span>
-                  <code>last_reply_age_sec</code>
                 </legend>
                 <div class="field-grid">
                   <label class="field">
@@ -656,12 +634,12 @@
                       step="60"
                       aria-describedby="cooldownHint"
                     />
-                    <p class="field-hint" id="cooldownHint">同一会话里，两次主动回复至少间隔这么多秒；各会话独立计时；设为 0 表示不做冷却限制。</p>
+                    <p class="field-hint" id="cooldownHint">0 不限制，按会话计时</p>
                   </label>
                 </div>
               </fieldset>
 
-              <fieldset class="origin origin-count">
+              <fieldset class="origin">
                 <legend class="origin-head">
                   <span class="origin-title">判断时参考的聊天记录</span>
                 </legend>
@@ -678,10 +656,7 @@
                       step="1"
                       aria-describedby="minContextHint"
                     />
-                    <p class="field-hint" id="minContextHint">
-                      本插件记录的文字消息少于此数时，会尝试读取同一会话的旧消息，帮助判断要不要接话。设为
-                      0 时，只看插件已记录的消息。
-                    </p>
+                    <p class="field-hint" id="minContextHint">0 只用已记录的消息</p>
                   </label>
                 </div>
               </fieldset>
@@ -689,14 +664,13 @@
           </section>
 
           <!-- 第四层：怎么判断。判断模型 Provider 容器是 #judgeProviderField（app.js 用 id 定位） -->
-          <section class="panel" id="sec-decision">
+          <section class="panel panel-decision" id="sec-decision">
             <div class="panel-head">
               <h2>
                 <svg class="panel-icon" aria-hidden="true">
                   <use href="#i-brain" /></svg
                 >判断方式
               </h2>
-              <span class="muted">决定「此刻该不该开口」</span>
             </div>
 
             <label class="toggle-row">
@@ -720,7 +694,7 @@
                   >判断模型 Provider</label
                 >
                 <div class="provider-control">
-                  <select id="judgeProviderSelect" aria-describedby="providerHint">
+                  <select id="judgeProviderSelect">
                     <option value="">使用当前会话默认模型</option>
                   </select>
                   <button
@@ -737,15 +711,13 @@
                   class="provider-manual-input"
                   type="text"
                   id="judgeProviderInput"
-                  aria-describedby="providerHint"
-                  placeholder="手动填写 Provider ID"
+                  placeholder="留空使用当前会话默认模型"
                   aria-label="手动填写判断模型 Provider ID"
+                  aria-description="留空表示使用当前会话默认模型"
                   maxlength="200"
                   hidden
                 />
-                <span class="muted field-hint" id="providerHint"
-                  >留空表示使用当前会话默认模型</span
-                >
+
                 <span
                   class="field-hint"
                   id="providerListState"
@@ -762,9 +734,7 @@
                   min="0"
                   max="2"
                   step="0.1"
-                  aria-describedby="decisionTempHint"
                 />
-                <p class="field-hint" id="decisionTempHint">越高越发散，默认 0.2</p>
               </label>
               <label class="field">
                 <span class="field-label" id="decisionTimeoutInputLabel">判断超时<em>秒</em></span>
@@ -775,9 +745,7 @@
                   min="1"
                   max="300"
                   step="1"
-                  aria-describedby="decisionTimeoutHint"
                 />
-                <p class="field-hint" id="decisionTimeoutHint">判断模型等待上限，超时则本次不主动回应</p>
               </label>
             </div>
 
@@ -806,12 +774,12 @@
                 <pre class="prompt-preview" id="promptPreview"></pre>
               </section>
               <!-- 桌面端定位到右列（预览面板正下方）；窄屏单列时自然落在预览之后 -->
-              <div class="actions compact-actions prompt-actions">
+              <div class="actions prompt-actions">
                 <button class="btn danger" id="resetPromptBtn" type="button">
                   恢复默认提示词
                 </button>
                 <span class="reset-hint"
-                  >此操作会清空当前已填写的提示词，点击保存后生效。</span
+                  >此操作会用内置默认模板覆盖当前提示词，点击保存后生效。</span
                 >
               </div>
             </div>
@@ -820,7 +788,7 @@
               <summary>提示词变量帮助</summary>
               <div class="details-body">
                 <p class="muted">
-                  预览窗口只展示你写的模板本体（用示例值替换变量）。真实运行时插件还会按当前会话与触发方式替换变量，并在模板没有相应内容时附加三段：最近消息列表（模板既无 {recent_messages} 也无 {latest_message} 时）、JSON 输出约定（模板缺 should_reply 或 reason 任一即附加）、以及引用提示（quote_mode 为 model 且模板无 quote 时）。所以预览比模型实际收到的内容短。
+                  预览只替换变量；运行时还会追加最近消息、JSON 输出约定与引用提示。
                 </p>
                 <dl class="variable-list">
                   <div>
@@ -868,7 +836,7 @@
                   <option value="random">按概率引用</option>
                 </select>
                 <p class="field-hint" id="quoteModeHint">
-                  引用本次回复所依据的最后一条消息。选「由判断模型决定」时，模型会在判断结果里给出是否引用（判断模型未表态时按引用概率兜底）；钉钉等不支持引用标注的平台请保持「不引用」。
+                  引用本次回复依据的消息，不支持时降级
                 </p>
               </label>
               <label class="field">
@@ -884,7 +852,7 @@
                   aria-describedby="quoteProbabilityHint"
                 />
                 <p class="field-hint" id="quoteProbabilityHint">
-                  0 表示从不引用，100 表示每次都引用；用于「按概率引用」，以及判断模型未给出决定时。
+                  按概率引用或模型未表态时生效
                 </p>
               </label>
               <label class="field">
@@ -895,7 +863,7 @@
                   <option value="random">按概率 @</option>
                 </select>
                 <p class="field-hint" id="mentionModeHint">
-                  @ 本次回复所依据的那条消息的发送者（与上面「引用消息」是两个独立开关，可同时开启；取不到发送者 ID 或不支持 @ 的平台自动降级为普通发送）。
+                  @ 本次回复依据消息的发送者
                 </p>
               </label>
               <label class="field">
@@ -910,9 +878,7 @@
                   step="5"
                   aria-describedby="mentionProbabilityHint"
                 />
-                <p class="field-hint" id="mentionProbabilityHint">
-                  0 表示从不 @，100 表示每次都 @；仅在「按概率 @」时生效。
-                </p>
+                <p class="field-hint" id="mentionProbabilityHint">仅在按概率 @ 时生效</p>
               </label>
             </div>
           </section>
@@ -925,7 +891,6 @@
                   <use href="#i-tools" /></svg
                 >运行边界</h2
               >
-              <span class="muted">主动回复默认不碰插件工具</span>
             </summary>
             <div class="details-body">
               <label class="toggle-row">
@@ -937,7 +902,7 @@
                 <span>允许继承插件工具（与正常 @Bot 回复一致）</span>
               </label>
               <p class="muted">
-                默认关闭：主动回复只允许内置低副作用能力，第三方插件工具、Shell/Python、文件读写、浏览器、定时任务、技能管理和跨会话发送一律不可用。开启后，群聊里的普通消息可能间接触发插件能力（如发图、记忆、搜索），仅在你信任群聊环境并确认插件工具副作用可控时开启。
+                默认不开放任何工具；开启后群聊消息可间接触发插件工具，Shell/Python、浏览器、定时任务等仍禁用。
               </p>
             </div>
           </details>
@@ -950,7 +915,6 @@
                   <use href="#i-image" /></svg
                 >图片识别</h2
               >
-              <span class="muted">可选增强，默认关闭</span>
             </summary>
             <div class="details-body">
               <label class="toggle-row">
@@ -1062,9 +1026,7 @@
                       min="1"
                       max="5"
                       step="1"
-                      aria-describedby="visionMaxImagesHint"
                     />
-                    <p class="field-hint" id="visionMaxImagesHint">单次最多读取几张图</p>
                   </label>
                   <label class="field">
                     <span class="field-label" id="visionImageAgeInputLabel">图片有效时间<em>秒</em></span>
@@ -1076,9 +1038,7 @@
                       min="60"
                       max="86400"
                       step="60"
-                      aria-describedby="visionImageAgeHint"
                     />
-                    <p class="field-hint" id="visionImageAgeHint">超过此时长未活动的图片不再识别</p>
                   </label>
                   <label class="field">
                     <span class="field-label" id="visionTimeoutInputLabel">识图超时<em>秒</em></span>
@@ -1089,14 +1049,12 @@
                       min="1"
                       max="120"
                       step="1"
-                      aria-describedby="visionTimeoutHint"
                     />
-                    <p class="field-hint" id="visionTimeoutHint">单次识图等待上限</p>
                   </label>
                 </div>
               </div>
 
-              <div class="actions compact-actions">
+              <div class="actions">
                 <button
                   class="btn secondary"
                   id="cleanupImageCacheBtn"
@@ -1108,15 +1066,12 @@
                   class="muted"
                   id="cleanupImageCacheState"
                   aria-live="polite"
-                  >过期图片由后台定时清理（插件暂停时不清理）</span
+                  >过期图片由后台定时清理</span
                 >
               </div>
 
               <p class="muted">
-                两个识图开关独立。判断阶段触发频率高，只开主模型识图更省
-                token。开启「跳过表情包识图」后，QQ OneBot
-                标记为表情包的图片（通常为 subType=1）不会调用
-                Vision。图片描述仅作为不可信聊天上下文参与判断与生成，不会写入会话历史。缓存按钮只清理已超过有效时间且未被当前任务使用的图片。
+                两个开关独立，只开主模型识图更省 Token；图片描述不写入会话历史。
               </p>
             </div>
           </details>

@@ -146,6 +146,15 @@ async function installBridge(page, options = {}) {
             if (state.saveMode === "fail-once" && state.saveAttempts === 1) {
               return { ok: false, error: "write failed" };
             }
+            if (state.saveMode === "stale") {
+              // CAS 失配：后端返回 STALE_WRITE 与新 revision，前端必须要求刷新。
+              return {
+                ok: false,
+                error: "配置已被其他请求修改",
+                error_code: "STALE_WRITE",
+                config_revision: `sha256:${"d".repeat(64)}`,
+              };
+            }
             if (state.saveMode === "field-error") {
               // 模拟后端 _strict_int 的字段级拒绝：error 文案以「键名 + 空格」
               // 前缀自带定位，驱动 saveConfig 的 numberField 标红路径。
@@ -282,14 +291,49 @@ test("pending save restores the form and a second save succeeds", async ({ page 
   await page.locator("#messageDelayInput").fill("75");
   await page.locator("#saveTopBtn").click();
   await expect(page.locator("#toast")).toContainText("保存状态未知");
+  // 四个保存入口都被禁用：焦点必须落到下一步唯一可做的刷新按钮，而不是 body。
+  await expect(page.locator("#refreshBtn")).toBeFocused();
+  // 超时时并不知道写没写进去：侧栏不能断言「保存失败」。
+  await expect(page.locator("#navSaveState")).toHaveText("状态未知");
+  // unknown 借用 error 的红样式：没有这一档就只剩默认色。
+  await expect(page.locator("#configSaveState")).toHaveClass(/is-error/);
+  // 顶栏保存入口持续红边；改字也不能把「状态未知」盖成「有未保存改动」。
+  await expect(page.locator("#saveTopBtn")).toHaveClass(/is-failed/);
+  await page.locator("#messageDelayInput").fill("80");
+  await expect(page.locator("#configSaveState")).toHaveText("保存状态未知");
+  await expect(page.locator("#navSaveState")).toHaveText("状态未知");
   await expect(page.locator("#configForm")).not.toHaveAttribute("inert", "");
   await expect(page.locator("#saveTopBtn")).toBeDisabled();
+
+  // 刷新成功要同时清掉失败外环与侧栏「状态未知」，否则会一直停在错误态。
+  await page.locator("#refreshBtn").click();
+  await page.locator("#refreshBtn").click();
+  await expect(page.locator("#configSaveState")).toHaveText("");
+  await expect(page.locator("#navSaveState")).not.toHaveText("状态未知");
+  await expect(page.locator("#saveTopBtn")).not.toHaveClass(/is-failed/);
 
   await page.waitForTimeout(80);
   const posts = await page.evaluate(() =>
     window.__bridgeCalls.filter((call) => call.method === "POST" && call.endpoint === "config")
   );
   expect(posts).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+test("unknown save state focuses a reachable refresh affordance on narrow screens", async ({ page }) => {
+  // 窄屏刷新按钮收在「更多操作」菜单里（菜单 hidden 时 focus() 是空操作），
+  // 回焦必须落到菜单触发器上，否则焦点仍掉到 body。
+  await page.setViewportSize({ width: 390, height: 900 });
+  await installBridge(page, { saveMode: "pending" });
+  const errors = await openPage(page);
+  await page.evaluate((timeoutMs) => {
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = (callback, delay, ...args) =>
+      nativeSetTimeout(callback, delay === timeoutMs ? 30 : delay, ...args);
+  }, FETCH_TIMEOUT_MS);
+  await page.locator("#saveTopBtn").click();
+  await expect(page.locator("#toast")).toContainText("保存状态未知");
+  await expect(page.locator("#moreActionsBtn")).toBeFocused();
   expect(errors).toEqual([]);
 });
 
@@ -390,6 +434,33 @@ test("a late refresh does not overwrite an edit that was saved meanwhile", async
     () => window.__bridgeState.config.config_revision,
   );
   expect(revisionAfter).toBe(savedRevision);
+  expect(errors).toEqual([]);
+});
+
+test("a stale write asks for a refresh and focuses the refresh affordance", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { saveMode: "stale" });
+  const errors = await openPage(page);
+  await page.locator("#messageDelayInput").fill("75");
+  await page.locator("#saveTopBtn").click();
+  await expect(page.locator("#toast")).toContainText("刷新配置后重试");
+  await expect(page.locator("#configSaveState")).toHaveText("保存状态未知");
+  await expect(page.locator("#configSaveState")).toHaveClass(/is-error/);
+  await expect(page.locator("#navSaveState")).toHaveText("状态未知");
+  await expect(page.locator("#refreshBtn")).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test("saving returns keyboard focus to the triggering button", async ({ page }) => {
+  // 保存期间按钮 disabled，浏览器把焦点丢给 body；恢复 enabled 后不回填，键盘用户
+  // 要重新 Tab 一遍才能继续。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page);
+  const errors = await openPage(page);
+  await page.locator("#saveTopBtn").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#navSaveState")).toHaveText("已保存");
+  await expect(page.locator("#saveTopBtn")).toBeFocused();
   expect(errors).toEqual([]);
 });
 
@@ -865,7 +936,8 @@ test("dark theme keyboard focus stays visible on the toggle, the text action and
 
 test("provider and mention controls expose the labels screen readers should announce", async ({ page }) => {
   // 可访问名必须是字段标题本身，而不是把 field-hint 一并算进去
-  // （读屏会念出「判断温度 越高越发散，默认 0.2」这种长串）。
+  // （读屏会念出「@ 概率 判断模型未表态时按此概率引用」这种长串）。
+  // 有描述的字段在这里直接读可访问名；无描述的 Provider 手动输入靠 aria-label。
   await page.setViewportSize({ width: 1440, height: 1000 });
   await installBridge(page);
   const errors = await openPage(page);
@@ -882,15 +954,20 @@ test("provider and mention controls expose the labels screen readers should anno
     return {
       decisionTemp: byLabel("decisionTempInput"),
       mentionMode: byLabel("mentionModeInput"),
-      judgeProvider: document.getElementById("judgeProviderInput")?.getAttribute("aria-describedby"),
     };
   });
   expect(names.decisionTemp.labelledby).toBe("decisionTempInputLabel");
   expect(names.decisionTemp.labelText).toBe("判断温度");
-  expect(names.decisionTemp.describedby).toContain("decisionTempHint");
+  await expect(page.locator("#decisionTempInput")).toHaveAccessibleName("判断温度");
   expect(names.mentionMode.labelledby).toBe("mentionModeInputLabel");
   expect(names.mentionMode.describedby).toBe("mentionModeHint");
-  expect(names.judgeProvider).toBe("providerHint");
+  await expect(page.locator("#mentionModeInput")).toHaveAccessibleName("主动回复 @ 对方");
+  await page.locator("#providerManualBtn").click();
+  await expect(page.locator("#judgeProviderInput")).toBeVisible();
+  await expect(page.locator("#judgeProviderInput")).toHaveAccessibleName("手动填写判断模型 Provider ID");
+  await expect(page.locator("#judgeProviderInput")).toHaveAccessibleDescription(
+    "留空表示使用当前会话默认模型",
+  );
   expect(errors).toEqual([]);
 });
 
@@ -1881,40 +1958,44 @@ test("topbar must not change its height when the stuck class toggles", async ({ 
 test("whitelist count and summary agree on the same deduplicated input", async ({
   page,
 }) => {
-  // 顶栏读数的标签是「生效会话」，与下方摘要的「已识别 N 个有效会话」是同一事实
+  // 顶栏读数的标签是「生效会话」，与下方摘要的「共 N 条」是同一事实
   // 的两种呈现：后端把裸群号与其群 UMO 视为同一会话（utils.session_whitelisted）。
   // 计数若用未去重的 parseWhitelist().length，`12347` + 对应 UMO 会让顶栏读 2、
   // 摘要读 1，两条读数都是 aria-live="polite"，读屏连续播报两个互相抵消的数字。
   await installBridge(page);
   const errors = await openPage(page);
-  const read = () =>
-    page.evaluate(() => {
-      const input = document.getElementById("whitelistInput");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      return {
-        count: document.getElementById("whitelistCount").textContent,
-        summary: document.getElementById("whitelistSummary").textContent,
-      };
+  const read = async () => {
+    await page.evaluate(() => {
+      document
+        .getElementById("whitelistInput")
+        .dispatchEvent(new Event("input", { bubbles: true }));
     });
+    // 摘要与计数在 input 事件上 400ms 防抖后写入（逐键播报的修复）。
+    await page.waitForTimeout(500);
+    return page.evaluate(() => ({
+      count: document.getElementById("whitelistCount").textContent,
+      summary: document.getElementById("whitelistSummary").textContent,
+    }));
+  };
 
   // 折叠：裸群号与它的群 UMO 是同一个会话，计数必须按去重后的算
   await page.locator("#whitelistInput").fill("12347\nqq:GroupMessage:12347");
   const collapsed = await read();
   expect(collapsed.count).toBe("1");
-  expect(collapsed.summary).toContain("已识别 1 条");
+  expect(collapsed.summary).toContain("共 1 条");
   expect(collapsed.summary).toContain("存在 1 处重复");
 
   // 反向锚：两个真正不同的会话不得被折叠成 1（防「恒 1」式的错误修复）
   await page.locator("#whitelistInput").fill("111\nqq:GroupMessage:222");
   const two = await read();
   expect(two.count).toBe("2");
-  expect(two.summary).toContain("已识别 2 条");
+  expect(two.summary).toContain("共 2 条");
 
   // 完全重复的同一项同样按去重后计数
   await page.locator("#whitelistInput").fill("12347\n12347");
   const dup = await read();
   expect(dup.count).toBe("1");
-  expect(dup.summary).toContain("已识别 1 条");
+  expect(dup.summary).toContain("共 1 条");
 
   expect(errors).toEqual([]);
 });
@@ -1953,14 +2034,15 @@ test("the whitelist live region is written only when its text changes", async ({
 
   await page.locator("#whitelistInput").fill("");
   await watch();
-  // 9 次按键只产生 5 句不同的摘要（每个逗号都不改变解析结果）：逐键写会看到 9 次。
   await page.locator("#whitelistInput").pressSequentially("1,2,3,4,7", { delay: 0 });
-  await page.waitForTimeout(100);
+  // 防抖窗口内不得写入：同步实现会在这里写到 5 句（每逗号一句）。
+  const during = await page.evaluate(() => window.__summaryWrites.slice());
+  expect(during, `防抖窗口内写入了 ${during.length} 次：${during.join(" | ")}`).toEqual([]);
+  await page.waitForTimeout(600);
   const seen = await writes();
-  expect(seen.length, `逐键写死了 live region：${seen.length} 次写入`).toBeLessThan(9);
-  // 每次写入都必须是内容真变了：同一句写两遍就是重复播报。
-  expect(new Set(seen).size, `摘要被重复写入：${seen.join(" | ")}`).toBe(seen.length);
-  await expect(page.locator("#whitelistSummary")).toHaveText("已识别 5 条（5 个纯群号）");
+  // 停顿后只播报一次最终摘要；同一句写两遍同样是重复播报。
+  expect(seen, `停顿后写入：${seen.join(" | ")}`).toEqual(["共 5 条（5 个纯群号）"]);
+  await expect(page.locator("#whitelistSummary")).toHaveText("共 5 条（5 个纯群号）");
   await expect(page.locator("#whitelistCount")).toHaveText("5");
 
   // 反向锚：摘要真的变了仍必须写，否则这条会被「恒不写」满足。
@@ -1969,9 +2051,10 @@ test("the whitelist live region is written only when its text changes", async ({
     const input = document.getElementById("whitelistInput");
     input.value = "only-one";
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // 防抖窗口内不写；等到窗口过去再看写入。
+    await new Promise((resolve) => setTimeout(resolve, 550));
   });
-  expect(await writes()).toEqual(["已识别 1 条（1 个完整 UMO）"]);
+  expect(await writes()).toEqual(["共 1 条（1 个群键）"]);
   expect(errors).toEqual([]);
 });
 
@@ -2029,8 +2112,10 @@ test("a successful refresh clears stale field errors and the failed-save state",
   await page.locator("#messageDelayInput").fill("75");
   await page.locator("#saveTopBtn").click();
   await expect(page.locator("#configSaveState")).toHaveText("保存失败");
+  await expect(page.locator("#saveTopBtn")).toHaveClass(/is-failed/);
   await refresh();
   await expect(page.locator("#configSaveState")).toHaveText("");
+  await expect(page.locator("#saveTopBtn")).not.toHaveClass(/is-failed/);
   await expect(page.locator("#navSaveState")).toHaveText("已同步");
   expect(errors).toEqual([]);
 });

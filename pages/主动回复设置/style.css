@@ -50,7 +50,6 @@
 	--focus-ring:
 		0 0 0 2px var(--focus-offset-color), 0 0 0 4px var(--focus-color);
 	--ornament: light-dark(#596694, #b4762e);
-	--ornament-soft: light-dark(rgba(89, 102, 148, 0.14), rgba(180, 118, 46, 0.2));
 	--spirit: #7fccce;
 	--spirit-soft: rgba(127, 204, 206, 0.14);
 	--info: light-dark(#3d6ea8, #9ec5ef);
@@ -75,7 +74,6 @@
 	--master-border: light-dark(rgba(72, 84, 132, 0.35), rgba(224, 160, 64, 0.38));
 	--master-sheen: light-dark(rgba(72, 84, 132, 0.08), rgba(96, 64, 32, 0.55));
 	--master-glow: light-dark(rgba(72, 84, 132, 0.14), rgba(224, 160, 64, 0.2));
-	--stat-kicker: light-dark(#4b5780, #c89050);
 	--field-glow: light-dark(rgba(72, 84, 132, 0.2), rgba(224, 160, 64, 0.25));
 	--glass: light-dark(rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.1));
 	/* 阴影是多层颜色列表，light-dark() 只接单个颜色，因此三个阴影令牌按色向各写
@@ -754,6 +752,14 @@ html.bold-text body {
 	background: var(--surface);
 	box-shadow: var(--shadow-card);
 }
+/* 判断方式内容多，卡片底部留高一些，引用/@ 行不贴边框。 */
+.panel-decision {
+	padding-bottom: 40px;
+}
+/* 卡片内相邻块间距：没自带 margin 的块（开关行最典型）不能贴在一起。 */
+section.panel > * + * {
+	margin-top: 14px;
+}
 .panel-head {
 	display: flex;
 	align-items: baseline;
@@ -853,21 +859,12 @@ html.bold-text body {
 	gap: 8px;
 	flex-wrap: wrap;
 	padding: 0;
-	margin-bottom: 12px;
+	margin-bottom: 4px;
 }
 .origin-title {
 	color: var(--text-soft);
 	font-size: var(--fs-300);
 	font-weight: 700;
-}
-.origin-head code {
-	border-color: transparent;
-	background: var(--ornament-soft);
-	color: var(--stat-kicker);
-	font-size: var(--fs-100);
-}
-.origin-count .origin-head {
-	min-height: 24px;
 }
 .field-grid {
 	display: grid;
@@ -889,7 +886,9 @@ html.bold-text body {
 	gap: 8px;
 }
 .btn-text-action {
+	flex: none;
 	min-height: var(--control-h);
+	white-space: nowrap;
 	padding: 2px 8px;
 	border: 1px solid var(--border-strong);
 	border-radius: 6px;
@@ -925,6 +924,7 @@ html.bold-text body {
 .field-label {
 	display: flex;
 	align-items: baseline;
+	flex-wrap: wrap;
 	gap: 6px;
 	color: var(--muted);
 	font-size: var(--fs-300);
@@ -932,6 +932,7 @@ html.bold-text body {
 }
 .field-label em {
 	font-style: normal;
+	white-space: nowrap;
 	font-weight: 500;
 	font-size: var(--fs-100);
 	color: var(--faint);
@@ -1028,14 +1029,14 @@ textarea {
 	display: flex;
 }
 .field-hint {
+	margin-top: 8px;
 	color: var(--faint);
 	font-size: var(--fs-200);
-	line-height: 1.6;
+	line-height: 1.7;
+	/* 窄列里长提示的末行会只剩一个字，按行平衡换行。 */
+	text-wrap: balance;
 }
-.field-hint::before {
-	content: "· ";
-	color: var(--ornament);
-}
+
 .field-hint:empty {
 	display: none;
 }
@@ -1220,7 +1221,7 @@ textarea {
 		var(--field-glow);
 }
 .prompt-help {
-	margin-top: 14px;
+	margin: 14px 0 26px;
 	border: var(--border-w) solid var(--border);
 	border-radius: var(--radius-sm);
 	background: var(--surface-2);
@@ -1289,10 +1290,6 @@ textarea {
 	align-items: center;
 	gap: 12px;
 	flex-wrap: wrap;
-}
-.compact-actions {
-	align-items: flex-start;
-	margin-top: 12px;
 }
 .form-actions {
 	padding: 18px 24px;
@@ -1491,6 +1488,21 @@ textarea {
 	height: 18px;
 	margin: 0;
 	color: currentColor;
+}
+/* 保存失败 / 状态未知：实心主按钮文字不能改色（与填充同亮度），用外环提示。
+   外环不能压掉键盘焦点环，禁用时也不能被整体 opacity 减半到看不清。 */
+.top-actions .action-save.is-failed:not(:focus-visible),
+.form-actions .btn.primary.is-failed:not(:focus-visible),
+.mobile-savebar .btn.primary.is-failed:not(:focus-visible) {
+	outline: 2px solid var(--danger);
+	outline-offset: 2px;
+}
+.form-actions .btn.primary.is-failed:disabled,
+.top-actions .action-save.is-failed:disabled,
+.mobile-savebar .btn.primary.is-failed:disabled {
+	opacity: 1;
+	background: var(--danger-soft);
+	color: var(--danger);
 }
 .top-actions .action-refresh {
 	width: var(--control-h);
@@ -1831,14 +1843,39 @@ textarea {
 	}
 }
 @media (max-width: 460px) {
+	.topbar {
+		flex-wrap: nowrap;
+	}
+	.topbar .brand {
+		min-width: 0;
+	}
 	.top-actions {
 		flex-wrap: nowrap;
+		justify-content: flex-end;
+	}
+	.top-actions .action-save {
+		flex: none;
+		width: var(--tap);
+		min-width: var(--tap);
+		height: var(--tap);
+		min-height: var(--tap);
+		padding: 0;
+		gap: 0;
+	}
+	.top-actions .action-save .btn-label {
+		display: none;
 	}
 	.theme-toggle .theme-label {
 		display: none;
 	}
-	.theme-toggle {
-		padding: 0 10px;
+	.top-actions .theme-toggle {
+		flex: none;
+		width: var(--tap);
+		min-width: var(--tap);
+		height: var(--tap);
+		min-height: var(--tap);
+		padding: 0;
+		justify-content: center;
 	}
 	.more-actions {
 		position: relative;
@@ -1878,9 +1915,14 @@ textarea {
 		display: inline;
 	}
 }
+/* 361–374 的可用宽度比 18px 标题差几像素，缩到 17px 避免省略号截断。 */
+@media (max-width: 374px) {
+	.topbar .brand-text h1 {
+		font-size: var(--fs-500);
+	}
+}
 @media (max-width: 360px) {
 	.topbar {
-		flex-wrap: nowrap;
 		gap: 8px;
 	}
 	.topbar .brand {
@@ -1891,22 +1933,8 @@ textarea {
 	}
 	.top-actions {
 		flex: 1 1 auto;
-		justify-content: flex-end;
 		gap: 6px;
 		min-width: 0;
-	}
-	.theme-toggle,
-	.top-actions .action-save {
-		flex: none;
-		width: var(--tap);
-		min-width: var(--tap);
-		height: var(--tap);
-		min-height: var(--tap);
-		padding: 0;
-		gap: 0;
-	}
-	.top-actions .action-save .btn-label {
-		display: none;
 	}
 }
 @media (prefers-reduced-motion: reduce) {

@@ -22,8 +22,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        # ruff 精确钉版的唯一权威在此（本地开发用 uvx ruff，版本区间见 pyproject
-        # [dev]），两处不构成同值声明，无需跨源互锁。
+        # 本行版本必须与 pyproject [dev] 里的同名钉版同值：CI 不读 pyproject，
+        # 两处各自声明。版本不一致时本地 `ruff format` 的产物在 CI 会红。
         run: pip install ruff==0.16.1
       - name: Ruff check
         run: ruff check .
@@ -131,6 +131,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install real AstrBot
+        # latest 腿是漂移预警：上游发版导致解析冲突或被 yank 时，安装阶段就会红。
+        # 只给冒烟步骤挂 continue-on-error 挡不住它（装不上时那条步骤根本不执行），
+        # 于是「不阻塞」的承诺失效、每个 PR 都因与本次改动无关的上游变化变红。
+        continue-on-error: ${{ matrix.astrbot == 'latest' }}
         run: |
           if [ "${{ matrix.astrbot }}" = "latest" ]; then
             pip install astrbot

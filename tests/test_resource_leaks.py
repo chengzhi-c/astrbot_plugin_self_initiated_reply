@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from ._support import UMO, make_event
+from ._support import UMO, make_event, shorten_shutdown_windows
 from .host_stubs import until, with_plugin
 
 
@@ -144,7 +144,7 @@ def test_spared_critical_task_abandons_later_state_writes(tmp_path: Path) -> Non
     """
 
     async def scenario(plugin, main):
-        original_timeout = getattr(main, "TERMINATE_TASK_TIMEOUT_SEC", None)
+        restore_windows = shorten_shutdown_windows(main)
         entered = asyncio.Event()
         release = asyncio.Event()
         state_path = plugin._storage_path
@@ -160,7 +160,6 @@ def test_spared_critical_task_abandons_later_state_writes(tmp_path: Path) -> Non
 
         critical = plugin._track_critical_task(slow_persist())
         await entered.wait()
-        main.TERMINATE_TASK_TIMEOUT_SEC = 0.02
         # 制造一处真实内存变更，最终落盘才有东西可写（跳写判据会挡掉空快照）
         plugin._state_for(UMO).last_active_at += 1.0
         try:
@@ -187,9 +186,6 @@ def test_spared_critical_task_abandons_later_state_writes(tmp_path: Path) -> Non
             if not critical.done():
                 critical.cancel()
             await asyncio.wait_for(critical, timeout=1.0)
-            if original_timeout is None:
-                del main.TERMINATE_TASK_TIMEOUT_SEC
-            else:
-                main.TERMINATE_TASK_TIMEOUT_SEC = original_timeout
+            restore_windows()
 
     with_plugin(tmp_path, scenario)

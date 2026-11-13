@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ntpath
 import os
-import re
 from collections.abc import Iterator, Mapping
 from html import unescape
 from typing import TYPE_CHECKING, Any
@@ -20,32 +19,53 @@ if TYPE_CHECKING:
 
 
 _IMAGE_TYPES = {"image", "img", "picture", "photo"}
-_CQ_COMPONENT_RE = re.compile(
-    r"\[CQ:(?P<type>[^,\]]+)(?:,(?P<body>[^\]]*))?\]",
-    re.IGNORECASE,
-)
+_CQ_PREFIX = "[CQ:"
 
 
 def _parse_raw_cq_components(raw: Any) -> list[dict[str, Any]]:
-    """Recover image segments when an adapter exposes only raw CQ text."""
+    """Recover image segments when an adapter exposes only raw CQ text.
+
+    线性扫描而不是正则：原正则的两段字符类（类型段与正文段）在同一段输入上竞争，
+    缺右括号时每个起点都要逐字符回退，复杂度 O(n²)——对端可控的 raw 串（或行为
+    异常的适配器）能用一条上百 KB 的消息把事件循环按住数秒（16KB 已到百毫秒级），
+    而本函数在消息热路径上对每条消息同步执行两遍。语义与正则一致：类型非空、以第一个右括号结束，
+    不匹配时原正则从下一位重扫，这里同样逐位前移。唯一例外是类型段只有空白
+    （``[CQ: ,[CQ:image,file=a]]``）：原正则已消费整段、返回空；这里从下一位
+    重扫会捡到内层段。更宽松一侧，不影响正确性。
+    """
     if isinstance(raw, bytes):
         # errors="replace" 下 bytes.decode 不会抛。
         raw = raw.decode("utf-8", errors="replace")
     if not isinstance(raw, str):
         return []
     components: list[dict[str, Any]] = []
-    for match in _CQ_COMPONENT_RE.finditer(raw):
-        component_type = str(match.group("type") or "").strip().lower()
+    cursor = 0
+    while True:
+        start = raw.find("[", cursor)
+        if start < 0:
+            return components
+        if raw[start : start + len(_CQ_PREFIX)].upper() != _CQ_PREFIX:
+            cursor = start + 1
+            continue
+        end = raw.find("]", start + len(_CQ_PREFIX))
+        if end < 0:
+            return components
+        head, _, body = raw[start + len(_CQ_PREFIX) : end].partition(",")
+        cursor = end + 1
+        component_type = head.strip().lower()
+        if not component_type:
+            # 原正则要求类型至少一个字符，不匹配时从下一位重扫。
+            cursor = start + 1
+            continue
         if component_type not in _IMAGE_TYPES:
             continue
         data: dict[str, str] = {}
-        for item in str(match.group("body") or "").split(","):
+        for item in body.split(","):
             key, separator, value = item.partition("=")
             if not separator:
                 continue
             data[unescape(key).strip()] = unescape(value).strip()
         components.append({"type": component_type, "data": data})
-    return components
 
 
 def _component_field(component: Any, name: str) -> Any:

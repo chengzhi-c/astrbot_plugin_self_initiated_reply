@@ -100,7 +100,7 @@ export function createConfigIo(deps) {
 	const SAVE_UNKNOWN_MESSAGE = "保存状态未知，请刷新配置后重试";
 	function markSaveUnknown() {
 		setState({ requiresConfigRefresh: true });
-		setSaveState("保存状态未知", "error");
+		setSaveState("保存状态未知", "unknown");
 		showToast(SAVE_UNKNOWN_MESSAGE, true);
 	}
 	function setSaveState(message, state) {
@@ -112,19 +112,27 @@ export function createConfigIo(deps) {
 		// 保存改动」会在每次按键时被重新排进播报队列（同 #whitelistSummary 口径）。
 		if (e.configSaveState.textContent !== message)
 			e.configSaveState.textContent = message;
-		e.configSaveState.classList.remove("is-pending", "is-ok", "is-error");
-		const cssKind = state === "dirty" ? "pending" : state;
+		e.configSaveState.classList.remove("is-pending", "is-ok", "is-error", "is-saving");
+		// unknown 借用 error 的红样式：同样是「没存进去，要看一眼」。
+		const cssKind = state === "dirty" ? "pending" : state === "unknown" ? "error" : state;
 		if (cssKind) e.configSaveState.classList.add(`is-${cssKind}`);
+		// 失败态要有个不随 toast 消失的指示：三处保存入口同时染红。
+		const failed = state === "error" || state === "unknown";
+		[e.saveTopBtn, e.saveBottomBtn, e.saveMobileBtn].forEach((btn) => {
+			if (btn) btn.classList.toggle("is-failed", failed);
+		});
 		if (e.navSaveState) {
 			if (state === "ok") e.navSaveState.textContent = "已保存";
 			else if (state === "error") e.navSaveState.textContent = "保存失败";
+			else if (state === "unknown") e.navSaveState.textContent = "状态未知";
 			else if (state === "saving") e.navSaveState.textContent = "保存中";
+			else if (state === "") e.navSaveState.textContent = "已同步";
 		}
 		if (e.mobileSaveState) {
 			const mobileText = message || (state ? "" : "已同步");
 			if (e.mobileSaveState.textContent !== mobileText)
 				e.mobileSaveState.textContent = mobileText;
-			e.mobileSaveState.classList.remove("is-pending", "is-ok", "is-error");
+			e.mobileSaveState.classList.remove("is-pending", "is-ok", "is-error", "is-saving");
 			if (cssKind) e.mobileSaveState.classList.add(`is-${cssKind}`);
 		}
 	}
@@ -137,13 +145,26 @@ export function createConfigIo(deps) {
 		[e.saveTopBtn, e.saveMobileBtn, e.saveBottomBtn, e.navSaveDot].forEach((btn) => {
 			if (btn) btn.classList.toggle("is-dirty", dirty);
 		});
-		if (e.navSaveState)
+		// unknown/saving 的文案由 setSaveState 负责，这里不能盖掉。
+		if (e.navSaveState && saveStateKind !== "unknown" && saveStateKind !== "saving")
 			e.navSaveState.textContent = dirty ? "有未保存改动" : "已同步";
-		if (dirty && saveStateKind !== "saving")
+		// 刷新成功也会走到这里：失败外环随「已同步」一起清掉。
+		if (!dirty) {
+			[e.saveTopBtn, e.saveBottomBtn, e.saveMobileBtn].forEach((btn) => {
+				if (btn) btn.classList.remove("is-failed");
+			});
+		}
+		// unknown 是「先把配置刷回来才能再存」：这时改字不能把这句话盖掉。
+		if (dirty && saveStateKind !== "saving" && saveStateKind !== "unknown")
 			setSaveState("有未保存改动", "dirty");
 		// error 一并清：一次成功的刷新/加载已经拿到服务端真值，此时保留
 		// 「保存失败」会让顶标说「已同步」、正文说「保存失败」，两句互相矛盾。
-		else if (!dirty && (saveStateKind === "dirty" || saveStateKind === "error"))
+		else if (
+			!dirty &&
+			(saveStateKind === "dirty" ||
+				saveStateKind === "error" ||
+				saveStateKind === "unknown")
+		)
 			setSaveState("", "");
 	}
 	function attachDirtyListeners() {
@@ -180,12 +201,12 @@ export function createConfigIo(deps) {
 		// 只 parse 一次：计数与摘要共用同一结果（两者共用同一套分隔/去重规则，
 		// 分别调用会让同一份文本被切分三遍）。
 		const parsed = parseWhitelist(text);
-		// 计数取**去重后**的长度：这个读数的标签是「生效会话」，而后端把裸群号与
+		// 计数取**去重后**的长度：这个读数的标签是「生效会话」，而后端把裸群键与
 		// 其群 UMO 视为同一会话（utils.session_whitelisted）。用未去重的 parsed.length
 		// 时，`12347` + `qq:GroupMessage:12347` 会让顶栏读 2 而下方的摘要读
-		// 「已识别 1 条」，两个数字互相矛盾。
+		// 「共 1 条」，两个数字互相矛盾。
 		// 注意读数本身不校验合法性：`bad"quote` 这种保存时会被后端拦下的条目也会
-		// 被计入。摘要文案因此说「已识别 N 条」而不是「有效」——顶栏那个
+		// 被计入。摘要文案因此说「共 N 条」而不是「有效」——顶栏那个
 		// 「生效会话 N」在有条目非法时同样偏乐观，保存被拦下时以字段报错为准。
 		const unique = uniqueWhitelistItems(text, parsed);
 		// 摘要与计数都在 input 事件上写，而 #whitelistSummary 是
@@ -215,7 +236,7 @@ export function createConfigIo(deps) {
 			setDirty(true);
 		validateWhitelist();
 		showToast(
-			unique.length ? `已整理并保留 ${unique.length} 个会话` : "白名单已清空",
+			unique.length ? `已整理并保留 ${unique.length} 条` : "白名单已清空",
 		);
 	}
 	function setupValidation() {
@@ -255,10 +276,19 @@ export function createConfigIo(deps) {
 		});
 		if (e.whitelistInput) {
 			e.whitelistInput.addEventListener("input", () => {
+				// 摘要与计数都是 aria-live 区域：逐键重写会把每个中间态都排进播报队列
+				// （输一个 UMO 三四次），停顿后再写一次。
+				clearTimeout(whitelistFeedbackTimer);
+				whitelistFeedbackTimer = setTimeout(updateWhitelistFeedback, 400);
+				// 逐键报错会让 role=alert 的每个中间态都被播报（输一个 UMO 十几次），
+				// 文案等输入停顿后再写；红框与 aria-invalid 仍即时更新。
+				validateWhitelist({ quiet: true });
+			});
+			e.whitelistInput.addEventListener("blur", () => {
+				clearTimeout(whitelistFeedbackTimer);
 				updateWhitelistFeedback();
 				validateWhitelist();
 			});
-			e.whitelistInput.addEventListener("blur", () => validateWhitelist());
 		}
 		if (e.formatWhitelistBtn) {
 			e.formatWhitelistBtn.addEventListener("click", () => formatWhitelist());
@@ -303,18 +333,29 @@ export function createConfigIo(deps) {
 		}
 		return true;
 	}
-	function validateWhitelist({ focus = false } = {}) {
+	let whitelistErrorTimer = 0;
+	let whitelistFeedbackTimer = 0;
+	function validateWhitelist({ focus = false, quiet = false } = {}) {
 		const e = getEls();
 		if (!e.whitelistInput || !e.whitelistError) return true;
 		const errors = validateWhitelistLines(e.whitelistInput.value);
+		clearTimeout(whitelistErrorTimer);
 		if (errors.length > 0) {
 			const first = errors[0];
-			const msg = `第 ${first.line} 项${first.reason}：${first.item.slice(0, 24)}`;
+			// 按码点截断：按 UTF-16 码元切会切出孤立高位代理，界面显示成乱码。
+			const chars = [...first.item];
+			const shown = chars.slice(0, 24).join("") + (chars.length > 24 ? "…" : "");
+			const msg = `第 ${first.line} 项${first.reason}：${shown}`;
 			e.whitelistInput.setAttribute("aria-invalid", "true");
 			// #whitelistError 是 role="alert"：同样的道理见 updateWhitelistFeedback，
-			// 逐字相同就不写，否则继续输入时同一句被反复排进播报队列打断读屏。
-			if (e.whitelistError.textContent !== msg) e.whitelistError.textContent = msg;
-			e.whitelistError.classList.add("show");
+			// 逐字相同就不写；逐键路径再等停顿，避免中间态把播报队列塞满。
+			const writeMsg = () => {
+				if (e.whitelistError.textContent !== msg) e.whitelistError.textContent = msg;
+				// 文案与可见性一起写：只亮红框不写字会留下 400ms 的无解释「!」。
+				e.whitelistError.classList.add("show");
+			};
+			if (quiet) whitelistErrorTimer = setTimeout(writeMsg, 400);
+			else writeMsg();
 			// 只在保存路径抢焦点：input/blur 上抢会把用户困在该字段
 			// （点其他字段被拽回、Tab 逃不出），可达性缺陷。
 			if (focus) revealAndFocus(e.whitelistInput);
@@ -323,6 +364,7 @@ export function createConfigIo(deps) {
 		e.whitelistInput.removeAttribute("aria-invalid");
 		e.whitelistError.classList.remove("show");
 		e.whitelistError.textContent = "";
+		whitelistErrorTimer = 0;
 		return true;
 	}
 	function applyConfigPayload(config) {
@@ -416,7 +458,11 @@ export function createConfigIo(deps) {
 			const container = control?.closest(
 				".field, .provider-field, .toggle-row, .master-switch",
 			) || control?.closest("label");
+			// 识图两个 Provider 的 .field-label 是 .provider-field 的**兄弟**（判断
+			// 模型那个在自己内部）：只在本层找会一路回退到内部 schema 键，把
+			// "vision_provider_id" 直接显示给运营者。往上再找一层即可。
 			const label = container?.querySelector(".field-label") ||
+				container?.parentElement?.querySelector(".field-label") ||
 				(control?.id
 					? [...document.querySelectorAll("label[for]")].find(
 						(item) => item.htmlFor === control.id,
@@ -452,6 +498,9 @@ export function createConfigIo(deps) {
 			return;
 		}
 		const e = getEls();
+		// 保存按钮 disabled 时浏览器把焦点丢给 body，成功后要能回到触发点。
+		// 契约用例会在没有 DOM 的 node 环境里直接跑 saveConfig，故先探 document。
+		const trigger = typeof document === "undefined" ? null : document.activeElement;
 		setState({ savingConfig: true });
 		setSaving(true);
 		e.configForm.inert = true;
@@ -484,6 +533,9 @@ export function createConfigIo(deps) {
 			if (offList) {
 				showToast("部分 Provider ID 不在列表中，已继续保存，请确认拼写无误");
 			}
+			// 上面那条在成功时会被下文的保存结果 toast 覆盖（一次本地请求往返只有
+			// 几十毫秒，用户读不到），所以成功文案里再带上一次：拼写风险提示是这条
+			// 分支唯一的目的，不能被自己的成功回执吞掉。
 			try {
 				result = await apiPost("config", body);
 			} catch (error) {
@@ -504,7 +556,7 @@ export function createConfigIo(deps) {
 					});
 					// 与 markSaveUnknown 同一句话术：四个保存入口全被禁用时，
 					// 用户需要知道"为什么点不动"和"该做什么"。
-					setSaveState("保存状态未知", "error");
+					setSaveState("保存状态未知", "unknown");
 					showToast(`${errorText}，请刷新配置后重试`, true);
 					return;
 				}
@@ -560,20 +612,38 @@ export function createConfigIo(deps) {
 			applyConfigPayload(savedConfig);
 			setSaveState("已保存", "ok");
 			const labels = adjustedFieldLabels(adjusted);
+			const savedText = labels.length
+				? `配置已保存，已规范化：${labels.join("、")}`
+				: "配置已保存";
 			showToast(
-				labels.length
-					? `配置已保存，已规范化：${labels.join("、")}`
-					: "配置已保存",
+				offList
+					? `${savedText}（部分 Provider ID 不在列表中，请确认拼写）`
+					: savedText,
 			);
 		} finally {
 			setState({ savingConfig: false });
 			e.configForm.classList.remove("is-saving");
 			e.configForm.inert = false;
+			setSaving(false);
+			// 先解除 disabled 再回焦：按钮仍 disabled 时 focus() 会被忽略。
 			if (pendingFocus) {
 				revealAndFocus(pendingFocus);
 				pendingFocus = null;
+			} else if (getState().requiresConfigRefresh && e.refreshBtn) {
+				// 保存入口全被禁用（状态未知 / STALE），下一步唯一能做的就是刷新；
+				// 窄屏刷新收在「更多操作」菜单里，菜单收起时聚焦它的触发器。
+				const refreshHidden = e.refreshBtn.closest?.("[hidden]");
+				const target = refreshHidden && e.moreActionsBtn ? e.moreActionsBtn : e.refreshBtn;
+				target.focus({ preventScroll: true });
+			} else if (
+				trigger &&
+				typeof trigger.focus === "function" &&
+				trigger.isConnected !== false &&
+				// 只在焦点真的丢了才回填：慢保存期间用户可能已经移到别的控件。
+				document.activeElement === document.body
+			) {
+				trigger.focus({ preventScroll: true });
 			}
-			setSaving(false);
 		}
 	}
 	// 刷新响应被协调器作废（loadConfig 返回 false）时的口径：表单仍脏，说明用户的

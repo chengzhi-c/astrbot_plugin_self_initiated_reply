@@ -5,10 +5,14 @@
 ## 发布产物
 
 发布主路径是 AstrBot 插件市场（git 仓库）。手工部署包（VPS 直投 zip）用
-`git archive --format=zip -o <name>.zip HEAD` 导出（`HEAD` 取的是提交而非工作树，
-发布前须先 commit 或 stash，也可 `git archive $(git stash create)`，否则打出的
-是上次提交的旧代码）：排除规则单点声明在仓库根 `.gitattributes` 的
+`git archive --format=zip --prefix=<name>/ -o <name>.zip HEAD` 导出（`HEAD` 取的是
+提交而非工作树，发布前须先 commit 或 stash，也可 `git archive $(git stash create)`，
+否则打出的是上次提交的旧代码）：排除规则单点声明在仓库根 `.gitattributes` 的
 `export-ignore`，未跟踪/被 .gitignore 排除的文件天然不进包。
+
+`--prefix` 不是可选项：控制台的「安装插件 → 上传 zip」走 `updator.unzip_file`，
+它把 `zipfile.namelist()[0]` 当目录名再把内层文件搬上来；平铺包会直接抛
+`NotADirectoryError`。带一层同名目录的包在这条路径与手工解压两条路上都能用。
 
 不从 wheel 派生部署 zip：那条路要 pyproject exclude 列表、检查脚本禁运名单与
 pathspec 交叉核验三份名单同步，任一处漏改就静默失守，而分发主路径不产生 wheel。
@@ -254,7 +258,7 @@ teardown 之后落盘的偏好会在下次启动被读回，用户看到「已�
 时自行 `classList.toggle("manual", …)`，`app.js` 的 `PROVIDER_CONTROLS` 每一项都必须
 传 `field`。
 
-**不要退回「让 judge 的 `onModeChange` 加类」那种写法。** 三个字段共用一条路径才有保证：
+**不要为某个字段单独加回调去挂类。** 三个字段共用 `setManual` 一条路径才有保证：
 `manual` 类只挂在 judge 的 spec 回调上时，vision 两个字段切手动后容器类恒为空，基类
 `.provider-control` 的两列定义继续生效，按钮被拉成整行宽。
 

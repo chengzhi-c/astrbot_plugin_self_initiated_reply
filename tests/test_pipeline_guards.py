@@ -2,13 +2,14 @@
 
 这些路径删掉后全量套件仍全绿，而各自的后果都是用户可见的：判断期间代次变化
 照样烧一次 LLM 且状态显示过期结论、排队等锁的协程拿着锁前的过期结论开跑、
-事件被回收后引用一个不存在的消息 ID、decision 违约时把「不该回」的消息静默发
+没有事件可用时引用一个不存在的消息 ID、decision 违约时把「不该回」的消息静默发
 出去、工具直发后同一条内容被发两遍、空生成产出一条成功的假消息。
 """
 
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -93,7 +94,7 @@ async def test_duplicate_final_text_after_tool_direct_send_is_suppressed(tmp_pat
 
     class DupGeneration:
         async def generate(
-            self, _umo, _state, *, expected_generation, ledger, force, silence_active_at
+            self, _umo, _state, *, expected_generation, ledger, force, silence_active_at, **_kwargs
         ):
             # 管线自己建账本并经 kwargs 传进来：工具直发必须记到**这一本**上，
             # 外挂一本 ledger 不会被抑制逻辑看到。
@@ -253,30 +254,29 @@ async def test_lock_wait_does_not_bypass_the_in_lock_guard(tmp_path) -> None:
     assert calls["n"] == 2, f"门卫调用次数异常：{calls['n']}"
 
 
-def test_quote_target_id_is_empty_when_event_was_evicted(tmp_path) -> None:
-    """事件被回收后引用目标必须降级成空串，不得编一个 ID。
+def test_quote_target_id_is_empty_without_an_event(tmp_path) -> None:
+    """没有事件可用时引用目标必须降级成空串，不得编一个 ID。
 
     缺陷形态：``_quote_target_id`` 的 ``if last_event is None: return ""``。
-    ``_last_events`` 会按陈旧度与容量上限淘汰，而淘汰后 ``force=True`` 的手动
-    检查仍会走到投递（"没有可用的最近消息事件"那道门卫在 force 下被跳过）。
     改成返回 "0" 之类，主动回复会带上一个指向不存在消息的引用 ID，平台侧要么
     报错要么引用到错误的消息。
+
+    「事件被回收」不落在这里：冻结引用握在手里时照旧用该事件投递，见
+    ``test_regressions.test_eviction_during_generation_still_delivers_and_writes_history``。
 
     变异锚定：把 ``return ""`` 改成 ``return "0"``，本用例红。
     """
     _install()
     umo = "qq:GroupMessage:12345"
     delivery_mod = load_package(f"{PACKAGE_NAME}_quote_target", "delivery")
-
     runner = object.__new__(delivery_mod.DeliveryRunner)
-    runner._last_events = {}
-    assert runner._quote_target_id(umo) == "", "事件已回收却仍返回了引用 ID"
+
+    assert runner._quote_target_id(None) == "", "没有事件可用却仍返回了引用 ID"
 
     # 对照组：有事件时取的是该事件的消息 ID
     event = FakeEvent(umo=umo)
-    runner._last_events = {umo: event}
-    expected = delivery_mod.event_message_id(event)
-    assert runner._quote_target_id(umo) == expected
+    event.message_obj = SimpleNamespace(message_id="m-42")
+    assert runner._quote_target_id(event) == "m-42"
 
 
 async def test_empty_generation_short_circuits_before_delivery(tmp_path) -> None:
@@ -295,7 +295,7 @@ async def test_empty_generation_short_circuits_before_delivery(tmp_path) -> None
 
     class EmptyGeneration:
         async def generate(
-            self, _umo, _state, *, expected_generation, ledger, force, silence_active_at
+            self, _umo, _state, *, expected_generation, ledger, force, silence_active_at, **_kwargs
         ):
             return "", ledger
 
@@ -316,6 +316,59 @@ async def test_empty_generation_short_circuits_before_delivery(tmp_path) -> None
         umo, trigger="message_delay", force=False, expected_generation=baseline
     )
     assert result == "管线未生成内容。", f"空生成没有短路：{result}"
+
+
+async def test_reply_targets_the_message_the_generation_read(tmp_path) -> None:
+    """引用与 @ 的目标必须是生成实际读到的那条消息。
+
+    缺陷形态：投递现读 ``_last_events``。判断 + 生成是两次模型调用（识图与判断
+    模型默认就要十几秒），期间新消息会替换该表——回复内容依据的是最新消息，
+    引用却指向判断前那条（或者反过来）。冻结点必须落在生成取数那一刻：早于
+    判断阶段会用旧消息，晚于生成则又漂到生成期间的新消息。
+
+    变异锚定：把冻结挪回检查入口、或去掉向投递下传的 ``target_event``，本用例红。
+    """
+    _install()
+    umo = "qq:GroupMessage:12345"
+    before_check, after_decision, during_generation = object(), object(), object()
+    seen: dict[str, object] = {}
+
+    class SwappingDecision:
+        def local_gate(self, _state, *, force):
+            return ""
+
+        async def decide(self, _umo, _state, *, trigger, force):
+            pipeline._last_events[umo] = after_decision  # 判断阶段到达的新消息
+            return {"should_reply": True, "reason": "该接话", "elapsed_sec": 0.1}
+
+    class AdvancingGeneration:
+        async def generate(self, _umo, _state, **kwargs):
+            seen["frozen"] = pipeline._last_events[umo]
+            pipeline._last_events[umo] = during_generation  # 生成期间到达的新消息
+            return "hi", kwargs["ledger"]
+
+    class CapturingDelivery:
+        async def deliver_reply(self, _umo, _state, reply, direct_send_count, **kwargs):
+            seen["delivery_target"] = kwargs.get("target_event")
+            return "已发送"
+
+    pipeline, _models = _wire_pipeline(
+        f"{PACKAGE_NAME}_pinned_target",
+        umo=umo,
+        decision=SwappingDecision(),
+        generation=AdvancingGeneration(),
+        delivery=CapturingDelivery(),
+    )
+    pipeline._last_events[umo] = before_check
+    baseline = pipeline._gate.advance(umo)
+
+    result = await pipeline.check_session_locked(
+        umo, trigger="message_delay", force=False, expected_generation=baseline
+    )
+
+    assert result == "已发送", result
+    assert seen["frozen"] is after_decision, "前提不成立：判断阶段没有换过事件"
+    assert seen["delivery_target"] is after_decision, "引用目标不是生成读到的那条消息：冻结时机错位"
 
 
 async def test_absent_generation_baseline_still_guards_against_advance(tmp_path) -> None:

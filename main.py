@@ -63,6 +63,7 @@ from .models import (
     PLUGIN_ID,
     PLUGIN_VERSION,
     SESSION_CANCEL_COMMAND_ACTIONS,
+    SHUTDOWN_TASK_DRAIN_TIMEOUT_SEC,
     TERMINATE_TASK_TIMEOUT_SEC,
     PluginLifecycle,
     SessionState,
@@ -782,7 +783,10 @@ class SelfInitiatedReplyPlugin(Star):
         if not tasks:
             return
 
-        _, pending = await asyncio.wait(tasks, timeout=TERMINATE_TASK_TIMEOUT_SEC)
+        # 窗口必须覆盖被等待方自己的优雅停止宽限 + 记账落盘：取 TERMINATE_TASK_TIMEOUT_SEC
+        # （3s）会把**合作**任务判成"吞掉取消"并隔离登记，_mark_degraded 随即把
+        # 插件永久打成 DEGRADED（同 PATROL_STOP_TIMEOUT_SEC 的理由）。
+        _, pending = await asyncio.wait(tasks, timeout=SHUTDOWN_TASK_DRAIN_TIMEOUT_SEC)
         for task in pending:
             if task in self._critical_tasks:
                 # 关键落盘任务必须在关停中存活（track_critical_task 的契约：
@@ -805,12 +809,19 @@ class SelfInitiatedReplyPlugin(Star):
             self._quarantine_task(task, "shutdown deadline exceeded")
         self._background_tasks.difference_update(task for task in tasks if task.done())
 
-    async def _save_final_state_with_deadline(self) -> None:
+    async def _save_final_state_with_deadline(self, budget_sec: float | None = None) -> None:
+        """最终落盘，硬窗口内未完成就放弃（契约 §5：终止有界）。
+
+        ``budget_sec`` 是调用方给的剩余额度：取锁与写盘共用同一个
+        TERMINATE_TASK_TIMEOUT_SEC，否则「锁等 3s + 写等 3s」等于把承诺放大一倍。
+        """
+
         async def persist() -> None:
             await self._save_storage()
 
+        budget = TERMINATE_TASK_TIMEOUT_SEC if budget_sec is None else budget_sec
         task = self._track_critical_task(persist())
-        done, _ = await asyncio.wait({task}, timeout=max(0.0, TERMINATE_TASK_TIMEOUT_SEC))
+        done, _ = await asyncio.wait({task}, timeout=max(0.0, budget))
         if not done:
             # 硬窗口耗尽：宿主不等隔离任务就构造新实例，本实例的慢写若落地会
             # 用陈旧快照覆盖新实例刚写出的 state.json。置位放弃标志，让仍在跑
@@ -830,20 +841,46 @@ class SelfInitiatedReplyPlugin(Star):
             else PluginLifecycle.STOPPING
         )
         self._stopping = True
-        # 取消收敛不持 _config_lock：构造期的 ``_startup_disk_writes`` 第一件事就是
-        # 拿这把锁做配置规范化，持锁等它们就是等自己（它的等待会耗满关停窗口、
-        # 被当成「吞掉取消」隔离登记，一次普通 reload 也会打出 lifecycle degraded
-        # ERROR）；且巡检停止最长 9s，持锁会把每一次 Dashboard 写请求一起阻塞。
-        self._cancel_delay_tasks()
-        await self._scheduler.stop_patrol()
-        self._cancel_background_tasks()
-        await self._wait_background_tasks()
-        self._coordinator.reset_all()
-        # 只把最终落盘包进 _config_lock：Dashboard 的 POST /config 在同一把锁下
-        # 改 settings/whitelist，锁外快照会读到半更新的白名单。锁序恒为
-        # _config_lock → _save_lock，无反向持有。
-        async with self._config_lock:
-            # 记录点已逐次落盘，此处兜底覆盖「最后一次记录之后又有内存变更」。
-            await self._save_final_state_with_deadline()
-        self._terminated = True
-        logger.info("[%s] terminated", PLUGIN_ID)
+        try:
+            # 取消收敛不持 _config_lock：构造期的 ``_startup_disk_writes`` 第一件事就是
+            # 拿这把锁做配置规范化，持锁等它们就是等自己（它的等待会耗满关停窗口、
+            # 被当成「吞掉取消」隔离登记，一次普通 reload 也会打出 lifecycle degraded
+            # ERROR）；且巡检停止最长 9s，持锁会把每一次 Dashboard 写请求一起阻塞。
+            self._cancel_delay_tasks()
+            await self._scheduler.stop_patrol()
+            self._cancel_background_tasks()
+            await self._wait_background_tasks()
+            self._coordinator.reset_all()
+            # 只把最终落盘包进 _config_lock：Dashboard 的 POST /config 在同一把锁下
+            # 改 settings/whitelist，锁外快照会读到半更新的白名单。锁序恒为
+            # _config_lock → _save_lock，无反向持有。
+            # 取锁同样要有上界：这把锁被 POST /config 持有时最长是「启停拓扑收敛
+            # （stop_patrol 9s）+ 两次落盘」，无上界地等，宿主 reload 就被拖住数秒，
+            # 而契约 §5 对最终状态保存只承诺一个 TERMINATE_TASK_TIMEOUT_SEC 硬窗口。
+            # 取锁超窗只放弃本次最终落盘（同置 _abandon_disk_writes），不隔离、不
+            # DEGRADED：写任务根本没起来，不存在迟到落地的写，与写超时不同。
+            budget = max(0.0, TERMINATE_TASK_TIMEOUT_SEC)
+            deadline = asyncio.get_running_loop().time() + budget
+            acquired = False
+            try:
+                await asyncio.wait_for(self._config_lock.acquire(), budget)
+                acquired = True
+            except TimeoutError:
+                self._abandon_disk_writes = True
+                logger.warning("[%s] final state save skipped: config lock busy", PLUGIN_ID)
+            if acquired:
+                try:
+                    # 记录点已逐次落盘，此处兜底覆盖「最后一次记录之后又有内存变更」。
+                    await self._save_final_state_with_deadline(
+                        max(0.0, deadline - asyncio.get_running_loop().time())
+                    )
+                finally:
+                    self._config_lock.release()
+        finally:
+            # 被取消或抛异常时同样要置位。账本终态任务刻意绕过停止闸门
+            # （track_critical_task 的契约就是"关停中也照常登记"），它们手里的
+            # 快照在关停窗口之后必然陈旧：宿主不等隔离任务就构造新实例，迟到的
+            # 那次 os.replace 会用旧快照覆盖新实例刚写出的 state.json。
+            # 取消落在 await 上时只写到这里，宁可丢掉本次最终落盘。
+            self._terminated = True
+            logger.info("[%s] terminated", PLUGIN_ID)

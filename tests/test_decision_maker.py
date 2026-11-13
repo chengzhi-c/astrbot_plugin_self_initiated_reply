@@ -344,19 +344,18 @@ async def test_timeout_returns_promptly_when_provider_honors_cancellation(tmp_pa
     assert not quarantined, "响应取消的 provider 任务不得被隔离登记"
 
 
-async def test_converge_grace_window_cancellation_quarantines_provider_task(
+async def test_converge_grace_window_cancellation_lets_provider_converge(
     tmp_path: Path,
 ) -> None:
-    """宽限窗口内又收到取消：provider 任务不得静默成孤儿。
+    """宽限窗口内又收到取消，而 provider 正在自行收敛：不得隔离登记。
 
-    缺陷形态：``_converge_provider_task`` 的 ``asyncio.wait`` 没有
-    ``except asyncio.CancelledError``。``terminate`` 的 force cancel 落在
-    「判断已超时、正在宽限收敛」的那一刻时，取消从 ``asyncio.wait`` 抛出，
-    而 provider 任务的 ``cancel()`` 早已投递却无人等它收敛——宿主 SDK 吞掉
-    CancelledError 时，那条真实 HTTP 请求带着零日志永久挂在后台。外层
-    ``except Exception`` 也接不住（CancelledError 是 BaseException）。
+    缺陷形态：``except asyncio.CancelledError`` 里立即 ``_quarantine_or_warn``。
+    ``cancel()`` 是异步投递的，落到那一刻 provider 可能下一个 tick 就结束，而隔离
+    登记 → ``_mark_degraded`` 是单向永久的——一次例行写指令、在面板点一下禁用、
+    或插件 reload 就能把主动回复永久停摆到重载为止（契约 §5 只把 DEGRADED 留给
+    真的超出硬停止窗口的任务）。与 generation._graceful_stop 同一判据。
 
-    修法：镜像 ``generation._graceful_stop`` 的形状，隔离登记后原样重放。
+    变异锚定：把该分支改回「立即 _quarantine_or_warn」，本用例红。
     """
     quarantined: list = []
     _, _models, maker, _, _ = _make_decision(
@@ -383,8 +382,58 @@ async def test_converge_grace_window_cancellation_quarantines_provider_task(
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert quarantined, "宽限窗口内又收到取消时，provider 任务必须被隔离登记"
+
+    assert not quarantined, f"窗口内自行收敛的任务被隔离登记：{quarantined}"
+    # 收敛不改变取消意图：except 分支会再注入一次取消，provider 以
+    # CancelledError 收尾同样算收敛（不隔离、不留孤儿）。
+    await asyncio.wait_for(asyncio.gather(provider, return_exceptions=True), timeout=5)
+
+
+async def test_converge_grace_window_cancellation_quarantines_stubborn_provider(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """吞掉取消的 provider 仍须隔离登记：收紧误隔离不得变成放行孤儿。
+
+    ``cancel()`` 已投递却没人等它收敛时，宿主 SDK 吞掉 CancelledError 就是一条零日志
+    的后台 HTTP 请求；外层 ``except Exception`` 也接不住（CancelledError 是
+    BaseException）。宽限耗尽仍未收敛一律交隔离登记。
+    """
+    quarantined: list = []
+    _, _models, maker, _, _ = _make_decision(
+        tmp_path, {"decision_model_enabled": True}, quarantine=quarantined
+    )
+    # _decision_module() 依赖 _make_decision 建出的包，取模块必须在它之后。
+    decision_mod = _decision_module()
+    monkeypatch.setattr(decision_mod, "DECISION_CONVERGE_GRACE_SEC", 0.1)
+    release = asyncio.Event()
+
+    async def stubborn() -> None:
+        while not release.is_set():
+            try:
+                await asyncio.sleep(30.0)
+            except asyncio.CancelledError:
+                continue
+
+    provider = asyncio.ensure_future(stubborn())
+    await asyncio.sleep(0)
+
+    async def converge() -> None:
+        await maker._converge_provider_task(provider, "decision converge interrupted")
+
+    task = asyncio.ensure_future(converge())
+    await asyncio.sleep(0.02)
+    task.cancel()
+    try:
+        await task
+        raise AssertionError("expected CancelledError")
+    except asyncio.CancelledError:
+        pass
+
+    assert quarantined, "吞掉取消的 provider 任务必须被隔离登记"
     assert quarantined[0][1] == "decision converge interrupted"
+    release.set()
+    await asyncio.wait_for(provider, timeout=5)
 
 
 async def test_timeout_path_cancellation_does_not_converge_twice(tmp_path: Path) -> None:
@@ -428,7 +477,8 @@ async def test_timeout_path_cancellation_does_not_converge_twice(tmp_path: Path)
         await task
 
     assert converges == ["decision model timeout"], f"重复收敛宽限窗口：{converges}"
-    assert quarantined, "宽限窗口内又收到取消时，provider 任务必须被隔离登记"
+    # 内层已把剩余宽限用完：provider 在窗口内收敛，隔离登记不该发生。
+    assert not quarantined, f"provider 收敛后仍被隔离登记：{quarantined}"
 
 
 async def test_timeout_task_finishing_with_exception_consumes_it(tmp_path: Path) -> None:

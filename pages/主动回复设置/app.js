@@ -55,7 +55,6 @@ function getEls() {
 		configForm: $("configForm"),
 		enabledInput: $("enabledInput"),
 		decisionModelInput: $("decisionModelInput"),
-		providerHint: $("providerHint"),
 		providerListState: $("providerListState"),
 		decisionPromptInput: $("decisionPromptInput"),
 		promptPreview: $("promptPreview"),
@@ -178,7 +177,7 @@ const providerDeps = {
 	onDirty: () => configIo.setDirty(true),
 };
 
-/* 三个 Provider 控件同构。差异只在占位文案，以及 judge 要切换 hint 文案。
+/* 三个 Provider 控件同构，差异只在占位文案。
    容器类（manual）由控件内部的 setManual 统一挂载，三个控件都必须
    传 field，否则该类只会挂到 judge 上，vision 两个字段切手动后会落回基类列定义、
    按钮被拉成整行宽。元素在此直接取：它们不参与其余逻辑，不必再进 getEls。 */
@@ -206,22 +205,12 @@ const PROVIDER_CONTROLS = [
 		input: $("judgeProviderInput"),
 		button: $("providerManualBtn"),
 		placeholder: "使用当前会话默认模型",
-		onModeChange: (manual) => {
-			if (els.providerHint) {
-				els.providerHint.textContent = manual
-					? "手动输入为空时使用当前会话默认模型"
-					: "留空表示使用当前会话默认模型";
-			}
-		},
 	},
 ];
 
 const providerControlsByName = {};
 const providerControlList = PROVIDER_CONTROLS.map((spec) => {
-	const control = createProviderControl(
-		spec,
-		spec.onModeChange ? { ...providerDeps, onModeChange: spec.onModeChange } : providerDeps,
-	);
+	const control = createProviderControl(spec, providerDeps);
 	providerControlsByName[spec.name] = control;
 	return control;
 });

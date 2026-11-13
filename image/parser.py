@@ -36,7 +36,7 @@ from ..models import (
     MAX_IMAGE_DESCRIPTION_CACHE_BYTES,
     PLUGIN_ID,
 )
-from ..storage import fsync_dir
+from ..storage import fsync_dir, replace_with_retry
 from ..utils import redact_exc_text, redact_url, response_text
 from ._support import (
     ALLOWED_IMAGE_PORTS,
@@ -85,6 +85,7 @@ _HASH_CHUNK_BYTES = 1 << 16
 # 但主机真把该前缀路由给翻译器时，::ffff:7f00:1 就是可达的环回。地址判据单点收口
 # 在 _is_safe_public_address，传输层与预检共用。
 _NAT64_NETWORK = ipaddress.ip_network("64:ff9b::/96")
+_SSL_CONTEXT: ssl.SSLContext | None = None
 
 _CacheEntry = tuple[float, Path, int, Path]
 
@@ -248,7 +249,9 @@ def _atomic_write(path: Path, content: bytes) -> None:
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = None
-        os.replace(temporary_path, path)
+        # 图片缓存写入频率高，一撞上瞬时占用就放弃会让已冻结的图静默消失（prepare
+        # 退化成内存 data URL，随后被会话预算拒掉），故复用 storage 的替换重试。
+        replace_with_retry(temporary_path, path)
         temporary_path = None
         # 目录 fsync 的理由见 storage.fsync_dir（失败降级不抛）。
         fsync_dir(path)
@@ -263,6 +266,19 @@ def _atomic_write(path: Path, content: bytes) -> None:
                 temporary_path.unlink()
             except OSError:
                 pass
+
+
+def _shared_ssl_context() -> ssl.SSLContext:
+    """进程内共享 TLS 上下文。
+
+    create_default_context() 每次要读约 95 个 CA（本机实测 20-40ms），而这里每个
+    请求、包括每一跳重定向都新建一个连接池：一批 5 张图最顺也要 10 次请求，
+    叠起来是数百毫秒纯 CPU 停顿，且全插件共享同一事件循环。
+    """
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is None:
+        _SSL_CONTEXT = ssl.create_default_context()
+    return _SSL_CONTEXT
 
 
 def _is_safe_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -430,7 +446,7 @@ class _FixedAddressTransport(httpx.AsyncBaseTransport):
             raise _ImageAddressBlocked(f"拒绝连接非公网主机: {host}")
 
         pool = httpcore.AsyncConnectionPool(
-            ssl_context=ssl.create_default_context(),
+            ssl_context=_shared_ssl_context(),
             max_connections=1,
             max_keepalive_connections=0,
             http1=True,
@@ -1011,6 +1027,11 @@ class ImageParser:
         只按「全文任意位置命中 pattern」判定会误杀正常描述：描述一张报错截图
         本身就必须提到「图片加载失败」这类字样，被丢弃后既不写缓存、又会让
         每次触发重复调用 provider。
+
+        已知误判（保留，不再收紧）：11 字的「图片加载失败的错误弹窗」剩余 5 字，
+        与真拒答的剩余区间（≤8 字）重叠，纯长度无法区分——要区分就得判断剩余
+        正文是否在描述内容，那是另一层语义判断。两种错误的代价都低（描述不写
+        缓存，下一轮重试），故停在当前判据。
         """
         stripped = str(content or "").strip()
         match = _UNABLE_PATTERNS.search(stripped)

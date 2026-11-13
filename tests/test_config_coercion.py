@@ -142,3 +142,82 @@ def test_read_config_value_uses_spec_default_for_null() -> None:
     assert models.read_config_value(spec, {"enabled": None}) is True
     assert models.read_config_value(spec, {}) is True
     assert models.read_config_value(spec, {"enabled": False}) is False
+
+
+def test_damaged_value_types_fall_back_and_warn(monkeypatch) -> None:
+    """类型损坏的配置值必须沿 legacy fallback 读取，并留一条 WARNING。
+
+    缺陷形态：as_bool 对容器一律 False，str(raw) 把 dict/list 落成 Python repr。
+    enabled: [] 因此静默关掉整个插件，vision_judge_enabled: {} 让旧的
+    vision_enabled: true 被无声忽略；首启规范化随后又把原始损坏值覆盖掉，事后
+    无从定位（契约 §7 的 legacy fallback 与 §9 的告警口径）。
+
+    变异锚定：删掉 bool/str/text 三支的类型判定，本用例红。
+    """
+    models = _models()
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        models.logger, "warning", lambda message, *args: warnings.append(message % args)
+    )
+    enabled = next(item for item in models.CONFIG_SPECS if item.key == "enabled")
+    judge_vision = next(item for item in models.CONFIG_SPECS if item.key == "vision_judge_enabled")
+    template = next(item for item in models.CONFIG_SPECS if item.key == "decision_prompt_template")
+    provider = next(item for item in models.CONFIG_SPECS if item.key == "judge_provider_id")
+
+    assert models.read_config_value(enabled, {"enabled": []}) is True, (
+        "损坏的 enabled 被静默判成关闭：插件整体停摆且无告警"
+    )
+    assert (
+        models.read_config_value(judge_vision, {"vision_judge_enabled": {}, "vision_enabled": True})
+        is True
+    ), "正式键类型损坏时没沿 legacy 键读取"
+    assert models.read_config_value(template, {"decision_prompt_template": ["x"]}) != "['x']"
+    assert models.read_config_value(provider, {"judge_provider_id": {"a": 1}}) == ""
+    assert len(warnings) >= 4, f"类型损坏未记录 WARNING：{warnings}"
+    assert any("damaged value type" in message for message in warnings)
+
+    # 显式 null 是合法形状（回规格默认），不得报成类型损坏：漏掉这个守卫会让每个
+    # 空值布尔键每次加载各刷一条假告警。
+    warnings.clear()
+    assert models.read_config_value(enabled, {"enabled": None}) is True
+    assert warnings == [], f"显式 null 被报成类型损坏：{warnings}"
+
+    # int / float / enum 三支同一口径：容器损坏降级后同样要留痕，否则首启规范化
+    # 把原始值覆盖掉之后日志里查不到任何痕迹。
+    cooldown = next(item for item in models.CONFIG_SPECS if item.key == "cooldown_sec")
+    temperature = next(item for item in models.CONFIG_SPECS if item.key == "decision_temperature")
+    length_mode = next(item for item in models.CONFIG_SPECS if item.key == "reply_length_mode")
+    warnings.clear()
+    assert models.read_config_value(cooldown, {"cooldown_sec": [], "cooldown_seconds": 600}) == 600
+    models.read_config_value(temperature, {"decision_temperature": {}})
+    models.read_config_value(length_mode, {"reply_length_mode": {}})
+    assert len(warnings) == 3, f"int/float/enum 的损坏值没有留痕：{warnings}"
+
+    # bool 是 int 的子类，必须与 as_int/as_float 的拒收口径一致：否则 true 写进
+    # 整数键会静默回默认值，首启规范化覆盖原值后日志里查不到任何线索。
+    warnings.clear()
+    assert models.read_config_value(cooldown, {"cooldown_sec": True}) == 900
+    assert models.read_config_value(temperature, {"decision_temperature": False}) == 0.2
+    assert len(warnings) == 2, f"bool 写进数值键没有留痕：{warnings}"
+
+
+def test_unencodable_text_is_stripped_before_it_can_break_the_config() -> None:
+    """孤立代理项必须在 coercion 层剔除。
+
+    缺陷形态：控制字符过滤只按 ord >= 32，U+D800-U+DFFF 原样通过。它们能进内存
+    但编不了 UTF-8：config_revision 与 write_json_atomic 会一起抛，设置页从此
+    读不出配置（GET /config 被吞成 ok:false），且没有自愈路径。
+
+    变异锚定：去掉 _is_utf8_encodable 过滤，本用例红。
+    """
+    models = _models()
+    settings = models.Settings.from_config(
+        {
+            "decision_prompt_template": "abc\ud800def",
+            "whitelist_sessions": ["a\ud800b"],
+        }
+    )
+    assert "\ud800" not in settings.decision_prompt_template
+    assert all("\ud800" not in item for item in settings.whitelist)
+    # 进得来的值一定可 UTF-8 编码：任务摘要与落盘都依赖这一点
+    models.config_revision(settings)

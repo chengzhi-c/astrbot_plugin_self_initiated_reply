@@ -222,6 +222,11 @@ class SessionPipeline:
             if isinstance(decision, str):
                 return decision
 
+            # 引用/@ 的目标与生成取数是同一时刻：紧贴在 generate 前冻结。判断阶段
+            # 可能长达数十秒（识图 + 判断模型），在那里冻结会让引用指向生成从不曾
+            # 依据的消息；而 build_context_text 读 state.recent 发生在第一个 await
+            # 的参数求值里，两者之间没有让出事件循环的机会。
+            target_event = self._last_events.get(umo)
             reply_text, reply_ledger = await self._generation.generate(
                 umo,
                 state,
@@ -260,6 +265,7 @@ class SessionPipeline:
                 silence_active_at=observed_active_at,
                 # 判断模型给出的引用决定（None = 未表态，由投递侧按模式兜底）
                 quote=decision.get("quote"),
+                target_event=target_event,
             )
         finally:
             try:
@@ -273,6 +279,8 @@ class SessionPipeline:
                         observed_active_at=observed_active_at,
                     )
                 )
+                # 只补等一次：这里是会话 finalizer，不是必须落盘的回滚，无限等待会让
+                # 关停卡死；回滚持久化路径才用 utils.await_rollback（那条必须跑完）。
                 try:
                     await asyncio.shield(finalizer)
                 except asyncio.CancelledError:
@@ -324,6 +332,12 @@ class SessionPipeline:
             else:
                 confirmed = True
                 recorded_reply = ""
+
+            if not recorded_reply.strip() and ledger.direct_texts:
+                # 工具直发已把正文发出去了，记账却只留一个占位符：下一轮判断与
+                # 生成会把「自己说过什么」读成「[工具主动发送 xN]」，去重基准也
+                # 失效。契约 §3 要求生成超时/取消/失败三类出口都不得丢失这份文本。
+                recorded_reply = "；".join(text for text in ledger.direct_texts if text.strip())
 
             self._delivery.apply_proactive_state(
                 umo,
@@ -412,6 +426,7 @@ class SessionPipeline:
             # 成功。判 False 只能是重入，而重入已被上面的 record_task 复用分支
             # 接住。多出的 cancel 分支永不执行，留着只会让人以为有第二条路径。
             ledger.start_recording(task)
+        # 与上面同形：记录任务补等一次即可，不引入无界等待。
         try:
             await asyncio.shield(cast(asyncio.Future[Any], task))
         except asyncio.CancelledError:

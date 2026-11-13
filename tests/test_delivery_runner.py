@@ -796,7 +796,7 @@ async def test_send_reply_stale_before_hooks_skips_hooks(tmp_path: Path) -> None
 
 
 async def test_send_reply_context_fallback_when_no_event(tmp_path: Path) -> None:
-    """事件被清理（生成期间）→ 走 context 兜底路径，仍记 DELIVERED。"""
+    """完全没有事件可用（无冻结目标、表项也为空）→ context 兜底，仍记 DELIVERED。"""
     delivery, models, runner, _ = _make_runner(tmp_path)
     context_send = FakeContextSend()
     runner._context_send = context_send
@@ -1037,6 +1037,34 @@ async def test_quote_random_mode_quotes_at_probability_extremes(tmp_path: Path) 
     never_chains = _capture_sent_chains(never_event)
     await never.send_reply("s1", "你好", expected_generation=1)
     assert len(never_chains[0]) == 1
+
+
+async def test_quote_follows_the_pinned_target_event(tmp_path: Path) -> None:
+    """引用必须锚在本次依据的那条消息上，而不是投递时刻的最新消息。
+
+    缺陷形态：``send_reply`` 现读 ``_last_events``。判断与生成是两次模型调用，
+    期间到达的新消息会把该表换成别人的消息——引用指向一条本次从未依据过的
+    消息，运营者看到的是「引用错对象」。
+
+    变异锚定：``send_reply`` 改回现读 ``_last_events``，本用例红。
+    """
+    _, models, runner, last_events = _make_runner(
+        tmp_path, config={"quote_mode": "random", "quote_probability": 100}
+    )
+    original = _event_with_id("msg-original")
+    newcomer = _event_with_id("msg-newcomer")
+    last_events["s1"] = newcomer  # 判断/生成期间到达的新消息抢走了 _last_events
+    original_chains = _capture_sent_chains(original)
+    newcomer_chains = _capture_sent_chains(newcomer)
+
+    outcome = await runner.send_reply("s1", "你好", expected_generation=1, target_event=original)
+
+    assert outcome.status is models.SendStatus.DELIVERED
+    # 装饰与通道都用冻结目标：新消息事件是宿主仍在处理的槽，不能借用。
+    assert not newcomer_chains, "发送走了生成期间新到达的消息事件"
+    quote, text = original_chains[0]
+    assert getattr(quote, "id", None) == "msg-original", "引用指向了生成期间到达的消息"
+    assert text == "你好"
 
 
 async def test_quote_model_mode_obeys_the_judge(tmp_path: Path) -> None:
@@ -1477,3 +1505,20 @@ async def test_deliver_log_reply_content_preview(tmp_path: Path, caplog: Any) ->
     assert f"chars={len(long_reply)}" in previews[0]
     assert f"text={short_reply}" in previews[1], f"短回复未原样记录：{previews[1]}"
     assert "…" not in previews[1], "短回复不该被截断"
+
+
+def test_named_at_serialization_never_turns_a_send_into_unknown(monkeypatch) -> None:
+    """宿主 at 段结构变化时，装饰组件的序列化必须静默降级。
+
+    缺陷形态：_NamedAt.toDict 直接写 data["data"]["name"]。这一步在**投递时**由
+    适配器序列化阶段执行，晚于构造期保护：抛出去会被 outbound 归成 UNKNOWN
+    （消耗冷却与日配额、不重试），一次普通发送就变成「提交状态未知」——正是
+    契约 §14 禁止的「装饰性组件影响投递分类」。
+
+    变异锚定：去掉 isinstance(section, dict) 保护，本用例红。
+    """
+    _load_modules()
+    delivery = _delivery_module()
+    monkeypatch.setattr(delivery.At, "toDict", lambda self: {"type": "at"})
+    component = delivery._NamedAt(qq="123", name="小明")
+    assert component.toDict() == {"type": "at"}

@@ -20,13 +20,15 @@ dependencies = [
 # 取值口径：
 # - 用主版本上界而非精确钉版：test 作业覆盖 3.12-3.14，精确钉版会在新 Python 上
 #   撞到"该版本没有对应 wheel"。
-# - ruff 的精确钉版唯一权威在 ci.yml 的 lint 作业（那里独立安装、不装 .[dev]）。
+# - ruff 精确钉版：0.16 系列内格式化输出变过（同一段代码 0.16.1 要求一行、
+#   0.16.5 要求换行），范围会让本地与 CI 的 `ruff format --check` 互相打架。
+#   版本与 ci.yml 的 lint 作业保持一致（那里独立安装同一精确版）。
 # - pytest-asyncio 上界 <2：asyncio_mode = "auto" 的语义历史上随大版本变过。
 dev = [
   "pytest>=8,<10",
   "pytest-asyncio>=1,<2",
   "pytest-cov>=5,<8",
-  "ruff>=0.16,<0.17",
+  "ruff==0.16.1",
   "mypy>=1.19,<3",
 ]
 
@@ -81,6 +83,12 @@ exclude = [
   "uv.lock",
   "*.md",
   ".gitignore",
+  # 仓库根的开发配置：整目录打包会把这几个一并收进 wheel（从 sdist 构建时
+  # 还多一个 PKG-INFO），它们与宿主加载、设置页渲染都无关。
+  ".editorconfig",
+  ".gitattributes",
+  "pyproject.toml",
+  "PKG-INFO",
   # 覆盖率产物。pytest-cov 的并行数据文件名带主机名与 pid
   # （.coverage.<host>.pid<N>.<rand>），不以固定后缀结尾，具名条目认不出；
   # `coverage json` / `--cov-report=xml` 写的是不带点前缀的 coverage.json / xml。
@@ -120,11 +128,22 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# 协程未 await 是异步用例的经典假绿来源：GC 阶段以 RuntimeWarning 或
+# PytestUnraisableExceptionWarning 上报，两种都要当失败，否则门禁抓不到它。
+# 当前全套在该口径下已全绿，加门禁零成本。
+filterwarnings = [
+    "error::RuntimeWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
 # 覆盖率默认不开启：本地单测保持快速；跑门槛时由 CI test 作业显式加 --cov。
 
 [tool.coverage.run]
 # 生产口径：`--cov=.` 会把 tests/ 计入分母，scripts/ 经 runpy 加载也会进入统计。
 omit = ["tests/*", "scripts/*"]
+# 只量行会让「if 只走真分支」的用例满额得分，故开分支：行与分支合并计入同一个
+# 覆盖率百分比，与 fail_under 比较。实测值随用例变化，以 CI 上传的 coverage
+# 工件为准，不在此处写死。
+branch = true
 
 [tool.coverage.report]
 # 门槛 89%：生产口径（omit tests/）按"实测减 5%"留缓冲定档。

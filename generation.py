@@ -47,6 +47,10 @@ from .utils import (
     response_text,
 )
 
+# 宿主的工具状态消息类型：主动运行要把它们挡在会话之外（宿主在 webchat 平台
+# 不读 show_tool_use / show_tool_call_result，会直接发送这两类）。
+_HOST_TOOL_STATUS_TYPES = frozenset({"tool_call", "tool_call_result"})
+
 # 回复长度档位的措辞。未知值按 balanced 兜底（配置漂移不应让 prompt 缺失长度约束）。
 _LENGTH_HINTS = {
     "short": "回复要非常简短，控制在一句话或几个字，像随口搭一句。",
@@ -60,7 +64,7 @@ _TOOL_HINT_INHERIT = (
     "其余工具按宿主能力使用，发送仍受本次运行的预算约束。"
 )
 _TOOL_HINT_RESTRICTED = (
-    "主动回复默认只允许当前会话内的低副作用工具；不得执行命令或 Python、"
+    "本次主动运行不提供任何工具；不得执行命令或 Python、"
     "读写文件、访问浏览器、创建定时任务、管理技能、写入记忆或向其他会话发消息。"
 )
 
@@ -235,6 +239,42 @@ class GenerationRunner:
                 return
             self._quarantine_task(task, reason)
 
+        def grace_deadline() -> float:
+            # 每次宽限都从注入取消的那一刻起算：被取消后重入等待时只能用剩余额度，
+            # 否则一次取消就把总停止时间放大一倍。
+            return asyncio.get_running_loop().time() + max(0.0, self._grace_stop_sec())
+
+        async def wait_until(deadline: float) -> bool:
+            """等 run_task 收敛到 deadline；这段等待被取消时用剩余额度再判定一次。
+
+            返回 True 表示已收敛。二次取消会先按同一判据登记隔离再原样重抛：
+            停止意图明确，保守隔离优于留下可能绕过闸门的存活 agent。
+            """
+            try:
+                done, _ = await asyncio.wait(
+                    {run_task},
+                    timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                )
+            except asyncio.CancelledError:
+                # 宽限窗口内又收到取消（一条写指令、/off、POST /config、terminate）。
+                # 不能据此判定"run task 吞掉了取消"：它可能正在自行收敛，而隔离
+                # 登记 → _mark_degraded 是**单向永久**的——一次例行指令、在面板点
+                # 一下禁用、或插件 reload，就能把主动回复永久停摆到重载为止
+                # （契约 §5 把 DEGRADED 留给真的超出硬停止窗口的任务）。
+                run_task.cancel()
+                try:
+                    done, _ = await asyncio.wait(
+                        {run_task},
+                        timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                    )
+                except asyncio.CancelledError:
+                    quarantine(run_task, "generation stop interrupted")
+                    raise
+                if not done:
+                    quarantine(run_task, "agent runner ignored cancellation")
+                raise
+            return bool(done)
+
         request_stop = getattr(agent_runner, "request_stop", None)
         if callable(request_stop):
             try:
@@ -242,62 +282,31 @@ class GenerationRunner:
                 # 协程对象，优雅停止请求静默失效，此后每次超时都退化到取消+隔离。
                 await maybe_await(request_stop())
             except asyncio.CancelledError:
-                # 这一次等待自己被打断：调用方的取消意图优先于宽限窗口，但
-                # 必须先注入取消再让取消继续上抛——否则 run_task 既没被取消、
-                # 也没进入下方的宽限/隔离判定，成为继续运行且绕过闸门的孤儿。
+                # 这一次等待自己被打断：调用方的取消意图优先，但必须先注入取消并
+                # 走完同一套收敛判定——否则 run_task 既没被取消、也没进入宽限/隔离
+                # 判定，成为继续运行且绕过预算与代次闸门的孤儿（契约 §5）。
                 run_task.cancel()
+                if await wait_until(grace_deadline()):
+                    consume_task_result(run_task)
+                else:
+                    quarantine(run_task, "agent runner ignored cancellation")
                 raise
             except Exception:
                 # 优雅停止是尽力而为：失败不能阻断下方的宽限等待与兜底 cancel()。
                 pass
         if cancel_first:
             run_task.cancel()
-        grace_sec = max(0.0, self._grace_stop_sec())
-        # 宽限窗口的统一截止时刻：被取消后重入等待时只能用剩余额度，否则一次
-        # 取消就把总停止时间放大一倍。
-        deadline = asyncio.get_running_loop().time() + grace_sec
-        try:
-            done, _ = await asyncio.wait({run_task}, timeout=grace_sec)
-        except asyncio.CancelledError:
-            # 宽限窗口内又收到取消（一条写指令、/off、POST /config、terminate）。
-            # 不能据此判定"run task 吞掉了取消"：超时路径下它可能正在自行收敛，
-            # 而隔离登记 → _mark_degraded 是**单向永久**的——一次例行指令、或在
-            # 面板点一下禁用、或插件 reload，就能把主动回复永久停摆到重载为止
-            # （契约 §5 把 DEGRADED 留给真的超出硬停止窗口的任务）。与下方超时
-            # 路径用同一判据：把剩余宽限用完再决定。
-            run_task.cancel()
-            try:
-                done, _ = await asyncio.wait(
-                    {run_task},
-                    timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
-                )
-            except asyncio.CancelledError:
-                # 二次取消：停止意图明确，按原行为隔离后原样重放。仓库其余取消
-                # 点都带 cancelling() 守卫，这条路基本不可达；真到达时保守隔离
-                # 优于留下可能绕过闸门的存活 agent。
-                run_task.cancel()
-                quarantine(run_task, "generation stop interrupted")
-                raise
-            if not done:
-                quarantine(run_task, "agent runner ignored cancellation")
-            raise
-        if done:
+        if await wait_until(grace_deadline()):
             # 收敛成功也必须取回结果：以异常收尾时若不读，asyncio 会在事件
             # 循环里留下无归属的 "Task exception was never retrieved"。
             consume_task_result(run_task)
             return
 
         run_task.cancel()
-        try:
-            done, _ = await asyncio.wait({run_task}, timeout=grace_sec)
-        except asyncio.CancelledError:
-            run_task.cancel()
-            quarantine(run_task, "generation cancellation interrupted")
-            raise
-        if done:
+        if await wait_until(grace_deadline()):
             consume_task_result(run_task)
-        if not done:
-            quarantine(run_task, "agent runner ignored cancellation")
+            return
+        quarantine(run_task, "agent runner ignored cancellation")
 
     def __init__(
         self,
@@ -357,10 +366,25 @@ class GenerationRunner:
         # 一次运行一个工具语义：入口快照，避免运行中改配置导致 install 与
         # enforce 读到不同开关值（False→True 方向会留下未清理的工具集）。
         inherit_tools = self.settings.proactive_inherit_tools
-        context_text = await self.build_context_text(umo, state)
-        prompt = build_proactive_prompt(
-            self.settings.reply_length_mode, context_text, inherit_tools=inherit_tools
-        )
+        try:
+            context_text = await self.build_context_text(umo, state)
+            prompt = build_proactive_prompt(
+                self.settings.reply_length_mode,
+                context_text,
+                inherit_tools=inherit_tools,
+            )
+        except Exception as exc:
+            # 与 decision 的 fail-closed 出口同口径：让异常穿出去只会变成调度器的
+            # "delayed check failed"，而 last_decisions 已记下 should_reply=True，
+            # 排障时看到的是"决定接话"加一条与原因无关的失败。
+            logger.warning(
+                "[%s] proactive prompt build failed ledger_id=%s session=%s error=%s",
+                PLUGIN_ID,
+                ledger.ledger_id,
+                umo,
+                redact_exc_text(exc),
+            )
+            return "", ledger
         run = _GenerateRun(
             umo=umo,
             state=state,
@@ -435,8 +459,15 @@ class GenerationRunner:
         )
 
         async def tracked_send(message: MessageChain) -> Any:
-            is_tool_direct = getattr(message, "type", "") == "tool_direct_result"
+            message_type = getattr(message, "type", "")
+            is_tool_direct = message_type == "tool_direct_result"
             if not is_tool_direct:
+                if message_type in _HOST_TOOL_STATUS_TYPES:
+                    # 宿主在 webchat 平台无视 show_tool_use / show_tool_call_result
+                    # 直接发送工具状态（astr_agent_run_util 的 tool_call 与
+                    # tool_call_result）。主动运行的中间过程不该进会话，这里补上
+                    # 宿主没做的那道拦截。
+                    return None
                 if self._is_stopping():
                     logger.info(
                         "[%s] suppress ordinary agent send after lifecycle stop "
@@ -700,9 +731,9 @@ class GenerationRunner:
 
         参数取值都是刻意的，失效机制分两类：
 
-        - ``show_tool_use=False``：为真时宿主会 ``await event.send(工具状态消息)``，
-          其 type 是 ``"tool_call"``，不匹配 ``tracked_send`` 只认的
-          ``"tool_direct_result"``，会绕过预算与代次闸门直接进会话。
+        - ``show_tool_use=False`` 与 ``show_tool_call_result=False``：为真时
+          宿主会发出 ``tool_call`` / ``tool_call_result`` 状态消息；本方法关掉
+          两者，``tracked_send`` 的类型过滤（``_HOST_TOOL_STATUS_TYPES``）是第二道防线。
         - ``stream_to_general=False`` 配 ``buffer_intermediate_messages=True``：
           让宿主缓冲中间 ``llm_result`` 到结束才合并；任一项反向改动都会让每个
           中间步骤各自 ``set_result``，本方法拦不住已落在事件结果上的内容。
@@ -750,13 +781,13 @@ class GenerationRunner:
         return False
 
     def install_agent_tool_boundary(self, event: Any, inherit_tools: bool) -> dict[str, Any]:
-        """Limit a proactive run to built-in low-side-effect tools by default.
+        """Clear plugin ownership for the proactive run.
 
         Only ``event.plugins_name`` is touched: the event object is per-message
         owned by this plugin, while ``platform_meta`` is a shared adapter
-        singleton and must never be mutated. The authoritative allowlist is
-        enforced later on ``req.func_tool`` via the runtime adapter. When
-        ``inherit_tools`` is enabled the boundary is not installed at all.
+        singleton and must never be mutated. The empty allowlist enforced
+        later on ``req.func_tool`` strips every tool, so this call only
+        removes plugin ownership; with ``inherit_tools`` it is not installed.
         """
         if inherit_tools:
             return {}

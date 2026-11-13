@@ -38,12 +38,14 @@ from .models import (
     CONFIG_SPEC_BY_KEY,
     CONFIG_SPECS,
     PLUGIN_ID,
+    PRINTABLE_CHAR_MIN,
     CheckTrigger,
     ConfigSpec,
     SessionState,
     Settings,
     config_revision,
     first_bindable_args,
+    is_utf8_encodable,
     js_trim,
     normalize_config_updates,
     normalize_string_list,
@@ -52,7 +54,7 @@ from .models import (
 )
 from .plugin_state import apply_enabled_topology
 from .storage import write_json_atomic
-from .utils import redact_exc_text
+from .utils import await_rollback, redact_exc_text
 
 # 配置 schema 全键（fail loud：名单之外的提交键一律 400 拒绝，防止提交
 # 新字段时被静默吞掉）。历史兼容别名由 Settings.from_config 的 legacy_keys
@@ -440,7 +442,17 @@ def _parse_config_updates(data: Any) -> dict[str, Any]:
 
     unknown = sorted(set(data) - CONFIG_SCHEMA_KEYS)
     if unknown:
-        raise ValueError(f"未知配置键: {', '.join(unknown)}")
+        # 键名是客户端可控输入，且这段文本既进响应也进日志：不清掉控制字符就能
+        # 伪造日志行（含 ANSI 转义），不截断则一次提交可写出数 KB 的假日志。
+        # 孤立代理项编不了 UTF-8：这条文案既进日志也进响应体，留着会让严格的
+        # UTF-8 日志 sink 丢掉整条拒绝记录，并让宿主在 ensure_ascii=False 下序列化
+        # 响应时直接抛（值侧同一条规则见 models.is_utf8_encodable）。
+        shown = [
+            "".join(ch for ch in key if ord(ch) >= PRINTABLE_CHAR_MIN and is_utf8_encodable(ch))
+            for key in unknown[:20]
+        ]
+        shown = [text[:40] for text in shown]
+        raise ValueError(f"未知配置键: {', '.join(shown)}")
 
     updates: dict[str, Any] = {}
     for spec in CONFIG_SPECS:
@@ -739,19 +751,13 @@ async def _apply_config_updates(
         # 的保存静默撤销——重启后丢失，且全程无告警。
         #
         # 等待继续经 shield：第二次取消不能又把我们打回"立刻放弃等待"。
-        restore = asyncio.ensure_future(
-            _restore_plugin_state(
-                plugin, snapshot, pruned=pruned, extra_delay_umos=window_delay_umos
+        await await_rollback(
+            asyncio.ensure_future(
+                _restore_plugin_state(
+                    plugin, snapshot, pruned=pruned, extra_delay_umos=window_delay_umos
+                )
             )
         )
-        # 退出条件必须是 ``restore.done()``：已取消过一次之后每次 await 都可能
-        # 立刻再抛 CancelledError（回滚任务自身被取消时 shield 每次都同步抛），
-        # 以“await 正常返回”作退出条件会紧空转并挂死关停。
-        while not restore.done():
-            try:
-                await asyncio.shield(restore)
-            except asyncio.CancelledError:
-                continue
         raise
 
 

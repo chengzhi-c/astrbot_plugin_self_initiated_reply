@@ -22,6 +22,7 @@ from .models import (
     LEAK_WARN_SESSION_THRESHOLD,
     LEAK_WARN_TASK_THRESHOLD,
     MAX_CACHED_EVENTS,
+    MAX_PATROL_INACTIVE_SEC,
     MAX_RELEASE_WAIT_ROUNDS,
     MIN_VISION_IMAGE_AGE_SEC,
     PATROL_BACKOFF_DELAY_SEC,
@@ -450,7 +451,11 @@ class SessionScheduler:
         # 「没有可用的最近消息事件」判据会让该会话永久跳过，patrol_inactive_after_sec
         # 配到 1h 以上的部分随之完全失效（上限 604800）。条数仍由
         # MAX_CACHED_EVENTS 兜底，放宽时间窗不会无界增长。
-        stale_cutoff = max(EVENT_CLEANUP_INTERVAL_SEC, self.settings.patrol_inactive_after_sec)
+        # 0 的语义是"不截断"（面板如此承诺），直接进 max() 会被抬成 1 小时：
+        # 事件先被回收，_patrol_one_session 随后因"没有可用的最近消息事件"永久
+        # 跳过该会话。折算成规格上限仍是有限窗口，条数另由 MAX_CACHED_EVENTS 兜底。
+        patrol_window = self.settings.patrol_inactive_after_sec or MAX_PATROL_INACTIVE_SEC
+        stale_cutoff = max(EVENT_CLEANUP_INTERVAL_SEC, patrol_window)
         stale = [item for item in removable if now - item[0] >= stale_cutoff]
         for active_at, umo in stale:
             self._clear_event(umo, active_at)

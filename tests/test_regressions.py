@@ -1167,7 +1167,7 @@ def test_on_command_is_rejected_when_degraded(tmp_path: Path) -> None:
     from types import SimpleNamespace
 
     async def scenario(plugin, main):
-        commands = sys.modules[f"{PACKAGE_NAME_R3}.commands"]
+        commands = _load_plugin_module("commands")
         plugin._mark_degraded("probe")
         event = SimpleNamespace(unified_msg_origin=UMO)
         text = await commands.dispatch_command_action(plugin, event, "on")
@@ -1224,7 +1224,7 @@ def test_check_command_waits_for_previous_run_release(tmp_path: Path) -> None:
     """
 
     async def scenario(plugin, main):
-        commands = sys.modules[f"{PACKAGE_NAME_R3}.commands"]
+        commands = _load_plugin_module("commands")
         event = make_event()
         plugin.settings.whitelist = {UMO}
         plugin.settings.min_silence_sec = 0
@@ -1836,13 +1836,67 @@ def test_force_cancel_converges_before_grace_timeout(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario, generation_timeout_sec=60)
 
 
+def test_direct_tool_text_survives_a_failed_generation_exit(tmp_path: Path) -> None:
+    """工具直发后生成空回复：记账必须回填真实直发文本，不得留占位符。
+
+    缺陷形态：``_finalize_ledger`` 在非 DELIVERED 出口把 ``recorded_reply`` 置空，
+    只有 ``direct_texts`` 存在时才回填。删掉回填后 ``apply_proactive_state`` 会把
+    ``[工具主动发送 x1]`` 写进历史与「上轮说过什么」——下一轮判断、生成与去重
+    基准都读这个占位符（契约 §3）。
+    """
+
+    async def scenario(plugin, main):
+        event = make_event()
+        plugin._last_events[UMO] = event
+        plugin._last_event_at[UMO] = 1.0
+        state = plugin._state_for(UMO)
+        state.last_active_at = main.now_ts() - 300
+
+        class _Decision:
+            def local_gate(self, _state, *, force):
+                return ""
+
+            async def decide(self, _umo, _state, *, trigger, force):
+                return {"should_reply": True, "reason": "测试", "elapsed_sec": 0.1}
+
+        models = importlib.import_module(main.__package__ + ".models")
+
+        class _Generation:
+            async def generate(self, _umo, _state, **kwargs):
+                ledger = kwargs["ledger"]
+                attempt = ledger.reserve("tool_direct", "超时前直发")
+                ledger.mark_in_flight(attempt)
+                ledger.resolve(attempt, models.SendStatus.DELIVERED)
+                return "", ledger
+
+        plugin._pipeline._decision = _Decision()
+        plugin._pipeline._generation = _Generation()
+        plugin._pipeline._state_for = lambda _umo: state
+        result = await plugin._pipeline.check_session(UMO, trigger="message_delay", force=True)
+
+        assert "工具主动回复" in result, result
+        # 记账是 critical task：等它把结论写进 state 再断言。
+        await until(lambda: bool(state.last_proactive_text))
+        assert state.last_proactive_text == "超时前直发", (
+            f"直发文本被占位符取代：{state.last_proactive_text!r}"
+        )
+
+    with_plugin(tmp_path, scenario)
+
+
 # ============================================================================
 # 0.2 P1：context 兜底发送误记 UNKNOWN
 # ============================================================================
 
 
-def test_context_send_none_is_delivered_and_writes_history(tmp_path: Path) -> None:
-    """context 兜底发送正常完成（返回 None）：记 DELIVERED 并写入 assistant 历史。"""
+def test_eviction_during_generation_still_delivers_and_writes_history(tmp_path: Path) -> None:
+    """生成期间事件被清理：冻结的事件仍须送达并写入 assistant 历史。
+
+    清理只释放 ``_last_events`` 里的索引，冻结引用仍握着事件对象。投递必须继续
+    走该事件（发送返回 None = 正常完成 → DELIVERED），既不能因为一次内存回收
+    丢掉已生成的回复，也不能改投此刻最新到达的消息——那是宿主仍在处理的事件，
+    往里写 ``_result`` 会与它自己的回复互相覆盖。
+    """
 
     from types import SimpleNamespace
 
@@ -1883,7 +1937,7 @@ def test_context_send_none_is_delivered_and_writes_history(tmp_path: Path) -> No
 
         def run_effect(_runner, **_kwargs):
             async def gen():
-                # 模拟生成期间事件被清理：send_reply 走 context 兜底路径
+                # 模拟生成期间事件被清理：冻结引用在手，仍走该事件送达
                 plugin._coordinator.clear_event(
                     UMO,
                     expected_active_at=plugin._last_event_at.get(UMO),
@@ -1900,7 +1954,8 @@ def test_context_send_none_is_delivered_and_writes_history(tmp_path: Path) -> No
             result = await plugin._pipeline.check_session(UMO, trigger="patrol", force=True)
             # 修复前：None 被记 UNKNOWN → "主动发送状态未知，未自动重试。"
             assert "已主动回复" in result
-            assert sent_via_context
+            assert event.sent_texts, "生成期间事件被清理后回复被丢弃"
+            assert not sent_via_context, "冻结事件在手，不该退化到 context 兜底"
             assert state.last_proactive_text == "你好呀"
             assert state.recent[-1].role == "assistant"
             assert state.daily_count == 1
