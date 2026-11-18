@@ -40,7 +40,7 @@
 	/* 提示文字令牌（11-12px 小字号）必须过 WCAG AA 4.5:1，且 --surface 与 --surface-2
 	   两种底都要过：浅色侧 #7c839f 在白底仅 3.75，同色相加深到 #666d88（白底 5.11 /
 	   --surface-2 底 4.77）；深色侧取 #9c886f（--surface 5.39 / --surface-2 4.97）。
-	   四组数值由 tests/frontend_browser.test.mjs 的对比度用例实测断言，改值前先复算。 */
+	   四组数值都是实测值，改值前先复算。 */
 	--faint: light-dark(#666d88, #9c886f);
 	--accent: light-dark(#485484, #e0a040);
 	--accent-text: light-dark(#3b4672, #e8ae52);
@@ -50,16 +50,18 @@
 	--focus-ring:
 		0 0 0 2px var(--focus-offset-color), 0 0 0 4px var(--focus-color);
 	--ornament: light-dark(#596694, #b4762e);
-	--spirit: #7fccce;
-	--spirit-soft: rgba(127, 204, 206, 0.14);
+	--spirit: light-dark(#2b7578, #7fccce);
+	--spirit-soft: light-dark(rgba(63, 154, 157, 0.14), rgba(127, 204, 206, 0.14));
+	--accent-sheen: light-dark(#ffffff, #ffe3b8);
+	--dim-overlay: light-dark(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.42));
+	--bar-shadow: light-dark(rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.62));
 	--info: light-dark(#3d6ea8, #9ec5ef);
 	--info-soft: light-dark(rgba(61, 110, 168, 0.12), rgba(158, 197, 239, 0.16));
 	--ok: light-dark(#437128, #b8d89a);
 	--ok-soft: light-dark(rgba(67, 113, 40, 0.12), rgba(184, 216, 154, 0.16));
 	/* --warn 是武装态刷新按钮的文字色（.action-refresh.is-armed），按正文级 AA
 	   4.5 取色：#8f670f 在 --warn-soft 上只有 4.37。加深到 #7d590d 后四种浅底
-	   （--surface/-2/-3/--bg）最低 4.80，深色侧 7.00 余。数值由
-	   frontend_browser.test.mjs 的对比度用例实测断言，改值前先复算。 */
+	   （--surface/-2/-3/--bg）最低 4.80，深色侧 7.00 余。改值前先复算。 */
 	--warn: light-dark(#7d590d, #e0c670);
 	--warn-soft: light-dark(rgba(125, 89, 13, 0.12), rgba(224, 198, 112, 0.16));
 	--danger: light-dark(#a13014, #e8a68a);
@@ -78,8 +80,7 @@
 	--glass: light-dark(rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.1));
 	/* 阴影是多层颜色列表，light-dark() 只接单个颜色，因此三个阴影令牌按色向各写
 	   一份：这里是浅色份，深色两份见下方 :root[data-theme="dark"] 与
-	   prefers-color-scheme 块，同名声明必须同值，由 frontend_contract 的
-	   shadow-token 用例与浏览器侧的计算值断言共同锁定。 */
+	   prefers-color-scheme 块，三处同名声明必须同值，改一处要同步另两处。 */
 	--shadow-btn:
 		inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 1px 3px rgba(27, 30, 46, 0.06);
 	--shadow-drop:
@@ -533,7 +534,7 @@ html::after {
 	transition: background 0.18s var(--ease);
 }
 html.dimmed::after {
-	background: rgba(0, 0, 0, 0.18);
+	background: var(--dim-overlay);
 }
 html.bold-text body {
 	font-weight: 600;
@@ -645,11 +646,18 @@ html.bold-text body {
 	font-weight: 700;
 	letter-spacing: -0.01em;
 }
+/* 视觉层不再复述开关状态：开关本身与右侧指标卡已表达。保留为读屏播报
+   （aria-live），否则屏幕阅读器用户拿不到「未保存」的即时提示。 */
 .master-copy em {
-	font-size: var(--fs-300);
-	font-style: normal;
-	font-weight: 700;
-	color: var(--muted);
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
 }
 .master.is-on .master-copy em {
 	color: var(--accent-text);
@@ -853,6 +861,21 @@ section.panel > * + * {
 	border-radius: var(--radius-sm);
 	background: var(--surface-2);
 }
+/* 三张卡等高靠 grid 拉伸，卡内若让错误提示按文档流插进输入与提示之间，
+   同一行的提示会被挤下去。卡内 field 固定成 标签/控件/提示/错误 四行，
+   错误行无论亮不亮都占位，三张卡的提示基线与底部留白才对得齐。 */
+.origin .field > .field-label {
+	grid-row: 1;
+}
+.origin .field > input {
+	grid-row: 2;
+}
+.origin .field > .field-hint {
+	grid-row: 3;
+}
+.origin .field > .field-error {
+	grid-row: 4;
+}
 .origin-head {
 	display: flex;
 	align-items: center;
@@ -908,18 +931,20 @@ section.panel > * + * {
 	background: var(--accent-soft);
 	color: var(--accent);
 }
+/* 摘要只是提示文本：描边 + 浅底会让它长得像第二个输入框，与 .field-hint 同款。 */
 .whitelist-bar {
 	display: flex;
 	align-items: center;
-	padding: 6px 10px;
-	border-radius: var(--radius-xs);
-	background: var(--surface-2);
-	border: 1px solid var(--border);
-	font-size: var(--fs-200);
-	color: var(--muted);
+	min-width: 0;
+}
+.whitelist-bar:has(.whitelist-summary:empty) {
+	display: none;
 }
 .whitelist-summary {
-	line-height: 1.5;
+	color: var(--faint);
+	font-size: var(--fs-200);
+	line-height: 1.7;
+	text-wrap: balance;
 }
 .field-label {
 	display: flex;
@@ -1003,18 +1028,31 @@ textarea {
 	font-size: var(--fs-300);
 	line-height: 1.65;
 }
+/* 白名单随内容长：两行起步、超过 220px 内部滚动。固定 rows=5 会让单行内容
+   也白占首屏一半高度，把后面两项开关推到下一屏。 */
+.whitelist-input {
+	field-sizing: content;
+	min-height: calc(2 * 1.65em + 2 * var(--sp-5));
+	max-height: 220px;
+	overflow-y: auto;
+}
 .field-error {
 	display: none;
 	gap: 5px;
-	align-items: center;
+	/* 顶端对齐：「第 N 项…」与条目原文分两行，居中的「!」徽标会浮在两行中间。 */
+	align-items: flex-start;
 	color: var(--danger);
 	font-size: var(--fs-200);
 	font-weight: 500;
 	line-height: 1.5;
+	/* 文案里的 \n 是「第 N 项」与条目原文的分行点，不合并成空格。 */
+	white-space: pre-line;
+	overflow-wrap: anywhere;
 }
 .field-error::before {
 	content: "!";
 	flex: none;
+	margin-top: 2px;
 	width: 15px;
 	height: 15px;
 	border-radius: 50%;
@@ -1124,6 +1162,77 @@ textarea {
 }
 .provider-manual-input {
 	min-width: 0;
+}
+/* 备用模型的有序列表：顺序就是尝试顺序，所以每项都带移动与移除 */
+.fallback-list {
+	display: grid;
+	gap: 6px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.fallback-item {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) repeat(3, auto);
+	align-items: center;
+	gap: 4px;
+	padding: 4px 4px 4px 12px;
+	border: var(--border-w) solid transparent;
+	border-radius: var(--radius-btn);
+	background: var(--surface-2);
+	font-size: var(--fs-300);
+}
+.fallback-item > span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-soft);
+	font-variant-numeric: tabular-nums;
+}
+.btn-icon {
+	display: grid;
+	place-items: center;
+	width: 32px;
+	height: 32px;
+	padding: 0;
+	border: 0;
+	border-radius: var(--radius-btn);
+	background: transparent;
+	color: var(--muted);
+	cursor: pointer;
+	font: inherit;
+	font-size: var(--fs-400);
+	line-height: 1;
+}
+.btn-icon:hover:not(:disabled) {
+	background: var(--surface-3);
+	color: var(--text);
+}
+/* 只给读屏的播报位：添加/移动/移除都要说一声，否则这些操作对读屏用户是静默的 */
+.sr-status {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+/* 0.35 时禁用箭头对比度只有 1.6:1，看不出是「到头了」还是「画糊了」 */
+.btn-icon:disabled {
+	opacity: 0.55;
+	cursor: default;
+}
+/* 禁用态仍是 pointer 会让悬停高亮照旧出现，看着像还能点 */
+.btn-link:disabled {
+	cursor: default;
+	opacity: 0.55;
+}
+.btn-link:disabled:hover {
+	border-color: var(--border-strong);
+	color: var(--muted);
 }
 .provider-field.manual .provider-control {
 	grid-template-columns: auto;
@@ -1298,10 +1407,6 @@ textarea {
 	background: var(--surface);
 	box-shadow: var(--shadow-card);
 }
-.form-actions-hint {
-	margin-left: auto;
-}
-
 /* ==== 控件（输入、开关、按钮） ==== */
 .btn {
 	display: inline-flex;
@@ -1337,7 +1442,7 @@ textarea {
 	border-color: transparent;
 	background: linear-gradient(
 		180deg,
-		color-mix(in srgb, var(--accent), #ffffff 12%),
+		color-mix(in srgb, var(--accent), var(--accent-sheen) 12%),
 		var(--accent)
 	);
 	color: var(--on-accent);
@@ -1716,6 +1821,11 @@ textarea {
 		padding: 0;
 		gap: 0;
 	}
+	/* 手机上 32px 的箭头太难点中，与顶栏图标统一到 --tap */
+	.fallback-item .btn-icon {
+		width: var(--tap);
+		height: var(--tap);
+	}
 	.master {
 		align-items: stretch;
 		flex-direction: column;
@@ -1772,7 +1882,7 @@ textarea {
 		backdrop-filter: blur(12px);
 		-webkit-backdrop-filter: blur(12px);
 		border-top: var(--border-w) solid var(--border);
-		box-shadow: 0 -8px 24px -12px rgba(0, 0, 0, 0.35);
+		box-shadow: 0 -8px 24px -12px var(--bar-shadow);
 	}
 	.mobile-savebar .mobile-save-state {
 		flex: 1 1 auto;
@@ -1935,6 +2045,17 @@ textarea {
 		flex: 1 1 auto;
 		gap: 6px;
 		min-width: 0;
+	}
+}
+/* 高对比度模式下浏览器把 box-shadow 强制为 none：.sidenav-link / .btn-link / .mtab
+   的焦点环只画阴影，会整条消失，键盘用户看不到焦点位置。
+   补回真轮廓，颜色留空由系统接管（outline-color 在该模式下同样被强制）。 */
+@media (forced-colors: active) {
+	.sidenav-link:focus-visible,
+	.btn-link:focus-visible,
+	.mtab:focus-visible {
+		outline: 2px solid;
+		outline-offset: 2px;
 	}
 }
 @media (prefers-reduced-motion: reduce) {

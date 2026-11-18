@@ -34,6 +34,15 @@ try:
 except ImportError:  # pragma: no cover - compatibility with older AstrBot hosts
     from quart import request
 
+try:
+    from astrbot.api.web import error_response
+except ImportError:  # pragma: no cover - 旧宿主没有统一错误响应构造器
+
+    def error_response(message: str, *, status_code: int = 400) -> Any:
+        # Quart 接受 (body, status) 返回值；只返回 dict 会把错误变成 HTTP 200。
+        return {"ok": False, "error": message}, status_code
+
+
 from .models import (
     CONFIG_SPEC_BY_KEY,
     CONFIG_SPECS,
@@ -44,7 +53,6 @@ from .models import (
     SessionState,
     Settings,
     config_revision,
-    first_bindable_args,
     is_utf8_encodable,
     js_trim,
     normalize_config_updates,
@@ -54,64 +62,36 @@ from .models import (
 )
 from .plugin_state import apply_enabled_topology
 from .storage import write_json_atomic
-from .utils import await_rollback, redact_exc_text
+from .utils import await_rollback, redact_exc_text, session_whitelisted
 
 # 配置 schema 全键（fail loud：名单之外的提交键一律 400 拒绝，防止提交
 # 新字段时被静默吞掉）。历史兼容别名由 Settings.from_config 的 legacy_keys
 # 回退读取，不入本名单。
 CONFIG_SCHEMA_KEYS = frozenset(spec.key for spec in CONFIG_SPECS)
 
-# 主题合法值单点：前端集合与本常量的漂移由
-# test_config_source_of_truth.test_frontend_theme_values_match_backend 钉住。
+# 主题合法值单点：前端的集合必须与本常量一致，改一处要同步另一处。
 UI_THEME_VALUES = frozenset({"auto", "light", "dark"})
 
 
-def _config_value(config: Any, key: str, default: Any = "") -> Any:
-    if isinstance(config, dict):
-        return config.get(key, default)
-    return getattr(config, key, default)
-
-
-def _provider_config(provider: Any) -> Any:
-    if isinstance(provider, dict):
-        return provider.get("provider_config") or provider.get("config") or provider
-    return getattr(provider, "provider_config", None) or getattr(provider, "config", None) or {}
-
-
-def _provider_id(provider: Any, fallback_id: str = "") -> str:
-    config = _provider_config(provider)
-    return str(
-        _config_value(config, "id")
-        or _config_value(config, "provider_id")
-        or getattr(provider, "id", "")
-        or getattr(provider, "provider_id", "")
-        or fallback_id
-        or ""
-    ).strip()
-
-
-def _provider_label(provider: Any, provider_id: str) -> str:
-    config = _provider_config(provider)
-    label = str(
-        _config_value(config, "display_name")
-        or _config_value(config, "name")
-        or _config_value(config, "model")
-        or _config_value(config, "model_name")
-        or getattr(provider, "display_name", "")
-        or getattr(provider, "name", "")
-        or provider_id
-    ).strip()
-    return f"{label} ({provider_id})" if label and label != provider_id else label or provider_id
+def _provider_config(provider: Any) -> dict[str, Any]:
+    """宿主 Provider 的配置字典（``get_all_providers`` 与 ``inst_map`` 都返回 Provider 对象）。"""
+    config = getattr(provider, "provider_config", None)
+    return config if isinstance(config, dict) else {}
 
 
 def _provider_option(provider: Any, fallback_id: str = "") -> dict[str, str] | None:
-    provider_id = _provider_id(provider, fallback_id)
+    config = _provider_config(provider)
+    provider_id = str(config.get("id") or fallback_id or "").strip()
     if not provider_id:
         return None
-    return {"id": provider_id, "label": _provider_label(provider, provider_id)}
+    label = str(config.get("model") or "").strip() or provider_id
+    if label == provider_id:
+        return {"id": provider_id, "label": label}
+    return {"id": provider_id, "label": f"{label} ({provider_id})"}
 
 
 def _provider_items(source: Any) -> list[Any]:
+    """Provider 集合归一：``inst_map`` 是 dict，键作 fallback id；``get_all_providers`` 是 list。"""
     if isinstance(source, dict):
         return list(source.items())
     return list(source or [])
@@ -221,8 +201,8 @@ def load_ui_prefs(plugin: SelfInitiatedReplyPlugin) -> tuple[str, bool, bool]:
         return "auto", False, False
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError) as exc:
         # 必须留痕：静默回退 + 随后任何一次 POST 整块三字段覆写，会把原偏好永久
-        # 抹掉，而运维在日志里看不到任何一行（契约 §9「不记则无从定位」；同仓库
-        # 的 state.json 损坏路径记了两条 ERROR，这边一条都没有）。
+        # 抹掉，而运维在日志里看不到任何一行（不记则无从定位：同仓库的 state.json
+        # 损坏路径记了两条 ERROR，这边一条都没有）。
         logger.warning(
             "[%s] ui prefs unreadable, falling back to auto/off/off: %s",
             PLUGIN_ID,
@@ -262,6 +242,13 @@ async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]
     # 关停中拒写：teardown 之后落盘的偏好会在下次启动被读回陈旧值。
     if plugin._stopping:
         return {"ok": False, "error": "插件正在关闭"}
+    # 与 POST /config 共用同一道 Content-Length 预检：本端点同样读 JSON 并在
+    # _config_lock 内写盘，没有上限的请求体读取会白占锁外的内存与连接。
+    # 拒绝走 HTTP 200 + {ok:false}：前端 sendThemeWrite 只对非 2xx 抛异常，
+    # 非 2xx 会让文案退化成通用「请求失败」。
+    rejection = _content_length_rejection(_MAX_UI_THEME_BODY_BYTES, endpoint="post ui theme")
+    if rejection is not None:
+        return {"ok": False, "error": rejection[0]}
     try:
         data = await _request_json()
     except Exception as exc:
@@ -331,7 +318,7 @@ def _strict_float(value: Any, field: str) -> float:
         # JSON 超长整数字面量被解析成任意精度 int，float() 抛 OverflowError。
         # 它是 ArithmeticError 而非 ValueError，会一路逃到最外层兜底、被报成
         # 「请求体不是合法 JSON」——字段值错误被说成请求体错误，前端按错误
-        # 文案前缀定位字段的规则随之失效（契约 §7.1 要字段级文案）。
+        # 文案前缀定位字段的规则随之失效（要字段级文案）。
         raise ValueError(f"{field} 必须是有限数字") from exc
     if not math.isfinite(parsed):
         raise ValueError(f"{field} 必须是有限数字")
@@ -343,36 +330,61 @@ def _strict_float(value: Any, field: str) -> float:
 # 区分开——后者是合法的无字段保存，前者必须报错。
 _BODY_UNREADABLE = object()
 
+# 配置提交是 JSON 对象，1 MiB 对整份配置（含最长的白名单列表）有大量余量。
+_MAX_CONFIG_BODY_BYTES = 1024 * 1024
+# UI 偏好只有 theme/dim/bold 三个短字段，4 KiB 足够，且不必跟着配置上限走。
+_MAX_UI_THEME_BODY_BYTES = 4 * 1024
+
+
+def _content_length() -> int | None:
+    headers = getattr(request, "headers", None)
+    getter = getattr(headers, "get", None)
+    raw = getter("content-length") if callable(getter) else None
+    if not isinstance(raw, str) or not raw.isascii() or not raw.isdecimal():
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        # 超长纯数字串（CPython 3.11+ 的 int 位数上限）同样是不可用的头：
+        # 调用点位置在 try 之外，漏接会变成 500 而不是 411。
+        return None
+
+
+def _content_length_rejection(max_bytes: int, *, endpoint: str) -> tuple[str, int] | None:
+    """Content-Length 预检的共用实现：返回 ``(错误文案, HTTP 状态码)`` 或 None。
+
+    各端点只差体积上限与日志前缀，拒绝语义（缺头/坏头 411、超限 413）必须一致；
+    错误载荷结构由调用方按各自端点的既有格式组装。
+    """
+    length = _content_length()
+    if length is None:
+        logger.warning("[%s] api %s missing or invalid content-length", PLUGIN_ID, endpoint)
+        return "请求体需提供有效的 Content-Length", 411
+    if length > max_bytes:
+        logger.warning("[%s] api %s body too large: %s bytes", PLUGIN_ID, endpoint, length)
+        return "请求体过大", 413
+    return None
+
 
 async def _request_json() -> Any:
-    json_reader = getattr(request, "json", None)
-    if callable(json_reader):
-        picked = first_bindable_args(json_reader, [((), {"default": _BODY_UNREADABLE}), ((), {})])
-        if picked is None:
-            raise RuntimeError("当前 AstrBot Web API 不支持 JSON 请求读取")
-        args, kwargs = picked
-        data = await json_reader(*args, **kwargs)
-        if data is _BODY_UNREADABLE:
-            # 宿主 reader 吞掉了读取异常：按坏请求体处理，两个调用方的
-            # except 分支都已覆盖该文案。
-            raise ValueError("请求体不是合法 JSON")
-        return data
+    # Quart.json 是异步 property；先用 get_json，避免创建未消费的协程。
     get_json = getattr(request, "get_json", None)
     if callable(get_json):
-        # 注意：silent=True 把「坏请求体」与「合法 JSON null」都折成 None，两者
-        # 在调用方那个 not isinstance(data, dict) 分支上拿不到可区分的信号，只能
-        # 统一回「请求体必须是 JSON 对象」。request.json 分支有 _BODY_UNREADABLE
-        # 哨兵才分得开（见上）。旧宿主形态下这条歧义无法消除，除非再探一次
-        # silent=False——那要求宿主允许重复读 body，未经验证，不做。
         return await get_json(silent=True)
-    raise RuntimeError("当前 AstrBot Web API 不支持 JSON 请求读取")
+    data = await request.json(default=_BODY_UNREADABLE)
+    if data is _BODY_UNREADABLE:
+        raise ValueError("请求体不是合法 JSON")
+    return data
 
 
-async def _api_post_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
+async def _api_post_config(plugin: SelfInitiatedReplyPlugin) -> Any:
     """更新配置，并在锁内执行可选的 revision 前置条件。"""
+    rejection = _content_length_rejection(_MAX_CONFIG_BODY_BYTES, endpoint="post config")
+    if rejection is not None:
+        return error_response(rejection[0], status_code=rejection[1])
     # 请求体读取与全部纯函数校验留在锁外：等待客户端上传的时长由客户端
     # 决定，持锁等待会连坐 terminate() 与一切 /selfreply 写指令（它们同一把
-    # _config_lock）。§7 的「在 _config_lock 内比较 revision」不受影响——比较
+    # _config_lock）。「在 _config_lock 内比较 revision」不受影响——比较
     # 仍在锁内、且是在任何变更之前。
     try:
         data = await _request_json()
@@ -484,8 +496,8 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
         return value
     # kind == "text" / "str" 的兜底：只做类型与空白规范化。
     # 拒绝 bool/dict/list：str 化的落盘值既不是用户输入也匹配不到任何
-    # provider 或模板。int/float 沿用 falsy 规范化（与历史面板行为一致，
-    # 见 test_parse_config_updates_formal_defaults）。空提交 = 恢复内置默认，
+    # provider 或模板。int/float 沿用 falsy 规范化（与历史面板行为一致）。
+    # 空提交 = 恢复内置默认，
     # 但该复位只对 text 生效（读侧 coerce 的 text 分支），写侧一律不回落，
     # 否则默认口径有两处。长度上限同样只由读侧按 spec.max_len 截断。
     if isinstance(raw, (bool, dict, list)):
@@ -500,10 +512,15 @@ def _config_update_was_adjusted(
     if spec.container == "set":
         if not isinstance(submitted, list):
             return submitted != actual
+        # 提交条数超过容量上限时必然被截断（解析期已先按 max_items 截再规范化），
+        # 不必把 10 万条再逐条 str/js_trim 建集合比对：那一步会在事件循环上把
+        # 整份提交重扫一遍。正好等于上限的提交仍走下面的精确比对。
+        if spec.max_items is not None and len(submitted) > spec.max_items:
+            return True
         raw_items = [str(item) for item in submitted]
         # 必须与条目规范化同一个字符集：裸 str.strip() 连 U+0085 一起剥，而
         # 设置页的 String.prototype.trim() 不剥，页面放行的条目会被误报成
-        # 「已规范化」——值一个字节都没改，提示却说改过（契约 §7）。
+        # 「已规范化」——值一个字节都没改，提示却说改过。
         trimmed_items = [js_trim(item) for item in raw_items if js_trim(item)]
         return (
             raw_items != trimmed_items
@@ -521,25 +538,13 @@ _AUDITED_CONFIG_KEYS = tuple(spec.key for spec in CONFIG_SPECS if spec.audited)
 
 
 def _snapshot_plugin_state(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """对应配置前会变更的全部运行态做快照，供回滚恢复。
+    """保留配置和可能被裁剪的历史；真实活动、发送配额与冷却继续随运行推进。
 
-    ``sessions`` 只深保护 ``recent``：它是唯一会被窗口内消息入口**不可逆裁剪**
-    的字段（有界 deque 挤掉的旧记录无法从别处还原）。
-
-    其余会话字段（``last_active_at`` / ``daily_count`` / ``last_proactive_at`` /
-    ``last_proactive_observed_at``）刻意**不**回滚：它们在窗口内可能被一次真实
-    已发出的回复推进过，回滚等于「撤销一次已发送的回复」——会让日配额与冷却倒流，
-    该会话随后可能再发一条。两害相权取不回滚：代价是失败保存之后偶发一次
-    「今日主动回复次数已达上限」，次日自愈，且日志已说明保存失败。
-
-    本快照也不足以独立完成回滚：被白名单变更 pop 掉的会话状态不在这里，那部分由
-    ``_apply_config_updates`` 捕获 ``replace`` 的 ``pruned`` 并在恢复时先回填
-    （见 ``_restore_plugin_state``）。
+    被白名单变更摘下的原会话对象由 ``pruned`` 单独保留，恢复时先回填。
     """
     return {
         "settings": copy.deepcopy(plugin.settings),
         "runtime_enabled": plugin.runtime_enabled,
-        **plugin._coordinator.snapshot(),
         "whitelist_runtime_umos": {
             key: set(values) for key, values in plugin._whitelist_runtime_umos.items()
         },
@@ -562,14 +567,17 @@ def _restore_session_history(plugin: SelfInitiatedReplyPlugin, saved: dict[str, 
     """
     limit = plugin.settings.recent_message_limit
     for key in list(plugin.sessions):
-        if key not in saved:
+        if key not in saved and not session_whitelisted(key, plugin.settings.whitelist):
             del plugin.sessions[key]
     for key, records in saved.items():
         state = plugin.sessions.get(key)
         if state is None:
             plugin.sessions[key] = SessionState(recent=deque(records, maxlen=limit))
         else:
-            state.recent = deque(records, maxlen=limit)
+            # 消息入口不持配置锁：按对象身份保留 apply await 窗口内追加的新记录。
+            saved_ids = {id(record) for record in records}
+            new_records = [record for record in state.recent if id(record) not in saved_ids]
+            state.recent = deque([*records, *new_records], maxlen=limit)
 
 
 async def _restore_plugin_state(
@@ -577,7 +585,9 @@ async def _restore_plugin_state(
     snapshot: dict[str, Any],
     *,
     pruned: dict[str, Any] | None = None,
+    pruned_images: dict[str, Any] | None = None,
     extra_delay_umos: set[str] | None = None,
+    cleared_events: dict[str, tuple[Any, float, int]] | None = None,
 ) -> None:
     """恢复配置应用前快照，重建被取消的延迟检查并恢复任务拓扑。
 
@@ -586,56 +596,59 @@ async def _restore_plugin_state(
     分支，日配额与冷却清零且对象身份丢失；顺序反了则回填会被随后的删键
     抹掉。``replace`` 全程同步且紧跟快照，``pruned`` 的键必然都在快照里。
 
-    ``extra_delay_umos`` 是 apply 窗口内新排、随后被禁用路径取消的延迟检查
-    （快照时刻还不存在）。少了它，那条检查既不复活也不重排，代次又被
-    ``SessionGate.restore`` 退回，最终静默出局。
+    ``cleared_events`` 仅含本次白名单或停用操作清掉的事件及失效后的代次。
+    窗口内又被失效或被新事件替换的条目不恢复。``pruned_images`` 是白名单收缩
+    前摘下的图片索引；只补当前仍缺席的键，保存期间新收的图不受影响。
     """
     # 原地恢复（保持 Settings 与容器对象身份）：组件构造时捕获的是这些
     # 对象本身的引用，属性重绑定会让它们继续写孤儿容器，回滚后该会话
     # 主动回复静默停止直到重启。
     plugin.settings.apply(snapshot["settings"])
     plugin.runtime_enabled = snapshot["runtime_enabled"]
-    plugin._coordinator.restore_inplace(snapshot)
+    runtime_umos = dict(plugin._whitelist_runtime_umos)
     restore_container_inplace(plugin._whitelist_runtime_umos, snapshot["whitelist_runtime_umos"])
+    # 保存期间的新会话仍需被裸群号巡检找到。
+    for key, values in runtime_umos.items():
+        kept = {umo for umo in values if session_whitelisted(umo, plugin.settings.whitelist)}
+        if kept:
+            plugin._whitelist_runtime_umos.setdefault(key, set()).update(kept)
     # 原地 clear+update：scheduler 与 pipeline 持同一个 dict 引用，重绑定会让
     # janitor 继续回收旧容器里的条目，回滚内容对不上。
     restore_container_inplace(plugin._last_decisions, snapshot["last_decisions"])
     plugin._gate.restore(snapshot["gate"])
     if pruned:
         plugin.sessions.update(pruned)
+    if pruned_images:
+        plugin._coordinator.restore_images(pruned_images)
     _restore_session_history(plugin, snapshot["sessions"])
-    # 重新调度快照时刻的全部在途延迟检查（已取消的任务对象不可复用，只能按默认
-    # ``message_delay`` 语义重建）。
-    #
-    # 刻意**整表**重调度而不是只补「被白名单变更取消的」那些：apply 窗口里
-    # 谁被取消没有记录，要区分就得再加一张差分表，而代价只是——未被取消的
-    # 会话静默计时从头起算，且可能多跑一次检查。后者被会话自身的去重闸挡住
-    # （刚回复过的会话有冷却，或观察窗口已推进到该消息之后），最坏是多花一次
-    # 判断模型调用。配置保存失败是低频路径，用这点代价换掉一张新表和它的
-    # 新不变量。快照里已消失的会话（白名单收缩后未回填）跳过。
-    # extra_delay_umos 是窗口内新排的那批：它们不在快照里，却同样被禁用路径
-    # 取消过，一并重排才不会静默丢掉一次主动回复评估。
+    for umo, (event, active_at, generation) in (cleared_events or {}).items():
+        if (
+            plugin._gate.current(umo) == generation
+            and umo in plugin.sessions
+            and session_whitelisted(umo, plugin.settings.whitelist)
+            and umo not in plugin._last_events
+        ):
+            plugin._last_events[umo] = event
+            plugin._last_event_at[umo] = active_at
+    # 已取消的任务不可复用；停用窗口内新排的延迟检查也需要重建。
     for umo in snapshot["delay_umos"] | (extra_delay_umos or set()):
         if umo in plugin.sessions and not plugin._stopping:
             try:
-                # 必须带快照代次：``schedule_delayed_check`` 在 generation 为 None
-                # 时会 advance 一次，而上面刚把 gate 恢复成快照态。跳过这半步，
-                # 并发在途检查持有的代次会被这次 advance 判为过期，其回复被静默
-                # 丢弃——回滚因此部分抵消了自己刚恢复的代次。取不到（该会话从未
-                # 有过代次）才回落 None，由调度器自行 advance。
+                # 显式传当前代次，排队不推进 token；若新消息随后推进代次，调度器
+                # 会按自己的代次检查丢弃过期延迟任务。
                 plugin._scheduler.schedule_delayed_check(
                     umo,
                     delay_sec=None,
                     trigger=CheckTrigger.MESSAGE_DELAY,
                     force=False,
-                    generation=snapshot["gate"]["generation"].get(umo),
+                    generation=plugin._gate.current(umo),
                 )
             except Exception as re_exc:
                 logger.debug(
                     "[%s] delayed check reschedule failed on rollback session=%s error=%s",
                     PLUGIN_ID,
                     umo,
-                    re_exc,
+                    redact_exc_text(re_exc),
                 )
         else:
             logger.debug("[%s] delayed check dropped on rollback session=%s", PLUGIN_ID, umo)
@@ -650,7 +663,11 @@ async def _restore_plugin_state(
         await plugin._persist_config()
         await plugin._save_storage()
     except Exception as rollback_exc:
-        logger.error("[%s] config rollback persistence failed: %s", PLUGIN_ID, rollback_exc)
+        logger.error(
+            "[%s] config rollback persistence failed: %s",
+            PLUGIN_ID,
+            redact_exc_text(rollback_exc),
+        )
 
 
 async def _apply_config_updates(
@@ -659,16 +676,14 @@ async def _apply_config_updates(
     *,
     submitted: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """应用配置变更；任何失败回滚全部运行态后重新抛出。"""
+    """应用配置变更；失败时恢复配置和本次清理的会话素材。"""
     snapshot = _snapshot_plugin_state(plugin)
     # 被白名单变更摘下的会话状态（键 → 原对象）。必须在回滚路径可见，
     # 故声明在 try 之外；见 _restore_plugin_state 的 pruned 参数。
     pruned: dict[str, Any] = {}
-    # apply 窗口内新排的延迟检查（快照时刻还不存在，故不在 snapshot["delay_umos"]）。
-    # 禁用路径会取消它们，而回滚只重排快照集合——不记下来这条检查就既不被取消
-    # 复活也不被重排，其代次又被 gate 回滚掉，最终在 _wait_initial_delay_and_validate
-    # 静默出局：无日志、无裁决，只能等该会话下一条消息或巡检轮次才恢复。
+    pruned_images: dict[str, Any] = {}
     window_delay_umos: set[str] = set()
+    cleared_events: dict[str, tuple[Any, float, int]] = {}
     try:
         candidate = plugin.settings.to_config_dict()
         # 三层分工：_strict_value 拒绝类型错误（400），normalize_config_updates
@@ -686,7 +701,19 @@ async def _apply_config_updates(
         # 会造成热更新后组件读旧值。
         plugin.settings.apply(new_settings)
         if "whitelist_sessions" in updates:
+            events = {
+                umo: (event, plugin._last_event_at[umo])
+                for umo, event in plugin._last_events.items()
+                if umo in plugin._last_event_at
+            }
+            # 被移出白名单的会话连图片索引一起被 clear_session 摘掉，先留一份；
+            # 回滚时这些键如果仍然缺席就补回去，保存期间新收的图不受影响。
+            pruned_images = plugin._coordinator.snapshot_images()
             pruned = plugin._whitelist.replace(new_settings.whitelist)
+            for umo, (event, active_at) in events.items():
+                if umo not in plugin._last_events:
+                    # replace 已 prune 代次；临时 token 区分随后发生的 invalidate/prune。
+                    cleared_events[umo] = (event, active_at, plugin._gate.advance(umo))
         if vision_changed:
             plugin._vision.clear_parsers()
         if updates:
@@ -707,10 +734,13 @@ async def _apply_config_updates(
         if enabled_persisted_changed:
             plugin.runtime_enabled = new_settings.enabled
             if not new_settings.enabled:
-                # 必须在 apply_enabled_topology **之前**取：它经 _cancel_delay_tasks
-                # 取消并把条目 pop 出 _delay_tasks，之后再也拿不到取消前的集合。
                 window_delay_umos = set(plugin._delay_tasks)
-            await apply_enabled_topology(plugin, enabled=new_settings.enabled)
+                if not pruned_images:
+                    # 停用会经 invalidate→clear_session 摘掉全部图片索引，回滚要能补回。
+                    pruned_images = plugin._coordinator.snapshot_images()
+            await apply_enabled_topology(
+                plugin, enabled=new_settings.enabled, cleared_events=cleared_events
+            )
         elif plugin.runtime_enabled:
             plugin._scheduler.ensure_image_cleanup()
         # 影响后台任务拓扑的**其余**配置键也要重算注册：POST /config 是运行期
@@ -754,11 +784,22 @@ async def _apply_config_updates(
         await await_rollback(
             asyncio.ensure_future(
                 _restore_plugin_state(
-                    plugin, snapshot, pruned=pruned, extra_delay_umos=window_delay_umos
+                    plugin,
+                    snapshot,
+                    pruned=pruned,
+                    pruned_images=pruned_images,
+                    extra_delay_umos=window_delay_umos,
+                    cleared_events=cleared_events,
                 )
             )
         )
         raise
+    finally:
+        for umo, (_event, _active_at, generation) in cleared_events.items():
+            if not session_whitelisted(umo, plugin.settings.whitelist) and plugin._gate.is_current(
+                umo, generation
+            ):
+                plugin._gate.prune(umo)
 
 
 def _audit_value(value: Any) -> str:
@@ -791,11 +832,15 @@ def _log_audited_changes(
 
 
 async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """返回插件集成状态与会话级运行状态。面板零消费，运维/排障专用。
+    """返回插件集成状态与聚合计数。面板零消费，运维/排障专用。
 
     ``lifecycle`` 是承重字段：生成超时且宿主吞取消即永久 DEGRADED，此后一切
     新工作被拒，而 ``runtime_enabled`` 读持久配置仍显示 True；没有这个字段
     运营者只能翻日志才能发现插件已死。
+
+    只回计数不回明细：同义的 ``/selfreply status`` 只服务本会话，而这里若回
+    多个会话的 UMO、代次与派生自群聊原文的 ``reason``，只是为一个面板零消费
+    的端点扩大用户内容暴露面。
     """
     try:
         return {
@@ -805,8 +850,8 @@ async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
             "whitelist_count": len(plugin.settings.whitelist),
             "decision_model_enabled": plugin.settings.decision_model_enabled,
             "gate": {
-                "generation": dict(plugin._gate.generation_view),
-                "running": sorted(plugin._gate.running_sessions_view),
+                "sessions": len(plugin._gate.generation_view),
+                "running": len(plugin._gate.running_sessions_view),
             },
             "tasks": {
                 "delay": len(plugin._delay_tasks),
@@ -818,7 +863,7 @@ async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
                 "image_events": len(plugin._recent_image_events),
                 "sessions": len(plugin.sessions),
             },
-            "last_decisions": dict(plugin._last_decisions),
+            "decisions": len(plugin._last_decisions),
         }
     except Exception as exc:
         # 同 _api_get_config：详情只进服务端日志，不回显给调用方。

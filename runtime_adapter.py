@@ -68,16 +68,7 @@ EVENT_TYPE_MEMBERS = (
 # 事件结果契约：实例必须可用且具备这两个链式方法（缺失参数即红）
 _EVENT_RESULT_METHODS = ("message", "set_result_content_type")
 
-# 「属性不存在」的哨兵：不能用 None 当 getattr 默认值，宿主
-# ProviderRequest.func_tool 的合法默认值就是 None。用 None 兜底会把「宿主没有
-# 这个字段」与「宿主声明本次无工具」压成同一出口，而两者该走反方向。
-_MISSING = object()
-
 # ProviderRequest 实例在 generation 中实际赋值的字段：缺失即红。
-# func_tool 是本清单里唯一承担安全职责的字段（工具边界的唯一读写点）：
-# 加载期断言缺失即 raise，使 filter_final_tools 的「缺属性」分支在生产上
-# 不可达；删字段会把它复活成真实 fail-open，由
-# tests/test_runtime_adapter.py::test_func_tool_stays_in_load_time_contract_assertion 钉住。
 _PROVIDER_REQUEST_FIELDS = frozenset(
     {
         "prompt",
@@ -90,14 +81,8 @@ _PROVIDER_REQUEST_FIELDS = frozenset(
     }
 )
 
-# 可按宿主能力省略的 build config 键（仅存储层能力增强类）。
-# ``fallback_provider_ids`` 是 4.29 才有的字段；4.23.3 / 4.27.2 的
-# ``MainAgentBuildConfig`` 是 dataclass，多传一个未知关键字就是加载期
-# ``RuntimeError``，插件整个装不上。旧宿主上回退走另一条通道
-# ``provider_settings.fallback_chat_models``，而本插件本就透传整棵
-# ``provider_settings``，省略该键不会丢掉旧宿主的回退。
-# 其余键保持严格：省略它们等于放弃对宿主键名漂移的加载期告警。
-_OPTIONAL_BUILD_CONFIG_KWARGS = frozenset({"fallback_provider_ids"})
+# 4.29 将回退名单、重试次数提升为独立字段；旧版回退能力从 provider_settings 读取。
+_OPTIONAL_BUILD_CONFIG_KWARGS = frozenset({"fallback_provider_ids", "request_max_retries"})
 
 
 class _HostEntry(NamedTuple):
@@ -106,6 +91,7 @@ class _HostEntry(NamedTuple):
     module: str
     symbols: tuple[str, ...]
     core: bool  # 主 Agent API 必需项：缺失即整包 import_error
+    fallback_module: str | None = None
 
 
 # 宿主私有符号单一来源表：增删符号只需改此处。
@@ -113,11 +99,29 @@ class _HostEntry(NamedTuple):
 # 单符号缺失 → 对应能力为 None（旧版宿主降级路径）。
 _HOST_CONTRACT: tuple[_HostEntry, ...] = (
     _HostEntry("astrbot.core.agent.tool", ("ToolSet",), core=True),
-    _HostEntry("astrbot.core.astr_agent_run_util", ("run_agent",), core=True),
+    _HostEntry(
+        "astrbot.core.astr_agent_run_util",
+        ("run_agent",),
+        core=True,
+        fallback_module="astrbot.core.astr_agent_runtime.runner",
+    ),
     _HostEntry(
         "astrbot.core.astr_main_agent",
-        ("MainAgentBuildConfig", "_get_session_conv", "build_main_agent"),
+        ("MainAgentBuildConfig",),
         core=True,
+        fallback_module="astrbot.core.astr_agent_runtime.main_agent.config",
+    ),
+    _HostEntry(
+        "astrbot.core.astr_main_agent",
+        ("_get_session_conv",),
+        core=True,
+        fallback_module="astrbot.core.astr_agent_runtime.main_agent.request",
+    ),
+    _HostEntry(
+        "astrbot.core.astr_main_agent",
+        ("build_main_agent",),
+        core=True,
+        fallback_module="astrbot.core.astr_agent_runtime.main_agent.builder",
     ),
     _HostEntry(
         "astrbot.core.message.message_event_result",
@@ -136,8 +140,32 @@ _HOST_CONTRACT: tuple[_HostEntry, ...] = (
 
 
 def _import_symbols(entry: _HostEntry) -> dict[str, Any]:
-    module = importlib.import_module(entry.module)
-    return {name: getattr(module, name) for name in entry.symbols}
+    last_error: ImportError | AttributeError | None = None
+    for module_name in (entry.module, entry.fallback_module):
+        if module_name is None:
+            continue
+        try:
+            module = importlib.import_module(module_name)
+            return {name: getattr(module, name) for name in entry.symbols}
+        except (ImportError, AttributeError) as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise ImportError(f"missing host module for {entry.symbols}")
+
+
+def _resolved_entry_module(entry: _HostEntry) -> str:
+    """Return the first module exporting all symbols in an entry."""
+    for module_name in (entry.module, entry.fallback_module):
+        if module_name is None:
+            continue
+        try:
+            module = importlib.import_module(module_name)
+            if all(hasattr(module, name) for name in entry.symbols):
+                return module_name
+        except (ImportError, AttributeError):
+            continue
+    return entry.module
 
 
 class AstrBotRuntimeAdapter:
@@ -147,7 +175,8 @@ class AstrBotRuntimeAdapter:
     契约断言都只经本类发生；delivery/generation/main 不得再直接 import。
     """
 
-    _BUILD_REQUIRED = frozenset({"event", "plugin_context", "config", "req", "apply_reset"})
+    _BUILD_REQUIRED = frozenset({"event", "plugin_context", "config", "req"})
+    _OPTIONAL_BUILD_KWARGS = frozenset({"apply_reset"})
     _RUN_REQUIRED = frozenset(
         {
             "agent_runner",
@@ -166,7 +195,11 @@ class AstrBotRuntimeAdapter:
     @classmethod
     def host_contract(cls) -> list[tuple[str, list[str]]]:
         """compat_check 存在性检查的单一来源清单（增删符号只需改 _HOST_CONTRACT）。"""
-        return [(entry.module, list(entry.symbols)) for entry in _HOST_CONTRACT]
+        merged: dict[str, list[str]] = {}
+        for entry in _HOST_CONTRACT:
+            module = _resolved_entry_module(entry)
+            merged.setdefault(module, []).extend(entry.symbols)
+        return [(module, symbols) for module, symbols in merged.items()]
 
     @classmethod
     def from_host(cls) -> AstrBotRuntimeAdapter:
@@ -252,20 +285,18 @@ class AstrBotRuntimeAdapter:
             if caps.build_config is None:
                 problems.append("当前 AstrBot 缺少 MainAgentBuildConfig")
             else:
-                # 签名探测不够：build config 的**键**兼容性只有实例化能验。
-                # 缺这一探针时，宿主改一个键名就让插件加载成功、每次主动生成
-                # 在运行期 TypeError（一条回复产不出），而 compat_check 与测试
-                # 全绿——桩的 build config 都是 **kwargs。
-                # 必须与运行期走**同一个出口**（new_build_config），否则可选键
-                # 的门控只在一侧生效：探针仍硬传就会在旧宿主上误判为不兼容。
+                # 用运行期相同的构造入口核验配置键，保留旧宿主的可选参数筛选。
                 try:
                     self.new_build_config(**proactive_build_config_kwargs())
                 except TypeError as exc:
                     problems.append(
-                        f"当前 AstrBot 的 MainAgentBuildConfig 不接受主动运行的配置参数：{exc}"
+                        "当前 AstrBot 的 MainAgentBuildConfig 不接受主动运行的配置参数："
+                        f"{redact_exc_text(exc)}"
                     )
                 except Exception as exc:
-                    problems.append(f"当前 AstrBot 的 MainAgentBuildConfig 不可实例化：{exc}")
+                    problems.append(
+                        f"当前 AstrBot 的 MainAgentBuildConfig 不可实例化：{redact_exc_text(exc)}"
+                    )
         self._validate_callable(problems, "call_event_hook", caps.call_event_hook, frozenset())
         if caps.event_result_cls is None:
             problems.append("当前 AstrBot 缺少事件结果类（MessageEventResult）")
@@ -273,7 +304,9 @@ class AstrBotRuntimeAdapter:
             try:
                 instance = caps.event_result_cls()
             except Exception as exc:
-                problems.append(f"当前 AstrBot 的 MessageEventResult 不可实例化：{exc}")
+                problems.append(
+                    f"当前 AstrBot 的 MessageEventResult 不可实例化：{redact_exc_text(exc)}"
+                )
             else:
                 missing_methods = sorted(
                     name
@@ -300,7 +333,9 @@ class AstrBotRuntimeAdapter:
             try:
                 instance = caps.provider_request_cls()
             except Exception as exc:
-                problems.append(f"当前 AstrBot 的 ProviderRequest 不可实例化：{exc}")
+                problems.append(
+                    f"当前 AstrBot 的 ProviderRequest 不可实例化：{redact_exc_text(exc)}"
+                )
             else:
                 missing_fields = sorted(_PROVIDER_REQUEST_FIELDS - set(dir(instance)))
                 if missing_fields:
@@ -378,69 +413,6 @@ class AstrBotRuntimeAdapter:
     # main.py 在 import 期把 capabilities 里的这几项绑成模块级名字，测试按名字替换。
     # 路径解析失败由 resolve_paths 让异常传播、加载期即崩。
 
-    @staticmethod
-    def _read_func_tool(req: Any) -> Any:
-        """读 ``req.func_tool``，属性读取本身抛时返回 ``_MISSING``。
-
-        ``getattr(req, "func_tool", _MISSING)`` 的默认值只在宿主抛
-        ``AttributeError`` 时生效；宿主把它实现成会抛别的异常的 property 时
-        （RuntimeError 等），异常会原样逃出本类。那会把「无法枚举」变成一次裸
-        异常，而 ``filter_final_tools`` 正是工具边界的 fail-closed 接缝——它必须
-        先于调用方能处理的层级把这类失败收敛成哨兵。
-
-        加载期 ``_PROVIDER_REQUEST_FIELDS`` 断言不覆盖这种情况：``dir()`` 照样
-        列出一个会抛的 property，``validate()`` 因此通过。
-        """
-        try:
-            return getattr(req, "func_tool", _MISSING)
-        except Exception:
-            return _MISSING
-
-    def _tool_list(self, req: Any) -> list[str] | None:
-        """共享工具枚举前奏：哨兵/None/tools 三段判定。
-
-        AstrBot 在 reset/run 时从 ``req.func_tool`` 取工具，请求对象就是事后的
-        权威快照。枚举失败统一 DEBUG，决策与告警归调用方。返回 ``None`` 表示
-        无法枚举（调用方必须 fail closed）；返回 ``[]`` 是"本次没有工具"，
-        与"读不到工具集"方向相反。``func_tool`` 属性缺失与显式 ``None`` 分开
-        处理：后者是宿主声明「本次无工具」，前者是读不到字段本身，返回
-        ``[]`` 会把"查不到"谎报成"查过了、是空的"。
-        """
-        tool_set: Any = self._read_func_tool(req)  # Any：见 filter_final_tools 说明
-        if tool_set is _MISSING:
-            logger.debug(
-                "[%s] tool enumeration unavailable: req has no 'func_tool' (type=%s)",
-                PLUGIN_ID,
-                type(req).__name__,
-            )
-            return None
-        if tool_set is None:
-            return []
-        try:
-            tools = getattr(tool_set, "tools", None)
-        except Exception as exc:
-            # 属性读取本身抛（宿主 property 坏了）时同样必须 fail closed：
-            # 让异常逃出 filter_final_tools 会把"无法枚举"变成一次裸异常，
-            # 调用方只能按 generate 的兜底分支处理，归因反而更糊。
-            logger.debug("[%s] tool enumeration failed: %s", PLUGIN_ID, redact_exc_text(exc))
-            return None
-        if tools is None:
-            logger.debug(
-                "[%s] tool enumeration unavailable: func_tool has no 'tools' (type=%s)",
-                PLUGIN_ID,
-                type(tool_set).__name__,
-            )
-            return None
-        try:
-            return [str(getattr(tool, "name", "") or "").strip() for tool in tools]
-        except Exception as exc:
-            logger.debug(
-                "[%s] tool enumeration failed: %s",
-                PLUGIN_ID,
-                redact_exc_text(exc),
-            )
-            return None
-
     def filter_final_tools(
         self,
         req: Any,
@@ -448,67 +420,17 @@ class AstrBotRuntimeAdapter:
         keep: frozenset[str] | None = None,
         drop: frozenset[str] = frozenset(),
     ) -> bool:
-        """Filter ``req.func_tool`` down to ``keep`` minus ``drop``.
+        """Apply the allowlist, or ``drop`` when inheriting tools, to the request's ToolSet.
 
-        Two modes per call:
-        - ``keep`` is not None: allowlist mode. Removes every tool not in
-          ``keep`` (the default proactive policy: empty allowlist removes all).
-        - ``keep`` is None: denylist mode. Removes only tools in ``drop`` and
-          leaves everything else untouched (inherit mode guard against
-          host-dangerous capabilities, including tools a hook injected after
-          build).
-
-        Operates on ``req.func_tool`` directly, the same object the agent
-        runner reads at reset and run time. Returns ``False`` when the tool
-        set cannot be enumerated or a removal fails; callers must then abort
-        the proactive run (fail closed).
-
-        「``func_tool`` 属性缺失」与「显式 ``None``」走反方向；缺属性分支在
-        生产上不可达（``func_tool`` 由 ``_PROVIDER_REQUEST_FIELDS`` 加载期硬
-        断言），保留它是纵深防御，本方法是公共接缝，接受任意 ``req``。
+        Return ``False`` if the tools cannot be read, removed or verified; the
+        caller must then abort the proactive run.
         """
-        # 显式 ``Any``：默认值换成哨兵后联合类型会坍缩成 ``object``，
-        # 下面的 ``tool_set.remove_tool`` 会被 mypy 判成 attr-defined。
-        # 宿主工具集本就是鸭子类型（能力由 validate 在加载期核验）。
-        tool_ids = self._tool_list(req)
-        if tool_ids is None:
-            # fail-closed 恰好一条 WARNING 且须点名原因（test_missing_func_tool_
-            # attribute_fails_closed_not_open / test_fail_closed_warning_names_the_reason）。
-            tool_set: Any = self._read_func_tool(req)
-            if tool_set is _MISSING:
-                logger.warning(
-                    "[%s] tool boundary fail-closed: req has no 'func_tool' attribute "
-                    "(type=%s); aborting proactive run",
-                    PLUGIN_ID,
-                    type(req).__name__,
-                )
-            else:
-                logger.warning(
-                    "[%s] tool boundary fail-closed: func_tool has no enumerable 'tools' "
-                    "(type=%s); aborting proactive run",
-                    PLUGIN_ID,
-                    type(tool_set).__name__,
-                )
-            return False
-        if not tool_ids:
-            # func_tool 显式 None（宿主声明本次无工具）或工具集本身为空：
-            # 无工具可调，两种模式的核验都平凡通过。
-            return True
-        tool_set = self._read_func_tool(req)  # _tool_list 已排除 _MISSING/None tools
-        if tool_set is _MISSING or tool_set is None:
-            # 上一次枚举还能读到，此刻读不到：宿主属性在两次读取之间变了。
-            # fail-closed 接缝不猜这种情况，直接判失败。
-            logger.warning(
-                "[%s] tool boundary fail-closed: req.func_tool became unreadable "
-                "(type=%s); aborting proactive run",
-                PLUGIN_ID,
-                type(req).__name__,
-            )
-            return False
         try:
-            tools = tool_set.tools
-            for tool in list(tools):
-                name = str(getattr(tool, "name", "") or "").strip()
+            tool_set = req.func_tool
+            if tool_set is None:
+                return True
+            for tool in list(tool_set.tools):
+                name = tool.name
                 if not name:
                     continue
                 if keep is not None:
@@ -516,56 +438,29 @@ class AstrBotRuntimeAdapter:
                         tool_set.remove_tool(name)
                 elif name in drop:
                     tool_set.remove_tool(name)
+            remaining = [tool.name for tool in tool_set.tools]
         except Exception as exc:
-            # 脱敏后进日志：tool_set 的实现可能把宿主配置路径、插件名或上游
-            # SDK 原文带进异常文本，而这条是 fail-closed 的安全缝。顺带挡住
-            # exc.__str__ 再抛——那会让日志调用本身在 except 块里炸掉，
-            # fail-closed 的归因随之丢失（同 utils.safe_exc_text 的理由）。
-            detail = redact_exc_text(exc)
             logger.warning(
                 "[%s] tool boundary fail-closed: tool set read or removal failed (%s); "
                 "aborting proactive run",
                 PLUGIN_ID,
-                detail,
-            )
-            return False
-        remaining = self._tool_list(req)
-        if remaining is None:
-            logger.warning(
-                "[%s] tool boundary fail-closed: post-filter enumeration unavailable; "
-                "aborting proactive run",
-                PLUGIN_ID,
+                redact_exc_text(exc),
             )
             return False
         if keep is not None:
             violations = sorted({name or "<unnamed>" for name in remaining if name not in keep})
-            if violations:
-                logger.warning(
-                    "[%s] tool boundary fail-closed: non-allowlisted tools remain: %s",
-                    PLUGIN_ID,
-                    ", ".join(violations),
-                )
-                return False
-            return True
-        violations = sorted({name for name in remaining if name in drop})
+            policy = "non-allowlisted"
+        else:
+            violations = sorted(
+                {name or "<unnamed>" for name in remaining if not name or name in drop}
+            )
+            policy = "denied"
         if violations:
             logger.warning(
-                "[%s] tool boundary fail-closed: denied tools remain: %s",
+                "[%s] tool boundary fail-closed: %s tools remain: %s",
                 PLUGIN_ID,
+                policy,
                 ", ".join(violations),
-            )
-            return False
-        # denylist 模式下读不出名字的工具同样必须 fail closed：它与 allowlist
-        # 分支的「<unnamed>」违规对称——名字读不到就无从判断它是否在 drop 里，
-        # 而放行它正是 inherit 模式要防的（宿主把 tools 换成名字不可读的容器时，
-        # 整个危险工具集会静默穿过这道最后的防线）。
-        unnamed = sum(1 for name in remaining if not name)
-        if unnamed:
-            logger.warning(
-                "[%s] tool boundary fail-closed: %d tool(s) without a readable name "
-                "in denylist mode; aborting proactive run",
-                PLUGIN_ID,
-                unnamed,
             )
             return False
         return True
@@ -589,19 +484,75 @@ class AstrBotRuntimeAdapter:
         config_type = self.capabilities.build_config
         if config_type is None:
             raise RuntimeError("当前 AstrBot 缺少 MainAgentBuildConfig")
-        accepted = {
-            key: value
-            for key, value in kwargs.items()
-            if key not in _OPTIONAL_BUILD_CONFIG_KWARGS
-            or self._accepts_build_config_kwarg(config_type, key)
-        }
+        accepted: dict[str, Any] = {}
+        dropped: list[str] = []
+        for key, value in kwargs.items():
+            if key in _OPTIONAL_BUILD_CONFIG_KWARGS and not self._accepts_build_config_kwarg(
+                config_type, key
+            ):
+                dropped.append(key)
+                continue
+            accepted[key] = value
+        if dropped:
+            # 备用模型有 provider_settings.fallback_chat_models 回退通道；重试次数
+            # 只有支持从 provider_settings 读取它的宿主才生效，最低支持版 4.23.3
+            # 不读取。保留 DEBUG 记录，便于定位旧宿主上设置未生效的原因。
+            logger.debug(
+                "[%s] build config 无 %s 字段；旧版 provider_settings 回退能力视宿主版本而定",
+                PLUGIN_ID,
+                "/".join(dropped),
+            )
         return config_type(**accepted)
 
     async def load_session_conversation(self, event: Any, context: Any) -> Any:
         return await self.get_session_conv(event, context)
 
+    def legacy_conversation(self, conversation: Any, context: Any) -> Any:
+        """把 4.30 的会话读结果转成宿主 build/persona/历史回写要用的对象。
+
+        4.30 的 ``_get_session_conv`` 返回 ``ConversationRead``：会话 id 在
+        ``conversation_id``，没有 ``cid``/``history``。显式请求（插件自带
+        ``req``）的路径上宿主不再自己做这层转换，而 build 的 event writer 读
+        ``req.conversation.cid``、persona 读 ``.persona_id``、历史回写也按
+        ``req.conversation`` 是否为空决定——不转换就整段丢掉人格与历史回写。
+        转换器由宿主提供（``to_legacy_conversation``），老宿主返回的对象本身
+        已带 ``cid``，原样放行。
+        """
+        if conversation is None or hasattr(conversation, "cid"):
+            return conversation
+        manager = getattr(context, "conversation_manager", None)
+        convert = getattr(manager, "to_legacy_conversation", None)
+        if not callable(convert):
+            return conversation
+        try:
+            return convert(conversation)
+        except Exception as exc:
+            logger.debug(
+                "[%s] legacy conversation conversion failed error=%s",
+                PLUGIN_ID,
+                redact_exc_text(exc),
+            )
+            return conversation
+
     async def build(self, **kwargs: Any) -> Any:
-        return await self.build_main_agent(**kwargs)
+        build = self.build_main_agent
+        try:
+            params = dict(inspect.signature(build).parameters)
+        except (TypeError, ValueError):
+            params = {}
+        accepts_var_kwargs = any(
+            param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
+        )
+        if not accepts_var_kwargs and params:
+            if "apply_reset" not in params:
+                # 4.30 assembles messages inside build, so request hooks must run there.
+                kwargs["config"].call_request_hook = True
+            kwargs = {
+                key: value
+                for key, value in kwargs.items()
+                if key not in self._OPTIONAL_BUILD_KWARGS or key in params
+            }
+        return await build(**kwargs)
 
     def run(self, agent_runner: Any, **kwargs: Any) -> AsyncIterator[Any]:
         return self.run_agent(agent_runner, **kwargs)

@@ -253,8 +253,6 @@ async def test_add_at_capacity_refuses_instead_of_evicting(tmp_path: Path, caplo
     内存与磁盘里都没有，该会话此后每条消息都被静默丢弃；字典序居中时反过来把
     一个正常会话挤出去，它的日配额/冷却时间戳被清零、代次表项被删，表现为
     「该群主动回复莫名停了」。两种都只留一条不带条目名的计数 WARNING。
-
-    变异锚定：删掉 ``add`` 里的容量守卫，本用例红。
     """
     _, _, models = _load_modules()
     full = {f"qq:GroupMessage:{i:04d}" for i in range(models.MAX_WHITELIST_SIZE)}
@@ -392,7 +390,7 @@ async def test_remove_rollback_restores_pruned_session_state(tmp_path: Path) -> 
 
     # 白名单已回滚
     assert ctx.settings.whitelist == {umo, group}
-    # SessionState 必须存活：配额/冷却/最近事件未被清零（修复前此处为 False）
+    # SessionState 保留配额、冷却与最近事件。
     restored = ctx.sessions.get(umo)
     assert restored is not None, "回滚后 SessionState 被 _prune 销毁"
     assert restored["daily_count"] == 7
@@ -408,8 +406,6 @@ async def test_remove_rollback_restores_runtime_umo_map(tmp_path: Path) -> None:
     运行时 UMO，而 ``_runtime_umos_for_whitelist_item`` 对裸群号直接返回空集，
     巡检从此不再访问该群，直到下一条消息重新注册。全程无日志，表现为"该群的
     主动回复莫名停了"。
-
-    变异锚定：删掉 ``commit_change`` 里 ``_runtime_umos`` 的原地恢复，本用例红。
     """
     _, _, models = _load_modules()
     umo = _umo_with_group()
@@ -441,9 +437,6 @@ async def test_remove_rollback_runs_when_persist_is_cancelled(tmp_path: Path) ->
     会话状态已摘下、磁盘未写）。于是 remove 看起来成功了——内存里会话已被移出，
     磁盘却仍写着它在白名单里，重启即复活；同时该会话的配额与冷却被清零。
     add 侧则相反：内存里会话已加入，磁盘没有，重启后不再命中白名单。
-
-    变异锚定：把 ``commit_change`` 的 ``except BaseException`` 改回
-    ``except Exception``，本用例红。
     """
     _, _, models = _load_modules()
     umo = _umo_with_group()
@@ -496,8 +489,6 @@ async def test_remove_rollback_finishes_when_the_caller_is_cancelled(tmp_path: P
     （代次推进、会话状态摘下），回滚只来得及恢复内存——取消落在回滚的 await 上
     就跳出，磁盘仍是驳回后的白名单，重启后 ``load_config_data`` 直接把它复活
     （契约 §6），同时该会话的配额与冷却被清零（契约 §11 B2）。
-
-    变异锚定：把 shield 等待循环改回裸 ``await rollback()``，本用例红。
     """
     _, _, models = _load_modules()
     umo = _umo_with_group()

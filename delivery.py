@@ -60,6 +60,53 @@ RuntimeCallback = Callable[[], Any]
 _LOG_REPLY_PREVIEW_CHARS = 80
 
 
+async def _submit_once(
+    adapter: Callable[[Any], Any],
+    payload: Any,
+    ledger: AttemptLedger,
+    *,
+    log_label: str,
+    umo: str,
+    ledger_id: str,
+) -> tuple[Any, SendOutcome | None]:
+    """经 gateway 投递一次，返回（gateway 结果, 失败 outcome）。
+
+    提交标志在**适配器被调用那一刻**置位，而非 gateway 之前：gateway 在调用适配器
+    前还有 accepts_attempts / reserve / mark_in_flight，其 except 只包住
+    ``self._sender(message)`` 那一段（outbound.py:123-140），故逃出 gateway 的异常
+    必然发生在提交前——那些前置步骤抛错时适配器一次都没被调用，记 UNKNOWN 会白吃
+    一次冷却与日配额且不写历史。adapter 调用之后 gateway 自身再抛仍归 UNKNOWN：
+    此时标志位已置位。send 正常返回后调用方再用 ``submitted`` 精确化。
+    """
+    submitted = False
+
+    def submit(message: Any) -> Any:
+        nonlocal submitted
+        submitted = True
+        return adapter(message)
+
+    try:
+        result = await OutboundGateway(submit, ledger=ledger).send(payload)
+    except Exception as exc:
+        detail = redact_exc_text(exc)
+        logger.warning(
+            "[%s] %s ledger_id=%s session=%s error=%s",
+            PLUGIN_ID,
+            log_label,
+            ledger_id,
+            umo,
+            detail,
+        )
+        status = SendStatus.UNKNOWN if submitted else SendStatus.FAILED_BEFORE_SUBMIT
+        return None, SendOutcome(status, detail)
+    return result, None
+
+
+# 账本已封时迟到的发送（关停/隔离期）与「会话已更新」无关，回执必须指向真实
+# 成因，否则排障方向被指错（SUPPRESSED 文案按成因分流，不同成因不合并）。
+LEDGER_SEALED_REPLY_TEXT = "本次投递已收尾，放弃这条迟到的回复。"
+
+
 class _NamedAt(At):
     """把 ``name`` 带进 OneBot ``at`` 段的 ``At``。
 
@@ -76,7 +123,7 @@ class _NamedAt(At):
     def toDict(self) -> dict[str, Any]:
         # 本方法在**投递时**由适配器序列化阶段调用，晚于 _attach_chain_prefix 的
         # 构造保护：这里抛出去会被 outbound 归成 UNKNOWN（状态未知、消耗冷却与
-        # 日配额、不重试），一条普通发送就变成「提交状态未知」——正是契约 §14
+        # 日配额、不重试），一条普通发送就变成「提交状态未知」——正是
         # 禁止的「装饰性组件影响投递分类」。宿主换结构时静默降级为裸 at。
         data = super().toDict()
         name = getattr(self, "name", "")
@@ -162,17 +209,10 @@ class DeliveryRunner:
         target_id: str,
         skip_log: str,
     ) -> str:
-        """装饰性组件 ID 的单一解析形状：不需要就返回空串，取不到返回空串并留痕。
-
-        quote 与 mention 只在这里分叉（判定开关、目标取值、跳过日志各不同），
-        骨架（不插 await、两级降级）由本方法收口，两条路径行为完全一致。
-        """
-        if not wanted:
-            return ""
-        component_id = target_id
-        if not component_id:
+        """装饰性组件 ID 的单一解析形状：不需要或取不到时返回空串并留痕。"""
+        if wanted and not target_id:
             logger.debug(skip_log, PLUGIN_ID, umo)
-        return component_id
+        return target_id if wanted else ""
 
     def _resolve_quote_id(self, umo: str, model_decision: bool | None, last_event: Any) -> str:
         """本次发送要引用的消息 ID；不需要引用或取不到 ID 时返回空串。"""
@@ -207,8 +247,8 @@ class DeliveryRunner:
         """本次是否 @ 对方。``off`` 从不 @（默认）；``always`` 每次；``random``
         按 ``mention_probability``。100 必 @、0 必不 @（随机值域为 [0, 1)）。
 
-        与 ``_should_quote`` 的关键差异：**没有 model 模式**。是否 @ 是投递
-        形态，不是"该不该接话"的判断内容。``off``/``always`` 下不调用
+        与 ``_should_quote`` 的关键差异：没有 model 模式。是否 @ 属于投递形态，
+        与「该不该接话」的判断内容互相独立。``off``/``always`` 下不调用
         ``_random_value()``：不消耗随机序列，同批测试的随机数轨迹才可复现。
         """
         mode = self.settings.mention_mode
@@ -309,12 +349,14 @@ class DeliveryRunner:
                     return "主动发送状态未知，未自动重试。"
                 # SUPPRESSED 的成因判定必须先于代次复核：装饰 hook 是一次 await，
                 # 期间插件重载会同时置 _stopping 并推进代次。先判代次会把
-                # "因停止而抑制"误报成"会话已更新"，把排障方向指错（DECISIONS.md
-                # 的 SUPPRESSED 文案按成因分流一节）。
+                # "因停止而抑制"误报成"会话已更新"，把排障方向指错。SUPPRESSED
+                # 文案按成因分流，不同成因不合并成一句。
                 if sent.status is SendStatus.SUPPRESSED:
                     # 判据取 code 而非 detail 文案：改措辞不该改变控制流。
                     if sent.code is SuppressCode.STOPPING:
                         return STOPPING_REPLY_TEXT
+                    if sent.code is SuppressCode.GATE_REJECTED:
+                        return LEDGER_SEALED_REPLY_TEXT
                     return STALE_REPLY_MESSAGE
                 if not self._gate.is_current(umo, expected_generation):
                     return STALE_REPLY_MESSAGE
@@ -386,10 +428,15 @@ class DeliveryRunner:
         last_event = target_event if target_event is not None else self._last_events.get(umo)
         quote_id = self._resolve_quote_id(umo, quote, last_event)
         # @ 与引用同源取目标且无条件解析：短路掉会让「mention_mode=always 但
-        # 事件已被回收」静默失效且无迹可查（契约 §14：context 兜底路径不 @）。
+        # 事件已被回收」静默失效且无迹可查（context 兜底路径不 @：事件被回收时 @ 会静默失效）。
         mention_id = self._resolve_mention_id(umo, last_event)
         # 显示名与目标同源，都取本次依据消息的发送者；理由见 _NamedAt。
         mention_name = event_sender_name(last_event) if mention_id and last_event else ""
+        # 零宽昵称不能作显示名，否则读取 at.name 的平台只显示一个 @。
+        if mention_id and not any(
+            char.isprintable() and not char.isspace() for char in mention_name
+        ):
+            mention_name = mention_id
         if last_event:
             return await self._send_via_event(
                 umo,
@@ -401,12 +448,7 @@ class DeliveryRunner:
                 mention_id=mention_id,
                 mention_name=mention_name,
             )
-        return await self._send_via_context(
-            umo,
-            reply,
-            ledger=ledger,
-            expected_generation=expected_generation,
-        )
+        return await self._send_via_context(umo, reply, ledger=ledger)
 
     async def _send_via_event(
         self,
@@ -435,11 +477,30 @@ class DeliveryRunner:
                 .message(reply)
                 .set_result_content_type(self._runtime().result_llm_type)
             )
-            await self._call_hook(last_event, self._runtime().event_type.OnDecoratingResultEvent)
+            try:
+                await self._call_hook(
+                    last_event, self._runtime().event_type.OnDecoratingResultEvent
+                )
+            except Exception as exc:
+                # 装饰钩子链上任意第三方插件抛错不该丢弃已生成的回复：按出错时手上
+                # 的链继续发送（可能含该钩子已做的部分修改；口径同下方 after-send
+                # 钩子）。异常落进外层 except 时 send_started 仍为 False，整条回复
+                # 会被判 FAILED_BEFORE_SUBMIT——用户收不到消息，且账本无 attempt
+                # 故不消耗冷却、下轮再生成再付费。
+                # 不回滚到调用前的链：hook 就地改 result.chain，也可能改链外字段
+                # （use_t2i_/use_markdown_）或整条换掉 result，深拷贝只能覆盖链这
+                # 一面，且会连更早 hook 已完成的装饰一起丢弃；契约取「不阻断发送」。
+                logger.warning(
+                    "[%s] decorating hook failed ledger_id=%s session=%s error=%s",
+                    PLUGIN_ID,
+                    ledger_id,
+                    umo,
+                    redact_exc_text(exc),
+                )
             # 复核点 2/2（真实窗口）：装饰钩子是 await，期间插件重载会同时置
             # _stopping 并推进代次。停止必须先于代次判定：反过来会把「因停止
             # 而抑制」误报成「会话已更新」，把排障方向指错（deliver_reply 的
-            # SUPPRESSED 文案按成因分流，DECISIONS.md 同）。
+            # SUPPRESSED 文案按成因分流，不同成因不合并）。
             if self._is_stopping():
                 self._clear_result(last_event)
                 logger.info(
@@ -469,6 +530,15 @@ class DeliveryRunner:
                 )
             result = last_event.get_result()
             if result is None or not result.chain:
+                # 装饰钩子（分段、过滤、裁剪一类）把链清空或整条丢掉。回复就此消失，
+                # 若不记日志，运营者手上只有「面板说接话了、群里没动静」。
+                logger.warning(
+                    "[%s] decorating hook produced no result; reply dropped "
+                    "ledger_id=%s session=%s",
+                    PLUGIN_ID,
+                    ledger_id,
+                    umo,
+                )
                 self._clear_result(last_event)
                 return SendOutcome(
                     SendStatus.FAILED_BEFORE_SUBMIT, "decorating hook produced no result"
@@ -493,15 +563,31 @@ class DeliveryRunner:
                 len(reply),
                 len(getattr(result, "chain", []) or []),
             )
-            outbound = OutboundGateway(last_event.send, ledger=ledger)
-            # 悲观默认：send 调用一旦开始，消息就可能已提交。gateway 内部把
-            # adapter 异常转成 UNKNOWN，但其 except 块自身仍可能抛（异常对象的
-            # ``__str__`` 坏掉时二次抛），此时异常逃出 gateway 而 adapter 早已
-            # 调用，必须仍归 UNKNOWN：记 FAILED_BEFORE_SUBMIT 会不消耗冷却而
-            # 重发。send 正常返回后再用 submitted 精确化。
-            send_started = True
-            send_result = await outbound.send(result)
+
+            send_result, failed = await _submit_once(
+                last_event.send,
+                result,
+                ledger,
+                log_label="event send reply failed",
+                umo=umo,
+                ledger_id=ledger_id,
+            )
+            if failed is not None:
+                self._clear_result(last_event)
+                return failed
             send_started = send_result.submitted
+            if send_result.outcome.status is SendStatus.UNKNOWN:
+                # 与 context 路径同口径：发送状态未知是真实群里最常见的失败形态
+                # （平台超时/风控/适配器异常），只留 DEBUG 等于用户查不到。
+                # 注意 UNKNOWN 在 outbound 的 submitted 定义里算「已提交」，所以这条
+                # 告警必须在 submitted 分支外面，放进 not submitted 里是死代码。
+                logger.warning(
+                    "[%s] event send result unknown ledger_id=%s session=%s detail=%s",
+                    PLUGIN_ID,
+                    ledger_id,
+                    umo,
+                    send_result.outcome.detail,
+                )
             if not send_result.submitted:
                 self._clear_result(last_event)
                 return send_result.outcome
@@ -558,7 +644,6 @@ class DeliveryRunner:
         reply: str,
         *,
         ledger: AttemptLedger,
-        expected_generation: int | None,
     ) -> SendOutcome:
         """context 兜底投递：事件已不在手边时经宿主 ``Context.send_message`` 发送。
 
@@ -573,14 +658,16 @@ class DeliveryRunner:
         # 自然上抛；gateway 内部已把 adapter 调用期间的取消归类为 UNKNOWN。
         send_started = False
         try:
-            outbound = OutboundGateway(
+            send_result, failed = await _submit_once(
                 lambda message: self._context_send(umo, message),
-                ledger=ledger,
+                MessageChain().message(reply),
+                ledger,
+                log_label="send reply failed",
+                umo=umo,
+                ledger_id=ledger_id,
             )
-            chain = MessageChain().message(reply)
-            # 悲观默认，理由见事件路径同处注释。
-            send_started = True
-            send_result = await outbound.send(chain)
+            if failed is not None:
+                return failed
             send_started = send_result.submitted
             if send_result.outcome.status is SendStatus.UNKNOWN:
                 logger.warning(
@@ -657,6 +744,6 @@ class DeliveryRunner:
             return True
         except Exception as exc:
             # 脱敏后进日志：落盘失败的异常文本含 state.json 绝对路径，
-            # 与 §7.1「内部异常细节只进服务端日志、不回显客户端」同一口径。
+            # 与「内部异常细节只进服务端日志、不回显客户端」同一口径。
             logger.warning("[%s] proactive state save failed: %s", PLUGIN_ID, redact_exc_text(exc))
             return False

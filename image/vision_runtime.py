@@ -87,7 +87,11 @@ class VisionService:
             try:
                 await parser.snapshot_local_sources(images)
             except Exception as exc:
-                logger.debug("[%s] local image snapshot stage failed: %s", PLUGIN_ID, exc)
+                logger.debug(
+                    "[%s] local image snapshot stage failed: %s",
+                    PLUGIN_ID,
+                    redact_exc_text(exc),
+                )
         self._track_background_task(
             self._freeze_images(
                 umo,

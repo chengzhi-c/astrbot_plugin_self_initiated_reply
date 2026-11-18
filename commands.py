@@ -24,14 +24,12 @@ from .plugin_state import append_recent_user_message, apply_enabled_topology, re
 from .utils import (
     clean_chat_text,
     collapse_whitespace,
-    event_group_id,
-    event_self_id,
     event_sender_id,
     event_text,
     event_umo,
     is_at_or_wake_command_event,
     is_explicit_direct_call,
-    raw_umo,
+    session_is_private,
     session_whitelisted,
     strip_leading_mentions,
 )
@@ -98,7 +96,7 @@ def strip_command_prefix(text: str) -> str:
 
 def _alias_help_line() -> str:
     """别名说明从调度表派生：给动作加别名而忘了同步文案会静默失效，
-    装饰器侧的 ``alias=`` 与本表的等价由 test_command_aliases_single_source 钉住。"""
+    装饰器侧的 ``alias=`` 必须与本表同源。"""
     groups = [
         f"{action}/{'/'.join(sorted(names - {action}))}"
         for action, names in COMMAND_ALIASES.items()
@@ -114,20 +112,22 @@ def help_text() -> str:
             "/selfreply status: 查看运行状态、判断模型、白名单、冷却和今日次数（管理员）",
             "/selfreply add: 将当前会话加入主动回复白名单（管理员）",
             "/selfreply remove: 将当前会话移出主动回复白名单（管理员）",
-            "/selfreply list: 查看当前主动回复白名单（管理员）",
+            "/selfreply list: 私聊中查看完整主动回复白名单（管理员）",
             "/selfreply check [content]: 手动测试一次主动回复；可附带测试内容（管理员）",
             "/selfreply on: 启用主动回复，重启后保持（管理员）",
             "/selfreply off: 暂停主动回复，重启后保持（管理员）",
-            "/selfreply debug: 查看当前会话、发送者与识别信息（管理员）",
+            "/selfreply debug: 查看当前消息识别结果（管理员）",
             _alias_help_line(),
             "也支持 @Bot selfreply <动作>（无需斜杠）。",
         ]
     )
 
 
-def list_text(settings: Settings) -> str:
+def list_text(settings: Settings, event: AstrMessageEvent) -> str:
     if not settings.whitelist:
-        return "主动回复白名单为空。"
+        return "主动回复白名单为空。在群内发 /selfreply add 把当前会话加进去。"
+    if not session_is_private(event_umo(event)):
+        return f"主动回复白名单共 {len(settings.whitelist)} 条，请在私聊中查看明细。"
     return "主动回复白名单：\n" + "\n".join(f"- {item}" for item in sorted(settings.whitelist))
 
 
@@ -139,13 +139,13 @@ _RECENT_DECISION_REASON_MAX = 60
 def recent_decision_line(decision: dict[str, Any] | None) -> str:
     """把本会话最近一次裁决渲染成一行（与 ``GET /status`` 的 ``last_decisions`` 同源）。"""
     if not decision:
-        return "最近裁决: 暂无记录"
+        return "最近一次判断: 暂无记录"
     verdict = "接话" if decision.get("should_reply") else "不接话"
     # reason 可能是多行，先折成单行再截断，保证回显行数稳定。
     reason = collapse_whitespace(decision.get("reason") or "未说明")
     if len(reason) > _RECENT_DECISION_REASON_MAX:
         reason = reason[: _RECENT_DECISION_REASON_MAX - 1] + "…"
-    return f"最近裁决: {fmt_ts(decision.get('at'))} {verdict} · {reason}"
+    return f"最近一次判断: {fmt_ts(decision.get('at'))} {verdict} · {reason}"
 
 
 def status_text(
@@ -194,7 +194,7 @@ def status_text(
             f"{settings.min_silence_sec}s）",
             f"后台巡检: {settings.enabled_patrol_trigger}",
             "直接 @Bot: 始终交给 AstrBot 主回复链，主动回复不抢答",
-            f"忽略发送者: {', '.join(sorted(settings.ignored_sender_ids)) or '-'}",
+            f"忽略发送者数量: {len(settings.ignored_sender_ids)}",
             f"冷却: {settings.cooldown_sec}s，今日上限: "
             f"{settings.max_daily_replies_per_session or '不限'}",
             # daily_key 不是今天时计数属于昨天：read_session_state 刻意不刷新
@@ -235,19 +235,12 @@ def _lifecycle_reject_text(plugin: SelfInitiatedReplyPlugin, action: str) -> str
 
 
 def debug_text(event: AstrMessageEvent, ignored_sender: bool) -> str:
-    text = event_text(event)
     return "\n".join(
         [
             "主动回复调试信息",
-            f"原始 UMO: {raw_umo(event) or '-'}",
-            f"归一化 UMO: {event_umo(event) or '-'}",
-            f"group_id: {event_group_id(event) or '-'}",
-            f"sender_id: {event_sender_id(event) or '-'}",
-            f"self_id: {event_self_id(event) or '-'}",
-            f"message_str: {text or '-'}",
             f"is_at_or_wake_command: {is_at_or_wake_command_event(event)}",
             f"ignored_sender: {ignored_sender}",
-            f"explicit_direct_call: {is_explicit_direct_call(event, text)}",
+            f"explicit_direct_call: {is_explicit_direct_call(event, event_text(event))}",
         ]
     )
 
@@ -277,7 +270,7 @@ async def dispatch_command_action(
             plugin._scheduler.message_trigger_delay(),
         )
     if action == "list":
-        return list_text(plugin.settings)
+        return list_text(plugin.settings, event)
     if not umo:
         return "无法识别当前会话。"
     if action == "add":

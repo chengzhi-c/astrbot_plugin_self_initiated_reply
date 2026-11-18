@@ -32,6 +32,7 @@ from .models import (
 from .utils import (
     build_history_text,
     cap_context_text,
+    collapse_whitespace,
     consume_task_result,
     latest_user_text,
     parse_decision_json,
@@ -109,7 +110,7 @@ class DecisionMaker:
             # 宽限窗口内又收到取消（/off、/check、/add、POST /config、terminate）。
             # 不能据此判定 provider 成了孤儿：取消是异步投递的，它可能正在自行
             # 收敛，而隔离登记 → _mark_degraded 是单向永久的——一次例行指令就能
-            # 把主动回复永久停摆到重载为止（契约 §5 把 DEGRADED 留给真的超出
+            # 把主动回复永久停摆到重载为止（DEGRADED 留给真的超出
             # 硬停止窗口的任务）。把剩余宽限用完再决定。
             task.cancel()
             try:
@@ -241,15 +242,22 @@ class DecisionMaker:
             decision = {"should_reply": True, "reason": "手动强制检查", "elapsed_sec": 0.0}
         else:
             decision = await self.ask_decision_model(umo, state, trigger=trigger)
+        # reason 由判断模型产出，可被群聊内容带偏：不折单行/去控制字符会撑开
+        # /selfreply status 面板，ANSI 转义还能伪造日志行。字符串与 dict 两条
+        # 出口共用这一份口径（INFO 与 /status 读的都是它）：先折单行再逐字符筛，
+        # 反过来会把换行直接删掉、两个词黏在一起。isprintable 同时挡 C0/DEL/C1。
+        decision["reason"] = "".join(
+            char for char in collapse_whitespace(decision.get("reason") or "") if char.isprintable()
+        )
         if not decision.get("should_reply"):
-            return f"判断不回复：{decision.get('reason') or '未说明'}"
+            return f"判断不回复：{decision['reason'] or '未说明'}"
         # quote 是可选字段：只有真被模型裁决过的路径才带值，强制路径缺省
         # None =「模型没说」，由投递侧按 quote_mode 兜底。
         decision.setdefault("quote", None)
         return decision
 
     # ------------------------------------------------------------------
-    # 判断模型调用（超时/失败分类；文案冻结于行为契约 §7）
+    # 判断模型调用（超时/失败分类；文案已冻结，改它等于换一套分类口径）
     # ------------------------------------------------------------------
 
     async def ask_decision_model(

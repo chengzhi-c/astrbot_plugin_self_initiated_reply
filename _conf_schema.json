@@ -8,20 +8,20 @@
   "decision_model_enabled": {
     "type": "bool",
     "description": "启用判断模型",
-    "hint": "开启后，普通消息会先用提示词判断是否适合主动回复；关闭后仅后台巡检与手动检查会触发主动回复。回复生成仍走 AstrBot 主 Agent 管线。",
+    "hint": "开启后，普通消息会先用提示词判断是否适合主动回复；关闭后只有后台巡检与手动检查会触发。",
     "default": true
   },
   "judge_provider_id": {
     "type": "string",
     "description": "判断模型 Provider ID",
-    "hint": "留空使用当前会话模型；建议选择速度快、成本低的小模型。该模型只判断是否回复，不负责生成正文或调用工具。",
+    "hint": "留空使用当前会话模型；建议选择速度快、成本低的小模型。",
     "default": "",
     "_special": "select_provider"
   },
   "decision_prompt_template": {
     "type": "text",
     "description": "判断提示词",
-    "hint": "可用变量：{session}、{trigger}、{bot_aliases}、{last_message_age_sec}、{last_reply_age_sec}、{latest_message}、{recent_messages}。需输出 JSON：{\"should_reply\": true/false, \"reason\": \"理由\"}。",
+    "hint": "留空使用内置默认模板。可用变量：{session}、{trigger}、{bot_aliases}、{last_message_age_sec}、{last_reply_age_sec}、{latest_message}、{recent_messages}。需输出 JSON：{\"should_reply\": true/false, \"reason\": \"理由\"}。",
     "default": "",
     "editor_mode": true,
     "editor_language": "text"
@@ -95,7 +95,7 @@
       "random"
     ],
     "description": "主动回复引用消息",
-    "hint": "off：不引用（默认）。model：由判断模型在判断结果里给出是否引用（需判断模型返回 {\"should_reply\":…,\"quote\":true/false}；未给出决定时按「引用概率」兜底）。random：每次都按「引用概率」决定。引用的是本次回复所依据的最后一条消息；钉钉等不支持引用的平台请保持 off。",
+    "hint": "不引用：默认；由判断模型决定：模型未表态时按「引用概率」兜底；按概率引用：每次按「引用概率」决定。不支持引用的平台请选「不引用」。",
     "default": "off"
   },
   "quote_probability": {
@@ -134,13 +134,13 @@
   "log_reply_content": {
     "type": "bool",
     "description": "日志记录主动回复内容",
-    "hint": "开启后发送成功日志会附带文本预览，方便排查；担心隐私可关闭。默认关闭以保护隐私。",
+    "hint": "开启后发送成功日志会附带文本预览，方便排查；担心隐私可关闭。",
     "default": false
   },
   "bot_aliases": {
     "type": "list",
     "description": "Bot 昵称",
-    "hint": "用于判断提示词的 {bot_aliases} 变量，让模型知道 Bot 的昵称。",
+    "hint": "判断提示词的 {bot_aliases} 变量取这里的昵称。",
     "default": []
   },
   "ignored_sender_ids": {
@@ -170,7 +170,7 @@
   "skip_after_direct_call": {
     "type": "bool",
     "description": "被点名后本批消息不再主动接话",
-    "hint": "默认开启。有人 @Bot 或唤醒 Bot（这些消息由 AstrBot 正常回复，本插件只把它们记为「已回应」）之后，同一批消息不再触发主动回复；下一条新消息到达后即恢复正常。关闭后，@Bot 之后的静默期仍可能追加一次主动回复。",
+    "hint": "默认开启。有人 @Bot 或唤醒 Bot 之后，同一批消息不再触发主动回复；下一条新消息到达后恢复正常。关闭后，@Bot 之后的静默期仍可能追加一次主动回复。",
     "default": true
   },
   "check_interval_sec": {
@@ -187,7 +187,7 @@
   "patrol_inactive_after_sec": {
     "type": "int",
     "description": "巡检不活跃截断（秒）",
-    "hint": "白名单会话超过该时间没有新消息时，后台巡检会跳过。0 表示不截断。",
+    "hint": "该会话多久没有新消息时，后台巡检会跳过它；同时决定事件、判断结果与白名单缓存的回收窗口。0 表示不截断。",
     "default": 1800,
     "slider": {
       "min": 0,
@@ -198,7 +198,7 @@
   "message_delay_sec": {
     "type": "int",
     "description": "消息后延迟触发（秒）",
-    "hint": "白名单会话收到普通消息后等待多久再检查是否主动回应，避免马上插话。",
+    "hint": "白名单会话收到普通消息后等待多久再检查是否主动回应，避免马上插话。实际等待取本项与「最小静默时间」中较大的一方，调小本项不会让回复更早出现。",
     "default": 60,
     "slider": {
       "min": 5,
@@ -209,7 +209,7 @@
   "min_silence_sec": {
     "type": "int",
     "description": "最小静默时间（秒）",
-    "hint": "距离该会话最后一条用户消息不足该时间时，不会主动回应。每个群聊独立计时。设为 0 表示不要求静默（收到消息后按「消息后延迟」到点即可能接话，是回复偏频繁的常见原因之一）。",
+    "hint": "距离该会话最后一条用户消息不足该时间时，不会主动回应。每个群聊独立计时。设为 0 表示不要求静默；「消息后延迟」比本项短时按本项等待。",
     "default": 45,
     "slider": {
       "min": 0,
@@ -271,13 +271,37 @@
   "generation_timeout_sec": {
     "type": "float",
     "description": "主 Agent 生成超时（秒）",
-    "hint": "主动回复走 AstrBot 主 Agent 管线；超时则本次不发送。",
-    "default": 60.0,
+    "hint": "单次主动生成的等待上限。宿主按顺序尝试备用模型；每个模型的请求超时按「请求尝试次数」累计，重试间隔还会延长等待。默认 300 秒，上限 600 秒。超时预算不够时这一轮不会有回复，日志会给出请求超时预算。",
+    "default": 300.0,
     "slider": {
       "min": 1,
-      "max": 300,
+      "max": 600,
       "step": 1
     }
+  },
+  "proactive_provider_id": {
+    "type": "string",
+    "description": "主动回复使用的模型",
+    "hint": "从 AstrBot 里已有的 provider 中选择，留空则用当前会话聊天用的模型。聊天那个模型慢的话，主动回复整轮都在陪它等超时，这里选一个响应快的能明显缩短出话时间。",
+    "default": "",
+    "_special": "select_provider"
+  },
+  "proactive_request_max_retries": {
+    "type": "int",
+    "description": "主动回复的单模型请求尝试次数",
+    "hint": "最大请求尝试次数，含首次请求。超时与网络错误按这个次数重试，之后才切备用模型。默认 1 表示不重试、超时即切；调大只会让这一轮等更久。",
+    "default": 1,
+    "slider": {
+      "min": 1,
+      "max": 10,
+      "step": 1
+    }
+  },
+  "proactive_fallback_provider_ids": {
+    "type": "list",
+    "description": "主动回复的备用模型",
+    "hint": "主模型失败或超时后按顺序依次尝试。留空则沿用 AstrBot 里配置的备用模型顺序。",
+    "default": []
   },
   "proactive_inherit_tools": {
     "type": "bool",
@@ -307,13 +331,13 @@
   "vision_skip_stickers": {
     "type": "bool",
     "description": "跳过表情包识图",
-    "hint": "按消息段的表情包标记（QQ OneBot 通常为 subType=1）过滤图片，不调用 Vision 解析。默认关闭。",
+    "hint": "跳过平台标记为表情包的图片，不送识图模型解析。默认关闭。",
     "default": false
   },
   "vision_judge_provider_id": {
     "type": "string",
     "description": "判断阶段识图模型 Provider ID",
-    "hint": "单独指定判断阶段用哪个模型识图。判断阶段触发频率高，可以填一个更便宜的 Vision 模型控制成本。留空则使用上方「识图模型」（而非判断模型，因为判断模型通常不支持 Vision）。",
+    "hint": "单独指定判断阶段用哪个模型识图；可以填一个更便宜的 Vision 模型控制成本。留空则跟随判断模型本身。",
     "default": "",
     "_special": "select_provider"
   },

@@ -26,8 +26,9 @@ from .storage import (
 )
 from .utils import (
     await_rollback,
-    event_sender_id,
     event_sender_name,
+    redact_exc_text,
+    session_group_id,
     whitelist_storage_key,
 )
 
@@ -88,7 +89,12 @@ def refresh_admin_ids(plugin: SelfInitiatedReplyPlugin) -> set[str]:
         # 的注释）；文件被删与瞬时读取失败在本层不可区分，清空会把所有管理员
         # 暂时锁外面。
     except Exception as exc:
-        logger.debug("[%s] load admins failed path=%s error=%s", PLUGIN_ID, path, exc)
+        logger.debug(
+            "[%s] load admins failed path=%s error=%s",
+            PLUGIN_ID,
+            path,
+            redact_exc_text(exc),
+        )
     return plugin._admin_ids
 
 
@@ -113,14 +119,14 @@ def track_critical_task(
 
 
 def state_for(plugin: SelfInitiatedReplyPlugin, umo: str) -> SessionState:
-    """取（必要时创建）会话状态。不做 legacy 迁移（一次性迁移在
-    ``load_sessions`` 里完成）；状态键在此派生（``whitelist_storage_key``），
-    调用方一律传 UMO，键的口径不散落到调用点。
-    """
+    """取（必要时创建）会话状态；首个完整群 UMO 接管裸群号旧状态。"""
     key = whitelist_storage_key(umo)
     state = plugin.sessions.get(key)
     if state is None:
-        state = SessionState(recent=deque(maxlen=plugin.settings.recent_message_limit))
+        legacy_key = session_group_id(umo)
+        state = plugin.sessions.pop(legacy_key, None) if legacy_key else None
+        if state is None:
+            state = SessionState(recent=deque(maxlen=plugin.settings.recent_message_limit))
     else:
         limit = plugin.settings.recent_message_limit
         if state.recent.maxlen != limit:
@@ -151,12 +157,10 @@ def append_recent_user_message(
     stamped = now_ts() if active_at is None else active_at
     state = plugin._state_for(umo)
     state.last_active_at = stamped
-    sender_id = event_sender_id(event)
     state.recent.append(
         MessageRecord(
             role="user",
             name=event_sender_name(event),
-            sender_id=sender_id,
             text=clean_text,
             at=stamped,
         )
@@ -182,7 +186,9 @@ def save_storage_sync(plugin: SelfInitiatedReplyPlugin) -> None:
     try:
         payload = _build_payload(plugin)
     except Exception as exc:
-        logger.error("[%s] failed to prepare state snapshot: %s", PLUGIN_ID, exc, exc_info=True)
+        # 不开 exc_info：traceback 末尾是 str(exc) 原文，会把 redact_exc_text 脱掉的凭证
+        # 原样带回同一条日志。口径同 scheduler/delivery/generation 的失败分支。
+        logger.error("[%s] failed to prepare state snapshot: %s", PLUGIN_ID, redact_exc_text(exc))
         return
     if sessions_payload_matches(plugin._storage_path, payload):
         return
@@ -224,7 +230,7 @@ async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
         payload = _build_payload(plugin)
         # 跳写判据的读+解析也进线程：state.json 可达数十 MB（白名单规模 ×
         # recent_message_limit × 单条长度），同步跑在事件循环上会阻塞该进程内
-        # 所有会话与 Web 面板——写盘一侧的同一纪律见 tests/test_cleanup_nonblocking。
+        # 所有会话与 Web 面板——写盘一侧遵守同一纪律。
         if await asyncio.to_thread(sessions_payload_matches, plugin._storage_path, payload):
             return
         write_task = asyncio.create_task(
@@ -294,14 +300,14 @@ async def persist_enabled(plugin: SelfInitiatedReplyPlugin, enabled: bool) -> No
                 "[%s] enabled=%s rollback persistence failed: %s",
                 PLUGIN_ID,
                 enabled,
-                rollback_exc,
+                redact_exc_text(rollback_exc),
             )
 
     try:
         await plugin._persist_config()
     except asyncio.CancelledError:
         # 取消同样要回滚：CancelledError 不落 except Exception，而 enabled 已在
-        # 内存翻面。少了这一步，§6.1 承诺的「重启后保持」反向变成「重启后回落」。
+        # 内存翻面。少了这一步，「重启后保持」反向变成「重启后回落」。
         # 回滚必须跑完才算数：单次 shield 在取消瞬间就抛，rollback 成游离任务在
         # 锁外继续，能拿到锁并完整落盘的一次后续写入随后被它用旧值撤销。
         await await_rollback(asyncio.ensure_future(rollback()))
@@ -314,7 +320,12 @@ async def persist_enabled(plugin: SelfInitiatedReplyPlugin, enabled: bool) -> No
         raise
 
 
-async def apply_enabled_topology(plugin: SelfInitiatedReplyPlugin, *, enabled: bool) -> None:
+async def apply_enabled_topology(
+    plugin: SelfInitiatedReplyPlugin,
+    *,
+    enabled: bool,
+    cleared_events: dict[str, tuple[Any, float, int]] | None = None,
+) -> None:
     """enabled 切换后的任务拓扑单源：开则起巡检与图片清理，关则停。
 
     ``enabled`` 是调用方已判定"本次生效值真正变化"后的结果（webapi 传新的
@@ -325,7 +336,20 @@ async def apply_enabled_topology(plugin: SelfInitiatedReplyPlugin, *, enabled: b
         plugin._scheduler.ensure_patrol()
         plugin._scheduler.ensure_image_cleanup()
     else:
+        events = (
+            {
+                umo: (event, plugin._last_event_at[umo])
+                for umo, event in plugin._last_events.items()
+                if umo in plugin._last_event_at
+            }
+            if cleared_events is not None
+            else {}
+        )
         plugin._cancel_delay_tasks()
+        if cleared_events is not None:
+            for umo, (event, active_at) in events.items():
+                if umo not in plugin._last_events:
+                    cleared_events[umo] = (event, active_at, plugin._gate.current(umo))
         await plugin._scheduler.stop_patrol()
 
 

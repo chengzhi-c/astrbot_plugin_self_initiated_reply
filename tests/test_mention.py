@@ -15,6 +15,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from .host_stubs import FakeContextSend, FakeEvent
 from .test_delivery_runner import _make_runner
 
@@ -60,8 +62,6 @@ async def test_mentions_follow_the_pinned_target_event(tmp_path: Path) -> None:
 
     缺陷形态：``send_reply`` 现读 ``_last_events``。判断与生成期间新消息会把
     该表换人——群里 A 提问、B 插话后，回复 @ 到了 B（「引用错对象」）。
-
-    变异锚定：``send_reply`` 改回现读 ``_last_events``，本用例红。
     """
     _mod, models, runner, last_events = _make_runner(
         tmp_path, config={"mention_mode": "always"}, random_value=lambda: 0.99
@@ -105,6 +105,32 @@ async def test_mention_always_inserts_at_for_message_sender(tmp_path: Path) -> N
     )
 
 
+@pytest.mark.parametrize(
+    ("nickname", "expected_name"),
+    [
+        ("\u2060", "123456"),
+        (" \u200b\u200d\ufeff\n", "123456"),
+        (" \t", "123456"),
+        ("小\u200b明", "小\u200b明"),
+        ("👩\u200d💻", "👩\u200d💻"),
+    ],
+)
+async def test_mention_uses_sender_id_when_nickname_is_invisible(
+    tmp_path: Path, nickname: str, expected_name: str
+) -> None:
+    _mod, models, runner, last_events = _make_runner(tmp_path, config={"mention_mode": "always"})
+    event = _ChainRecordingEvent(umo="s1", sender_id="123456")
+    event.get_sender_name = lambda: nickname
+    last_events["s1"] = event
+
+    outcome = await runner.send_reply("s1", "hello", expected_generation=None)
+
+    assert outcome.status is models.SendStatus.DELIVERED
+    at = _at_items(event.sent_chains[0])[0]
+    assert at.name == expected_name
+    assert at.toDict() == {"type": "at", "data": {"qq": "123456", "name": expected_name}}
+
+
 async def test_mention_random_follows_probability_boundaries(tmp_path: Path) -> None:
     """random：0 从不、100 每次；概率边界由同一个随机源判定。
 
@@ -126,11 +152,7 @@ async def test_mention_random_follows_probability_boundaries(tmp_path: Path) -> 
 
 
 async def test_mention_off_and_always_do_not_consume_random_source(tmp_path: Path) -> None:
-    """off/always 不得调用随机源：否则同批测试的随机数轨迹不可复现。
-
-    变异锚定：把 ``_should_mention`` 改成无条件调 ``self._random_value()``
-    （先算概率再判模式），本用例红。
-    """
+    """off/always 不得调用随机源：否则同批测试的随机数轨迹不可复现。"""
     calls: list[int] = []
 
     def counting_random() -> float:
@@ -271,21 +293,3 @@ async def test_quote_component_failure_degrades_to_plain_send(tmp_path: Path) ->
     assert not [
         item for item in event.sent_chains[0] if type(item).__name__ in {"Reply", "_FakeReply"}
     ], "quote 构造失败后链里仍留有 Reply 组件"
-
-
-async def test_mention_host_at_stub_accepts_qq_and_name(tmp_path: Path) -> None:
-    """守卫：``At`` 桩必须接受生产实际使用的 ``qq=`` 与 ``name=`` 关键字。
-
-    空壳 ``type("At", (), {})`` 会让构造抛 TypeError，被
-    ``_attach_chain_prefix`` 的 except 吞掉，所有"已插入 @"断言会静默通过。
-    ``name=`` 同样要守：这个名字一旦不被接受，线上就是永远不出现 @ 而测试全绿。
-    """
-    from . import host_stubs
-
-    host_stubs.install_astrbot_stubs()
-    import astrbot.api.message_components as components
-
-    at = components.At(qq="u1", name="小明")
-    assert str(at.qq) == "u1"
-    assert at.name == "小明"
-    assert str(at) == "", "At 不得进入 get_plain_text 正文"

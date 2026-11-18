@@ -1,7 +1,6 @@
 """宿主公开 API 的调用封装（``AstrBotBridge``）。
 
-拥有：provider 的文本生成调用与形态兼容、provider id 解析、宿主会话历史
-读取，以及这些调用在不同宿主版本上的返回形态归一。
+拥有：provider 的文本生成调用、provider id 解析与宿主会话历史读取。
 
 与 ``runtime_adapter`` 的分工：这里只走 ``astrbot.api.*`` 公开层，私有层
 （``astrbot.core.*``）的符号探测与契约校验全在 ``runtime_adapter``。
@@ -9,24 +8,17 @@
 
 from __future__ import annotations
 
-import inspect
-import json
 from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.star import Context
 
-from .models import PLUGIN_ID, MessageRecord, first_bindable_args, history_display_name
-from .utils import content_to_text, maybe_await, redact_exc_text
+from .models import PLUGIN_ID, MessageRecord, history_display_name
+from .utils import content_to_text, conversation_history, maybe_await, redact_exc_text
 
 
 class AstrBotBridge:
-    """Small compatibility bridge for data the proactive plugin still owns.
-
-    Reply generation now uses AstrBot's main Agent pipeline directly. Stealer and
-    LivingMemory are intentionally not accessed here; they participate through
-    their normal llm_tool and event-hook paths.
-    """
+    """通过公开 Context API 调用判断模型、识图 Provider 并读取会话历史。"""
 
     def __init__(self, context: Context) -> None:
         self.context = context
@@ -40,125 +32,6 @@ class AstrBotBridge:
             for error_type in type(exc).__mro__
         )
 
-    @staticmethod
-    def _signature_or_none(func: Any) -> inspect.Signature | None:
-        """签名不可检查（内置/ C 扩展等）返回 None，调用点按原回退处理。"""
-        try:
-            return inspect.signature(func)
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
-    def _keyword_names(func: Any) -> frozenset[str] | None:
-        """函数可按关键字接收的参数名集；**kwargs 形参返回 None（全部放行）。
-        签名探测的单一出口：宿主兼容层各处共用。"""
-        signature = AstrBotBridge._signature_or_none(func)
-        if signature is None:
-            return None
-        params = signature.parameters.values()
-        if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params):
-            return None
-        return frozenset(
-            name
-            for name, param in signature.parameters.items()
-            if param.kind
-            in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
-        )
-
-    @staticmethod
-    def _supported_kwargs(
-        func: Any,
-        kwargs: dict[str, Any],
-        aliases: dict[str, tuple[str, ...]] | None = None,
-    ) -> dict[str, Any]:
-        supported = AstrBotBridge._keyword_names(func)
-        if supported is None:
-            return kwargs
-        mapped: dict[str, Any] = {}
-        aliases = aliases or {}
-        for key, value in kwargs.items():
-            candidates = aliases.get(key, (key,))
-            target = next((name for name in candidates if name in supported), "")
-            if target:
-                mapped[target] = value
-        return mapped
-
-    @staticmethod
-    async def _call_compat(
-        func: Any,
-        *,
-        kwargs: dict[str, Any],
-        minimal_kwargs: dict[str, Any],
-        aliases: dict[str, tuple[str, ...]] | None = None,
-    ) -> Any:
-        call_kwargs = AstrBotBridge._supported_kwargs(func, kwargs, aliases)
-        signature = AstrBotBridge._signature_or_none(func)
-        if signature is not None:
-            # 绑定预检失败才回退 minimal；函数体内部抛出的 TypeError 直接上抛，
-            # 重试意味着同一函数可能执行两次（对 LLM 调用即重复计费）。
-            try:
-                signature.bind(**call_kwargs)
-            except TypeError as exc:
-                minimal = AstrBotBridge._supported_kwargs(func, minimal_kwargs, aliases)
-                if minimal == call_kwargs:
-                    raise
-                try:
-                    return await maybe_await(func(**minimal))
-                except TypeError:
-                    raise exc from None
-        return await maybe_await(func(**call_kwargs))
-
-    @staticmethod
-    def _method_call_options(func: Any, umo: str) -> list[tuple[tuple[Any, ...], dict[str, Any]]]:
-        signature = AstrBotBridge._signature_or_none(func)
-        if signature is None:
-            # 取不到签名时无法预检，``first_bindable_args`` 直接取首个候选，
-            # 因此后两个候选在本分支不可达。保留它们只为与其余分支同形：
-            # 调用点读到的是同一份「先名字、再位置、最后空调用」的优先级。
-            return [((), {"umo": umo}), ((umo,), {}), ((), {})]
-        params = signature.parameters
-        keyword_names = AstrBotBridge._keyword_names(func)
-        if keyword_names is None:
-            # 有 **kwargs：名字候选绑得上（会被吞进 kwargs），位置候选同样保留，
-            # 否则 ``def f(umo, /, **kw)`` 这类形态只会走到空调用——
-            # 宿主方法被无参调用，比静默降级更糟。
-            return [((), {"umo": umo}), ((umo,), {}), ((), {})]
-        for name in ("umo", "session_id", "unified_msg_origin"):
-            if name in params:
-                # 位置候选必须在关键字候选之后：形如 ``def f(umo, /)`` 的宿主
-                # 方法无法用关键字绑定，只给关键字候选会让 first_bindable_args
-                # 返回 None，调用方静默降级而不是 fail loud。
-                return [((), {name: umo}), ((umo,), {}), ((), {})]
-        positional = [
-            param
-            for param in params.values()
-            if param.kind
-            in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
-            and param.default is inspect.Parameter.empty
-        ]
-        if positional:
-            return [((umo,), {}), ((), {})]
-        return [((), {})]
-
-    @staticmethod
-    async def _call_first_supported(func: Any, umo: str, log_name: str) -> Any:
-        # bind 预检与候选构造共用 models.first_bindable_args；这里只负责调用与失败告警。
-        chosen = first_bindable_args(func, AstrBotBridge._method_call_options(func, umo))
-        if chosen is None:
-            logger.debug(
-                "[%s] %s unsupported signature: no bindable candidate",
-                PLUGIN_ID,
-                log_name,
-            )
-            return None
-        args, kwargs = chosen
-        try:
-            return await maybe_await(func(*args, **kwargs))
-        except Exception as exc:
-            # 宿主方法失败常把带凭证的请求 URL 写进异常文本，日志同样要脱敏。
-            logger.warning("[%s] %s failed: %s", PLUGIN_ID, log_name, redact_exc_text(exc))
-            raise
-
     async def llm_generate(
         self,
         *,
@@ -169,14 +42,7 @@ class AstrBotBridge:
         max_tokens: int | None = None,
         image_urls: list[str] | None = None,
     ) -> Any:
-        """Bare LLM call used only for lightweight should-reply decisions.
-
-        Do not use this for proactive reply generation: it does not run tools.
-        Reply generation lives in main.py via AstrBot's main Agent pipeline.
-        """
-        llm_generate = getattr(self.context, "llm_generate", None)
-        if not callable(llm_generate):
-            raise RuntimeError("当前 AstrBot Context 不支持 llm_generate")
+        """调用判断模型；回复生成使用 generation.py 中的主 Agent 管线。"""
         kwargs: dict[str, Any] = {"chat_provider_id": provider_id, "prompt": prompt}
         if system_prompt:
             kwargs["system_prompt"] = system_prompt
@@ -186,13 +52,7 @@ class AstrBotBridge:
             kwargs["max_tokens"] = max_tokens
         if image_urls:
             kwargs["image_urls"] = list(image_urls)
-        # 不走 _call_compat：宿主 llm_generate 是带 **kwargs 的公开方法，无需
-        # 别名猜测与 minimal 回退。
-        call_kwargs = self._supported_kwargs(llm_generate, kwargs)
-        if image_urls and "image_urls" not in call_kwargs:
-            # 图片支持是硬前提，不可静默降级成纯文本判断。
-            raise RuntimeError("当前 AstrBot Context 的 LLM 接口不支持图片输入")
-        return await maybe_await(llm_generate(**call_kwargs))
+        return await self.context.llm_generate(**kwargs)
 
     async def llm_generate_direct(
         self,
@@ -217,19 +77,7 @@ class AstrBotBridge:
         if not image_urls:
             raise ValueError("图片解析至少需要一个 image_url")
 
-        provider = None
-        get_provider = getattr(self.context, "get_provider_by_id", None)
-        if callable(get_provider):
-            provider = await maybe_await(get_provider(provider_id))
-        if provider is None:
-            manager = getattr(self.context, "provider_manager", None)
-            manager_get_provider = getattr(manager, "get_provider_by_id", None)
-            if callable(manager_get_provider):
-                provider = await maybe_await(manager_get_provider(provider_id))
-            if provider is None:
-                inst_map = getattr(manager, "inst_map", None)
-                if isinstance(inst_map, dict):
-                    provider = inst_map.get(provider_id)
+        provider = self.context.get_provider_by_id(provider_id)
         text_chat = getattr(provider, "text_chat", None)
         if not callable(text_chat):
             raise RuntimeError(f"Provider 不可用或不支持 text_chat: {provider_id}")
@@ -244,63 +92,20 @@ class AstrBotBridge:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
-        aliases = {
-            "prompt": ("prompt", "content", "query"),
-            "contexts": ("contexts", "context"),
-            "system_prompt": ("system_prompt", "system"),
-            "image_urls": ("image_urls", "images", "image_urls_list"),
-            "temperature": ("temperature",),
-            "max_tokens": ("max_tokens", "max_new_tokens"),
-        }
-        supported = self._supported_kwargs(text_chat, kwargs, aliases)
-        if not any(key in supported for key in aliases["image_urls"]):
-            raise RuntimeError(f"Provider 不支持图片输入: {provider_id}")
-        return await self._call_compat(
-            text_chat,
-            kwargs=kwargs,
-            minimal_kwargs={"prompt": prompt, "contexts": contexts or [], "image_urls": image_urls},
-            aliases=aliases,
-        )
+        return await text_chat(**kwargs)
 
     async def resolve_provider_id(self, umo: str, preferred: str) -> str:
         preferred = str(preferred or "").strip()
         if preferred:
             return preferred
-        get_current = getattr(self.context, "get_current_chat_provider_id", None)
-        if callable(get_current):
-            try:
-                provider_id = await self._call_first_supported(
-                    get_current, umo, "get_current_chat_provider_id"
-                )
-            except Exception as exc:
-                if not self._is_missing_provider_error(exc):
-                    raise
-                provider_id = ""
-            if provider_id:
-                return str(provider_id).strip()
-        # 二级回退：get_current_chat_provider_id 抛 ProviderNotFoundError 时，
-        # 由 get_using_provider + meta().id 兜底。
-        get_using = getattr(self.context, "get_using_provider", None)
-        if callable(get_using):
-            provider = await self._call_first_supported(get_using, umo, "get_using_provider")
-            provider_id = await self._provider_id_from_meta(provider)
-            if provider_id:
-                return provider_id
-        return ""
-
-    @staticmethod
-    async def _provider_id_from_meta(provider: Any) -> str:
-        if provider is None:
-            return ""
         try:
-            meta_method = getattr(provider, "meta", None)
-            meta = meta_method() if callable(meta_method) else None
-            meta = await maybe_await(meta)
-            if isinstance(meta, dict):
-                return str(meta.get("id") or "").strip()
-            return str(getattr(meta, "id", "") or "").strip()
-        except Exception:
+            # 4.23 的公开方法为同步调用，较新宿主为协程。
+            provider_id = await maybe_await(self.context.get_current_chat_provider_id(umo))
+        except Exception as exc:
+            if not self._is_missing_provider_error(exc):
+                raise
             return ""
+        return str(provider_id or "").strip()
 
     async def read_astrbot_history(self, umo: str, *, limit: int) -> list[MessageRecord]:
         """读宿主会话历史的最后 ``limit`` 条，归一为 ``MessageRecord`` 列表。
@@ -317,11 +122,9 @@ class AstrBotBridge:
             if not cid:
                 return []
             conversation = await maybe_await(manager.get_conversation(umo, cid))
-            raw = getattr(conversation, "history", "")
-            history = json.loads(raw) if isinstance(raw, str) else raw
+            history = conversation_history(conversation)
         except Exception as exc:
-            # 同本文件 _call_host 口径：宿主存储后端（redis/db）失败时异常文本
-            # 常带连接串，会话历史这条 debug 也不例外。
+            # 宿主存储后端异常常含连接串，历史读取失败日志也要脱敏。
             logger.debug(
                 "[%s] read astrbot history failed session=%s error=%s",
                 PLUGIN_ID,
@@ -331,8 +134,7 @@ class AstrBotBridge:
             return []
         if not isinstance(history, list):
             return []
-        # limit<=0 时 ``history[-limit:]`` 会退回全量（-0 就是 0）或只丢最旧
-        # 一条：两个调用点都有规格下限夹取，这里兜住直传（含未来的新调用点）。
+        # -0 等于 0，直接切片会在零条请求时返回全量历史。
         window = history[-limit:] if limit > 0 else []
         records: list[MessageRecord] = []
         for item in window:
@@ -349,7 +151,6 @@ class AstrBotBridge:
                     role=role,
                     name=history_display_name(role, item.get("name")),
                     text=text,
-                    sender_id=str(item.get("sender_id") or ""),
                     at=0.0,
                 )
             )

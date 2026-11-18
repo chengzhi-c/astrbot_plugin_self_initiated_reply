@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
+import heapq
 import json
 import math
 import re
@@ -26,13 +26,14 @@ from typing import Any, Protocol
 from astrbot.api import logger
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "1.5.2"
+PLUGIN_VERSION = "1.5.4"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
 # 配置安全限制：防 OOM、费用滥用与性能降级的硬边界。
 MAX_PROMPT_LENGTH = 8000
 MAX_WHITELIST_SIZE = 1000
+MAX_FALLBACK_PROVIDERS = 8
 MAX_STRING_LIST_ITEM_LEN = 200
 # str 类键（provider id）的硬上限：与列表条目同宽，防止无限长字符串落盘。
 MAX_PROVIDER_ID_LEN = MAX_STRING_LIST_ITEM_LEN
@@ -134,9 +135,7 @@ PROACTIVE_ALLOWED_TOOL_IDS: frozenset[str] = frozenset()
 # 宿主级危险能力工具 ID（实证于 AstrBot 4.26/4.27 源码）：cron、电脑使用、
 # 文件提取、知识库 agentic。无论 proactive_inherit_tools 如何，这些工具在主动
 # 运行中一律拒绝；是 build config 硬关闭之外拦截 hook 注入的最终防线。
-# 条目必须是宿主 FunctionTool 的精确 name，运行期不做名字匹配；完整性由
-# tests/test_security.py 的精确集合断言与 scripts/compat_check.py 枚举真实宿主
-# 模块共同钉住。
+# 条目必须是宿主 FunctionTool 的精确 name，运行期不做名字匹配；漏删即等于放行。
 HOST_DANGEROUS_TOOL_IDS: frozenset[str] = frozenset(
     {
         # 4.23.3 实测为单工具 multiCommand，FunctionTool.name 为 future_task
@@ -157,12 +156,40 @@ HOST_DANGEROUS_TOOL_IDS: frozenset[str] = frozenset(
         "astrbot_file_edit_tool",
         "astrbot_grep_tool",
         "astr_kb_search",
+        # 4.29.4 computer_tools/cua.py：截图 / 鼠标 / 键盘，属「电脑使用」
+        "astrbot_cua_screenshot",
+        "astrbot_cua_mouse_click",
+        "astrbot_cua_keyboard_type",
+        # 4.29.4 shipyard_neo/neo_skills.py：技能候选的创建、评测与发布回滚。
+        # 与同目录 browser 工具同源（同一 computer-use 运行时），同类一并拒绝。
+        "astrbot_get_execution_history",
+        "astrbot_annotate_execution",
+        "astrbot_create_skill_payload",
+        "astrbot_get_skill_payload",
+        "astrbot_create_skill_candidate",
+        "astrbot_list_skill_candidates",
+        "astrbot_evaluate_skill_candidate",
+        "astrbot_promote_skill_candidate",
+        "astrbot_list_skill_releases",
+        "astrbot_rollback_skill_release",
+        "astrbot_sync_skill_release",
+        # 4.30 astr_agent_runtime subagent tools can launch work or send to
+        # other agent sessions; proactive replies must not inherit them.
+        "spawn_agent",
+        "list_agents",
+        "get_agent_result",
+        "wait_agent",
+        "send_message",
+        "cancel_agent",
     }
 )
 
 
 EVENT_CLEANUP_INTERVAL_SEC = 3600
-MAX_CACHED_EVENTS = 100
+# 事件表条数硬上限。必须显著高于插件支持的白名单规模：超出即按最旧淘汰，
+# 而被淘汰的会话在 `_patrol_one_session` 第一道判据（没有事件就跳过）会从此
+# 巡检不到，直到该群再来新消息。100 会让一百多个会话的白名单里靠后的群静默失联。
+MAX_CACHED_EVENTS = 1200
 PATROL_BACKOFF_DELAY_SEC = 60
 # release 闸门等待兜底：配置回滚会把运行标记恢复成快照态，而支撑它的检查任务
 # 可能已结束，release 事件永不再 set。超时 + 轮次上限把失同步降级为一次延迟
@@ -244,6 +271,11 @@ PRINTABLE_CHAR_MIN = 32
 # config_revision 与 write_json_atomic 都会抛，设置页从此读不出配置。
 _SURROGATE_MIN = 0xD800
 _SURROGATE_MAX = 0xDFFF
+# 下面两张表是上面两个判据的逐字符等价形式：join 逐字符过滤是 O(n) 的 Python
+# 循环，2MB 提交实测要在事件循环上停 0.5s（webapi 的解析段直接跑在协程里）；
+# str.translate 在 C 层删同一批字符，2MB 降到 ~2ms。
+_SURROGATE_CHARS = {code: None for code in range(_SURROGATE_MIN, _SURROGATE_MAX + 1)}
+_UNPRINTABLE_CHARS = _SURROGATE_CHARS | {code: None for code in range(PRINTABLE_CHAR_MIN)}
 
 # 空白归一正则住 models：utils 依赖 models（叶子），反向会成环。
 # 两处各内联编译一份会漂移成「同一段文本在不同路径形状不同」。
@@ -266,6 +298,15 @@ def duration(seconds: float) -> str:
     )
 
 
+# 布尔键的已知文本取值。分成两张表的理由不是解析，而是诊断：落在两张表之外
+# 的文本既不是「开」也不是「关」，是写错了，必须留痕（手改配置打错字会让
+# enabled 静默变 false，插件看着像坏了）。
+BOOL_TRUE_VALUES = frozenset({"1", "true", "yes", "on", "enable", "enabled", "启用", "开启", "是"})
+BOOL_FALSE_VALUES = frozenset(
+    {"0", "false", "no", "off", "disable", "disabled", "禁用", "关闭", "否"}
+)
+
+
 def as_bool(value: Any, default: bool = False) -> bool:
     """Parse a persisted/host config flag. Broader than ``parse_decision_json``.
 
@@ -276,17 +317,7 @@ def as_bool(value: Any, default: bool = False) -> bool:
         return value
     if value is None:
         return default
-    return str(value).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-        "enable",
-        "enabled",
-        "启用",
-        "开启",
-        "是",
-    }
+    return str(value).strip().lower() in BOOL_TRUE_VALUES
 
 
 def as_int(value: Any, default: int, minimum: int = 0, maximum: int = 100000) -> int:
@@ -299,10 +330,52 @@ def as_int(value: Any, default: int, minimum: int = 0, maximum: int = 100000) ->
     return max(minimum, min(maximum, parsed))
 
 
+# 宿主 provider 请求的默认超时（astrbot openai_source: provider_config.get("timeout", 120)）。
+# 主模型超时后宿主才会切备用模型，所以主动生成的总预算必须大于「这个超时 + 切模型耗时」，
+# 否则预算永远先到期，备用模型还没来得及被试就已经被放弃——用户看到的就是一句都不回。
+_PROVIDER_DEFAULT_TIMEOUT_SEC = 120
+
+
+def _coerce_provider_timeout(raw: Any) -> float:
+    """配置里的超时可能是字符串；缺失、解析不了、非正数都按宿主默认值算。"""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(_PROVIDER_DEFAULT_TIMEOUT_SEC)
+    if not math.isfinite(value) or value <= 0:
+        return float(_PROVIDER_DEFAULT_TIMEOUT_SEC)
+    return value
+
+
+def provider_timeouts(providers: Any) -> list[float]:
+    """从宿主 provider 列表里取各自的请求超时（取不到就用宿主默认值）。"""
+    timeouts: list[float] = []
+    try:
+        items = providers.values() if isinstance(providers, dict) else providers
+        for provider in items or ():
+            config = getattr(provider, "provider_config", None)
+            raw: Any = config.get("timeout") if isinstance(config, dict) else None
+            timeouts.append(_coerce_provider_timeout(raw))
+    except Exception:
+        return []
+    return timeouts
+
+
+def chain_timeout_budget(providers: Any, *, request_attempts: int = 1) -> float | None:
+    """一条候选链中所有请求尝试都跑满超时所需的总时长。
+
+    宿主是串行试的：主模型超时之后才开始下一个，每个都可能耗满自己的超时。
+    请求尝试数包含首次请求；这里不含宿主的重试等待间隔。
+    """
+    timeouts = provider_timeouts(providers)
+    return sum(timeouts) * max(1, request_attempts) if timeouts else None
+
+
 def proactive_build_config_kwargs(
     provider_settings: dict[str, Any] | None = None,
     *,
-    fallback_provider_ids: Any = None,
+    model_settings: dict[str, Any] | None = None,
+    request_max_retries: int = 1,
 ) -> dict[str, Any]:
     """主动运行传给宿主 ``MainAgentBuildConfig`` 的键集合（唯一来源）。
 
@@ -312,6 +385,8 @@ def proactive_build_config_kwargs(
     TypeError（一条回复都产不出，且只在真实宿主上可见）。
     """
     settings = provider_settings or {}
+    model = model_settings or {}
+    fallback_provider_ids = model.get("fallback_provider_ids", [])
     return {
         # 夹取必须能防抛：provider_settings 是宿主配置里可手改的外部输入，
         # "60s" 之类的非数字串若在 try 之外 int() 抛出，会让所有主动生成
@@ -335,13 +410,21 @@ def proactive_build_config_kwargs(
         ),
         "computer_use_runtime": "none",
         "add_cron_tools": False,
-        "provider_settings": settings,
+        # 4.27.2 从 provider_settings 读取这两个键，4.23.3 不读取重试次数；
+        # 4.29.4 改读构造字段。两处都写以兼容支持它们的宿主版本。
+        "provider_settings": {
+            **settings,
+            "request_max_retries": as_int(request_max_retries, 1, minimum=1, maximum=10),
+        },
         # 回退链必须透传：宿主 runner 的候选集是 ``[provider, *fallback_providers]``，
         # 该键缺省为空列表时只剩单个候选，任何异常或错误响应直接终止而不换模型。
         # 非 list 交给宿主的既有校验（它会记 warning 并跳过）。
         "fallback_provider_ids": (
             fallback_provider_ids if isinstance(fallback_provider_ids, list) else []
         ),
+        # 主动回复用自己的请求尝试次数：宿主默认 5 次会把 APITimeoutError 重试四遍，
+        # 单模型就能耗到 600 秒，备用模型永远排不上。
+        "request_max_retries": as_int(request_max_retries, 1, minimum=1, maximum=10),
     }
 
 
@@ -370,30 +453,6 @@ def as_timestamp(value: Any, *, now: float | None = None) -> float:
 def choice(value: Any, allowed: set[str], default: str) -> str:
     normalized = str(value or "").strip().lower()
     return normalized if normalized in allowed else default
-
-
-def first_bindable_args(
-    func: Any, candidates: list[tuple[tuple[Any, ...], dict[str, Any]]]
-) -> tuple[tuple[Any, ...], dict[str, Any]] | None:
-    """返回首个可绑定到 ``func`` 签名的候选实参；都不匹配返回 None。
-
-    只做 ``bind`` 预检、绝不调用：函数体内的 TypeError 必须由调用方处理，
-    在此重试意味同一宿主调用可能执行两次（对落盘/LLM 即重复副作用）。
-    签名不可检查时返回首个候选（与各调用点原有回退一致）。
-    """
-    if not candidates:
-        return None
-    try:
-        signature = inspect.signature(func)
-    except (TypeError, ValueError):
-        return candidates[0]
-    for args, kwargs in candidates:
-        try:
-            signature.bind(*args, **kwargs)
-        except TypeError:
-            continue
-        return (args, kwargs)
-    return None
 
 
 def restore_container_inplace(target: Any, source: Any) -> None:
@@ -445,7 +504,6 @@ class MessageRecord:
     role: str
     name: str
     text: str
-    sender_id: str = ""
     at: float = field(default_factory=now_ts)
 
 
@@ -471,8 +529,10 @@ def history_display_name(role: str, name: str | None = None) -> str:
     #
     # 只在真撞上时改写：其余会话的提示词逐字节不变，判断模型已形成的行为不受
     # 影响。比较用 strip 后的值，``"Bot "`` 这类带空白的昵称同样算撞上。
-    if label == ASSISTANT_HISTORY_NAME:
-        return f"{FALLBACK_SENDER_NAME}({ASSISTANT_HISTORY_NAME})"
+    if label.casefold() == ASSISTANT_HISTORY_NAME.casefold() or label.casefold().startswith(
+        f"{ASSISTANT_HISTORY_NAME}:".casefold()
+    ):
+        return f"{FALLBACK_SENDER_NAME}({label})"
     return label
 
 
@@ -675,7 +735,11 @@ class AttemptLedger:
         attempt.state = AttemptState.IN_FLIGHT
 
     def resolve(self, attempt: SendAttempt, status: SendStatus) -> bool:
-        """Apply an adapter outcome, returning false for a sealed late result."""
+        """Apply an adapter outcome, returning false for a sealed late result.
+
+        Seal 之后证据冻结：seal() 已把在途一律悲观记 UNKNOWN，迟到结论一律丢弃，
+        否则封账后的 derived 证据（额度/去重基准）会被改写，与已 apply 的状态不一致。
+        """
         if self.phase != LedgerPhase.OPEN or attempt not in self._attempts:
             return False
         if attempt.state is not AttemptState.IN_FLIGHT:
@@ -804,15 +868,15 @@ class ConfigSpec:
     同一个键散在多处声明时，漏一处就静默失效（面板上能改、保存返回成功、
     值不生效）。本表驱动 ``Settings`` 字段表、``from_config``、
     ``to_config_dict``、``_parse_config_updates`` 与 ``_AUDITED_CONFIG_KEYS``；
-    ``_conf_schema.json`` 保留独立文件（承载 UI 文案），一致性由
-    ``tests/test_config_schema.py`` 断言。表只收机器可校验的语义，UI 拷贝不进表。
+    ``_conf_schema.json`` 保留独立文件（承载 UI 文案），两处必须同步改。表只收
+    机器可校验的语义，UI 拷贝不进表。
 
     字段语义：
         key: 配置键名（= schema 键名）。
         kind: ``bool`` / ``int`` / ``float`` / ``str`` / ``enum`` / ``text`` / ``list``。
         default: 缺键时的默认值，须与 schema 的 ``default`` 一致。
         minimum/maximum: 数值夹取边界，须与 schema ``slider`` 的 min/max 一致。
-        step: 仅 UI 用（slider 步长），Python 侧不参与校验。
+        step: slider 步长，须与 schema 与设置页控件一致。
         field_name: ``Settings`` 上的属性名，与 key 同名时留空。
         options: 枚举取值，须与 schema ``options`` 一致。
         audited: 是否记 INFO 审计日志（安全敏感键）。
@@ -857,13 +921,6 @@ class ConfigSpec:
     def attr(self) -> str:
         """``Settings`` 上的属性名。"""
         return self.field_name or self.key
-
-    @property
-    def schema_type(self) -> str:
-        """``_conf_schema.json`` 里的 ``type`` 值（enum/str 都渲染成 string）。"""
-        if self.kind in {"enum", "str"}:
-            return "string"
-        return self.kind
 
     def canonical_value(self, value: Any) -> Any:
         """set 容器按排序输出：JSON 无集合类型，无序写盘会产生伪 diff。"""
@@ -1021,7 +1078,26 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
     ),
     ConfigSpec("enabled_message_trigger", "bool", True),
     ConfigSpec("enabled_patrol_trigger", "bool", False),
-    ConfigSpec("generation_timeout_sec", "float", 60.0, 1, 300, step=1),
+    ConfigSpec("generation_timeout_sec", "float", 300.0, 1, 600, step=1),
+    ConfigSpec(
+        "proactive_provider_id",
+        "str",
+        "",
+        special="select_provider",
+        max_len=MAX_PROVIDER_ID_LEN,
+        surfaces=_PANEL,
+    ),
+    ConfigSpec("proactive_request_max_retries", "int", 1, 1, 10, step=1, surfaces=_PANEL),
+    ConfigSpec(
+        "proactive_fallback_provider_ids",
+        "list",
+        [],
+        container="list",
+        max_items=MAX_FALLBACK_PROVIDERS,
+        item_max_len=MAX_STRING_LIST_ITEM_LEN,
+        item_pattern=STRING_LIST_ILLEGAL_RE.pattern,
+        surfaces=_PANEL,
+    ),
     ConfigSpec("proactive_inherit_tools", "bool", False, audited=True, surfaces=_PANEL),
     ConfigSpec(
         "vision_judge_enabled",
@@ -1069,13 +1145,7 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         surfaces=_PANEL,
     ),
     ConfigSpec(
-        "vision_timeout_sec",
-        "float",
-        20.0,
-        1,
-        MAX_VISION_TIMEOUT_SEC,
-        step=1,
-        surfaces=_PANEL,
+        "vision_timeout_sec", "float", 20.0, 1, MAX_VISION_TIMEOUT_SEC, step=1, surfaces=_PANEL
     ),
 )
 
@@ -1120,10 +1190,19 @@ def _normalize_list_item(spec: ConfigSpec, raw: Any, mode: str) -> tuple[str | N
             raise ValueError(f"{spec.key} 条目必须是字符串")
         return None, 1, 0
     text = js_trim(raw)
+    # 长度上限前置：下面的编码检查与正则要扫全文，单条 2MB 就能在事件循环上停
+    # 近 1s。api 模式超长一律 400，与后面那条同一口径；判定用 trim 后的长度，
+    # 与后面那条一致（前后空白不算超长）。
+    if mode == "api" and spec.item_max_len is not None and len(text) > spec.item_max_len:
+        raise ValueError(f"{spec.key} 条目过长")
     sanitized = 0
-    if not all(is_utf8_encodable(char) for char in text):
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        # 全量判定要过 10 万条时，逐字符 is_utf8_encodable 是 Python 级循环，
+        # 会成为主耗时；encode 在 C 层拒绝同一批字符（孤立代理项），判定等价。
         if mode == "api":
-            raise ValueError(f"{spec.key} 条目含非法字符")
+            raise ValueError(f"{spec.key} 条目含非法字符") from None
         # 孤立代理项能进内存但编不了 UTF-8：留着会让整份配置摘要与落盘一起失败。
         text = "".join(char for char in text if is_utf8_encodable(char))
         sanitized = 1
@@ -1135,8 +1214,7 @@ def _normalize_list_item(spec: ConfigSpec, raw: Any, mode: str) -> tuple[str | N
             raise ValueError(f"{spec.key} 条目含非法字符")
         return None, 1, 0
     if spec.item_max_len is not None and len(text) > spec.item_max_len:
-        if mode == "api":
-            raise ValueError(f"{spec.key} 条目过长")
+        # api 模式已在入口按 len(js_trim(raw)) 拒绝，这里只剩 disk 的宽松截断。
         return text[: spec.item_max_len], 0, 1
     return text, 0, sanitized
 
@@ -1160,6 +1238,9 @@ def normalize_string_list(
     items: list[str] = []
     dropped = 0
     adjusted = 0
+    # 全量判定：容量不能前移成「只校验前 max_items 条」。尾部非法项（None、超长、
+    # 非法字符）必须照样被拒，否则截断自己就把违规项吞了。选择留给下面的有界
+    # nsmallest，规模代价因此不随条目数退化成全量排序。
     for item in _list_items(raw, split_items=mode == "api"):
         text, item_dropped, item_adjusted = _normalize_list_item(spec, item, mode)
         dropped += item_dropped
@@ -1167,15 +1248,22 @@ def normalize_string_list(
         if text is not None:
             items.append(text)
 
-    if spec.container == "set":
-        unique_items = sorted(set(items))
+    if spec.key == "proactive_fallback_provider_ids":
+        unique_items = list(dict.fromkeys(items))
         dropped += len(items) - len(unique_items)
         items = unique_items
-    if spec.max_items is not None and mode == "disk" and len(items) > spec.max_items:
-        # 容量上限只在 disk 模式生效：api 模式由 normalize_config_updates 的
-        # 第二次 disk 夹取收口（并据此回 adjusted_fields）。写成嵌套 if 会让
-        # 后来人以为 api 在这里也做容量判定，删掉内层那行就把 api 的截断点
-        # 搬到本函数、连带改变计数型 WARNING 的触发时机。
+
+    if spec.container == "set":
+        # 先去重并按 canonical 排序，再执行容量上限——否则提交排列会
+        # 决定实际保留值。只取前 N 个用有界选择，避免为容量上限全量排序。
+        unique_values = set(items)
+        dropped += len(items) - len(unique_values)
+        if spec.max_items is not None and len(unique_values) > spec.max_items:
+            dropped += len(unique_values) - spec.max_items
+            items = heapq.nsmallest(spec.max_items, unique_values)
+        else:
+            items = sorted(unique_values)
+    elif spec.max_items is not None and len(items) > spec.max_items:
         dropped += len(items) - spec.max_items
         items = items[: spec.max_items]
 
@@ -1214,7 +1302,7 @@ def is_utf8_encodable(char: str) -> bool:
 def _warn_damaged_variant(spec: ConfigSpec, raw: Any) -> None:
     """类型损坏的配置值：降级到 fallback，但必须留痕。
 
-    契约 §9 的判据是「静默降级但用户可感知」：enabled: [] 被静默判成 False
+    判据是「静默降级但用户可感知」：enabled: [] 被静默判成 False
     等于关掉整个插件，而首启规范化随后会把原始损坏值直接覆盖掉，事后无从
     定位。只记键名与类型，不记值本身。
     """
@@ -1238,9 +1326,17 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
         # 布尔键每次加载各刷一条假告警，把告警通道淹掉。
         if raw is not None and not isinstance(raw, (bool, int, float, str)):
             # as_bool 对容器/对象一律 False：那是「损坏」而不是「关掉」，
-            # 契约 §7 要求沿 legacy fallback 读取。
+            # 必须沿 legacy fallback 读取。
             _warn_damaged_variant(spec, raw)
             return bool(fallback)
+        if (
+            isinstance(raw, str)
+            and raw.strip()
+            and raw.strip().lower() not in BOOL_TRUE_VALUES | BOOL_FALSE_VALUES
+        ):
+            # 已知取值之外的文本按「关」处理（as_bool 的既有口径），但要留痕：
+            # 否则 enabled: "ture" 会让插件静默停用，日志里一个字都没有。
+            _warn_damaged_variant(spec, raw)
         return as_bool(raw, bool(fallback))
     if spec.kind == "int":
         if spec.minimum is None or spec.maximum is None:
@@ -1270,7 +1366,7 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
             raw = fallback
         # 空值回落默认模板（面板留空即复位）：唯一实现点在读侧，复位值单源
         # 于规格表 reset_default。
-        text = "".join(c for c in str(raw or "") if is_utf8_encodable(c)).strip()
+        text = str(raw or "").translate(_SURROGATE_CHARS).strip()
         return _truncate_text(spec, text or spec.reset_value)
     if spec.kind == "list":
         try:
@@ -1286,11 +1382,7 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
         # 单行标识（三个 provider id）剔除控制字符：它们经 %s 进日志，带换行就能
         # 伪造出一行假日志。与列表条目同一条规则（STRING_LIST_ILLEGAL_RE 排除
         # C0 控制字符）。孤立代理项一并剔除：留着会让落盘与配置摘要一起失败。
-        text = "".join(
-            char
-            for char in str(raw or "").strip()
-            if ord(char) >= PRINTABLE_CHAR_MIN and is_utf8_encodable(char)
-        )
+        text = str(raw or "").strip().translate(_UNPRINTABLE_CHARS)
         return _truncate_text(spec, text)
     # 规格表写错 kind 不得静默降级：那会让 int/bool 键带着非法值落盘并显示成
     # 正常值。与上面缺边界的自检同口径，加载期响。
@@ -1312,8 +1404,7 @@ def read_config_value(spec: ConfigSpec, config: Any) -> Any:
 
     只强制转换一次：把旧键值 coerce 成 fallback 再二次 coerce 会让同一份值
     走两遍边界与截断。``fallback`` 的语义是「``raw`` 强制失败时落回哪个值」：
-    正式键存在时落回旧键的值而非静态默认。守卫：
-    ``test_spec_table_legacy_fallback_matches_from_config``。
+    正式键存在时落回旧键的值而非静态默认。
     """
     raw: Any = spec.default
     fallback: Any = spec.default
@@ -1365,6 +1456,9 @@ class Settings:
     check_interval_sec: int
     patrol_inactive_after_sec: int
     generation_timeout_sec: float
+    proactive_provider_id: str
+    proactive_request_max_retries: int
+    proactive_fallback_provider_ids: list[str]
     proactive_inherit_tools: bool
     vision_judge_enabled: bool
     vision_main_enabled: bool
@@ -1379,12 +1473,12 @@ class Settings:
     def vision_judge_provider_resolved(self) -> str:
         """判断阶段实际使用的识图 Provider ID。
 
-        判断阶段触发频率高，允许单独指定更便宜的识图模型；留空回落主识图
-        Provider，两者都空则由 adapter 回落当前会话模型。
+        判断阶段触发频率高，允许单独指定更便宜的识图模型；留空跟随判断模型
+        本身（``judge_provider_id``），后者留空则由 adapter 回落当前会话模型。
         """
         return (
             str(self.vision_judge_provider_id or "").strip()
-            or str(self.vision_provider_id or "").strip()
+            or str(self.judge_provider_id or "").strip()
         )
 
     @property

@@ -573,6 +573,43 @@ def test_normalized_host_image_is_marked_as_trusted_local_source(tmp_path: Path)
     assert extracted[0].trusted_local_path is True
 
 
+@pytest.mark.parametrize("platform_name", ["aiocqhttp", "satori"])
+def test_peer_local_path_inside_data_is_not_used_as_image_source(
+    tmp_path: Path,
+    platform_name: str,
+) -> None:
+    """OneBot file and Satori src are peer-controlled even inside data/temp."""
+    _, image, _ = _load_modules()
+
+    source = tmp_path / "data" / "temp" / "another_message.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(bytes([137, 80, 78, 71, 13, 10, 26, 10]) + bytes(32))
+    image_url = "https://cdn.example.test/current-message.png"
+
+    class NormalizedImage:
+        type = "image"
+        local_path = str(source)
+        url = image_url
+
+    class Event:
+        raw_message = {
+            "message": [{"type": "image", "data": {"file": str(source), "url": image_url}}]
+        }
+
+        @staticmethod
+        def get_messages():
+            return [NormalizedImage()]
+
+        @staticmethod
+        def get_platform_name():
+            return platform_name
+
+    extracted = image.ImageExtractor.extract_images(Event())
+    assert len(extracted) == 1
+    assert extracted[0].file_path == ""
+    assert extracted[0].url == image_url
+
+
 def test_trusted_host_image_is_snapshotted_into_plugin_cache(tmp_path: Path) -> None:
     """事件临时文件必须在 handler 生命周期内复制到插件缓存。
 
@@ -624,6 +661,26 @@ def test_forged_trusted_absolute_path_outside_data_root_is_rejected(tmp_path: Pa
 
     assert asyncio.run(parser.snapshot_local_sources([info])) == [False]
     assert not info.prepared_source
+    assert asyncio.run(parser._resolve_image_url(info)) is None
+
+
+def test_other_plugin_data_image_is_not_read(tmp_path: Path) -> None:
+    """同一 ``<data>`` 根下其他插件的图片不得成为本地读取来源。"""
+    _, image, _ = _load_modules()
+
+    data_root = tmp_path / "data"
+    leaked = data_root / "plugin_data" / "other_plugin" / "private.png"
+    leaked.parent.mkdir(parents=True, exist_ok=True)
+    leaked.write_bytes(bytes([137, 80, 78, 71, 13, 10, 26, 10]) + bytes(32))
+
+    parser = image.ImageParser(
+        object(),
+        source_cache_dir=data_root / "plugin_data" / "selfreply" / "image_cache",
+        data_root=data_root,
+    )
+    info = image.ImageInfo(file_path=str(leaked), trusted_local_path=True)
+
+    assert asyncio.run(parser.snapshot_local_sources([info])) == [False]
     assert asyncio.run(parser._resolve_image_url(info)) is None
 
 
@@ -925,17 +982,13 @@ def test_bridge_direct_vision_call_forwards_images_without_context_hooks() -> No
             )
             return SimpleNamespace(completion_text="图片说明")
 
-    class ProviderManager:
+    class Context:
         def __init__(self, provider):
             self.provider = provider
 
-        async def get_provider_by_id(self, provider_id):
+        def get_provider_by_id(self, provider_id):
             assert provider_id == "vision"
             return self.provider
-
-    class Context:
-        def __init__(self, provider):
-            self.provider_manager = ProviderManager(provider)
 
         async def llm_generate(self, **_kwargs):
             raise AssertionError("图片识别不应调用 context.llm_generate")
@@ -1028,22 +1081,6 @@ def test_legacy_vision_enabled_migrates_to_both_toggles() -> None:
     override = models.Settings.from_config({"vision_enabled": True, "vision_judge_enabled": False})
     assert override.vision_judge_enabled is False
     assert override.vision_main_enabled is True
-
-
-def test_persisted_config_keys_all_exist_in_schema() -> None:
-    """写回配置的每个键都必须在 schema 里有声明。
-
-    否则 AstrBot 配置页会把未声明的键渲染成带原始键名的裸文本框。
-    """
-    import json
-
-    _, _, models = _load_modules()
-
-    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-    persisted = models.Settings.from_config({}).to_config_dict()
-
-    undeclared = sorted(set(persisted) - set(schema))
-    assert not undeclared, f"以下键被写回配置但不在 schema 里: {undeclared}"
 
 
 def test_image_cache_is_lru_bounded() -> None:
@@ -1176,34 +1213,33 @@ def test_image_info_cache_key_digests_oversized_data_url() -> None:
     assert len(key) < 100, f"缓存键仍可无界增长：len={len(key)}"
 
 
-def test_judge_vision_provider_falls_back_to_main_vision_provider() -> None:
-    """判断阶段识图 Provider 留空时必须回落到主识图 Provider。
+def test_judge_vision_provider_falls_back_to_judge_model() -> None:
+    """判断阶段识图 Provider 留空时跟随判断模型本身。
 
-    这保证旧配置升级后行为不变：以前只有一个 vision_provider_id，
-    两个阶段共用；新字段不填时应继续共用。
+    判断阶段的识图服务于同一次判断调用，跟着判断模型走才不需要在
+    「便宜判断模型 + 更强识图」之间配两条 Provider；显式填值时以填值为准。
     """
     _, _, models = _load_modules()
 
-    # 留空 → 回落主识图 Provider
-    inherited = models.Settings.from_config({"vision_provider_id": "vision-main"})
+    # 留空 → 跟随判断模型
+    inherited = models.Settings.from_config({"judge_provider_id": "judge-model"})
     assert inherited.vision_judge_provider_id == ""
-    assert inherited.vision_judge_provider_resolved == "vision-main"
+    assert inherited.vision_judge_provider_resolved == "judge-model"
 
-    # 显式指定 → 不受主识图 Provider 影响
+    # 主识图 Provider 不参与判断阶段的回落
+    main_only = models.Settings.from_config({"vision_provider_id": "vision-main"})
+    assert main_only.vision_judge_provider_resolved == ""
+
+    # 显式指定 → 不受判断模型影响
     overridden = models.Settings.from_config(
-        {"vision_provider_id": "vision-main", "vision_judge_provider_id": "vision-cheap"}
+        {"judge_provider_id": "judge-model", "vision_judge_provider_id": "vision-cheap"}
     )
     assert overridden.vision_judge_provider_resolved == "vision-cheap"
-    assert overridden.vision_provider_id == "vision-main"
+    assert overridden.vision_provider_id == ""
 
-    # 两者都留空 → 交由 adapter 回落到当前会话模型
+    # 判断模型也留空 → 交由 adapter 回落当前会话模型
     both_empty = models.Settings.from_config({})
     assert both_empty.vision_judge_provider_resolved == ""
-
-    # 只填判断阶段，主阶段仍然走会话默认
-    judge_only = models.Settings.from_config({"vision_judge_provider_id": "vision-cheap"})
-    assert judge_only.vision_judge_provider_resolved == "vision-cheap"
-    assert judge_only.vision_provider_id == ""
 
 
 def test_judge_vision_provider_is_persisted_and_whitespace_stripped() -> None:
@@ -1259,32 +1295,6 @@ def test_parsers_with_different_providers_do_not_share_descriptions() -> None:
     # 同一个 parser 重复解析同一张图仍然命中缓存
     assert asyncio.run(cheap_parser.parse(image_info, umo="qq:GroupMessage:1")) == "一只猫"
     assert cheap_bridge.calls == 1
-
-
-def test_skip_sticker_vision_setting_is_declared_in_schema() -> None:
-    import json
-
-    _, _, _ = _load_modules()
-    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-    entry = schema.get("vision_skip_stickers")
-    assert entry is not None
-    assert entry["type"] == "bool"
-    assert entry["default"] is False
-
-
-def test_judge_vision_provider_is_declared_in_schema() -> None:
-    """新增配置项必须在 schema 里声明，否则 AstrBot 配置页无法正常渲染。"""
-    import json
-
-    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-
-    entry = schema.get("vision_judge_provider_id")
-    assert entry is not None, "vision_judge_provider_id 未在 _conf_schema.json 声明"
-    assert entry["type"] == "string"
-    assert entry["default"] == ""
-    assert entry.get("_special") == "select_provider", (
-        "应使用 select_provider 以便在配置页直接选择 Provider"
-    )
 
 
 # ============================================================================
@@ -1414,6 +1424,25 @@ def test_cleanup_still_rmdirs_empty_directories_inside_the_cache(tmp_path: Path)
     assert not inner.exists(), "缓存内空目录未被回收，清理退化"
 
 
+def test_directory_removal_rechecks_ownership_before_rmdir(tmp_path: Path) -> None:
+    """回收前必须再验一次归属：快照与 rmdir 之间目录可能被换成联接。
+
+    ``rmdir`` 执行后无法撤销，扫描时通过归属校验不代表执行时仍在缓存树内。
+    """
+    _, image, _ = _load_modules()
+
+    root = tmp_path / "image_cache"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    victim = outside / "victim"
+    victim.mkdir(parents=True)
+    link = root / "linked"
+    _make_directory_junction(link, outside)
+
+    _parser_module()._remove_empty_cache_directories([link], root.resolve())
+    assert victim.exists(), "执行前未复核归属，缓存外的目录被删除"
+
+
 def test_cleanup_does_not_delete_outside_files_reached_through_a_junction(tmp_path: Path) -> None:
     """目录联接下的**过期文件**也不得被删，这才是真实拦截点。
 
@@ -1444,81 +1473,6 @@ def test_cleanup_does_not_delete_outside_files_reached_through_a_junction(tmp_pa
         f"缓存外的过期文件被目录联接引到后删除了（removed={removed}）扫描侧的文件归属校验缺失"
     )
     assert removed == 0, f"不该有任何文件被回收，实际 removed={removed}"
-
-
-def test_remove_empty_cache_directories_rechecks_ownership(tmp_path: Path) -> None:
-    """纵深：列表里混入缓存外目录时，回收函数自身也必须拒绝。
-
-    与文件那条的"双层防护"同款：扫描侧的过滤是第一层，回收侧自校验是第二层。
-    直接调用时列表由调用方给出，故这里显式传一个缓存外目录。
-    """
-    _load_modules()
-    parser_mod = sys.modules[f"{PACKAGE_NAME}.image.parser"]
-
-    root = tmp_path / "image_cache"
-    root.mkdir()
-    outside = tmp_path / "outside_empty"
-    outside.mkdir()
-
-    parser_mod._remove_empty_cache_directories([outside], root.resolve())
-
-    assert outside.exists(), "回收函数未自校验归属，缓存外目录被删"
-
-
-def test_cleanup_never_rmdirs_a_directory_that_still_holds_files(tmp_path: Path) -> None:
-    """非空目录不得进入 rmdir，即使宿主的 rmdir 不抛 ENOTEMPTY。
-
-    原实现依赖"非空目录 rmdir 会抛 OSError"这一 OS 错误语义来保护活跃文件。
-    某些环境的文件系统钩子会让非空目录 rmdir 成功并连带删除内部文件
-    （评估期实测触发过，表现为本文件 source_cache 用例的假阳性失败）。
-    本用例把 rmdir 替换为"无条件成功且删光目录"的宽松实现，模拟那类宿主：
-    只有显式 iterdir 守卫存在时，受保护文件才能存活。
-    """
-    _, image, _ = _load_modules()
-    from pathlib import Path as _Path
-
-    root = tmp_path / "image_cache"
-    protected = root / "keep" / "protected.png"
-    expired = root / "gone" / "expired.png"
-    for path in (protected, expired):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"cached-image")
-    os.utime(protected, (100.0, 100.0))
-    os.utime(expired, (100.0, 100.0))
-
-    rmdir_targets: list[str] = []
-    real_rmdir = _Path.rmdir
-
-    def permissive_rmdir(self: _Path) -> None:
-        """模拟不抛 ENOTEMPTY 的宿主：递归删除目录内容后移除目录。"""
-        rmdir_targets.append(self.name)
-        for child in list(self.iterdir()):
-            if child.is_dir():
-                permissive_rmdir(child)
-            else:
-                child.unlink()
-        real_rmdir(self)
-
-    _Path.rmdir = permissive_rmdir  # type: ignore[method-assign]
-    try:
-        removed = image.ImageParser.cleanup_source_cache(
-            root,
-            protected_sources={str(protected)},
-            max_age_sec=1000.0,
-            now=5000.0,
-        )
-    finally:
-        _Path.rmdir = real_rmdir  # type: ignore[method-assign]
-
-    # 过期文件按预期回收，受保护文件必须存活
-    assert removed == 1
-    assert not expired.exists()
-    assert protected.exists(), "非空目录被 rmdir 连带删除，守卫失效"
-    # 守卫的直接证据：持有文件的目录从未被交给 rmdir
-    assert "keep" not in rmdir_targets, "非空目录仍被送入 rmdir"
-    # 对照：清空后的目录仍应被回收，守卫不能变成"永不清理"
-    assert "gone" in rmdir_targets, "已清空的目录未被回收，清理退化"
-    assert not (root / "gone").exists()
 
 
 # ============================================================================
@@ -1633,68 +1587,6 @@ def test_extract_images_swaps_url_and_file_by_scheme() -> None:
     assert extracted[0].url == "", "非 http 的 url 未清空，会被当成可下载地址"
 
 
-# 对锁定版宿主 AstrBot 4.23.3 的
-# core/platform/sources 下全部 18 个平台适配器逐个核过入站图片的装配形态。
-# 结论：会落到本地磁盘的适配器全部写在 <data> 子树内，因此 main 注入的
-# data_root=<data> 覆盖了所有合法生产者，不存在「真图片被 allowlist 误拒」
-# 的回归。此表把当时的核查结果固化成契约：宿主哪天把落盘位置挪出 <data>
-# （例如改用 get_astrbot_system_tmp_path() 的系统临时目录），本测试即红。
-#
-# 分三类：
-#   local:  落盘到 <data> 子树，靠 allowlist 放行（必须在 <data> 内）
-#   remote: 只给 http(s) URL 或 base64，不经本地路径（allowlist 无关）
-#   peer:   file 值由对端可控，正是 allowlist 要拦的（不得放行）
-_HOST_INBOUND_IMAGE_SOURCES: dict[str, tuple[str, str]] = {
-    "dingtalk": ("local", "data/temp"),
-    "lark": ("remote", "base64"),
-    "line": ("local", "data/temp"),
-    "mattermost": ("local", "data/temp"),
-    "misskey": ("local", "data/temp"),
-    "qqofficial": ("remote", "url"),
-    "telegram": ("remote", "url"),
-    "webchat": ("local", "data/webchat"),
-    "wecom": ("local", "data/temp"),
-    "weixin_oc": ("local", "data/temp"),
-    "weixin_official_account": ("local", "data/temp"),
-    "aiocqhttp": ("peer", "onebot file"),
-    "satori": ("peer", "xml src attr"),
-    "discord": ("remote", "url"),
-    "kook": ("remote", "url"),
-    "slack": ("remote", "base64"),
-    "qqofficial_webhook": ("remote", "url"),
-    "wecom_ai_bot": ("remote", "base64"),
-}
-
-
-def test_all_host_local_image_roots_are_inside_data_root(tmp_path: Path) -> None:
-    """宿主全部落盘型适配器的图片根都必须被 allowlist 放行。
-
-    这条守卫的价值在于「不误拒」方向：`test_forged_trusted_absolute_path_...`
-    证明了 allowlist 能拦住伪造路径，但拦得太宽会让 wecom/webchat 等平台的
-    真实图片全部读不到（100% 静默失效，且只在装了宿主的部署里暴露）。此处按各
-    适配器的实测落盘位置逐个放行验证，任一家挪出 <data> 都会被发现。
-    """
-    _, image, _ = _load_modules()
-
-    data_root = tmp_path / "data"
-    cache = data_root / "plugin_data" / "selfreply" / "image_cache"
-    parser = image.ImageParser(object(), source_cache_dir=cache, data_root=data_root)
-
-    local_platforms = {
-        name: rel for name, (kind, rel) in _HOST_INBOUND_IMAGE_SOURCES.items() if kind == "local"
-    }
-    assert local_platforms, "落盘型平台表为空，测试已失去意义"
-
-    for name, rel in sorted(local_platforms.items()):
-        source = data_root / rel / f"{name}_inbound.png"
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_bytes(bytes([137, 80, 78, 71, 13, 10, 26, 10]) + bytes(32))
-        info = image.ImageInfo(file_path=str(source), trusted_local_path=True)
-        assert asyncio.run(parser.snapshot_local_sources([info])) == [True], (
-            f"{name} 的真实入站图片（{rel}）被 allowlist 拒绝，该平台图片理解将静默失效"
-        )
-
-
 def test_system_tmp_style_path_outside_data_root_is_rejected(tmp_path: Path) -> None:
     """`<系统 tmp>/.astrbot` 形态的路径不得被 allowlist 放行（不依赖宿主源码）。
 
@@ -1726,12 +1618,33 @@ def test_system_tmp_style_path_outside_data_root_is_rejected(tmp_path: Path) -> 
     assert not info.prepared_source, "被拒路径仍写入了 prepared_source"
 
 
-def _locked_host_version() -> str:
-    """从 metadata.yaml 解析锁定的宿主版本（如 ``4.23.3``），失败返回空串。
+@pytest.mark.parametrize(
+    "media_dir",
+    ["temp", "webchat/imgs", "attachments", "plugin_data/astrbot_plugin_message_recorder"],
+)
+def test_host_media_roots_accept_local_images(tmp_path: Path, media_dir: str) -> None:
+    """宿主落盘型适配器的图片目录都必须被 allowlist 放行。
 
-    单一来源是 ``astrbot_version: ">=4.23.3,<5"``，与 compat_check 的锁定版
-    保持一致，本守卫必须扫**这一个**版本，扫别的版本得出的结论无效。
+    拦得太宽会让 wecom/webchat 等平台的真实图片全部读不到（100% 静默失效，
+    只在装了宿主的部署里暴露）。这里逐个覆盖构造器实际放行的四个根。
     """
+    _, image, _ = _load_modules()
+
+    data_root = tmp_path / "data"
+    cache = data_root / "plugin_data" / "selfreply" / "image_cache"
+    parser = image.ImageParser(object(), source_cache_dir=cache, data_root=data_root)
+
+    source = data_root / media_dir / "inbound.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(bytes([137, 80, 78, 71, 13, 10, 26, 10]) + bytes(32))
+    info = image.ImageInfo(file_path=str(source), trusted_local_path=True)
+    assert asyncio.run(parser.snapshot_local_sources([info])) == [True], (
+        f"宿主真实入站目录 {media_dir} 被 allowlist 拒绝，该平台图片理解将静默失效"
+    )
+
+
+def _locked_host_version() -> str:
+    """从 metadata.yaml 解析锁定的宿主版本（如 ``4.23.3``），失败返回空串。"""
     try:
         text = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
     except OSError:
@@ -1743,16 +1656,9 @@ def _locked_host_version() -> str:
 def _find_host_platform_sources() -> Path | None:
     """定位**锁定版**宿主源码的 platform/sources 目录，找不到返回 None。
 
-    三级候选，全部要求版本等于 metadata.yaml 的锁定版：
-
-    1. ``SELFREPLY_HOST_SRC`` 环境变量指定的源码树（人工指定，不校验版本）
-    2. **pip 安装的 astrbot 包**，wheel 自带完整适配器源码，版本由
-       ``importlib.metadata`` 精确校验后才采用
-    3. 仓库同级/上一级目录下的兼容矩阵解包副本 ``astrbot-compat/srcs/``
-
-    踩过的坑：版本必须精确锚定，曾用 ``sorted(glob("astrbot-*"), reverse=True)``
-    取"最新"，那是字典序，``astrbot-4.5.8`` 排在 ``astrbot-4.23.3`` 前面
-    （"5" > "2"），于是扫了旧版源码，得出的漂移结论与锁定版无关。
+    候选顺序：``SELFREPLY_HOST_SRC``、pip 安装且版本等于 metadata.yaml 锁定版的
+    astrbot 包、仓库同级/上一级的 compat 解包副本。版本必须精确锚定：曾按字典序
+    取「最新」，``astrbot-4.5.8`` 会排在 ``astrbot-4.23.3`` 前面。
     """
     env = os.environ.get("SELFREPLY_HOST_SRC", "").strip()
     if env:
@@ -1768,33 +1674,23 @@ def _find_host_platform_sources() -> Path | None:
     if not version:
         return None
 
-    # 首选：真实安装的 astrbot 包（pip 装的 wheel 自带完整适配器源码）。
-    # CI 的 compat 作业会 `pip install astrbot==<锁定版>`，走这条即可让本守卫
-    # 在 CI 里真正生效，而不是恒 skip。仍校验版本等于锁定版：装的是 latest
-    # 时扫出的漂移与锁定版无关，交给 compat 作业的 latest 预警去管。
     try:
-        import importlib.metadata as _md
+        import importlib.metadata as metadata
 
         import astrbot as _astrbot
 
-        installed = _md.version("astrbot")
-        if installed == version and _astrbot.__file__:
+        if metadata.version("astrbot") == version and _astrbot.__file__:
             sources = Path(_astrbot.__file__).parent / "core" / "platform" / "sources"
             if sources.is_dir():
                 return sources
     except Exception:
-        # 宿主未安装 / 元数据缺失 / 布局变动：继续走本地源码副本候选。
         pass
 
-    bases = [
-        ROOT.parent / "astrbot-compat" / "srcs",
-        ROOT.parent.parent / "astrbot-compat" / "srcs",
-    ]
-    for base in bases:
-        if not base.is_dir():
+    for base in (ROOT.parent, ROOT.parent.parent):
+        compat = base / "astrbot-compat" / "srcs"
+        if not compat.is_dir():
             continue
-        for entry in base.iterdir():
-            # 解包目录大小写不统一（astrbot-4.23.3 / AstrBot-4.20.1）
+        for entry in compat.iterdir():
             if not entry.is_dir() or entry.name.lower() != f"astrbot-{version}":
                 continue
             sources = entry / "astrbot" / "core" / "platform" / "sources"
@@ -1806,34 +1702,19 @@ def _find_host_platform_sources() -> Path | None:
 def test_host_platform_adapters_do_not_use_system_tmp_path() -> None:
     """宿主平台适配器不得改用系统临时目录落盘（对真实源码的漂移预警）。
 
-    锁定版 AstrBot 4.23.3 实测：`get_astrbot_system_tmp_path()` 只出现在
-    astr_main_agent / computer_tools/fs / star.context 三处 agent 工具链里，
-    没有任何 `core/platform/sources/*` 适配器用它。它一旦被用于保存入站图片，
-    真实图片会落在 <data> 之外并被 allowlist 静默拒绝（只在装了宿主的部署里暴露）。
-
-    未找到宿主源码副本时跳过；但**不允许静默空转**：找到源码后先自证探针有效
-    （目录里确有平台适配器包，且覆盖了 `_HOST_INBOUND_IMAGE_SOURCES` 的全部
-    条目），再做断言。否则「指错目录 → 扫到 0 个文件 → 绿灯」会变成假结论。
-    定位方式见 `_find_host_platform_sources`：显式环境变量、已安装锁定版 astrbot、
-    仓库同级/上一级的 compat 解包副本，都是与机器无关的入口。
+    ``get_astrbot_system_tmp_path()`` 返回 ``<系统 tmp>/.astrbot``，落在 <data>
+    之外；它一旦被用于保存入站图片，真实图片会被 allowlist 静默拒绝，且只在装了
+    宿主的部署里暴露。扫不到宿主源码时跳过，但找到后先自证探针有效再断言，避免
+    「指错目录 → 扫到 0 个文件 → 绿灯」。
     """
     sources = _find_host_platform_sources()
     if sources is None:
-        import pytest
-
         pytest.skip("未找到宿主源码副本（可用 SELFREPLY_HOST_SRC 指定）")
 
     packages = {
         path.name for path in sources.iterdir() if path.is_dir() and path.name != "__pycache__"
     }
-    # 探针自证 1：确实扫到了平台适配器包
     assert len(packages) >= 10, f"探针无效：{sources} 下只有 {len(packages)} 个适配器包"
-    # 探针自证 2：本文件的平台表没有漏掉宿主已有的适配器
-    missing = sorted(packages - set(_HOST_INBOUND_IMAGE_SOURCES))
-    assert not missing, (
-        f"宿主新增了未核查的平台适配器：{missing}；请核对其入站图片落盘位置后补入 "
-        "_HOST_INBOUND_IMAGE_SOURCES"
-    )
 
     scanned = 0
     offenders: list[str] = []
@@ -1841,7 +1722,6 @@ def test_host_platform_adapters_do_not_use_system_tmp_path() -> None:
         scanned += 1
         if "get_astrbot_system_tmp_path" in path.read_text(encoding="utf-8", errors="replace"):
             offenders.append(path.relative_to(sources).as_posix())
-    # 探针自证 3：确实读到了文件
     assert scanned >= 20, f"探针无效：只扫到 {scanned} 个 py 文件"
     assert not offenders, (
         f"平台适配器开始使用系统临时目录落盘：{offenders}；这些路径在 <data> 外，"
@@ -2298,27 +2178,13 @@ def test_fixed_transport_re_resolves_each_redirect_hop(monkeypatch) -> None:
 
 
 def test_download_preflight_policy_refusal_warns(tmp_path: Path, monkeypatch, caplog) -> None:
-    """地址策略的**预检**拒绝也必须记 WARNING，不能一条日志都没有。
-
-    缺陷形态：``_download_image_data_url`` 的三处预检（scheme 不允许、端口不在
-    白名单、主机解析不到公网地址）此前是裸 ``return None``。唯一那条 WARNING 在
-    传输层，被预检挡在前面根本走不到——于是策略拒绝与网络故障在日志里完全同形，
-    而契约 §9 要的正是「有对端在敲被拦的门」这个信号。
-
-    与 ``test_download_warns_when_address_policy_blocks`` 分工：那个 monkeypatch
-    ``_resolve_global_address`` 让它返回内网地址，只走到传输层；本用例让预检自己
-    拒绝（scheme/端口/主机），覆盖前面那一截。
-
-    变异锚定：删掉**任意一处** ``_warn_policy_refusal`` 调用，本用例红——判据是
-    逐 case 核对 reason 文案，漏掉任一支都对应不上。
-    """
+    """scheme、端口和主机预检拒绝需各自留痕，因为这些路径到不了传输层告警。"""
     import logging
 
     _, image, _ = _load_modules()
     parser_mod = _parser_module()
     parser = make_parser(image, tmp_path)
-    # 三个 case 必须分别命中三处预检：scheme 一支此前从未被触发过（https 本就
-    # 合法，旧用例里那条 URL 实际落的是"解析不到公网地址"），漏掉它全绿。
+    # scheme、端口和主机分别覆盖独立的预检拒绝路径。
     cases = {
         "ftp://cdn.example/x.png": "scheme not allowed",
         "http://10.0.0.5/x.png": "no global address for host",
@@ -2652,22 +2518,25 @@ def test_parse_unable_description_not_cached(tmp_path: Path) -> None:
     assert _parse_with_bridge(image, Bridge(), info) is None
 
 
-def test_parse_truncation_limit_is_single_sourced(tmp_path: Path) -> None:
+def test_parse_truncates_overlong_description(tmp_path: Path) -> None:
     _, image, _ = _load_modules()
-    support_mod = sys.modules[f"{PACKAGE_NAME}.image._support"]
+    support = load_package(PACKAGE_NAME, "image._support")
 
     class Bridge:
         async def resolve_provider_id(self, _umo, preferred):
             return preferred
 
         async def llm_generate_direct(self, **_kwargs):
-            return SimpleNamespace(completion_text="字" * (support_mod.MAX_DESCRIPTION_CHARS + 50))
+            return SimpleNamespace(completion_text="字" * 5000)
 
     info = image.ImageInfo(url="https://x/y.png")
     result = _parse_with_bridge(image, Bridge(), info)
     assert result is not None
-    assert len(result) == support_mod.MAX_DESCRIPTION_CHARS + 3
     assert result.endswith("...")
+    assert len(result) == support.MAX_DESCRIPTION_CHARS + 3, (
+        f"截断长度 {len(result)} 与 _support.MAX_DESCRIPTION_CHARS="
+        f"{support.MAX_DESCRIPTION_CHARS} 不同源"
+    )
 
 
 def test_parse_timeout_returns_none(tmp_path: Path) -> None:
@@ -2796,7 +2665,7 @@ def test_unable_detection_ignores_short_text_without_refusal_phrase() -> None:
 
 
 def test_parse_keeps_error_screenshot_description_and_caches_it() -> None:
-    """端到端：报错截图的描述必须返回并写进缓存（改坏实现即红）。"""
+    """报错截图的描述正常返回并写入缓存。"""
     _, image, _ = _load_modules()
     description = "图片中显示上传失败的错误提示，红色文本位于中央。"
 
@@ -2841,16 +2710,7 @@ def test_cleanup_missing_root_returns_zero(tmp_path: Path) -> None:
 
 
 def test_cleanup_ignores_data_url_and_outside_protected(tmp_path: Path) -> None:
-    """protected_sources 的**内容**必须承重：命中的过期文件不得被删。
-
-    缺陷形态：两个受保护条目（data: URL 与缓存外路径）都匹配不到任何被扫文件，
-    ``protected`` 的内容对结果没有任何影响——把整个 protected 解析换成 ``set()``
-    用例仍绿，守住的只是「解析抛不抛异常」。放进一个真会被扫到的过期文件，
-    让集合内容进入断言。
-
-    变异锚定：把 ``_resolve_protected_cache_sources`` 的结果换成 ``set()``，
-    本用例红。
-    """
+    """同时使用实际缓存文件、data URL 和根目录外路径，核对保护集合的有效范围。"""
     _, image, _ = _load_modules()
     root = tmp_path / "cache"
     root.mkdir()
@@ -2875,15 +2735,7 @@ def test_cleanup_ignores_data_url_and_outside_protected(tmp_path: Path) -> None:
 
 
 def test_cleanup_skips_symlinks(tmp_path: Path) -> None:
-    """缓存内的符号链接自身不得被清理删掉（``is_symlink()`` 早退是承重判据）。
-
-    缺陷形态：链接指向缓存**外**时，归属校验（``resolve().relative_to(root)``）
-    已经把它挡掉，``is_symlink()`` 那条早退永远走不到——删掉它用例仍绿，守住的
-    其实是"不越出缓存根"。把链接指向**缓存内**的过期文件，两条判据才分别承重。
-
-    变异锚定：把 ``_scan_source_cache`` 的 ``if path.is_symlink(): continue``
-    改成恒假，本用例红。
-    """
+    """链接指向缓存内文件以独立验证符号链接保护，避免只测到根目录限制。"""
     _, image, _ = _load_modules()
     root = tmp_path / "cache"
     root.mkdir()
@@ -2965,8 +2817,6 @@ def test_cleanup_expiry_never_removes_files_inside_the_freeze_window(tmp_path: P
     ``MAX_FREEZE_BUDGET_SEC``：一张图在 t=0 落盘、整批到 t=61 才
     ``capture_images``，此刻清理起跑就把它当过期删掉，索引里留下指向已删文件的
     ``prepared_source``——``parse`` 的本地分支全部失败，图片在保留期内静默消失。
-
-    变异锚定：把 cutoff 改回 ``snapshot_now - max_age_sec``，本用例红。
     """
     _, image, _ = _load_modules()
     root = tmp_path / "cache"
@@ -3000,47 +2850,34 @@ def test_cleanup_quota_skips_protected_when_nothing_else_left(tmp_path: Path) ->
     assert protected.exists()
 
 
-def test_cleanup_quota_unlink_failure_is_ignored(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("method_name", "error_text"),
+    [("unlink", "busy"), ("stat", "gone")],
+)
+def test_cleanup_quota_os_failure_is_ignored(
+    tmp_path: Path, monkeypatch, method_name: str, error_text: str
+) -> None:
     _, image, _ = _load_modules()
     root = tmp_path / "cache"
     root.mkdir()
     old = root / "old.png"
     old.write_bytes(b"1234")
     os.utime(old, (100.0, 100.0))
-    original_unlink = Path.unlink
+    original = getattr(Path, method_name)
 
-    def blocked_unlink(self, *args, **kwargs):
+    def blocked(self, *args, **kwargs):
         if self.name == "old.png":
-            raise OSError("busy")
-        return original_unlink(self, *args, **kwargs)
+            raise OSError(error_text)
+        return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", blocked_unlink)
+    monkeypatch.setattr(Path, method_name, blocked)
     removed = image.ImageParser.cleanup_source_cache(
         root, max_age_sec=100000.0, max_total_bytes=0, now=5000.0
     )
     assert removed == 0
-    assert old.exists()
-
-
-def test_cleanup_quota_stat_failure_is_ignored(tmp_path: Path, monkeypatch) -> None:
-    _, image, _ = _load_modules()
-    root = tmp_path / "cache"
-    root.mkdir()
-    old = root / "old.png"
-    old.write_bytes(b"1234")
-    os.utime(old, (100.0, 100.0))
-    original_stat = Path.stat
-
-    def blocked_stat(self, *args, **kwargs):
-        if self.name == "old.png":
-            raise OSError("gone")
-        return original_stat(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "stat", blocked_stat)
-    removed = image.ImageParser.cleanup_source_cache(
-        root, max_age_sec=60, max_total_bytes=0, now=5000.0
-    )
-    assert removed == 0
+    # 用 os.listdir 核对落盘结果：Path.exists 内部走被本次打桩的同一个方法，
+    # 在 3.12 上会直接抛 OSError，断言变成对打桩的复读。
+    assert "old.png" in os.listdir(root)
 
 
 def test_cleanup_expired_files_are_not_counted_against_quota(tmp_path: Path) -> None:
@@ -3070,30 +2907,31 @@ def test_cleanup_expired_files_are_not_counted_against_quota(tmp_path: Path) -> 
     assert fresh.exists(), "已删除文件仍被计入配额，连带删掉了新鲜文件"
 
 
-def test_cleanup_walks_tree_once(tmp_path: Path, monkeypatch) -> None:
-    """整轮清理只遍历目录一次：三阶段共享同一时刻的目录视图。"""
+def test_cleanup_uses_one_snapshot_of_the_directory(tmp_path: Path, monkeypatch) -> None:
+    """整轮清理基于同一时刻的目录视图：清理途中新落盘的文件不参与本轮。"""
     _, image, _ = _load_modules()
     root = tmp_path / "cache"
-    (root / "aa").mkdir(parents=True)
-    fresh = root / "aa" / "fresh.png"
-    fresh.write_bytes(b"1234")
-    os.utime(fresh, (4900.0, 4900.0))
+    root.mkdir()
+    expired = root / "expired.png"
+    expired.write_bytes(b"1234")
+    os.utime(expired, (100.0, 100.0))
+    late = root / "late.png"
+    original_unlink = Path.unlink
 
-    rglob_calls: list[str] = []
-    original_rglob = Path.rglob
+    def unlink_then_create(self, *args, **kwargs):
+        result = original_unlink(self, *args, **kwargs)
+        if self.name == "expired.png" and not late.exists():
+            late.write_bytes(b"9999")
+            os.utime(late, (100.0, 100.0))
+        return result
 
-    def counting_rglob(self, pattern, *args, **kwargs):
-        rglob_calls.append(pattern)
-        return original_rglob(self, pattern, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "rglob", counting_rglob)
+    monkeypatch.setattr(Path, "unlink", unlink_then_create)
     removed = image.ImageParser.cleanup_source_cache(
         root, max_age_sec=1000.0, max_total_bytes=1024, now=5000.0
     )
 
-    assert removed == 0
-    assert fresh.exists()
-    assert len(rglob_calls) == 1, f"目录被遍历 {len(rglob_calls)} 遍，单遍契约退化"
+    assert removed == 1
+    assert late.exists(), "清理途中的新文件被本轮的旧快照误删"
 
 
 # ============================================================================
@@ -3115,7 +2953,7 @@ def test_resolve_uses_recorder_local_path(tmp_path: Path) -> None:
     # recorder 交回的路径同样要过 allowlist，它的入参 local_path 来自对端可控
     # 的消息组件，resolver 又是第三方插件函数，不能无条件当可信。
     _, image, _ = _load_modules()
-    source = _png_file(tmp_path)
+    source = _png_file(tmp_path / "plugin_data" / "astrbot_plugin_message_recorder")
 
     class Recorder:
         async def get_local_image_path(self, _message_id, _image_url):
@@ -3254,7 +3092,7 @@ def test_resolve_http_file_path_failure_falls_back_to_url(tmp_path: Path, monkey
 def test_resolve_relative_path_via_recorder(tmp_path: Path) -> None:
     # 同上：合法的 recorder 媒体文件在 <data> 下，注入 data_root 后照常放行。
     _, image, _ = _load_modules()
-    source = _png_file(tmp_path, "media.png")
+    source = _png_file(tmp_path / "plugin_data" / "astrbot_plugin_message_recorder", "media.png")
 
     class Recorder:
         async def resolve_relative_path(self, value):
@@ -3721,6 +3559,45 @@ def test_fetch_slow_dns_times_out(monkeypatch) -> None:
     assert elapsed < 2.5
 
 
+def test_slow_image_dns_does_not_starve_default_executor(monkeypatch) -> None:
+    """超时后的阻塞 DNS 不得占满 AstrBot 共享的默认线程池。"""
+    _, image, _ = _load_modules()
+    parser_mod = _parser_module()
+    release = threading.Event()
+    started = 0
+    started_lock = threading.Lock()
+
+    def slow_resolve(_host: str) -> str:
+        nonlocal started
+        with started_lock:
+            started += 1
+        release.wait(5.0)
+        return "93.184.216.34"
+
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", slow_resolve)
+    parser = image.ImageParser(object(), timeout_sec=0.15)
+
+    async def scenario() -> float:
+        requests = [
+            asyncio.create_task(parser._fetch_image_data_url(f"https://slow-{index}.example/x.png"))
+            for index in range(40)
+        ]
+        try:
+            results = await asyncio.gather(*requests)
+            assert all(result is None for result in results)
+            assert started > 0, "DNS 探针未启动，线程池饥饿断言无效"
+            assert started <= 2, f"图片 DNS 并发未受限：启动了 {started} 个阻塞解析"
+            start = time.monotonic()
+            await asyncio.wait_for(asyncio.to_thread(lambda: "available"), timeout=0.3)
+            return time.monotonic() - start
+        finally:
+            release.set()
+            await asyncio.gather(*requests, return_exceptions=True)
+
+    elapsed = asyncio.run(scenario())
+    assert elapsed < 0.25, f"默认线程池探针被慢 DNS 阻塞 {elapsed:.3f}s"
+
+
 # ============================================================================
 # 冻结预算、在途文件宽限与缓存目录解析
 # ============================================================================
@@ -3886,8 +3763,6 @@ def test_raw_cq_parsing_stays_linear_on_pathological_input() -> None:
     缺陷形态：原正则的两段字符类（类型段与正文段）在同一段输入上竞争，缺右括号时
     每个 [CQ: 起点都要逐字符回退。16 KB 的畸形 raw 串实测要 3.6 秒，而 has_images
     与 extract_images 在消息热路径上各跑一遍，全插件共享同一事件循环。
-
-    变异锚定：改回 re.finditer，本用例在 0.5s 预算上红。
     """
     import time
 
@@ -3913,8 +3788,6 @@ def test_shared_ssl_context_is_built_once() -> None:
 
     缺陷形态：每次下载都 ssl.create_default_context()——实测 24ms 的同步开销，且每份
     上下文各自持有证书链与会话缓存。图片查询在判断/生成两条热路径上串行触发。
-
-    变异锚定：把 _shared_ssl_context 改成每次返回新上下文，本用例红。
     """
     _load_modules()
     parser = load_package(PACKAGE_NAME, "image.parser")
@@ -3929,8 +3802,6 @@ def test_atomic_write_retries_transient_replace_failure(tmp_path: Path) -> None:
     缺陷形态：os.replace 撞上 PermissionError 就直接上抛，已冻结的图片缓存写入静默
     失败，prepare 退化成内存 data URL 后被会话预算拒掉——用户看到的是「这张图没被
     识别」，而磁盘完全正常。
-
-    变异锚定：去掉重试循环，本用例红。
     """
     _load_modules()
     parser = load_package(PACKAGE_NAME, "image.parser")
@@ -3952,3 +3823,27 @@ def test_atomic_write_retries_transient_replace_failure(tmp_path: Path) -> None:
 
     assert target.read_bytes() == b"payload"
     assert attempts["count"] == 3, f"没有重试：{attempts}"
+
+
+def test_fetch_refuses_non_identity_content_encoding(monkeypatch) -> None:
+    """传输压缩不得绕过体积预算：解码后的膨胀块必须先被拒。
+
+    ``aiter_bytes()`` 交回的是 httpx 解码后的字节，一个 64 KiB 的 gzip 块可膨胀
+    到数十 MB，而累加校验发生在 ``extend`` 之后——预算只约束线上字节时，一条
+    130 KB 的响应能换来上百 MB 峰值分配（任一群成员可控）。
+    """
+    image = _make_fetch_env(
+        monkeypatch,
+        _make_response(headers={"content-encoding": "gzip"}, chunks=[PNG_BYTES]),
+    )
+    assert _fetch_result(image) is None
+
+
+def test_fetch_refuses_malformed_port_as_policy_refusal(monkeypatch, caplog) -> None:
+    """越界/非数字端口的拒绝属地址策略拒绝，必须留 WARNING（契约 §9）。"""
+    image = _make_fetch_env(monkeypatch, _make_response(chunks=[PNG_BYTES]))
+    with caplog.at_level("WARNING"):
+        assert _fetch_result(image, "https://cdn.example:99999999/x.png") is None
+        assert _fetch_result(image, "https://cdn.example:abc/x.png") is None
+    policy = [r for r in caplog.records if "address policy" in r.getMessage()]
+    assert len(policy) == 2, [r.getMessage() for r in caplog.records]

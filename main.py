@@ -34,7 +34,6 @@ from .session_gate import SessionGate
 # **必须是运行时可解析的名字，不能放回 TYPE_CHECKING 块**：宿主注册处理器时调
 # `inspect.signature(handler, eval_str=True)`（4.27.2 起），会把字符串注解真的
 # eval 一遍，TYPE_CHECKING-only 的名字在那一步 NameError，整个插件拒绝加载。
-# 守卫：scripts/compat_check.py::_handler_signature_gaps。
 CommandReply = AsyncGenerator[Any, None]
 
 _AGENT_RUNTIME = AstrBotRuntimeAdapter.from_host()
@@ -134,7 +133,7 @@ class SelfInitiatedReplyPlugin(Star):
             get_plugin_data_path=get_astrbot_plugin_data_path,
         )
 
-        config_data = load_config_data(self._config_path, self.config)
+        config_data, config_can_be_normalized = load_config_data(self._config_path, self.config)
         self.settings = Settings.from_config(config_data)
         self.runtime_enabled = self.settings.enabled
 
@@ -144,7 +143,9 @@ class SelfInitiatedReplyPlugin(Star):
         # 首次规范化落盘的判定在这里，落盘本体延后到构造末尾与其余启动
         # 磁盘 IO 一起执行：此处 spawn 路径不可用，且写盘含 fsync，
         # 在会话循环上就地执行会阻塞所有会话。
-        self._pending_normalize_config = not config_file_matches(self._config_path, self.settings)
+        self._pending_normalize_config = config_can_be_normalized and not config_file_matches(
+            self._config_path, self.settings
+        )
 
         self.sessions = load_sessions(
             self._storage_path,
@@ -158,7 +159,11 @@ class SelfInitiatedReplyPlugin(Star):
         try:
             self._image_cache_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            logger.warning("[%s] image cache directory unavailable: %s", PLUGIN_ID, exc)
+            logger.warning(
+                "[%s] image cache directory unavailable: %s",
+                PLUGIN_ID,
+                redact_exc_text(exc),
+            )
         # UI 偏好：AstrBot 插件页面以 iframe 嵌入 Dashboard，localStorage
         # 不可靠，主题/压暗/粗体写入后端 JSON。
         self._ui_prefs_path = self._storage_path.parent / "ui_prefs.json"
@@ -195,7 +200,7 @@ class SelfInitiatedReplyPlugin(Star):
 
         # 启动期磁盘 IO 统一在此执行（配置规范化落盘、状态落盘、图片缓存清理）。
         # 它们都含 fsync / 大目录遍历，跑在宿主事件循环上会阻塞该进程内
-        # 所有会话与 Web 面板（契约见 tests/test_cleanup_nonblocking）。
+        # 所有会话与 Web 面板。
         # - 有运行中的循环 → 全部交后台任务（磁盘部分内部走 to_thread）。
         # - 无循环（同步加载的宿主）→ 原地同步执行，且**不得**在此 spawn。
         #   该分支因此也不起巡检与图片清理循环（create_task 需要循环）；消息
@@ -211,7 +216,11 @@ class SelfInitiatedReplyPlugin(Star):
             try:
                 self._scheduler.cleanup_image_sources(now=now_ts())
             except Exception as exc:
-                logger.warning("[%s] startup image cache cleanup failed: %s", PLUGIN_ID, exc)
+                logger.warning(
+                    "[%s] startup image cache cleanup failed: %s",
+                    PLUGIN_ID,
+                    redact_exc_text(exc),
+                )
         else:
             self._track_background_task(self._startup_disk_writes())
             self._scheduler.ensure_patrol()
@@ -263,11 +272,19 @@ class SelfInitiatedReplyPlugin(Star):
                 # 挂死。state.json 的正确性边界是 _save_lock，不是配置锁。
                 await self._save_storage()
             except Exception as exc:
-                logger.warning("[%s] startup state save failed: %s", PLUGIN_ID, exc)
+                logger.warning(
+                    "[%s] startup state save failed: %s",
+                    PLUGIN_ID,
+                    redact_exc_text(exc),
+                )
             try:
                 await self._scheduler.run_image_cleanup()
             except Exception as exc:
-                logger.warning("[%s] startup image cache cleanup failed: %s", PLUGIN_ID, exc)
+                logger.warning(
+                    "[%s] startup image cache cleanup failed: %s",
+                    PLUGIN_ID,
+                    redact_exc_text(exc),
+                )
 
         return run()
 
@@ -445,7 +462,7 @@ class SelfInitiatedReplyPlugin(Star):
             logger.warning(
                 "[%s] config normalization task error: %s",
                 PLUGIN_ID,
-                exc,
+                redact_exc_text(exc),
             )
             return
         if not written:
@@ -479,7 +496,7 @@ class SelfInitiatedReplyPlugin(Star):
         """Return whether new plugin-owned work may be scheduled.
 
         不做隔离注册表的容量判定：首例隔离即永久 DEGRADED，任何容量条件
-        都会被先行短路，留着只会误导读者以为它参与门禁。
+        都会被先行短路，留着只会误导读者以为它参与判定。
         """
         return self._lifecycle_state is PluginLifecycle.RUNNING and not self._stopping
 
@@ -526,7 +543,7 @@ class SelfInitiatedReplyPlugin(Star):
             # 事件循环里打一条无归属的 "Task exception was never retrieved"。
             # 调用点（宽限窗口耗尽后才来登记）恰好最容易命中这个时间差。
             # 必须自己留痕：provider 任务带着异常收敛时，静默丢弃会让整个归因
-            # 消失，与本次加固的方向相反。
+            # 消失，与本函数留痕的目的相反。
             if not task.cancelled():
                 exc = task.exception()
                 if exc is not None:
@@ -648,7 +665,7 @@ class SelfInitiatedReplyPlugin(Star):
         try:
             await event.send(MessageChain().message(text))
         except Exception as exc:
-            logger.debug("[%s] inline command send failed: %s", PLUGIN_ID, exc)
+            logger.debug("[%s] inline command send failed: %s", PLUGIN_ID, redact_exc_text(exc))
             try:
                 event.set_result(event.plain_result(text))
             except Exception:
@@ -804,13 +821,13 @@ class SelfInitiatedReplyPlugin(Star):
                 # 全局标志会把随后执行的最终落盘一起挡掉。
                 continue
             task.cancel()
-            # 超时即取消并隔离：terminate 有界（契约 §5），取消后的清理只由
+            # 超时即取消并隔离：terminate 有界，取消后的清理只由
             # 任务自身的 done 回调收尾。
             self._quarantine_task(task, "shutdown deadline exceeded")
         self._background_tasks.difference_update(task for task in tasks if task.done())
 
     async def _save_final_state_with_deadline(self, budget_sec: float | None = None) -> None:
-        """最终落盘，硬窗口内未完成就放弃（契约 §5：终止有界）。
+        """最终落盘，硬窗口内未完成就放弃（终止有界）。
 
         ``budget_sec`` 是调用方给的剩余额度：取锁与写盘共用同一个
         TERMINATE_TASK_TIMEOUT_SEC，否则「锁等 3s + 写等 3s」等于把承诺放大一倍。
@@ -832,7 +849,7 @@ class SelfInitiatedReplyPlugin(Star):
         try:
             task.result()
         except Exception as exc:
-            logger.warning("[%s] final state save failed: %s", PLUGIN_ID, exc)
+            logger.warning("[%s] final state save failed: %s", PLUGIN_ID, redact_exc_text(exc))
 
     async def terminate(self) -> None:
         self._lifecycle_state = (
@@ -856,7 +873,7 @@ class SelfInitiatedReplyPlugin(Star):
             # _config_lock → _save_lock，无反向持有。
             # 取锁同样要有上界：这把锁被 POST /config 持有时最长是「启停拓扑收敛
             # （stop_patrol 9s）+ 两次落盘」，无上界地等，宿主 reload 就被拖住数秒，
-            # 而契约 §5 对最终状态保存只承诺一个 TERMINATE_TASK_TIMEOUT_SEC 硬窗口。
+            # 而最终状态保存只承诺一个 TERMINATE_TASK_TIMEOUT_SEC 硬窗口。
             # 取锁超窗只放弃本次最终落盘（同置 _abandon_disk_writes），不隔离、不
             # DEGRADED：写任务根本没起来，不存在迟到落地的写，与写超时不同。
             budget = max(0.0, TERMINATE_TASK_TIMEOUT_SEC)

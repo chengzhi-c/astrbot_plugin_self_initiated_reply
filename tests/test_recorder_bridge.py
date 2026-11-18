@@ -80,60 +80,34 @@ def _record_with(*images: dict[str, Any]) -> Any:
 # ============================================================================
 
 
-async def test_ensure_api_false_without_context(bridge_mod) -> None:
-    bridge = bridge_mod.MessageRecorderBridge(None)
-    assert await bridge._ensure_api() is False
-    assert bridge._api is None
+def _star_context(star: Any) -> Any:
+    """注册一个 star 的上下文：``get_registered_star`` 返回 meta.star_instance = star。"""
+    return SimpleNamespace(get_registered_star=lambda _name: SimpleNamespace(star_instance=star))
 
 
-async def test_ensure_api_false_without_get_registered_star(bridge_mod) -> None:
-    ctx = type("Ctx", (), {})()
-    bridge = bridge_mod.MessageRecorderBridge(ctx)
-    assert await bridge._ensure_api() is False
-
-
-async def test_ensure_api_false_when_star_missing(bridge_mod) -> None:
-    def get_registered_star(name):
-        return None
-
-    ctx = type("Ctx", (), {"get_registered_star": get_registered_star})()
-    bridge = bridge_mod.MessageRecorderBridge(ctx)
-    assert await bridge._ensure_api() is False
-
-
-async def test_ensure_api_false_when_no_api_method(bridge_mod) -> None:
-    class Meta:
-        star_instance = type("Star", (), {})()
-
-    def get_registered_star(name):
-        return Meta()
-
-    ctx = type("Ctx", (), {"get_registered_star": get_registered_star})()
-    bridge = bridge_mod.MessageRecorderBridge(ctx)
-    assert await bridge._ensure_api() is False
-
-
-async def test_ensure_api_false_on_exception(bridge_mod) -> None:
-    def get_registered_star(name):
+def _raising_context() -> Any:
+    def boom(_name):
         raise OSError("boom")
 
-    ctx = type("Ctx", (), {"get_registered_star": get_registered_star})()
-    bridge = bridge_mod.MessageRecorderBridge(ctx)
+    return SimpleNamespace(get_registered_star=boom)
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        pytest.param(None, id="without_context"),
+        pytest.param(SimpleNamespace(), id="without_get_registered_star"),
+        pytest.param(SimpleNamespace(get_registered_star=lambda _name: None), id="star_missing"),
+        pytest.param(_star_context(SimpleNamespace()), id="no_api_method"),
+        pytest.param(_raising_context(), id="probe_raises"),
+        pytest.param(_star_context(SimpleNamespace(get_api=None)), id="get_api_not_callable"),
+    ],
+)
+async def test_ensure_api_false_when_host_unusable(bridge_mod, context) -> None:
+    """探测链任一环节不可用都判负，不抛给调用方，也不留下半成品 _api。"""
+    bridge = bridge_mod.MessageRecorderBridge(context)
     assert await bridge._ensure_api() is False
-
-
-async def test_ensure_api_false_when_get_api_not_callable(bridge_mod) -> None:
-    """探测链：star 的 get_api 不可调用时必须判负（40 行分支）。"""
-
-    class Meta:
-        star_instance = type("Star", (), {"get_api": None})()
-
-    class Ctx:
-        def get_registered_star(self, name):
-            return Meta()
-
-    bridge = bridge_mod.MessageRecorderBridge(Ctx())
-    assert await bridge._ensure_api() is False
+    assert bridge._api is None
 
 
 async def test_ensure_api_caches_result(bridge_mod) -> None:
@@ -378,7 +352,7 @@ async def test_resolve_relative_path_exception(bridge_mod) -> None:
 
 
 async def test_resolve_relative_path_resolver_not_callable(bridge_mod) -> None:
-    """探测链：api 的 get_media_absolute_path 不可调用时判负（84 行分支）。"""
+    """api 的 get_media_absolute_path 不可调用时判负。"""
 
     class StubApi:
         get_media_absolute_path = None

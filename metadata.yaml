@@ -6,12 +6,12 @@ help: |
   /selfreply status: 查看运行状态
   /selfreply add: 将当前会话加入白名单
   /selfreply remove: 移出当前会话
-  /selfreply list: 查看白名单
+  /selfreply list: 私聊中查看完整白名单
   /selfreply check [content]: 手动测试一次主动回复
   /selfreply on: 启用（重启后保持）
   /selfreply off: 暂停（重启后保持）
-  /selfreply debug: 查看当前会话识别信息
-version: 1.5.2
+  /selfreply debug: 查看当前消息识别结果
+version: 1.5.4
 astrbot_version: ">=4.23.3,<5"
 author: chengzhi-c
 repo: "https://github.com/chengzhi-c/astrbot_plugin_self_initiated_reply"

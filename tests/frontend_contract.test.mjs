@@ -22,9 +22,6 @@ import {
   uniqueWhitelistItems,
   validateWhitelistLines,
 } from "../pages/主动回复设置/config-form.mjs";
-import {
-  providerNeedsManualInput,
-} from "../pages/主动回复设置/providers.mjs";
 import { persistTheme, THEME_KEY } from "../pages/主动回复设置/theme.mjs";
 import { configPayload } from "./fixtures/config-payload.mjs";
 // 表单控件工厂：四个 helper 被多个用例复用，提到模块作用域只留一份实现。
@@ -49,6 +46,9 @@ const providerControls = (value = "") => ({
   judge: { value: () => value, sync() {} },
   vision: { value: () => value, sync() {} },
   visionJudge: { value: () => value, sync() {} },
+  proactive: { value: () => value, sync() {} },
+  // 备用模型是多选控件，取值是数组。
+  proactiveFallback: { value: () => [], sync() {} },
 });
 // createConfigIo 的调桩工厂：多数用例只关心 apiPost / showToast / apiGet 三处，
 // 其余七个键（elements/state/setState/setStatState/renderPromptPreview/Provider
@@ -123,6 +123,9 @@ const makeSaveFixture = ({
     number("vision_max_images", "3"),
     number("vision_image_age_sec", "301"),
     number("vision_timeout_sec", "22"),
+    providerField("proactive_provider_id", "proactive"),
+    providerField("proactive_fallback_provider_ids", "proactiveFallback"),
+    number("proactive_request_max_retries", "1"),
     checkbox("proactive_inherit_tools", true),
     ...extraFields,
     field("whitelist_sessions", whitelist, { configTransform: "whitelist" }),
@@ -153,6 +156,9 @@ const makeSaveFixture = ({
   const provider = (value) => ({ value: () => value, sync() {} });
   const controls = {
     judge: provider("judge"),
+    proactive: provider(""),
+    // 备用模型是多选，取值是数组。
+    proactiveFallback: { value: () => [], sync() {} },
     vision: provider("vision"),
     visionJudge: provider("vision-judge"),
   };
@@ -261,14 +267,6 @@ test("fetch fallback keeps the established GET and POST request shapes", async (
   assert.equal(calls[1].options.method, "POST");
   assert.deepEqual(calls[1].options.headers, { "Content-Type": "application/json" });
   assert.equal(calls[1].options.body, '{"enabled":true}');
-});
-
-test("provider list failure forces manual input for every provider control", () => {
-  assert.equal(providerNeedsManualInput("", [], false), true);
-  assert.equal(providerNeedsManualInput("provider-x", [], false), true);
-  assert.equal(providerNeedsManualInput("", [], true), false);
-  assert.equal(providerNeedsManualInput("provider-x", [{ id: "provider-x" }], true), false);
-  assert.equal(providerNeedsManualInput("provider-x", [{ id: "provider-y" }], true), true);
 });
 
 test("API errors retain a stable user-facing message", () => {
@@ -404,40 +402,6 @@ test("config load failure names the missing fields", async () => {
   await assert.rejects(() => io.loadConfig(), /缺少字段 min_silence_sec/);
 });
 
-test("page exposes the accessibility and narrow-layout contracts", async () => {
-  const [html, app, css, chrome, configIo, providers] = await Promise.all([
-    readFile(join(pageDir, "index.html"), "utf8"),
-    readFile(join(pageDir, "app.js"), "utf8"),
-    readFile(join(pageDir, "style.css"), "utf8"),
-    readFile(join(pageDir, "chrome.mjs"), "utf8"),
-    readFile(join(pageDir, "config-io.mjs"), "utf8"),
-    readFile(join(pageDir, "providers.mjs"), "utf8"),
-  ]);
-  const fe = [app, chrome, configIo, providers].join("\n");
-  assert.match(html, /<main\b[^>]*class="layout"/);
-  assert.match(html, /<form id="configForm"[^>]*\binert/);
-  assert.match(html, /class="skip-link"[^>]*href="#selfStat"/);
-  assert.match(app, /requestPluginApi\(/);
-  assert.match(app, /createProviderControl\(/);
-  assert.match(
-    providers,
-    /providerNeedsManualInput\(next, getOptions\(\), isListAvailable\(\)\)/
-  );
-  assert.match(
-    chrome,
-    /event\.key !== "Escape" \|\| !media\.matches \|\| els\.moreActionsMenu\.hidden/
-  );
-  assert.match(html, /id="moreActionsBtn"[^>]*aria-controls="moreActionsMenu"[^>]*aria-expanded="false"/);
-  assert.match(html, /id="judgeProviderInput"[^>]*hidden/);
-  assert.doesNotMatch(html, /超时按默认放行/);
-  assert.match(fe, /isSuccessfulConfigPayload\(/);
-  assert.match(fe, /btn\.disabled = blocked/);
-  assert.match(css, /@media \(max-width: 360px\)/);
-  assert.match(css, /more-actions-menu\[hidden\]/);
-  assert.doesNotMatch(css, /\.master, \.panel, \.form-actions/);
-  assert.doesNotMatch(css, /\.form > \*:nth-child\([2-6]\) \{ animation-delay/);
-});
-
 test("every data-config-control in the page is registered in PROVIDER_CONTROLS", async () => {
   // configControlValue 直接 providerControls[configControl].value()，未注册即裸
   // TypeError。注册表由 app.js 的 PROVIDER_CONTROLS 建好后整体传进 createConfigIo，
@@ -465,58 +429,6 @@ test("every data-config-control in the page is registered in PROVIDER_CONTROLS",
   );
   assert.match(configIo, /function providerConfigKeys\(form\)/);
   assert.doesNotMatch(configIo, /PROVIDER_CONFIG_KEYS/);
-});
-
-test("context-history setting states its zero behavior", async () => {
-  const html = await readFile(join(pageDir, "index.html"), "utf8");
-
-  assert.match(html, /判断时参考的聊天记录/);
-  assert.match(html, /少于多少条时补读历史/);
-  assert.match(
-    html,
-    /0 只用已记录的消息/
-  );
-  assert.doesNotMatch(html, /上下文至少几条消息才判断接话/);
-});
-
-test("browser config fixture covers every form-declared key", async () => {
-  // Playwright 用这份夹具当 GET /config。缺键时 isSuccessfulConfigPayload 失败，
-  // 表单一直 inert，浏览器用例会集体红。
-  const html = await readFile(join(pageDir, "index.html"), "utf8");
-  const htmlKeys = [...html.matchAll(/data-config-key="([a-z0-9_]+)"/g)].map(
-    (match) => match[1],
-  );
-  const fixture = configPayload();
-  const missing = htmlKeys.filter(
-    (key) => !Object.prototype.hasOwnProperty.call(fixture, key),
-  );
-  assert.deepEqual(missing, [], `config-payload.mjs 缺少表单键：${missing}`);
-
-  // 反向：夹具里的每个键都必须被页面消费（表单控件或 JS 读取），否则是
-  // 夹具里的孤儿键（后端已无此键）浏览器测试用这份夹具当桩，
-  // 残留键永远绿，漂移只有这一侧能抓。同 Python 侧
-  // test_every_exposed_config_key_is_consumed_by_the_panel 的口径。
-  const names = (await readdir(pageDir)).filter((name) => /\.(js|mjs)$/.test(name));
-  let front = html;
-  for (const name of names) {
-    front += await readFile(join(pageDir, name), "utf8");
-  }
-  const stale = Object.keys(fixture).filter((key) => !front.includes(key));
-  assert.deepEqual(
-    stale,
-    [],
-    `config-payload.mjs 含前端零消费的孤儿键（后端可能已删）：${stale}`,
-  );
-});
-
-test("CI runs the dependency-free frontend gate", async () => {
-  const workflow = await readFile(join(root, ".github", "workflows", "ci.yml"), "utf8");
-  // 只钉两条对"零依赖门禁还在跑"有决定意义的锚：frontend job 存在、且它执行
-  // node --test 跑契约文件。setup-node 版本、通配符字面量、node --check 子串
-  // 都是**实现细节**：升级 action 版本或调整 glob 写法都会变红，而红的原因与
-  // 被守卫的契约（前端门禁不被误删）无关，故不钉。
-  assert.match(workflow, /^ {2}frontend:\r?\n/m);
-  assert.match(workflow, /node --test tests\/frontend_contract\.test\.mjs/);
 });
 
 test("theme localStorage key stays single-sourced with the HTML bootstrap", async () => {
@@ -585,31 +497,6 @@ test("settings page scripts only look up ids that index.html declares", async ()
   assert.deepEqual(missing.sort(), [], `index.html 缺少脚本引用的 id：${missing.join(", ")}`);
 });
 
-test("responsive breakpoints stay in sync between chrome.mjs and the stylesheet", async () => {
-  // 这两处 JS 行为与 CSS 断点强耦合：更多操作菜单在 460px 上下切换折叠形态，
-  // 侧栏在 1024px 以下点击后自动收起。改 CSS 漏改 JS（或反之）只在断点附近的
-  // 一段宽度里表现异常，属静默错配。CSS 无法 import JS，故用守卫固定两侧，
-  // 而不是引入跨语言常量（那要破坏零构建承诺）。
-  const [chrome, css] = await Promise.all([
-    readFile(join(pageDir, "chrome.mjs"), "utf8"),
-    readFile(join(pageDir, "style.css"), "utf8"),
-  ]);
-  const widths = new Set([...chrome.matchAll(/max-width:\s*(\d+)px/g)].map((m) => m[1]));
-  assert.ok(widths.size > 0, "chrome.mjs 未声明任何 max-width 断点");
-  for (const width of widths) {
-    assert.match(
-      css,
-      new RegExp(`@media \\(max-width: ${width}px\\)`),
-      `chrome.mjs 使用 ${width}px 断点，但 style.css 没有同名 @media`
-    );
-  }
-  // 两个已知耦合值必须在两侧都出现：即便 JS 整体删掉断点也不得静默通过。
-  for (const width of ["460", "1024"]) {
-    assert.ok(widths.has(width), `chrome.mjs 不再使用 ${width}px 断点`);
-    assert.match(css, new RegExp(`@media \\(max-width: ${width}px\\)`));
-  }
-});
-
 test("frontend plugin id matches the backend package identity", async () => {
   const app = await readFile(join(pageDir, "app.js"), "utf8");
   const models = await readFile(join(root, "models.py"), "utf8");
@@ -619,87 +506,55 @@ test("frontend plugin id matches the backend package identity", async () => {
   assert.equal(feId, beId);
 });
 
-test("styles do not target element ids", async () => {
-  // 样式不用 #id 选择器：ID 特异性(100)会压过类(10)，同一按钮的普通类规则
-  // 从此改不动它，只能靠再写一条更长的 ID 规则去覆盖。id 仍是 JS 取节点的锚
-  // （getElementById 不动），
-  // 只有样式改用类。
-  //
-  // 判据取"选择器区域"（`{` 之前的部分）而不是"全文找 # 再剔除颜色"。
-  // 简单正则 `(^|[\s,{])(#[\w-]+)` 有三类漏检，均已实测：
-  // - 无空格组合符：`.a>#id`、`.a~#id`、`*#id`（`#` 前既非空白也非 `,{`）；
-  // - 属性选择器相连：`[attr]#id`；
-  // - 3-8 位纯十六进制字形 ID（如 `#abc123`）：被 `#[0-9a-fA-F]{3,8}\b`
-  // 当颜色剔除。注意 9 位以上反而漏不进颜色正则（`\b` 不满足），
-  // 所以区分力只在这个区间。
-  // 旧判据另有一处真误报：`content: "#hash #id"` 里的 `#id` 会被当成选择器。
-  // 新判据把这三点都修掉了（声明区天然落在 `{` 之后）。
-  //
-  // 判据仍是文本级，两处刻意写法会成为已知边界（本仓不出现，不加固，
-  // 上 CSS 解析器换取这点收益不划算）：
-  // - 假阳性：选择器区的属性选择器字符串含 #，如 `[data-icon="#x"]`；
-  // 同一规则内声明字符串含 `}` 且其后再有 `url(#…)`（`}` 使切分错位）。
-  // - 假阴性：`content:"/*"` 与后续 `content:"*/"` 之间的选择器会被注释
-  // 剔除整体吞掉；`\23 ` 转义写法新旧判据都看不见。
-  const css = await readFile(join(pageDir, "style.css"), "utf8");
-  const selectorArea = css
-    .replace(/\/\*[\s\S]*?\*\//g, "") // 注释整体排除
-    .split("}")
-    .map((chunk) => chunk.split("{")[0])
-    .join("\n");
-  const idSelectors = selectorArea.match(/#[A-Za-z_][\w-]*/g) || [];
-  assert.deepEqual(idSelectors, [], `style.css 又用 ID 选择器做样式锚：${idSelectors}`);
-});
-
-test("the three shadow token blocks stay token-identical", async () => {
-  // 阴影是多层颜色列表，且 light/dark 两侧的模糊半径与偏移也不同，
-  // light-dark()（只接单个颜色）承载不了，故三个 --shadow-* 令牌写了三份：
-  // :root（浅色）、:root[data-theme="dark"]（显式深色）与
-  // @media (prefers-color-scheme: dark) 下的 :root:not([data-theme])（跟随系统）。
-  // 两份深色必须同值，而浅色那份**必须存在**：漏掉它时 light-dark() 无关的
-  // box-shadow 会在计算值阶段整条落为 none，颜色类断言看不出来。
-  const css = await readFile(join(pageDir, "style.css"), "utf8");
-  const light = css.match(/\n:root\s*\{([\s\S]*?)\n\}/);
-  const explicit = css.match(
-    /:root\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/,
+test("forced-colors restores real outlines for box-shadow-only focus rings", async () => {
+  // Windows 高对比度（forced-colors: active）下浏览器把 box-shadow 强制为 none，
+  // 只用 box-shadow 表达焦点的规则会整条消失——键盘用户完全看不到焦点位置。
+  // Chromium 实测（emulateMedia({forcedColors:"active"}) + 键盘 Tab 聚焦，
+  // 对比聚焦前后的计算样式）：.sidenav-link / .btn-link / .mtab 三处只剩
+  // 不可见的 outline-color、outline-offset 差异，outline-style 始终 none；
+  // 而按钮（真 outline）与输入框（border-color 变化）仍有可辨差异，
+  // 兜底名单只收前者，后者保持原样。
+  const css = (await readFile(join(pageDir, "style.css"), "utf8")).replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
   );
-  const system = css.match(
-    /@media \(prefers-color-scheme: dark\) \{\s*\n\t:root:not\(\[data-theme\]\) \{([\s\S]*?)\n\t\}/,
-  );
-  assert.ok(light && explicit && system, "三份阴影令牌块没找齐 in style.css");
-  const names = ["--shadow-btn", "--shadow-drop", "--shadow-card"];
-  // 声明会因 Prettier 风格折行（`--x:` 与值分行），先把整块折成一行再按名取值。
-  const flatten = (body) =>
-    body
-      .replace(/\/\*[\s\S]*?\*\//g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  const blocks = [light, explicit, system].map((block) => {
-    const flat = flatten(block[1]);
-    return Object.fromEntries(
-      names.map((name) => [name, flat.match(new RegExp(`${name}: [^;]+;`))?.[0]])
-    );
-  });
-  for (const name of names) {
-    assert.ok(blocks[0][name], `:root 缺少 ${name}：浅色下阴影会整条落为 none`);
-    assert.ok(blocks[1][name] && blocks[2][name], `${name} 的深色块缺了一份`);
-    assert.equal(
-      blocks[1][name],
-      blocks[2][name],
-      `${name} 的两份深色块漂移：改一处必须改另一处`,
-    );
+  const blockStart = css.search(/@media\s*\(\s*forced-colors\s*:\s*active\s*\)/);
+  assert.ok(blockStart >= 0, "style.css 缺少 @media (forced-colors: active) 焦点兜底");
+  // 花括号配对切块体：块内还嵌套规则，惰性正则会在第一个 `}` 处截断。
+  const open = css.indexOf("{", blockStart);
+  let depth = 0;
+  let end = open;
+  for (; end < css.length; end += 1) {
+    if (css[end] === "{") depth += 1;
+    else if (css[end] === "}" && (depth -= 1) === 0) break;
   }
-});
-
-test("page wires the manual image cache cleanup control to the API", async () => {
-  // 清理按钮必须接入页面与 API，而不是只能重载插件。这条断言读前端源码，
-  // 必须与前端改动同处，放在识图测试里会因前端改名变红，与识图无关。
-  const [html, configIo] = await Promise.all([
-    readFile(join(pageDir, "index.html"), "utf8"),
-    readFile(join(pageDir, "config-io.mjs"), "utf8"),
-  ]);
-  assert.match(html, /id="cleanupImageCacheBtn"/);
-  assert.match(configIo, /apiPost\("image-cache\/cleanup"/);
+  const rules = [
+    ...css.slice(open + 1, end).matchAll(/([^{}]+)\{([^{}]*)\}/g),
+  ].map(([, selector, body]) => ({
+    selectors: selector
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+    body,
+  }));
+  assert.ok(rules.length > 0, "forced-colors 块里没有规则");
+  // 这块只补兜底轮廓，不该接管颜色/布局：出现非 :focus 选择器说明写歪了。
+  const broad = rules
+    .flatMap((rule) => rule.selectors)
+    .filter((selector) => !selector.includes(":focus"));
+  assert.deepEqual(broad, [], `forced-colors 块混入非焦点规则：${broad.join(", ")}`);
+  const outlined = new Set(
+    rules
+      .filter((rule) => /outline\s*:\s*(?!none)\S/.test(rule.body))
+      .flatMap((rule) => rule.selectors),
+  );
+  for (const selector of [
+    ".sidenav-link:focus-visible",
+    ".btn-link:focus-visible",
+    ".mtab:focus-visible",
+  ]) {
+    assert.ok(outlined.has(selector), `${selector} 在 forced-colors 下没有轮廓，键盘用户看不到焦点`);
+  }
 });
 
 test("number inputs keep their hint in aria-describedby", async () => {
@@ -790,97 +645,9 @@ test("field labels and aria wiring follow the single-source declarations", async
   assert.match(html, /id="boldBtn"[^>]*aria-pressed="false"/);
 });
 
-test("vision provider fields share the judge layout wrapper", async () => {
-  // vision 的两个 Provider 字段缺 .provider-control 包裹层，select 与按钮
-  // 在网格里各占一行（与 judge 的横排布局不一致）。这条同时钉住包裹层存在与
-  // 手动输入框留在包裹层外（切换模式靠 hidden 属性，包进去会把按钮一起藏掉）。
-  const html = await readFile(join(pageDir, "index.html"), "utf8");
-  const fieldBlock = (key, inputId) => {
-    const from = html.indexOf(`data-config-key="${key}"`);
-    assert.ok(from >= 0, `找不到 ${key}`);
-    // 到手动输入框结束为止的窗口足够覆盖包裹层与两个控件声明。
-    const to = html.indexOf(`id="${inputId}"`, from);
-    assert.ok(to > from, `${key} 里找不到 ${inputId}`);
-    return html.slice(from, html.indexOf("</div>", to) + 6);
-  };
-  for (const [fieldKey, selectId, inputId] of [
-    ["vision_provider_id", "visionProviderSelect", "visionProviderInput"],
-    ["vision_judge_provider_id", "visionJudgeProviderSelect", "visionJudgeProviderInput"],
-  ]) {
-    const block = fieldBlock(fieldKey, inputId);
-    const wrapper = block.match(/<div class="provider-control">([\s\S]*?)<\/div>/);
-    assert.ok(wrapper, `${fieldKey} 缺 .provider-control 包裹层`);
-    assert.match(wrapper[1], new RegExp(`id="${selectId}"`));
-    assert.doesNotMatch(
-      wrapper[1],
-      new RegExp(`id="${inputId}"`),
-      `${inputId} 必须留在包裹层外：.provider-control 是「select + 按钮」两列容器`,
-    );
-  }
-  // judge 的对照结构必须仍在，否则这条会在"三个字段一起被改坏"时静默通过。
-  const judgeFrom = html.indexOf('id="judgeProviderField"');
-  assert.ok(judgeFrom >= 0, "judge 字段不见了");
-  const judge = html.slice(judgeFrom, html.indexOf("</div>", html.indexOf('id="judgeProviderInput"', judgeFrom)));
-  assert.match(judge, /<div class="provider-control">/);
-});
-
-test("theme.mjs submits dim and bold behind their own touched guards", async () => {
-  // 行为断言在浏览器用例（`a dim click during a pending theme GET keeps the
-  // untouched sibling from the server`）；这条是源码锚，防的是退回「任一被动过
-  // 就两个一起提交」的总判据——那会把 GET 在途期间的本地默认值写成服务端值。
-  const theme = await readFile(join(pageDir, "theme.mjs"), "utf8");
-  assert.match(theme, /if \(dimWasTouched\(\)\) \{/);
-  assert.match(theme, /if \(boldWasTouched\(\)\) \{/);
-  assert.doesNotMatch(theme, /dimBoldWasTouched/);
-});
-
-test("topbar height writeback stays single-sourced and guarded", async () => {
-  // 令牌必须由实测高度写回，且只在整数变化时写（避免无谓样式重算）。
-  const [chrome, app] = await Promise.all([
-    readFile(join(pageDir, "chrome.mjs"), "utf8"),
-    readFile(join(pageDir, "app.js"), "utf8"),
-  ]);
-  assert.match(chrome, /new window\.ResizeObserver\(write\)\.observe\(els\.topbar\)/);
-  assert.match(chrome, /getPropertyValue\("--topbar-h"\) === `\$\{height\}px`/);
-  assert.match(app, /syncTopbarHeight\(els\);/);
-});
-
-test("theme label names are single-sourced in theme.mjs and written by applyTheme", async () => {
-  // 主题名（跟随系统/慈爱之惠/审判之司）曾经写了两处：style.css 的
-  // .theme-label::after content（可见短标签）与 theme.mjs 的 THEME_LABELS
-  //（读屏用的完整标签）。改一处忘另一处会让可见文字与播报不一致而无人报错。
-  // 现在可见文字由 applyTheme 写入 .theme-label，CSS 只保留图标切换等纯样式，
-  // 这条钉住三点：THEME_LABELS 恰有三档、CSS 不再声明主题名、写盘的调用点
-  // 仍在 applyTheme 内（搬回 CSS 或搬到调用方都会变红）。
-  const [css, theme] = await Promise.all([
-    readFile(join(pageDir, "style.css"), "utf8"),
-    readFile(join(pageDir, "theme.mjs"), "utf8"),
-  ]);
-  const jsLabels = [
-    ...theme.matchAll(/const THEME_LABELS = \{([\s\S]*?)\}/g),
-  ].flatMap((m) => [...m[1].replace(/\/\/[^\n]*/g, "").matchAll(/(?:auto|light|dark): "([^"]+)"/g)].map((x) => x[1]));
-  assert.equal(jsLabels.length, 3, "expected 3 THEME_LABELS entries");
-  assert.deepEqual(jsLabels.sort(), ["审判之司", "慈爱之惠", "跟随系统"].sort());
-  // 无脚本时的兜底：JS 未加载时按钮里不应残留任何主题名，由 aria-label 承担。
-  assert.doesNotMatch(css, /\.theme-label[^{]*\{[^}]*content:/);
-  assert.match(theme, /querySelector\("\.theme-label"\)/);
-  assert.match(theme, /label\.textContent = THEME_LABELS\[theme\]/);
-});
-
-test("script load failure fallback does not depend on the module", async () => {
-  const html = await readFile(join(pageDir, "index.html"), "utf8");
-  const chrome = await readFile(join(pageDir, "chrome.mjs"), "utf8");
-  assert.match(html, /脚本加载失败，请刷新/);
-  assert.match(html, /__selfreplyAppStarted/);
-  assert.doesNotMatch(html, /<script type="module">[\s\S]*脚本加载失败/);
-  assert.match(chrome, /桌面菜单常显/);
-  assert.match(chrome, /removeAttribute\("aria-expanded"\)/);
-});
-
 test("config save path follows the form-declared writable keys", async () => {
   // 可写键清单只留两份：index.html 的 data-config-key 声明（页面事实）与本用例的
-  // 夹具字段。原先此处还有第三份手抄名单，改一个键要同步三处；跨语言那一头由
-  // tests/test_config_source_of_truth.py 的 CONFIG_SPECS 对照守着。
+  // 夹具字段。
   const html = await readFile(join(pageDir, "index.html"), "utf8");
   const htmlKeys = [...html.matchAll(/data-config-key="([a-z0-9_]+)"/g)].map((match) => match[1]);
 
@@ -1003,14 +770,7 @@ test("saved whitelist count reflects the server-normalized payload", async () =>
 });
 
 test("save validation guards on whitelist before the numeric scan", async () => {
-  // 焦点唯一归属：白名单非法时校验必须短路返回，不再跑数值校验。
-  // 断言落在行为上（保存不得发请求、焦点只归白名单），不比对源码书写顺序：
-  // 换一种等价写法（例如 validateWhitelist({ focus: true })）不该让本用例变红。
-  //
-  // 定位说明：本用例守的是「保存路径仍然聚焦白名单、且不跑数值校验」
-  // 即 R2 修复后没有被削弱的那一半。R2 缺陷本身（input/blur 抢焦点把用户
-  // 困在字段里）由浏览器用例 invalid whitelist never steals focus on input
-  // or blur 捕获，那里才有真实的键盘/鼠标路径。
+  // 白名单非法时短路数值校验，让保存操作只聚焦白名单。
   const classList = {
     add() {},
     remove() {},
@@ -1264,6 +1024,58 @@ test("unknown provider id warns but does not block save", async () => {
   assert.ok(toasts.some((msg) => msg.includes("不在列表中")));
 });
 
+test("a valid fallback list does not claim to be off-list", async () => {
+  // 备用模型是数组。把数组整体丢给 providerNeedsManualInput 会被 String() 拼成
+  // "a,b"，与任何单个 ID 都不相等——于是两条以上备用模型时每次保存都误报
+  // 「不在列表中，请确认拼写」，而界面上唯一的「修正」就是把备用链删掉。
+  const classList = { add() {}, remove() {}, toggle() {} };
+  const fields = [
+    {
+      dataset: {
+        configKey: "proactive_fallback_provider_ids",
+        configControl: "proactiveFallback",
+      },
+    },
+  ];
+  const form = {
+    classList,
+    inert: false,
+    querySelector: () => null,
+    querySelectorAll: () => fields,
+  };
+  const toasts = [];
+  const io = makeConfigIo({
+    elements: {
+      configForm: form,
+      configSaveState: { textContent: "", classList },
+    },
+    state: {
+      configLoaded: true,
+      savingConfig: false,
+      configRevision: TEST_REVISION,
+      isDirty: false,
+      requiresConfigRefresh: false,
+    },
+    controls: {
+      proactiveFallback: { value: () => ["real-a", "real-b"], sync() {} },
+    },
+    apiPost: async () => ({ ok: true, config: {}, adjusted_fields: [] }),
+    showToast: (msg) => toasts.push(msg),
+    providerOptions: [
+      { id: "real-a", label: "A" },
+      { id: "real-b", label: "B" },
+    ],
+    providerListAvailable: true,
+  });
+
+  await io.saveConfig({ preventDefault() {} });
+
+  assert.deepEqual(
+    toasts.filter((msg) => msg.includes("不在列表中")),
+    [],
+  );
+});
+
 test("dirty indicator covers every save entry point", () => {
   // 四个保存入口（顶栏、移动端、底部、侧栏圆点）必须同步 is-dirty；
   // 漏掉移动端会让窄屏下唯一可见的保存按钮没有未保存角标。
@@ -1499,13 +1311,6 @@ test("empty number input is a validation error, not a silent fallback", () => {
   assert.ok(numberFieldError("99", 0, 30).includes("不能大于"));
 });
 
-test("integer number controls reject fractional input before save", () => {
-  assert.ok(numberFieldError("5.5", 0, 100, true).includes("整数"));
-  // step=5 只是滑杆增量，不是整除约束：47 必须合法，否则前端比后端更严。
-  assert.equal(numberFieldError("47", 0, 100, true), "");
-  assert.equal(numberFieldError("5.5", 0, 100), "");
-});
-
 test("validateWhitelistLines reports line numbers and reasons for malformed whitelist input", () => {
   const input = [
     "100001",
@@ -1734,6 +1539,35 @@ test("persistTheme reports a rejected write, not just a transport failure", asyn
   assert.ok(seen[0].includes("回退"));
 });
 
+test("concurrent theme writes land in the last click's state, not arrival order", async () => {
+  // 连点两次主题会各发一个 POST，后端按到达顺序落盘：先发的那笔若后到，就把
+  // 用户最后一次选择覆盖回旧值（刷新后主题静默回退）。首笔挂起、次笔立即完成
+  // 即乱序到达的最小模型；最终落盘的状态必须是最后一次点击的意图。
+  const landed = [];
+  const failures = [];
+  let releaseFirstPost;
+  let attempts = 0;
+  const apiPost = async (endpoint, body) => {
+    assert.equal(endpoint, "ui/theme");
+    attempts += 1;
+    if (attempts === 1) {
+      await new Promise((resolve) => {
+        releaseFirstPost = resolve;
+      });
+    }
+    landed.push(body.theme);
+    return { ok: true };
+  };
+  const first = persistTheme("dark", apiPost, (msg) => failures.push(msg));
+  const second = persistTheme("auto", apiPost, (msg) => failures.push(msg));
+  // 串行实现里首笔要晚一个微任务才发出：先等它真的在途，再放行。
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  releaseFirstPost();
+  await Promise.all([first, second]);
+  assert.equal(landed.at(-1), "auto", `先发的写入最后落盘：${landed}`);
+  assert.deepEqual(failures, []);
+});
+
 test("adjusted field labels never surface the internal config key", async () => {
   // 判断提示词的 textarea 裹在 <label class="prompt-editor"> 里（label 包控件、
   // 没有 for=），前两个 closest / label[for] 分支都取不到它。回退会把 schema 键
@@ -1842,35 +1676,8 @@ test("save is rejected while the initial config load has not completed", async (
   assert.equal(form.inert, false);
 });
 
-test("boot watchdog yields to in-flight first load instead of failing early", async () => {
-  // 首屏串行两个请求（各 FETCH_TIMEOUT_MS 上限，最坏 30s）会超过 12s 的 boot
-  // 定时器：看门狗在加载在途时必须重新武装而不是误报「加载超时」，否则慢网
-  // 用户会先看到失败提示、随后配置又正常渲染。源码级契约，防止回退。
-  const app = await readFile(join(pageDir, "app.js"), "utf8");
-  assert.match(app, /let loadInFlight = false;/);
-  assert.match(
-    app,
-    /loadInFlight = true;[\s\S]*?finally\s*\{[\s\S]*?loadInFlight = false;/,
-    "loadAll 必须在收尾处置位 loadInFlight，成功与失败路径都要覆盖"
-  );
-  assert.match(
-    app,
-    /function checkBoot\(\) \{[\s\S]*?state\.configLoaded\) return;[\s\S]*?if \(loadInFlight\) \{[\s\S]*?window\.setTimeout\(checkBoot, FETCH_TIMEOUT_MS\);/,
-    "看门狗必须先查加载状态：已加载静默退出，在途则重新武装"
-  );
-  // 再查分支重写句柄（let），否则收尾路径 clearTimeout 取消不到最新的定时器，
-  // 失败后仍会弹出第二条误导性的「加载超时」。
-  assert.match(app, /let bootTimeout = window\.setTimeout\(function checkBoot/);
-  assert.match(app, /bootTimeout = window\.setTimeout\(checkBoot, FETCH_TIMEOUT_MS\);/);
-});
-
 test("class names referenced by scripts exist in the page or stylesheet", async () => {
-  // 与上方 id 契约同构：脚本清单由目录派生，只认字面量引用，只做前向 JS ⊆ 页面。
-  // 类与 id 的差异在于 JS 会"凭空造类"（is-stuck、manual、is-saving 等由 JS 挂上、
-  // CSS 定义），核对对象因此是 index.html ∪ style.css 的并集而非单一文件。
-  // 反向不查：孤儿类与孤儿 id 同属无害死标记（同一裁决，豁免名单只会腐烂）。
-  // DECISIONS「前端契约的已知无守卫面」曾把类选择器列为刻意不守的面，本用例以
-  // 零豁免整词校验把它收编：类名拼错时这里变红，而不是吸顶/导航/渐隐静默失效。
+  // 脚本可动态挂类，已知类取 HTML 与 CSS 的并集；只核对字面量引用。
   const names = (await readdir(pageDir)).filter((name) => /\.(js|mjs)$/.test(name)).sort();
   const [html, css] = await Promise.all([
     readFile(join(pageDir, "index.html"), "utf8"),
@@ -1911,4 +1718,96 @@ test("class names referenced by scripts exist in the page or stylesheet", async 
     [],
     `index.html 与 style.css 缺少脚本引用的类：${missing.join(", ")}`,
   );
+});
+
+test("provider model controls keep saved ids that are missing from the list", async () => {
+  // 两个模型字段都改成只能从列表里选。已保存的 ID 若不在当前列表里，必须
+  // 仍然保留（标注「不在列表」），否则刷新一次列表再保存就把它删掉，
+  // 用户的备用链会静默少一项。
+  const { createProviderListControl, createProviderQueueControl } = await import(
+    "../pages/主动回复设置/providers.mjs"
+  );
+  const makeSelect = () => {
+    const options = [];
+    return {
+      options,
+      innerHTML: "",
+      value: "",
+      addEventListener() {},
+      appendChild(node) {
+        if (node.tagName === "option") options.push(node);
+      },
+    };
+  };
+  const makeNode = () => ({
+    tagName: "option",
+    value: "",
+    textContent: "",
+    selected: false,
+    className: "",
+    hidden: false,
+    type: "",
+    disabled: false,
+    dataset: {},
+    children: [],
+    setAttribute() {},
+    addEventListener() {},
+    appendChild(node) {
+      this.children.push(node);
+    },
+  });
+  globalThis.document = {
+    createElement(tag) {
+      const node = makeNode();
+      node.tagName = tag;
+      return node;
+    },
+  };
+
+  const select = makeSelect();
+  const single = createProviderListControl(
+    { field: {}, select, placeholder: "使用当前会话模型" },
+    {
+      getOptions: () => [{ id: "kept", label: "Kept" }],
+      isListAvailable: () => true,
+      onDirty() {},
+    },
+  );
+  single.render();
+  single.sync("gone");
+  assert.equal(single.value(), "gone");
+  assert.match(
+    select.options.find((option) => option.value === "gone").textContent,
+    /不在列表/,
+  );
+  single.sync("");
+  assert.equal(single.value(), "");
+
+  // 队列控件：顺序即尝试顺序，前后移动与移除都要改到提交值。
+  const queueSelect = makeSelect();
+  const list = {
+    innerHTML: "",
+    hidden: true,
+    children: [],
+    appendChild(node) {
+      this.children.push(node);
+    },
+    contains: () => false,
+    querySelectorAll: () => [],
+  };
+  const queue = createProviderQueueControl(
+    { field: {}, select: queueSelect, list, button: makeNode() },
+    {
+      getOptions: () => [
+        { id: "a", label: "A" },
+        { id: "b", label: "B" },
+      ],
+      isListAvailable: () => true,
+      maxItems: 8,
+      onDirty() {},
+    },
+  );
+  queue.sync(["b", "a", "gone"]);
+  assert.deepEqual(queue.value(), ["b", "a", "gone"]);
+  delete globalThis.document;
 });

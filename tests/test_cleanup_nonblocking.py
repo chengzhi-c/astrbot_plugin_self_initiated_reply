@@ -1,16 +1,4 @@
-"""图片清理的事件循环友好性契约。
-
-背景：``ImageParser.cleanup_source_cache`` 含 3 遍 ``rglob("*")`` + 全量
-``stat()``，配额上限 256MB。两处不得在协程内同步执行该遍历：
-① ``run_image_cleanup``（async，磁盘遍历必须进线程）；
-② ``cleanup_events_if_needed``（由 ``on_message`` 协程同步调用）。
-
-本文件锚定修复后的契约：磁盘遍历只允许经线程执行，事件清理路径不得触碰磁盘。
-断言基于"遍历发生在哪个线程"这一可观测事实，而非实现细节。
-
-同一断言形状后来扩到其它磁盘 IO（data URL 物化、配置写盘、webapi 端点写盘）：
-它们共享同一条契约，fsync/遍历不得跑在事件循环线程上。
-"""
+"""磁盘遍历、fsync 和文件物化在线程执行，避免阻塞事件循环。"""
 
 from __future__ import annotations
 

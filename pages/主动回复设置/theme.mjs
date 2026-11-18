@@ -44,24 +44,11 @@ export function applyTheme(theme, themeToggle) {
   const label = themeToggle.querySelector(".theme-label");
   if (label) label.textContent = THEME_LABELS[theme] || THEME_LABELS.auto;
 }
-export async function persistTheme(theme, apiPost, onPersistFailure) {
-  // 三个字段各自只在「用户真的动过它」时才提交：后端对未提交的键保持原值，
-  // 而渲染态在 GET ui/theme 返回前是本地默认（theme 恒为 "auto"、
-  // dim/bold 恒为 false），把它一并提交会把服务端已存的选择静默改掉。
-  // 总判据（任一被动过就两个都提交）不够：GET 在途时点一下压暗，DOM 里的
-  // 粗体还是本地默认 false，一并提交就把服务端已存的 bold 抹成 false。
-  const body = {};
-  if (theme) {
-    cacheThemeLocally(theme);
-    body.theme = theme;
-  }
-  if (dimWasTouched()) {
-    body.dim = document.documentElement.classList.contains("dimmed");
-  }
-  if (boldWasTouched()) {
-    body.bold = document.documentElement.classList.contains("bold-text");
-  }
-  if (Object.keys(body).length === 0) return;
+// 主题写入必须串行：连点两次会各发一个 POST，后端按到达顺序落盘，先发的那笔
+// 若后到就把用户最后一次选择覆盖回旧值（刷新后主题静默回退）。排同一条 promise
+// 链尾，才能保证「最后点击的那次」也是最后落盘的那次。
+let themeWriteChain = Promise.resolve();
+async function sendThemeWrite(body, apiPost, onPersistFailure) {
   try {
     // 后端拒绝走的是 HTTP 200 + {ok:false}（插件正在关闭 / 主题写入失败 /
     // 请求体不是合法 JSON，见 webapi._api_post_ui_theme），而 apiPost 只对
@@ -85,6 +72,32 @@ export async function persistTheme(theme, apiPost, onPersistFailure) {
       );
     }
   }
+}
+export function persistTheme(theme, apiPost, onPersistFailure) {
+  // 三个字段各自只在「用户真的动过它」时才提交：后端对未提交的键保持原值，
+  // 而渲染态在 GET ui/theme 返回前是本地默认（theme 恒为 "auto"、
+  // dim/bold 恒为 false），把它一并提交会把服务端已存的选择静默改掉。
+  // 总判据（任一被动过就两个都提交）不够：GET 在途时点一下压暗，DOM 里的
+  // 粗体还是本地默认 false，一并提交就把服务端已存的 bold 抹成 false。
+  const body = {};
+  if (theme) {
+    cacheThemeLocally(theme);
+    body.theme = theme;
+  }
+  if (dimWasTouched()) {
+    body.dim = document.documentElement.classList.contains("dimmed");
+  }
+  if (boldWasTouched()) {
+    body.bold = document.documentElement.classList.contains("bold-text");
+  }
+  if (Object.keys(body).length === 0) return Promise.resolve();
+  // 请求体在调用时定格：判据是「这次点击时用户动过哪些键」，排队期间 DOM 与
+  // 触摸态的变化属于后面那次点击的意图。
+  const queued = themeWriteChain.then(() => sendThemeWrite(body, apiPost, onPersistFailure));
+  // 单笔写入的异常不能永久卡死队列：链尾吸收掉（失败反馈已由 sendThemeWrite
+  // 负责），而调用方拿到的仍是这次写入自己的 promise。
+  themeWriteChain = queued.catch(() => {});
+  return queued;
 }
 export async function restoreTheme(apiGet) {
   try {

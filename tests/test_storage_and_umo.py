@@ -92,6 +92,105 @@ def test_parse_decision_json_quote_is_optional_and_never_fatal() -> None:
     assert quote_of('{"should_reply": true, "reason": "x", "quote": null}') is None
 
 
+def test_parse_decision_json_tolerates_prose_around_object() -> None:
+    """结论对象前后夹解释文字，且解释文字自带花括号。
+
+    生产触发：模型先复述提示词里的示例 JSON 再给结论（DeepSeek/Qwen 的
+    「格式说明」段），贪婪匹配从示例的左花括号一路吞到结论的右花括号。
+    """
+    _, utils, _ = _load_modules()
+
+    raw = (
+        '示例格式 {"格式": "说明"} 只是模板。\n'
+        '判断：{"should_reply": true, "reason": "被点名"} 以上。'
+    )
+    parsed = utils.parse_decision_json(raw)
+    assert parsed is not None
+    assert parsed["should_reply"] is True
+    assert parsed["reason"] == "被点名"
+
+
+def test_parse_decision_json_stops_at_object_then_trailing_braces() -> None:
+    """合法 JSON 后面还跟另一段花括号文本。
+
+    生产触发：模型判完再追加 ``{"tone": "轻松"}`` 之类的补充块，
+    贪婪匹配把两段连成一串无效 JSON，整条判断被判失败。
+    """
+    _, utils, _ = _load_modules()
+
+    raw = '{"should_reply": false, "reason": "群里在闲聊"}\n补充：{"tone": "轻松"}'
+    parsed = utils.parse_decision_json(raw)
+    assert parsed is not None
+    assert parsed["should_reply"] is False
+    assert parsed["reason"] == "群里在闲聊"
+
+
+def test_parse_decision_json_skips_unrelated_objects() -> None:
+    """无关对象（如模型先吐 {"status": "ok"}）跳过，只认那唯一一个判定对象。"""
+    _, utils, _ = _load_modules()
+
+    raw = '{"status": "ok"}\n{"should_reply": true, "reason": "先答这条"}\n'
+    parsed = utils.parse_decision_json(raw)
+    assert parsed is not None
+    assert parsed["should_reply"] is True
+    assert parsed["reason"] == "先答这条"
+
+
+def test_parse_decision_json_fails_closed_on_contradicting_decisions() -> None:
+    """多个冲突判定拒绝接话，避免把示例或草稿作为实际决策。"""
+    _, utils, _ = _load_modules()
+
+    raw = '{"should_reply": true, "reason": "草稿"}\n{"should_reply": false, "reason": "结论"}\n'
+    assert utils.parse_decision_json(raw) is None
+
+
+def test_parse_decision_json_unwraps_fence_with_trailing_note() -> None:
+    """markdown 围栏包裹，围栏外还有带花括号的说明。
+
+    生产触发：模型按提示词输出 ```json 代码块，末尾补一句「注：{"x": 1}」，
+    旧实现只剥首尾围栏，随后贪婪吞到最后一个右花括号。
+    """
+    _, utils, _ = _load_modules()
+
+    raw = '```json\n{"should_reply": true, "reason": "有人在问"}\n```\n注：{"置信度": "高"}'
+    parsed = utils.parse_decision_json(raw)
+    assert parsed is not None
+    assert parsed["should_reply"] is True
+    assert parsed["reason"] == "有人在问"
+
+
+def test_parse_decision_json_keeps_nested_braces_intact() -> None:
+    """嵌套 dict/list 内部的花括号、字符串里的花括号都不能截断对象。
+
+    生产触发：模型按 ``{"evidence": {"turns": [{"text": "…"}]}}`` 结构化
+    输出证据，reason 里还带用户打的花括号；按括号计数截取会在这里截半。
+    """
+    _, utils, _ = _load_modules()
+
+    raw = (
+        '判断：{"should_reply": true, "reason": "他说 {不回复} 也行", '
+        '"evidence": {"turns": [{"text": "}"}, {"text": "{"}]}} 完毕 {"tail": 1}'
+    )
+    parsed = utils.parse_decision_json(raw)
+    assert parsed is not None
+    assert parsed["should_reply"] is True
+    assert parsed["reason"] == "他说 {不回复} 也行"
+
+
+def test_parse_decision_json_stays_strict_without_legal_json() -> None:
+    """真正没有合法 JSON 时仍返回空，不放松成猜一个。
+
+    生产触发：模型超时只吐回 ``{"should_reply": tr`` 半截，或整段正文是
+    「{不回复}」这类花括号；把截断输出猜成裁决会发出本不该发的回复。
+    """
+    _, utils, _ = _load_modules()
+
+    assert utils.parse_decision_json("思考中...\n{invalid}") is None
+    assert utils.parse_decision_json('{"should_reply": true') is None
+    assert utils.parse_decision_json("{不回复}") is None
+    assert utils.parse_decision_json("我判断：{不回复}") is None
+
+
 def test_session_whitelisted_rejects_empty_umo() -> None:
     _, utils, _ = _load_modules()
 
@@ -99,12 +198,7 @@ def test_session_whitelisted_rejects_empty_umo() -> None:
 
 
 def test_is_full_umo_matches_the_segment_anchor() -> None:
-    """完整 UMO 判据 = 恰好 3 段，与 session_group_id 同锚。
-
-    白名单里裸群号与完整 UMO 混存。此前 scheduler/whitelist 用 ``":" in value``
-    判"是不是完整 UMO"，段数语义并不等价：两段值（畸形条目）会被当成 UMO 直接用
-    于巡检，而这里返回 False 走群号查表。
-    """
+    """两段畸形条目不能按完整 UMO 调度，判据与 session_group_id 对齐。"""
     _, utils, _ = _load_modules()
     assert utils.is_full_umo("qq:GroupMessage:12345")
     assert utils.is_full_umo("telegram:FriendMessage:9")
@@ -143,16 +237,6 @@ def test_session_is_private_treats_non_group_as_private() -> None:
     assert not utils.session_is_private("fake:group:123")
 
 
-def test_raw_umo_returns_empty_when_host_callable_fails() -> None:
-    _, utils, _ = _load_modules()
-
-    class BrokenEvent:
-        def unified_msg_origin(self) -> str:
-            raise RuntimeError("host failure")
-
-    assert utils.raw_umo(BrokenEvent()) == ""
-
-
 def test_event_self_id_returns_empty_when_host_getter_fails() -> None:
     _, utils, _ = _load_modules()
 
@@ -163,64 +247,16 @@ def test_event_self_id_returns_empty_when_host_getter_fails() -> None:
     assert utils.event_self_id(BrokenEvent()) == ""
 
 
-def test_event_extra_uses_two_arguments_when_host_signature_is_opaque() -> None:
+def test_event_extra_reads_host_values_and_uses_default_for_none() -> None:
     _, utils, _ = _load_modules()
+    from .host_stubs import FakeEvent
 
-    class OpaqueExtra:
-        received: tuple[str, str] | None = None
-
-        @property
-        def __signature__(self):
-            raise ValueError("signature unavailable")
-
-        def __call__(self, key: str, default: str) -> str:
-            self.received = (key, default)
-            return "value"
-
-    class Event:
-        pass
-
-    event = Event()
-    getter = OpaqueExtra()
-    event.get_extra = getter
-
+    event = FakeEvent()
+    event.set_extra("key", "value")
+    event.set_extra("none", None)
     assert utils.event_extra(event, "key", default="fallback") == "value"
-    assert getter.received == ("key", "fallback")
-
-
-def test_event_extra_supports_single_argument_host_getter() -> None:
-    _, utils, _ = _load_modules()
-
-    class Event:
-        pass
-
-    event = Event()
-    event.get_extra = lambda key: f"value:{key}"
-
-    assert utils.event_extra(event, "key", default="fallback") == "value:key"
-
-
-def test_event_extra_returns_default_for_incompatible_host_getter() -> None:
-    """不兼容的宿主 getter（双参与单参都无法接受）返回默认值。
-
-    语义变更说明：旧实现用 ``first_bindable_args`` 预检（不兼容则零调用），
-    新实现改为直接调用 + TypeError 两级回退，``get_extra`` 是纯读，重复
-    调用无害，而签名预检的 ``inspect.signature`` 要花在每条消息的热路径上。
-    “预检绝不调用”的契约仍由 adapters/storage 里有副作用风险的调用点维持。
-    """
-    _, utils, _ = _load_modules()
-
-    class IncompatibleExtra:
-        def __call__(self, *_args: object, **_kwargs: object) -> str:
-            raise TypeError("incompatible host getter")
-
-    class Event:
-        pass
-
-    event = Event()
-    event.get_extra = IncompatibleExtra()
-
-    assert utils.event_extra(event, "key", default="fallback") == "fallback"
+    assert utils.event_extra(event, "none", default="fallback") == "fallback"
+    assert utils.event_extra(event, "missing", default="fallback") == "fallback"
 
 
 def test_malformed_session_record_does_not_abort_load(tmp_path: Path) -> None:
@@ -307,17 +343,7 @@ def test_as_timestamp_clamps_both_directions() -> None:
 
 
 def test_far_future_timestamp_cannot_lock_session_forever(tmp_path: Path) -> None:
-    """状态文件里的远未来时间戳不得让会话永久锁死。
-
-    修复前实测：``last_active_at = now + 1e9`` 使 ``remaining_silence_sec`` 得到
-    1000000045 秒 ≈ 31.69 年，该会话永久不可主动发言；延迟检查还会以该值为
-    timeout 停放，``notify_activity`` 唤醒后重算仍是巨值又停回去（实测连续 4 次），
-    形成不死任务；巡检侧 ``now - last_active_at`` 为负，永远不大于
-    ``patrol_inactive_after_sec``，于是每轮巡检都白跑这个已锁死的会话。
-
-    断言用「调用后取时钟」作上界：``load_sessions`` 内部取自己的时钟（必然不早于
-    调用前），拿调用前的时钟当上界会因亚秒漂移偶发红灯。
-    """
+    """远未来时间戳受时钟偏差上限约束，避免延迟任务和静默门永久等待。"""
     import time
 
     models, _, storage = _load_modules()
@@ -341,13 +367,7 @@ def test_far_future_timestamp_cannot_lock_session_forever(tmp_path: Path) -> Non
 
 
 def test_negative_timestamps_cannot_bypass_proactive_gate(tmp_path: Path) -> None:
-    """负值时间戳不得成为「已回复过」判据的旁路。
-
-    修复前实测：只毒 ``last_active_at`` 会被「这条消息之后已经主动回复过」拦住，
-    但把 ``last_proactive_observed_at`` 一并毒成更负（-1e10 < -1e9）即可放行，
-    全新会话被拦、投毒会话放行，是真实的能力提升。钳位后两者同归 0.0，
-    与全新会话完全同构，能力提升消失。
-    """
+    """活动和观察时间一起夹取，避免负值组合绕过已回复判据。"""
     _, _, storage = _load_modules()
     key = "qq:GroupMessage:123"
     path = tmp_path / "state.json"
@@ -480,11 +500,7 @@ def test_version_mismatch_state_file_is_backed_up_and_best_effort_loaded(tmp_pat
 
 
 def test_legacy_bare_group_key_inherits_state_from_target_free_whitelist(tmp_path: Path) -> None:
-    """裸键在盘、目标键尚无记录：并入白名单里唯一匹配的完整 UMO。
-
-    迁移此前藏在 `state_for` 的 read-path pop 里，多平台同群号时首个访问者
-    继承整份历史，其余平台永远拿不到，而且那是在只读函数里做写操作。
-    """
+    """旧群号键只迁往唯一匹配平台，避免首个访问者拿走其他平台历史。"""
     _, _, storage = _load_modules()
     path = tmp_path / "state.json"
     path.write_text(
@@ -674,33 +690,68 @@ def test_event_umo_passes_through_non_triplet_shapes() -> None:
 # ============================================================================
 
 
-def test_dedupe_keeps_latest_occurrence_in_original_slot() -> None:
-    """同 (role, 归一化文本) 重复时保留**最新**那条，但占用最早出现的位置。
-
-    这两条语义各自都有理由，且都零测试守护过：
-    - 保留最新：后到的记录带更新的 ``at``/``sender_id``，是判断"谁刚说过"的依据；
-      改成保留最早会让 last_active 类判断读到过期时间戳。
-    - 占用最早位置：聊天记录必须保持时间顺序，把重复项移到末尾会让模型
-      误读对话顺序。
-    """
+def test_dedupe_only_merges_the_same_message() -> None:
+    """Same text from different members or at different times is separate chat."""
     models, utils, _ = _load_modules()
 
-    def rec(text, at, sender):
-        return models.MessageRecord(role="user", name="u", text=text, sender_id=sender, at=at)
+    def rec(name, text, at):
+        return models.MessageRecord(role="user", name=name, text=text, at=at)
 
     result = utils.dedupe_message_records(
         [
-            rec("重复内容", 100.0, "s1"),
-            rec("其他内容", 200.0, "s2"),
-            rec("重复内容", 300.0, "s3"),  # 与第一条重复
+            rec("小明", "哈哈", 100.0),
+            rec("小红", "哈哈", 200.0),
+            rec("小明", "哈哈", 300.0),
+            rec("小明", "哈哈", 300.0),
         ]
     )
 
-    assert len(result) == 2, "重复项未被合并"
-    assert result[0].text == "重复内容"
-    assert result[0].at == 300.0, "保留了最早那条，last_active 类判断会读到过期时间"
-    assert result[0].sender_id == "s3", "保留了最早那条的发送者"
-    assert result[1].text == "其他内容", "去重打乱了时间顺序"
+    assert [(item.name, item.at) for item in result] == [
+        ("小明", 100.0),
+        ("小红", 200.0),
+        ("小明", 300.0),
+    ]
+
+
+def test_dedupe_merges_host_history_with_local_cache() -> None:
+    """宿主历史不带时间戳，同一批消息要与本地缓存认成一条。
+
+    两条来源分开去重时，提示词里同一轮对话会出现两遍（宿主没带时间与昵称，
+    本地带），判断模型据此把一轮对话读成两轮。
+    """
+    models, utils, _ = _load_modules()
+
+    def rec(role, name, text, at):
+        return models.MessageRecord(role=role, name=name, text=text, at=at)
+
+    host = [
+        rec("user", "用户", "今晚吃啥", 0.0),
+        rec("assistant", "Bot", "火锅", 0.0),
+        rec("user", "用户", "好啊", 0.0),
+    ]
+    local = [
+        rec("user", "小明", "今晚吃啥", 100.0),
+        rec("assistant", "Bot", "火锅", 101.0),
+        rec("user", "小明", "好啊", 102.0),
+    ]
+
+    merged = utils.dedupe_message_records(host + local)
+
+    assert len(merged) == 3
+    assert [item.name for item in merged] == ["小明", "Bot", "小明"]
+    assert [item.at for item in merged] == [100.0, 101.0, 102.0]
+
+
+def test_dedupe_keeps_two_members_saying_the_same_text_at_different_times() -> None:
+    """两条来源都带时间时按「角色 + 昵称 + 正文 + 时间」区分。"""
+    models, utils, _ = _load_modules()
+
+    def rec(name, text, at):
+        return models.MessageRecord(role="user", name=name, text=text, at=at)
+
+    merged = utils.dedupe_message_records([rec("小明", "哈哈", 10.0), rec("小红", "哈哈", 20.0)])
+
+    assert [(item.name, item.at) for item in merged] == [("小明", 10.0), ("小红", 20.0)]
 
 
 def test_history_window_keeps_the_newest_record_even_when_it_repeats() -> None:
@@ -710,15 +761,13 @@ def test_history_window_keeps_the_newest_record_even_when_it_repeats() -> None:
     到最早出现的位置，聊天里常见的重复短句（"1"、"哈哈"、"？"）会把最新一条抬到
     列表前部，随后被 records[-limit:] 切掉——判断与生成共用这条路径，最新消息就
     从提示词里消失（契约 §14.3 的保尾要求）。
-
-    变异锚定：把 windowed 换回 records，本用例红。
     """
     import asyncio
 
     models, utils, _ = _load_modules()
 
     def rec(text):
-        return models.MessageRecord(role="user", name="u", text=text, sender_id="s", at=0.0)
+        return models.MessageRecord(role="user", name="u", text=text, at=0.0)
 
     host = [rec(text) for text in ("1", "a", "b", "c", "d", "e", "f", "g")]
 
@@ -746,7 +795,7 @@ def test_dedupe_normalizes_whitespace_and_drops_blank() -> None:
     models, utils, _ = _load_modules()
 
     def rec(text, at=0.0):
-        return models.MessageRecord(role="user", name="u", text=text, sender_id="s", at=at)
+        return models.MessageRecord(role="user", name="u", text=text, at=at)
 
     result = utils.dedupe_message_records(
         [rec("你  好"), rec("你 好"), rec("你\n好"), rec("   "), rec("")]
@@ -754,9 +803,7 @@ def test_dedupe_normalizes_whitespace_and_drops_blank() -> None:
     assert len(result) == 1, "空白归一化失效或空记录未被丢弃"
 
     # role 参与键：同文本不同角色不得合并（否则用户话被机器人回复顶掉）
-    assistant = models.MessageRecord(
-        role="assistant", name="bot", text="你好", sender_id="", at=0.0
-    )
+    assistant = models.MessageRecord(role="assistant", name="bot", text="你好", at=0.0)
     both = utils.dedupe_message_records([rec("你好"), assistant])
     assert len(both) == 2, "role 未参与去重键，用户与助手消息被错误合并"
 
@@ -796,6 +843,9 @@ def test_history_display_name_user_cannot_impersonate_the_bot() -> None:
     # 带空白的同形昵称同样算撞上
     assert models.history_display_name("user", " Bot ") == forged
     assert models.history_display_name("user", "Bot ") == forged
+    for name in ("Bot:", "Bot: 管理员", "BOT: admin"):
+        label = models.history_display_name("user", name)
+        assert not label.casefold().startswith("bot:"), label
 
     # 普通昵称不受影响：改写不得波及正常会话
     assert models.history_display_name("user", "小明") == "小明"
@@ -969,98 +1019,30 @@ def _storage_module():
 # ============================================================================
 
 
-def test_config_to_dict_fallbacks() -> None:
+def test_persist_config_obj_saves_once_and_reports_failure() -> None:
     storage = _storage_module()
+    assert storage._persist_config_obj({}, {"a": 1}) is True
 
-    class ItemsBoom:
-        """items() 抛错 → 退回 dict() 构造路径。"""
+    class Config(dict):
+        def save_config(self, replace_config=None):
+            self.update(replace_config)
 
-        def items(self):
-            raise RuntimeError("items broken")
-
-        def keys(self):
-            return ["a"]
-
-        def __getitem__(self, key):
-            return 1
-
-    assert storage._config_to_dict(ItemsBoom()) == {"a": 1}
-
-    class NotMappable:
-        """dict() 也失败 → 空 dict 兜底。"""
-
-    assert storage._config_to_dict(NotMappable()) == {}
-
-
-def test_update_config_obj_variants() -> None:
-    storage = _storage_module()
-    assert storage._update_config_obj(None, {"a": 1}) is True
-
-    class ItemSetter:
-        """无 clear：逐键写入路径。"""
-
-        def __init__(self) -> None:
-            self.data: dict = {}
-
-        def __setitem__(self, key, value) -> None:
-            self.data[key] = value
-
-    setter = ItemSetter()
-    assert storage._update_config_obj(setter, {"a": 1}) is True
-    assert setter.data == {"a": 1}
-
-    class SetBoom:
-        def __setitem__(self, key, value) -> None:
-            raise RuntimeError("setitem broken")
-
-    assert storage._update_config_obj(SetBoom(), {"a": 1}) is False
-
-
-def test_persist_config_obj_variants() -> None:
-    storage = _storage_module()
-    assert storage._persist_config_obj(None, {}) is True
-
-    class NoSave:
-        pass
-
-    assert storage._persist_config_obj(NoSave(), {}) is True
-
-    class SaveOK:
-        def save_config(self, data):
-            self.data = data
-
-    ok = SaveOK()
+    ok = Config()
     assert storage._persist_config_obj(ok, {"a": 1}) is True
-    assert ok.data == {"a": 1}
+    assert ok == {"a": 1}
 
-    class SaveWithoutData:
+    class BrokenConfig(dict):
         def __init__(self) -> None:
+            super().__init__()
             self.calls = 0
 
-        def save_config(self):
-            self.calls += 1
-
-    no_data = SaveWithoutData()
-    assert storage._persist_config_obj(no_data, {"a": 1}) is True
-    assert no_data.calls == 1
-
-    class TypeErrorInBody:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def save_config(self, data=None):
+        def save_config(self, replace_config=None):
             self.calls += 1
             raise TypeError("always broken")
 
-    body_error = TypeErrorInBody()
+    body_error = BrokenConfig()
     assert storage._persist_config_obj(body_error, {}) is False
     assert body_error.calls == 1
-
-    class SaveBoom:
-        def save_config(self, data):
-            raise RuntimeError("disk broken")
-
-    assert storage._persist_config_obj(SaveBoom(), {}) is False
 
 
 # ============================================================================
@@ -1140,9 +1122,10 @@ def test_load_config_data_unexpected_error(caplog: object) -> None:
             raise RuntimeError("read broken")
 
     with capture_logs(caplog, storage.logger, logging.ERROR):
-        data = storage.load_config_data(ReadBoomPath(), {"base": 1})
+        data, can_normalize = storage.load_config_data(ReadBoomPath(), {"base": 1})
 
     assert data == {"base": 1}
+    assert can_normalize is False
     errors = messages_at_least(caplog, logging.ERROR)
     assert any(
         "read broken" in msg or "unexpected error loading config" in msg for msg in errors
@@ -1184,8 +1167,6 @@ def test_non_dict_sessions_is_backed_up_and_logged(tmp_path: Path, caplog: objec
     ——两条都没有。load_sessions 随后只为白名单会话补空壳，save_storage 发现
     payload 不匹配就 os.replace 上去，原始内容被覆盖销毁，用户无从查证
     （契约 §8「不静默丢数据」）。
-
-    变异锚定：把 ``raise json.JSONDecodeError(...)`` 换回 ``return {}``，本用例红。
     """
     storage = _storage_module()
     path = tmp_path / "state.json"
@@ -1211,8 +1192,6 @@ def test_non_dict_session_entry_warns_before_skip(tmp_path: Path, caplog: object
     里，而 try/except 那条 warning 只覆盖 dict 之后的解析异常——该条被换成空壳、
     再由下一次落盘覆盖，运维在日志里看不到任何一行，表现为「某个群的日限额
     莫名重置」且无痕可查。
-
-    变异锚定：删掉新加的 warning 分支（合回原 continue），本用例红。
     """
     storage = _storage_module()
     path = tmp_path / "state.json"
@@ -1312,8 +1291,194 @@ def test_migrate_and_sync_fail_on_config_update(tmp_path: Path) -> None:
     settings = models.Settings.from_config({})
     path = tmp_path / "config.json"
 
-    class SetBoom:
-        def __setitem__(self, key, value) -> None:
+    class BrokenConfig(dict):
+        def update(self, data) -> None:
             raise RuntimeError("config object broken")
 
-    assert storage.persist_settings_config(path, SetBoom(), settings) is False
+    assert storage.persist_settings_config(path, BrokenConfig(), settings) is False
+
+
+def test_state_load_failure_log_redacts_exc_text(
+    tmp_path: Path, caplog: object, monkeypatch
+) -> None:
+    """状态载入失败分支必须走 redact_exc_text，不能裸 ``%s`` 打 exc。
+
+    缺陷形态：``_read_state_document`` 的 ``except (JSONDecodeError, OSError,
+    UnicodeDecodeError)`` 分支用 ``%s`` 直接插 ``exc``，绕开 ``redact_exc_text``。
+    触发条件是状态文件载入失败（盘满/编码损坏），恰好是运维现场；异常串里若带
+    凭证型 URL 会原样落进 ERROR 日志。仓库其余 30+ 处调用点都已收口。
+    """
+    storage = _storage_module()
+    path = tmp_path / "state.json"
+    path.write_text("{}", encoding="utf-8")
+    secret_url = "https://img.example.com/a.jpg?Signature=SECRET_SIGNATURE&api_key=SECRET_KEY"
+
+    def boom_read_text(self, encoding=None):
+        raise OSError(f"cannot read {secret_url}")
+
+    monkeypatch.setattr(type(path), "read_text", boom_read_text)
+    with capture_logs(caplog, storage.logger, logging.ERROR):
+        storage.load_sessions(path, {"123"}, 5)
+
+    errors = messages_at_least(caplog, logging.ERROR)
+    assert any("could not be read" in msg for msg in errors), f"载入失败必须留痕：{errors}"
+    leaked = [msg for msg in errors if "SECRET" in msg]
+    assert not leaked, f"脱敏漏点：异常原文带凭证进了 ERROR 日志：{leaked}"
+
+
+def test_unreadable_state_file_is_preserved_and_not_overwritten(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """暂时读不到的状态保留原文件并阻止空状态覆盖。"""
+    storage = _storage_module()
+    path = tmp_path / "state.json"
+    original = '{"version": 4, "sessions": {"umo::a": {"daily_count": 99}}}'
+    path.write_text(original, encoding="utf-8")
+
+    def boom_read_text(self, encoding=None):
+        raise PermissionError("file is being used by another process")
+
+    monkeypatch.setattr(type(path), "read_text", boom_read_text)
+    sessions = storage.load_sessions(path, {"umo::a"}, 5)
+    assert sessions["umo::a"].daily_count == 0, "读失败时应当返回空状态"
+    assert path.exists(), "读取失败时原文件被移走了"
+    assert not list(tmp_path.glob("state.json.corrupt-*")), "读取失败被当成文件损坏"
+    monkeypatch.undo()
+    written = storage.write_json_atomic(path, {"version": 4, "sessions": {}})
+    assert written is False, "读失败后仍然允许覆盖原文件"
+    with path.open(encoding="utf-8") as handle:
+        assert handle.read() == original, "原文件被空状态覆盖了"
+
+
+def test_corrupt_config_is_backed_up_before_defaults_overwrite(
+    tmp_path: Path, caplog: object
+) -> None:
+    """配置损坏会被默认值整包覆盖：白名单、延迟、判断模型全回出厂值。没有备份
+    的话用户连「原来配了哪些群」都无从查证。
+    """
+    storage = _storage_module()
+    path = tmp_path / "plugin_config.json"
+    path.write_text("{not json", encoding="utf-8")
+    with capture_logs(caplog, storage.logger, logging.WARNING):
+        storage.load_config_data(path, {})
+    assert list(tmp_path.glob("plugin_config.json.corrupt-*")), "损坏的配置没有被备份"
+
+
+def test_corrupt_config_backup_does_not_trust_exists(tmp_path: Path, monkeypatch) -> None:
+    storage = _storage_module()
+    path = tmp_path / "plugin_config.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    exists = type(path).exists
+    monkeypatch.setattr(
+        type(path),
+        "exists",
+        lambda candidate: False if candidate == path else exists(candidate),
+    )
+
+    data, can_normalize = storage.load_config_data(path, {})
+    backups = list(tmp_path.glob("plugin_config.json.corrupt-*"))
+    assert data == {}
+    assert can_normalize is True
+    assert len(backups) == 1, "exists() 的 False 结果跳过了损坏配置备份"
+    assert backups[0].read_text(encoding="utf-8") == "{not json"
+
+
+def test_non_object_config_is_backed_up(tmp_path: Path) -> None:
+    storage = _storage_module()
+    path = tmp_path / "plugin_config.json"
+    path.write_text("[]", encoding="utf-8")
+
+    data, can_normalize = storage.load_config_data(path, {})
+    backups = list(tmp_path.glob("plugin_config.json.corrupt-*"))
+    assert data == {}
+    assert can_normalize is True
+    assert len(backups) == 1, "非对象配置被默认值替换前没有备份"
+    assert backups[0].read_text(encoding="utf-8") == "[]"
+
+
+def test_write_guard_clears_when_state_file_is_absent(tmp_path: Path) -> None:
+    """文件不存在 = 没有可保护的数据。此时留着锁会让插件永远不再落盘：
+    首启正常、之后每次读都「成功」却一个字都不写。
+    """
+    storage = _storage_module()
+    path = tmp_path / "state.json"
+    storage._block_writes(path)
+    storage.load_sessions(path, set(), 5)
+    assert storage.write_json_atomic(path, {"version": 4, "sessions": {}})
+
+
+def test_state_file_survives_false_exists_result(tmp_path: Path, monkeypatch) -> None:
+    """Path.exists 暂报 False 时，仍可读的状态不能变成空状态再覆盖原文件。"""
+    storage = _storage_module()
+    path = tmp_path / "state.json"
+    path.write_text(
+        '{"version": 4, "sessions": {"qq:GroupMessage:123": {"daily_count": 42}}}',
+        encoding="utf-8",
+    )
+
+    exists = type(path).exists
+    monkeypatch.setattr(
+        type(path),
+        "exists",
+        lambda candidate: False if candidate == path else exists(candidate),
+    )
+
+    sessions = storage.load_sessions(path, {"123"}, 5)
+    assert sessions["qq:GroupMessage:123"].daily_count == 42
+
+    payload = storage.build_sessions_payload(sessions, {"123"}, 5)
+    assert storage.write_json_atomic(path, payload)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["sessions"]["qq:GroupMessage:123"]["daily_count"] == 42
+
+
+def test_write_guard_clears_after_corrupt_file_is_backed_up(tmp_path: Path) -> None:
+    """坏文件被移到 .corrupt-* 之后，磁盘上不再有会被覆盖的内容，锁必须撤掉。"""
+    storage = _storage_module()
+    path = tmp_path / "state.json"
+    path.write_text("not json at all", encoding="utf-8")
+    storage._block_writes(path)
+    storage.load_sessions(path, set(), 5)
+    assert list(tmp_path.glob("state.json.corrupt-*")), "坏文件没有被备份"
+    assert storage.write_json_atomic(path, {"version": 4, "sessions": {}})
+
+
+def test_write_guard_clears_after_a_successful_load(tmp_path: Path) -> None:
+    """锁必须能被下一次成功读取撤掉，否则插件会永远不保存状态。"""
+    storage = _storage_module()
+    path = tmp_path / "state.json"
+    path.write_text('{"version": 4, "sessions": {}}', encoding="utf-8")
+    storage._block_writes(path)
+    assert not storage.write_json_atomic(path, {"version": 4, "sessions": {}}), "锁没生效"
+
+    storage.load_sessions(path, set(), 5)
+    assert storage.write_json_atomic(path, {"version": 4, "sessions": {}}), "读成功后锁没撤掉"
+
+
+def test_state_load_unexpected_error_log_omits_traceback(
+    tmp_path: Path, caplog: object, monkeypatch
+) -> None:
+    """未预期异常分支同样必须脱敏，且不得开 exc_info。
+
+    缺陷形态：该分支记 ``exc`` 原文并带 ``exc_info=True``。抄 scheduler.py:356 的
+    结论——traceback 末尾就是 ``str(exc)`` 原文，脱敏后又被原样带回同一条日志。
+    """
+    storage = _storage_module()
+    path = tmp_path / "state.json"
+    path.write_text("{}", encoding="utf-8")
+    secret_url = "https://h/a.jpg?Signature=SECRET_SIGNATURE"
+
+    def boom_loads(_text):
+        raise RuntimeError(f"Provider client error for url '{secret_url}'")
+
+    monkeypatch.setattr(storage.json, "loads", boom_loads)
+    with capture_logs(caplog, storage.logger, logging.ERROR):
+        storage.load_sessions(path, {"123"}, 5)
+
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any("unexpected error loading state" in r.getMessage() for r in errors), errors
+    assert not [r for r in errors if "SECRET" in r.getMessage()], (
+        f"脱敏漏点：{errors[0].getMessage() if errors else ''}"
+    )
+    assert not [r for r in errors if r.exc_info], "该分支不得开 exc_info，traceback 会把原文带回来"

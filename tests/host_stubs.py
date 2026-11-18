@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib
+import json
 import logging
 import sys
 import types
@@ -29,35 +30,6 @@ MAIN_PACKAGE_NAME = "selfreply_main_test_package"
 
 # 单源守卫的扫描面：用 rglob 并在此单点声明排除目录，避免各守卫各写一套。
 # 非递归的 ROOT.glob("*.py") 会把 image/ 子包漏在视野外。
-_NON_PRODUCTION_DIRS = frozenset(
-    {
-        "tests",
-        "scripts",
-        ".scratch",
-        ".tmp_astrbot",
-        "data",
-        "dist",
-        "build",
-        "__pycache__",
-        ".venv",
-        ".git",
-    }
-)
-
-
-def production_py_files() -> list[Path]:
-    """全部生产 Python 文件（根 + image/ 子包），路径排序稳定。
-
-    守卫类测试应一律用它而非 ``ROOT.glob("*.py")``：后者漏掉子包，
-    使镜像/漂移类断言在子包内静默失效。
-    """
-    return sorted(
-        path
-        for path in ROOT.rglob("*.py")
-        if not _NON_PRODUCTION_DIRS & set(path.relative_to(ROOT).parts)
-    )
-
-
 def _module(name: str) -> types.ModuleType:
     return sys.modules.setdefault(name, types.ModuleType(name))
 
@@ -578,9 +550,13 @@ class DirectSendingRunner:
         pass
 
 
+def request_tool_names(req: Any) -> list[str]:
+    tool_set = req.func_tool
+    return sorted(tool.name for tool in tool_set.tools) if tool_set is not None else []
+
+
 def make_counting_enforce(
     original_enforce: Any,
-    runtime: Any,
     snapshots: list[list[str]],
     first_enforce_tools: tuple[str, ...] = ("hook_injected",),
 ):
@@ -591,7 +567,7 @@ def make_counting_enforce(
 
     def counting_enforce(req: Any, inherit_tools: Any) -> bool:
         ok = original_enforce(req, inherit_tools)
-        snapshots.append(sorted(runtime._tool_list(req) or []))
+        snapshots.append(request_tool_names(req))
         if len(snapshots) == 1:
             for name in first_enforce_tools:
                 req.func_tool.add_tool(SimpleNamespace(name=name))
@@ -648,14 +624,9 @@ async def _call_event_hook(event: Any, event_type: Any, *args: Any, **kwargs: An
 
 
 class FakeRequest:
-    """Web request stub whose JSON payload tests can swap per call.
+    """PluginRequestProxy 形态的 JSON 请求，可替换请求体或模拟读取失败。
 
-    ``error`` 让用例模拟宿主的另一种出口：请求体读不出时 reader 抛错，而不是
-    返回空对象（Quart 的 ``request.json()`` 对非法 JSON 就是这么做的）。
-    ``swallow_errors`` 模拟宿主的另一种出口：astrbot 的
-    ``PluginRequestProxy.json()`` 读不出 body 时返回 ``default`` 而不抛
-    （4.27 实测）。两者都要能造，否则「坏请求体与空对象可区分」这条契约
-    没有可测的宿主形态。
+    ``swallow_errors`` 模拟 reader 吞掉异常并返回 default 的行为。
     """
 
     def __init__(self) -> None:
@@ -663,16 +634,16 @@ class FakeRequest:
         self.error: BaseException | None = None
         self.swallow_errors = False
 
+    @property
+    def headers(self) -> dict[str, str]:
+        body = json.dumps(self.payload).encode("utf-8")
+        return {"content-length": str(len(body))}
+
     async def json(self, default: Any = None) -> Any:
         if self.error is not None:
             if self.swallow_errors:
                 return default
             raise self.error
-        return self.payload
-
-    async def get_json(self, **_: Any) -> Any:
-        if self.error is not None:
-            return None
         return self.payload
 
 
@@ -822,7 +793,7 @@ def make_plugin(tmp_path: Path, **config_overrides: Any) -> tuple[Any, types.Mod
 class PipelineTestAdapter:
     """Wrap the real runtime adapter; only build/run are injectable.
 
-    ``enforce``/``_tool_list``/``new_tool_set`` stay real so the integration
+    ``filter_final_tools``/``new_tool_set`` stay real so the integration
     test exercises the actual tool-boundary logic.
     """
 
@@ -855,32 +826,26 @@ def install_tool_injecting_pipeline(
     run_effect: Any = None,
     first_enforce_tools: tuple[str, ...] = ("hook_injected",),
     snapshot_reset: bool = False,
-    snapshot_prompts: bool = False,
 ) -> dict[str, Any]:
     """装配「build 注入工具 → 两次 enforce（第一次后注入）→ run」测试管线。
 
-    run_effect 签名 ``(runner, **kwargs)``；不传则 run 空转。快照开关控制 reset
-    时工具集快照与 build prompt 快照（不用快照的用例不背这份观测开销）。返回
-    控制器（快照列表 + restore），调用方须在 finally 里调 restore()。
+    run_effect 签名 ``(runner, **kwargs)``；不传则 run 空转。snapshot_reset
+    控制 reset 时的工具集快照。返回控制器（快照列表 + restore），调用方须在
+    finally 里调 restore()。
     """
     req_holder: dict[str, Any] = {}
     enforce_snapshots: list[list[str]] = []
     reset_snapshots: list[list[str]] = []
-    prompts: list[str] = []
 
     async def build_effect(kwargs: dict[str, Any], result: Any) -> Any:
         req_holder["req"] = kwargs["req"]
-        if snapshot_prompts:
-            prompts.append(str(getattr(kwargs["req"], "prompt", "") or ""))
         tool_set = kwargs["req"].func_tool
         for name in build_tools:
             tool_set.add_tool(SimpleNamespace(name=name))
 
         async def _reset() -> None:
             if snapshot_reset:
-                reset_snapshots.append(
-                    sorted(main._AGENT_RUNTIME._tool_list(req_holder["req"]) or [])
-                )
+                reset_snapshots.append(request_tool_names(req_holder["req"]))
 
         return FakeBuildResult(
             agent_runner=DirectSendingRunner(event),
@@ -903,13 +868,12 @@ def install_tool_injecting_pipeline(
     )
     original_enforce = plugin._generation.enforce_final_tool_policy
     plugin._generation.enforce_final_tool_policy = make_counting_enforce(
-        original_enforce, main._AGENT_RUNTIME, enforce_snapshots, first_enforce_tools
+        original_enforce, enforce_snapshots, first_enforce_tools
     )
     return {
         "req_holder": req_holder,
         "enforce_snapshots": enforce_snapshots,
         "reset_snapshots": reset_snapshots,
-        "prompts": prompts,
         "restore": lambda: (
             setattr(plugin._generation, "enforce_final_tool_policy", original_enforce),
             setattr(main, "_AGENT_RUNTIME", original_runtime),

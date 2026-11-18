@@ -23,7 +23,13 @@ from .models import (
     Settings,
     normalize_string_list,
 )
-from .utils import await_rollback, is_full_umo, session_group_id, session_whitelisted
+from .utils import (
+    await_rollback,
+    is_full_umo,
+    redact_exc_text,
+    session_group_id,
+    session_whitelisted,
+)
 
 
 class WhitelistManager:
@@ -126,7 +132,7 @@ class WhitelistManager:
         # 否则日配额/冷却时间戳被静默清零。
         self._sessions.update(pruned)
         # 恢复被 replace 整键 pop 掉的运行期 UMO 映射。必须原地 clear+update
-        # 而不是属性重绑定（契约 §11 B1）：scheduler 持同一 dict 引用，
+        # 而不是属性重绑定：scheduler 持同一 dict 引用，
         # 换容器会让它继续写孤儿表。
         self._runtime_umos.clear()
         self._runtime_umos.update(runtime_umos)
@@ -150,7 +156,7 @@ class WhitelistManager:
                     "[%s] whitelist %s rollback persistence failed: %s",
                     PLUGIN_ID,
                     label,
-                    rollback_exc,
+                    redact_exc_text(rollback_exc),
                 )
 
         try:
@@ -159,16 +165,15 @@ class WhitelistManager:
         except BaseException:
             # 取消与普通失败必须同一形状。CancelledError 不落 except Exception，
             # 而 replace 早已单向前进（代次已推进、会话状态已摘下、磁盘未写）：
-            # 少了一次回滚，内存白名单与会话配额永久偏离磁盘（契约 §11 B2）。
+            # 少了一次回滚，内存白名单与会话配额永久偏离磁盘。
             # 反过来，裸 await rollback() 又会被取消打断，磁盘上留下被驳回的
-            # 白名单，重启后 load_config_data 直接把它复活（契约 §6）。
+            # 白名单，重启后 load_config_data 直接把它复活。
             #
             # 回滚必须**跑完**才算数：单次 shield 在取消瞬间就抛，rollback 成
             # 游离任务在 _config_lock 之外继续，能拿到锁并完整落盘的一次后续
             # add/remove 或 POST /config 随后被它用旧值撤销。
             #
-            # restore.done() 是退出条件而不是 break：已被取消过一次之后每次
-            # await 都可能立刻再抛 CancelledError，包括回滚已跑完的那一刻。
+            # 取消纪律见 ``utils.await_rollback``。
             await await_rollback(asyncio.ensure_future(rollback()))
             raise
 

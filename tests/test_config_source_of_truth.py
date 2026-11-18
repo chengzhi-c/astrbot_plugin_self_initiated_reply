@@ -235,23 +235,44 @@ def test_frontend_prompt_textarea_maxlength_matches_backend() -> None:
     )
 
 
-def test_frontend_provider_manual_inputs_match_backend_max_len() -> None:
-    """手填 Provider 输入的 maxlength 必须等于后端 ``MAX_PROVIDER_ID_LEN``。
+def _provider_manual_control_keys(html: str) -> dict[str, str]:
+    """页面上的 Provider 控件：data-config-key → data-provider-manual 取值。
 
-    后端在读取强制时按该常量截断，前端不设上限时用户填超长值会拿到「保存成功、
-    重载后值被改写」的结果而无提示。同页 number 边界、textarea 长度、白名单条数
-    与单条长度都已有同源守卫，只有 Provider 手填框是缺口。数量也从规格表派生：
-    新增一个 select_provider 面的键而页面少一个手填框时，这条判红而不是静默少守。
+    手填框是控件的一部分，但 ``data-provider-manual="off"`` 的键只允许从宿主
+    Provider 列表里选，不提供手填输入。两者必须按同一张规格表对齐。
+    """
+    controls: dict[str, str] = {}
+    for tag in re.findall(r'<div\b[^>]*class="provider-field"[^>]*>', html):
+        key_match = re.search(r'data-config-key="([a-z0-9_]+)"', tag)
+        if not key_match:
+            continue
+        manual = re.search(r'data-provider-manual="([^"]+)"', tag)
+        controls[key_match.group(1)] = manual.group(1) if manual else "on"
+    return controls
+
+
+def test_frontend_provider_controls_match_backend_specs() -> None:
+    """Provider 控件集合与手填框上限都必须由规格表派生。
+
+    后端读取时按 ``MAX_PROVIDER_ID_LEN`` 截断，前端不设上限时用户填超长值会拿到
+    「保存成功、重载后值被改写」而无提示。数量也从规格表派生：新增一个
+    select_provider 面的键而页面少一个控件时判红，控件缺少手填框时同样判红。
     """
     models = _models_module()
     html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
-    manual_inputs = re.findall(r'<input\b[^>]*class="provider-manual-input"[^>]*>', html)
-    expected = [
+    controls = _provider_manual_control_keys(html)
+    expected = {
         spec.key for spec in models.panel_config_specs() if spec.special == "select_provider"
-    ]
+    }
+    assert set(controls) == expected, (
+        f"Provider 控件与规格表不符：页面 {sorted(controls)}，规格表 {sorted(expected)}"
+    )
 
-    assert len(manual_inputs) == len(expected), (
-        f"手填 Provider 输入数量与规格表不符：页面 {len(manual_inputs)}，规格表 {expected}"
+    manual_inputs = re.findall(r'<input\b[^>]*class="provider-manual-input"[^>]*>', html)
+    handfill = {key for key, mode in controls.items() if mode != "off"}
+    assert len(manual_inputs) == len(handfill), (
+        f"手填 Provider 输入数量与可手填控件不符：页面 {len(manual_inputs)}，"
+        f"期望 {sorted(handfill)}"
     )
     for tag in manual_inputs:
         element_id = re.search(r'id="(\w+)"', tag)

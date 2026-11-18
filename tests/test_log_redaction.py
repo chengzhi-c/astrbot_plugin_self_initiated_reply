@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from .host_stubs import install_astrbot_stubs, load_package
 
 PACKAGE_NAME = "selfreply_log_redaction_package"
@@ -76,6 +78,39 @@ def test_decision_exception_reason_drops_url_credentials() -> None:
         assert secret not in result["reason"], f"reason 泄漏凭证 {secret}：{result['reason']}"
 
 
+def test_storage_failure_log_drops_url_credentials() -> None:
+    """持久化适配器的异常日志也不能原样写入请求 URL。"""
+    install_astrbot_stubs()
+    storage = load_package(f"{PACKAGE_NAME}_storage", "storage")
+
+    class BrokenConfig:
+        def clear(self) -> None:
+            raise RuntimeError(f"request failed for {SIGNED_URL}")
+
+        def update(self, _data: object) -> None:
+            raise AssertionError("clear should fail first")
+
+    lines: list[str] = []
+
+    class Recorder:
+        def warning(self, template: str, *args: object) -> None:
+            lines.append(template % args if args else template)
+
+        def __getattr__(self, _name: str):
+            return lambda *args, **kwargs: None
+
+    original_logger = storage.logger
+    storage.logger = Recorder()
+    try:
+        assert storage._update_config_obj(BrokenConfig(), {}) is False
+    finally:
+        storage.logger = original_logger
+
+    assert lines
+    for secret in SECRETS:
+        assert secret not in lines[-1]
+
+
 def test_decision_exception_reason_drops_relative_url_credentials() -> None:
     """urllib3 的 MaxRetryError 把请求 URL 以**相对路径**形态带出来，同样要脱敏。
 
@@ -84,8 +119,6 @@ def test_decision_exception_reason_drops_relative_url_credentials() -> None:
     ``... Max retries exceeded with url: /v1/chat?api_key=sk-...&x=1``——
     没有 scheme，匹配不到，凭证原样进 reason 并经 GET /status 出网。
     reason 的回出面比日志更宽（任何能访问控制台的调用方），这条必须先堵。
-
-    变异锚定：删掉 ``_EXCEPTION_RELATIVE_URL_PATTERN`` 那一遍 sub，本用例红。
     """
     install_astrbot_stubs()
     utils_mod = load_package(f"{PACKAGE_NAME}_utils", "utils")
@@ -96,7 +129,7 @@ def test_decision_exception_reason_drops_relative_url_credentials() -> None:
     )
     redacted = utils_mod.redact_exc_text(RuntimeError(relative))
     assert "sk-REL123" not in redacted, f"相对路径 URL 的 query 凭证漏进 reason：{redacted}"
-    assert "/v1/chat" in redacted, "脱敏把路径也吃掉了，排障价值受损"
+    assert "/<redacted>" in redacted, "相对路径未脱敏"
     assert "?<redacted>" in redacted, "未留下脱敏标记，读者不知道有参数被抹掉"
 
     # 绝对 URL 与 userinfo 两种既有形态不得被这次扩展破坏
@@ -130,6 +163,36 @@ def test_decision_exception_log_drops_url_credentials() -> None:
     assert rendered, "未捕获判断模型异常日志"
     for secret in SECRETS:
         assert secret not in rendered, f"日志泄漏凭证 {secret}：{rendered}"
+
+
+def test_image_batch_exception_log_drops_url_credentials() -> None:
+    parser_mod = _load_parser()
+    parser = parser_mod.ImageParser(object())
+    lines: list[str] = []
+
+    class _Recorder:
+        def debug(self, template: str, *args: object) -> None:
+            lines.append(template % args if args else template)
+
+        def __getattr__(self, _name: str):
+            return lambda *args, **kwargs: None
+
+    async def fail(_image: object) -> bool:
+        raise RuntimeError(f"request failed for url '{SIGNED_URL}'")
+
+    original = parser_mod.logger
+    parser_mod.logger = _Recorder()
+    try:
+        result = asyncio.run(
+            parser._run_concurrent([object()], fail, max_concurrent=1, error_value=False)
+        )
+    finally:
+        parser_mod.logger = original
+
+    assert result == [False]
+    assert lines
+    for secret in SECRETS:
+        assert secret not in lines[-1]
 
 
 def _capture_download_failure_log(parser_mod, *, field: str) -> str:
@@ -185,7 +248,7 @@ def test_log_keeps_diagnosability_and_marks_redaction() -> None:
     parser_mod = _load_parser()
     line = _capture_download_failure_log(parser_mod, field="url")
     assert "img.example.com" in line, f"丢失 host，无法定位失败来源：{line}"
-    assert "media.jpg" in line, f"丢失 path，无法定位失败对象：{line}"
+    assert "path" not in line, f"URL 路径泄漏：{line}"
     assert "<redacted>" in line, f"未标记已剥离的 query：{line}"
 
 
@@ -203,8 +266,7 @@ def test_redaction_degrades_on_non_url_shapes() -> None:
     # 无 scheme/netloc 的本地路径原样保留（便于排查落盘文件）
     assert redact("C:/tmp/local.jpg") == "C:/tmp/local.jpg"
     assert redact("/var/data/img.png") == "/var/data/img.png"
-    # 无 query 的正常 URL 不加标记
-    assert redact("https://img.example.com/a.jpg") == "https://img.example.com/a.jpg"
+    assert redact("https://img.example.com/a.jpg") == "https://img.example.com/<redacted>"
     # urlparse 对畸形端口抛 ValueError，需走兜底而非崩溃
     assert redact("http://[::1") == "http://[::1"
 
@@ -221,17 +283,16 @@ def test_redaction_strips_userinfo_credentials() -> None:
     out = redact("https://alice:SUPERSECRET@img.example.com/a.jpg")
     assert "SUPERSECRET" not in out, f"userinfo 密码泄漏：{out}"
     assert "alice" not in out, f"userinfo 用户名泄漏：{out}"
-    assert out == "https://img.example.com/a.jpg"
+    assert out == "https://img.example.com/<redacted>"
     # 与 query 同时出现时两个都剥
     both = redact("https://alice:SECRET@img.example.com/a.jpg?Signature=X&token=Y")
     assert "SECRET" not in both and "Signature" not in both, f"组合形态泄漏：{both}"
-    assert both == "https://img.example.com/a.jpg?<redacted>"
-    # 无 userinfo 时行为不变（含 IPv6 与显式端口）
-    assert redact("http://[::1]:8080/a.jpg") == "http://[::1]:8080/a.jpg"
-    assert redact("https://img.example.com:8443/a.jpg") == "https://img.example.com:8443/a.jpg"
+    assert both == "https://img.example.com/<redacted>?<redacted>"
+    assert redact("http://[::1]:8080/a.jpg") == "http://[::1]:8080/<redacted>"
+    assert redact("https://img.example.com:8443/a.jpg") == "https://img.example.com:8443/<redacted>"
     # 越界/非数字端口不得让脱敏自身抛异常（对端可控文本即可构造）
-    assert redact("http://host:99999/a.jpg") == "http://host:99999/a.jpg"
-    assert redact("http://host:abc/a.jpg") == "http://host:abc/a.jpg"
+    assert redact("http://host:99999/a.jpg") == "http://host:99999/<redacted>"
+    assert redact("http://host:abc/a.jpg") == "http://host:abc/<redacted>"
 
 
 def test_exception_text_extraction_survives_broken_str() -> None:
@@ -330,8 +391,6 @@ def test_vision_provider_exception_log_drops_credentials() -> None:
     缺陷形态：``image/parser.py`` 的 ``except Exception`` 直接记 ``exc``，而
     provider SDK 的异常串常把请求 URL 整段带出来（含 api_key/Signature 等
     query 凭证）实测会把签名原样写进日志。
-
-    变异锚定：把该处 ``redact_exc_text(exc)`` 换回裸 ``exc``，本用例红。
     """
     parser_mod = _load_parser()
     exc = RuntimeError(f"Client error '401' for url '{SIGNED_URL}'")
@@ -381,14 +440,7 @@ def test_history_read_failure_log_drops_credentials() -> None:
 
 
 def test_webapi_failure_log_drops_url_credentials() -> None:
-    """webapi 失败日志与 decision/adapters 同口径，必须经 redact_exc_text。
-
-    缺陷形态：``_api_get_config`` 等六个失败分支直打 ``exc`` 原文，而触发
-    异常的宿主对象（provider 枚举、配置读取）异常串可能带请求 URL 的 query
-    凭证。该路径此前没有任何脱敏测试覆盖：日志全绿不代表无害。
-
-    变异锚定：把该处 ``redact_exc_text(exc)`` 换回裸 ``exc``，本用例红。
-    """
+    """宿主配置读取和提供商枚举异常可包含凭证 URL，失败日志必须脱敏。"""
     install_astrbot_stubs()
     webapi = load_package(f"{PACKAGE_NAME}_webapi", "webapi")
 
@@ -429,8 +481,6 @@ def test_webapi_status_failure_log_drops_url_credentials() -> None:
     ``exc`` 原文。它从 gate 视图、任务计数、缓存与 last_decisions 组装载荷，
     今天碰不到带凭证的异常串，但这是本文件唯一未脱敏的失败分支——契约是
     「webapi 全部失败日志同口径」，漏一个就让"已经统一脱敏"变成假话。
-
-    变异锚定：把该处 ``redact_exc_text(exc)`` 换回裸 ``exc``，本用例红。
     """
     install_astrbot_stubs()
     webapi = load_package(f"{PACKAGE_NAME}_webapi_status", "webapi")
@@ -504,7 +554,7 @@ def test_redact_relative_url_honours_length_budget() -> None:
     url_part = redacted.split("with url: ", 1)[1].split(" (Caused", 1)[0]
     assert len(url_part) <= limit, f"相对 URL 超出 {limit} 字符预算：{len(url_part)}"
     assert "SECRET_TOKEN" not in redacted
-    assert url_part.startswith("/v1/chat/"), f"路径诊断性被吃掉：{url_part}"
+    assert url_part.startswith("/<redacted>"), f"相对路径未脱敏：{url_part}"
 
 
 def test_redact_url_fallback_scrubs_userinfo_and_query() -> None:
@@ -544,31 +594,118 @@ def test_redact_url_scrubs_key_runs_in_netloc_and_path() -> None:
     """
     utils_mod = _load_utils()
     redact = utils_mod.redact_url
-    for value in (
-        "https://host/v1/chat&api_key=SECRET_TOKEN",
-        "https://host/a&api_key=SECRET_TOKEN?b=1",
-        "http://example.com:8080&token=SECRET_TOKEN",
+    for value, expected in (
+        ("https://host/v1/chat&api_key=SECRET_TOKEN", "https://host/<redacted>"),
+        (
+            "https://host/a&api_key=SECRET_TOKEN?b=1",
+            "https://host/<redacted>?<redacted>",
+        ),
+        ("http://example.com:8080&token=SECRET_TOKEN", "http://example.com:8080?<redacted>"),
     ):
         out = redact(value)
         assert "SECRET_TOKEN" not in out, f"key 运行泄漏凭证：{out}"
-        assert out.endswith("?<redacted>"), f"脱敏标记缺失：{out}"
+        assert out == expected, f"脱敏结果不符：{out}"
 
-    # 正常 URL 不受影响
-    assert redact("https://img.example.com/a.jpg") == "https://img.example.com/a.jpg"
+    assert redact("https://img.example.com/a.jpg") == "https://img.example.com/<redacted>"
 
 
-def test_redact_exc_text_covers_schemeless_host_port_query() -> None:
-    """不带 scheme 的 ``host:port/path?query`` 也要脱敏。
+def test_redact_url_drops_credentials_in_path() -> None:
+    utils_mod = _load_utils()
+    rendered = utils_mod.redact_url(
+        "https://api.telegram.org/bot123456:SECRET/sendMessage",
+    )
 
-    缺陷形态：相对路径模式的 lookbehind 拒掉黏在单词字符后的起点，而本机
-    端点（``127.0.0.1:11434/v1/chat?api_key=...``）正是这种写法——provider
-    指向本地 Ollama 时异常文本里全是它。
+    assert "123456:SECRET" not in rendered
+    assert "sendMessage" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        # 相对路径形态：urllib3 MaxRetryError 的标准文本
+        ("Max retries exceeded with url: /v1/chat?api_key=TOK0", "TOK0"),
+        # 本机端点：lookbehind 会拒掉黏在单词字符后的起点
+        ("Connection to 127.0.0.1:11434/v1/chat?api_key=TOK1 failed", "TOK1"),
+        # 裸 host 带 query 无路径
+        ("connect to api.example.com?api_key=TOK2 refused", "TOK2"),
+        # 单标签主机
+        ("localhost/v1/chat?api_key=TOK3 boom", "TOK3"),
+        # 无 scheme 的 IPv6 字面量
+        ("[::1]:11434/a?api_key=TOK4 boom", "TOK4"),
+        # 无 scheme 的 userinfo：密码不在 query 里
+        ("proxy user:PW5@cdn.example.com/a?key=TOK5", "PW5"),
+    ],
+)
+def test_redact_exc_text_catches_credentials_without_url_boundary(text: str, secret: str) -> None:
+    """不依赖 URL 边界也要抹掉凭证，普通文本原样保留。
+
+    按 URL 边界切分时，无路径的 ``host?key=``、单标签主机、无 scheme 的 IPv6
+    与 ``user:pass@host`` 都切不出 URL 形状，凭证会整段进日志与 reason。
+    """
+    redacted = _load_utils().redact_exc_text(RuntimeError(text))
+    assert secret not in redacted, f"凭证原样出网：{redacted}"
+    assert "<redacted>" in redacted, f"脱敏标记缺失：{redacted}"
+    plain = _load_utils().redact_exc_text(RuntimeError("read /etc/astrbot/config.json failed"))
+    assert plain == "read /etc/astrbot/config.json failed", f"无凭证文本被改写：{plain}"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # 畸形 scheme：urlparse 认得出 scheme 却给不出 netloc
+        "http:/cdn.example.com/img.png?api_key=sk-SECRET123",
+        # 协议相对 URL：无 scheme，两个斜杠后才是 authority
+        "//cdn.example.com/x?api_key=sk-SECRET123",
+        # 正常带 query 凭证：happy path
+        "https://cdn.example.com/x?api_key=sk-SECRET123",
+    ],
+)
+def test_redact_url_scrubs_scheme_and_netloc_malformed_urls(value: str) -> None:
+    """无 netloc 形状不得裸截断放行。
+
+    缺陷形态：``if not parsed.scheme or not parsed.netloc`` 分支里还有
+    ``if "://" not in text: return text[:80]`` 的捷径。畸形 scheme 与协议
+    相对 URL 都落进这一支，凭证因此原样返回；该文本经 image/parser.py 的
+    ``_warn_policy_refusal`` → ``logger.warning`` 直接落日志。
     """
     utils_mod = _load_utils()
-    for text in (
-        "Connection to 127.0.0.1:11434/v1/chat?api_key=SECRET_TOKEN failed",
-        "endpoint example.com:8080/v1/chat?api_key=SECRET_TOKEN failed",
-    ):
-        redacted = utils_mod.redact_exc_text(RuntimeError(text))
-        assert "SECRET_TOKEN" not in redacted, f"scheme-less 端点泄漏凭证：{redacted}"
-        assert "?<redacted>" in redacted, f"脱敏标记缺失：{redacted}"
+    out = utils_mod.redact_url(value)
+    assert "sk-" not in out, f"sk- 凭证前缀原样返回：{out}"
+    assert "sk-SECRET123" not in out, f"凭证值原样返回：{out}"
+    assert "api_key" not in out, f"参数名随值一起泄漏：{out}"
+    assert "cdn.example.com" in out, f"丢失 host，无法定位失败来源：{out}"
+    assert "<redacted>" in out, f"未标记已剥离的 query：{out}"
+    assert len(out) <= utils_mod.LOG_URL_MAX_CHARS
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # 兜底分支：协议相对 URL（无 scheme，两个斜杠后才是 authority）
+        "//host\x1fFAKE-LOG-LINE/a?api_key=sk-SECRET123",
+        # 兜底分支：畸形 scheme（urlparse 认得出 scheme 却给不出 netloc）
+        "http:/host\x00FAKE-LOG-LINE/a?api_key=sk-SECRET123",
+        # happy path：urlparse 不剥离 netloc 里的 \x0b / \x7f
+        "https://host\x0bFAKE-LOG-LINE/a?api_key=sk-SECRET123",
+        "https://host\x7fFAKE-LOG-LINE/a?api_key=sk-SECRET123",
+        # 换行是最直接的伪造行载体，两种分支都要挡
+        "https://host\rFAKE-LOG-LINE/a?api_key=sk-SECRET123",
+        "//host\nFAKE-LOG-LINE/a?api_key=sk-SECRET123",
+        # str.splitlines 与 \s 同样把 C1 与 U+2028/U+2029 当换行
+        "https://host\u0085FAKE-LOG-LINE/a?api_key=sk-SECRET123",
+        "https://host\u2028FAKE-LOG-LINE/a?api_key=sk-SECRET123",
+        "https://host\u2029FAKE-LOG-LINE/a?api_key=sk-SECRET123",
+    ],
+)
+def test_redact_url_strips_control_chars(value: str) -> None:
+    """脱敏结果不得含控制字符或行分隔符，否则可疑 URL 能伪造日志行。
+
+    兜底按字符边界重拼文本、happy path 复制 netloc，两者都会原样保留这些
+    字符；日志查看器把换行当成记录边界，对端只要在 URL 里塞一个换行就能
+    凭空多写一行日志。只挡 C0 不够：C1 与 U+2028/U+2029 同样是换行。
+    """
+    utils_mod = _load_utils()
+    out = utils_mod.redact_url(value)
+    assert out.splitlines() == [out], f"脱敏结果仍可被拆成多行：{out!r}"
+    assert len(out.splitlines()) == 1
+    assert "sk-SECRET123" not in out

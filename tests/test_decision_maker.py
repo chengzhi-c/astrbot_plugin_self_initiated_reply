@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import importlib
+import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -143,8 +144,7 @@ def _state(
 
 
 async def test_decide_force_always_replies(tmp_path: Path) -> None:
-    _, _, maker, _, _ = _make_decision(tmp_path)
-    _, models, _, _, _ = _make_decision(tmp_path)
+    _, models, maker, _, _ = _make_decision(tmp_path)
     state = _state(models)
     result = await maker.decide("s1", state, trigger="check", force=True)
     assert result["should_reply"] is True
@@ -280,23 +280,7 @@ async def test_model_timeout_reason(tmp_path: Path) -> None:
 
 
 async def test_timeout_returns_even_when_provider_swallows_cancellation(tmp_path: Path) -> None:
-    """宿主 provider 吞掉取消时，判断超时必须仍然按时返回。
-
-    缺陷形态：``asyncio.wait_for`` 的语义是"超时后取消内层并**等它真正结束**"，
-    若 provider 在 CancelledError 后继续 await（SDK 重试循环 / 裸 except），
-    判断任务永不返回 → 会话锁与运行标记永不释放，该会话从此拒绝一切检查；
-    ``terminate()`` 也会超时把插件拖进 DEGRADED。
-
-    修法：``asyncio.wait`` 只等待、不含取消语义，超时即返回，未收敛的任务
-    在宽限窗口后交隔离登记。宽限窗口是刻意的（``DECISION_CONVERGE_GRACE_SEC``）：
-    它把"响应取消"与"吞掉取消"分开，后者要触发插件降级，不能误判。
-    故本用例的耗时上界是「超时 + 宽限 + 余量」，而**不是**「超时」。
-
-    上界里的超时必须取 ``settings`` 上的**实际值**，不能抄配置里写的那个数：
-    ``decision_timeout_sec`` 的规格下限是 1，写 0.05 会被夹成 1.0。照抄 0.05
-    会让上界比理论地板只高 50ms——实测稳定 4.01s 对 4.05s，机器稍一抖动就红，
-    而行为完全正确。这是天生的 flaky，与它要守的契约无关。
-    """
+    """provider 吞取消时仍按时返回；耗时上界使用实际配置超时加收敛宽限。"""
     quarantined: list = []
     _, models, maker, _, _ = _make_decision(
         tmp_path,
@@ -354,8 +338,6 @@ async def test_converge_grace_window_cancellation_lets_provider_converge(
     登记 → ``_mark_degraded`` 是单向永久的——一次例行写指令、在面板点一下禁用、
     或插件 reload 就能把主动回复永久停摆到重载为止（契约 §5 只把 DEGRADED 留给
     真的超出硬停止窗口的任务）。与 generation._graceful_stop 同一判据。
-
-    变异锚定：把该分支改回「立即 _quarantine_or_warn」，本用例红。
     """
     quarantined: list = []
     _, _models, maker, _, _ = _make_decision(
@@ -411,7 +393,9 @@ async def test_converge_grace_window_cancellation_quarantines_stubborn_provider(
     async def stubborn() -> None:
         while not release.is_set():
             try:
-                await asyncio.sleep(30.0)
+                # 用事件等待而非固定 sleep：release.set() 能立刻唤醒，
+                # 不必等满整个睡眠窗口。
+                await release.wait()
             except asyncio.CancelledError:
                 continue
 
@@ -482,16 +466,7 @@ async def test_timeout_path_cancellation_does_not_converge_twice(tmp_path: Path)
 
 
 async def test_timeout_task_finishing_with_exception_consumes_it(tmp_path: Path) -> None:
-    """超时收敛路径必须消费以异常收尾的任务（Bug 形态见下）。
-
-    缺陷形态：provider 在 ``cancel()`` 后以真实异常（而非 CancelledError）
-    收尾时，``_converge_provider_task`` 的宽限窗口会等到它结束并直接返回。
-    若无人调用 ``task.exception()``，该任务被回收时事件循环会打出
-    "Task exception was never retrieved" 循环级 ERROR，掩盖真实故障来源。
-
-    修法：宽限窗口内收敛的分支显式消费一次任务结果，语义与
-    ``generation._consume_task_result`` 一致。
-    """
+    """收敛任务可能以真实异常结束，消费结果以避免无人接管的任务错误。"""
     loop = asyncio.get_running_loop()
     handler_calls: list = []
     loop.set_exception_handler(lambda _loop, ctx: handler_calls.append(ctx))
@@ -662,13 +637,7 @@ async def test_local_gate_silence_uses_check_start_activity(tmp_path: Path) -> N
 
 
 async def test_local_gate_silence_never_reports_negative_elapsed(tmp_path: Path) -> None:
-    """静默不足文案里的已过秒数不得为负。
-
-    钳位把外部时间戳压到 ``now + MAX_CLOCK_SKEW_SEC``，但**恰在上界**时
-    ``silence_left = min_silence + skew``，仍大于 ``min_silence``，差值为负，
-    修复前会向运营者显示「静默时间不足：-300s / 60s。」这种自相矛盾的文案。
-    所以钳位之外还需要这一处 ``max(0, ...)``：两者缺一不可，本用例锁的是后者。
-    """
+    """时钟偏差上界仍可令差值为负，静默已过时长单独夹取到零。"""
     _, models, maker, clock_value, _ = _make_decision(tmp_path, {"min_silence_sec": 60})
     clock_value[0] = 1000.0
     # 恰好落在钳位上界：now + skew
@@ -676,7 +645,7 @@ async def test_local_gate_silence_never_reports_negative_elapsed(tmp_path: Path)
 
     reason = maker.local_gate(state, force=False)
 
-    assert reason == "静默时间不足：0s / 60s。"  # 修复前为 -300s
+    assert reason == "静默时间不足：0s / 60s。"
     assert "-" not in reason
 
 
@@ -832,7 +801,12 @@ async def test_prompt_image_context_uses_judge_vision_settings(tmp_path: Path) -
     assert calls["image_args"] == (True, "judge-vision")
 
 
-async def test_prompt_recent_messages_keep_line_structure(tmp_path: Path) -> None:
+async def test_prompt_folds_newlines_inside_single_message(tmp_path: Path) -> None:
+    """单条消息内部的换行必须折掉，多条记录之间才换行。
+
+    群友可以在正文里写换行，渲染成多行后就是一条伪造的历史轮次（同一条消息里的
+    「小红: 是啊」与真正的两条记录无法区分）。折行后每条记录恒占一行。
+    """
     _, models, maker, _, _ = _make_decision(tmp_path)
     state = _state(
         models,
@@ -840,8 +814,18 @@ async def test_prompt_recent_messages_keep_line_structure(tmp_path: Path) -> Non
         recent=[("user", "小明: 今天好热\n小红: 是啊", 990.0)],
     )
     prompt = await maker.build_decision_prompt("s1", state, "message_delay")
-    assert "小明: 今天好热" in prompt
-    assert "小红: 是啊" in prompt
+    assert "今天好热 小红: 是啊" in prompt, prompt
+    assert "今天好热\n小红" not in prompt, prompt
+
+    # 对照：两条独立记录仍是两行，折行只作用于单条消息内部。
+    two = _state(
+        models,
+        active_at=900.0,
+        recent=[("user", "第一句", 985.0), ("user", "第二句", 990.0)],
+    )
+    two_prompt = await maker.build_decision_prompt("s1", two, "message_delay")
+    assert "第一句\n" in two_prompt, two_prompt
+    assert "第二句" in two_prompt, two_prompt
 
 
 async def test_prompt_custom_template_substitutes_variables(tmp_path: Path) -> None:
@@ -970,3 +954,77 @@ async def test_decision_prompt_appends_quote_hint_only_in_model_mode(tmp_path: P
     )
     model_prompt = await model_maker.build_decision_prompt("s1", _state(models2), "message_delay")
     assert "quote" in model_prompt
+
+
+async def test_skip_reason_folded_to_single_line_without_control_chars(tmp_path: Path) -> None:
+    """判断模型的 reason 可被群聊内容影响：带换行/ANSI 时必须折成单行再进 last_decisions。
+
+    否则 /selfreply status 面板会被多行撑开，ANSI 还能伪造日志行。
+    """
+    _, models, maker, _, _ = _make_decision(
+        tmp_path,
+        {"decision_model_enabled": True},
+        model_text='{"should_reply": false, "reason": "第一行\\n第二行\\u001b[31m红\\u001b[0m"}',
+    )
+    state = _state(models, active_at=900.0, recent=[("user", "今天天气不错", 990.0)])
+
+    result = await maker.decide("s1", state, trigger="message_delay", force=False)
+
+    pipeline = importlib.import_module(f"{PACKAGE_NAME}.session_pipeline")
+    last_decisions: dict = {}
+    pipeline.record_decision(
+        last_decisions, "s1", "message_delay", should_reply=False, reason=result
+    )
+    reason = last_decisions["s1"]["reason"]
+    assert "\n" not in reason and "\r" not in reason, f"reason 未折单行: {reason!r}"
+    assert all(ord(char) >= 32 for char in reason), f"reason 仍含控制字符: {reason!r}"
+    assert reason == "判断不回复：第一行 第二行[31m红[0m"
+
+
+# 群友可控的一段恶意 reason：换行 + C0(ESC/BEL) + DEL + C1(CSI/NEL)。
+# 逐类都要挡：ESC 伪造日志行，DEL/C1 撑坏 /selfreply status 面板。
+DIRTY_REASON = "第一行\n第二行\x1b[31m红\x1b[0m\x07alert\x7fDEL\x9b31mC1\x85NEL"
+CLEAN_REASON = "第一行 第二行[31m红[0malertDEL31mC1 NEL"
+
+
+@pytest.mark.parametrize("should_reply", [True, False])
+async def test_decision_reason_sanitized_before_verdict_branching(
+    tmp_path: Path, should_reply: bool
+) -> None:
+    """两种裁决走同一份清洗口径。
+
+    缺陷形态：清洗只挂在 ``should_reply=False`` 的字符串出口上，``True`` 的 dict
+    出口把模型原文原样交出去——它照样经 ``_decide_session_reply`` 的 INFO 与
+    ``record_decision`` 进 /status，ESC 能在日志里伪造行、DEL/C1 能撑坏面板。
+    另一处缺口：只按 ``ord(char) >= 32`` 过滤，DEL(0x7f) 与 C1(0x80–0x9f) 全部
+    通过。
+
+    本用例从真实 ``decide()`` 返回值进 ``record_decision``（``/status`` 的同一份
+    数据），两类裁决都必须干净且互相一致。
+    """
+    _, models, maker, _, _ = _make_decision(
+        tmp_path,
+        {"decision_model_enabled": True},
+        model_text=json.dumps({"should_reply": should_reply, "reason": DIRTY_REASON}),
+    )
+    state = _state(models, active_at=900.0, recent=[("user", "今天天气不错", 990.0)])
+
+    result = await maker.decide("s1", state, trigger="message_delay", force=False)
+
+    logical = result["reason"] if not isinstance(result, str) else result
+    pipeline = importlib.import_module(f"{PACKAGE_NAME}.session_pipeline")
+    last_decisions: dict = {}
+    pipeline.record_decision(
+        last_decisions, "s1", "message_delay", should_reply=should_reply, reason=logical
+    )
+    reason = last_decisions["s1"]["reason"]
+
+    assert "\n" not in reason and "\r" not in reason, f"reason 未折单行: {reason!r}"
+    assert all(char.isprintable() for char in reason), f"reason 仍含控制字符: {reason!r}"
+    for char in ("\x1b", "\x07", "\x7f", "\x85", "\x9b"):
+        assert char not in reason, f"reason 仍含 {char!r}: {reason!r}"
+    # 两条出口同口径：字符串出口 = 固定前缀 + dict 出口的 reason。
+    if should_reply:
+        assert logical == CLEAN_REASON
+    else:
+        assert result == f"判断不回复：{CLEAN_REASON}"

@@ -60,6 +60,9 @@ export function isSuccessfulConfigPayload(config, requiredKeys = []) {
 /* 三档超时分工（值不同是有意的，不收敛）：内联 8s 是无 bridge 时的失败兜底
    （index.html），12s 是应用启动 deadline（app.js），15s 是单次 API 上限（此处）。 */
 export const FETCH_TIMEOUT_MS = 15000;
+/* 与 models.MAX_FALLBACK_PROVIDERS 同值：后端超限会截断，页面不拦就是「加进去的
+   那条悄悄消失」。 */
+export const MAX_FALLBACK_PROVIDERS = 8;
 const REQUEST_TIMEOUT_MESSAGE = "请求超时，请稍后重试";
 
 async function withDeadline(operation, timeoutMs, onTimeout) {
@@ -121,7 +124,9 @@ export async function requestPluginApi({
           );
         }
         if (!response.ok) {
-          throw new Error(result?.error || `请求失败 (${response.status})`);
+          // 宿主 error_response 的信封是 {status, message}，插件自建的是
+          // {ok, error}：两种都要能取出可读文案，否则只剩通用「请求失败 (411)」。
+          throw new Error(result?.error || result?.message || `请求失败 (${response.status})`);
         }
         return result;
       },

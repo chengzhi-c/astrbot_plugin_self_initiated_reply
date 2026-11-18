@@ -1,0 +1,4 @@
+# 宿主插件加载器只读插件根的 requirements.txt 装依赖，不读 pyproject 的
+# dependencies；image/parser.py 顶层 import httpx/httpcore，缺包即加载失败。
+httpx>=0.27,<0.29
+httpcore>=1,<1.1

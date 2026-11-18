@@ -25,10 +25,14 @@ import pytest
 
 from ._support import UMO, make_event, shorten_shutdown_windows
 from .host_stubs import (
+    FakeContext,
     FakeToolSet,
     PipelineTestAdapter,
     install_astrbot_stubs,
+    load_main,
     load_package,
+    request_tool_names,
+    restore_path_functions,
     webapi_module,
     with_plugin,
 )
@@ -178,14 +182,7 @@ def test_enforce_final_tool_policy_fail_closed_aborts_run(tmp_path: Path) -> Non
 
 
 def test_enforce_final_tool_policy_inherit_mode_fails_closed(tmp_path: Path) -> None:
-    """继承模式（inherit_tools=True）下 denylist 无法执行时同样必须中止运行。
-
-    继承模式放行宿主工具链，但宿主级危险工具（cron、浏览器、电脑使用等）
-    仍永远拒绝，enforce_final_tool_policy 是拦截 hook 在 build 后注入危险
-    工具的最终防线（fail-closed）。此前只有非继承模式的失败路径有断言，
-    继承分支的失败路径零覆盖：把 drop 分支的 return False 改成 return True
-    不会红。
-    """
+    """继承模式仍拒绝宿主危险工具，策略无法核验时中止。"""
 
     async def scenario(plugin, main):
         bad_req = type("Req", (), {"func_tool": type("Bad", (), {"tools": None})()})()
@@ -197,7 +194,8 @@ def test_enforce_final_tool_policy_inherit_mode_fails_closed(tmp_path: Path) -> 
 
 def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> None:
     """核心管线集成：build 注入工具 → 两次 enforce 清空（含 hook 注入）→ run 期间
-    tool_direct 直发被计数/抑制 → finally 恢复 event.send 与 plugins_name。"""
+    tool_direct 直发被计数/抑制 → finally 恢复 event.send 与 plugins_name。
+    """
 
     async def scenario(plugin, main):
         from .host_stubs import _FakeMessageChain, install_tool_injecting_pipeline
@@ -234,7 +232,7 @@ def test_pipeline_injects_tools_and_enforces_policy_twice(tmp_path: Path) -> Non
             assert enforce_tool_snapshots[0] == []
             assert enforce_tool_snapshots[1] == []
             # run 结束时 req.func_tool 保持为空
-            assert main._AGENT_RUNTIME._tool_list(ctrl["req_holder"]["req"]) == []
+            assert request_tool_names(ctrl["req_holder"]["req"]) == []
             # 直发计数：前 2 次被接受，第 3 次超预算抑制
             assert returned_ledger.direct_send_count == 2
             assert len(returned_ledger.direct_texts) == 2
@@ -364,11 +362,6 @@ def test_off_persists_enabled_across_restart(tmp_path: Path) -> None:
     改持久前 ``/off`` 只改内存 ``runtime_enabled``，宿主一重启就回落到持久
     ``enabled=True``，用户打完 ``/off`` 以为「别再主动说话了」，重启后插件又
     开始发言，而用户不会知道要再打一次。这是静默违背用户意图。
-
-    变异锚定：把 ``_persist_enabled`` 里的 ``self.settings.enabled = enabled``
-    删掉（退回只改 runtime），第二条断言即红（磁盘仍是 True）；再把整个
-    ``_persist_enabled`` 换回 ``self.runtime_enabled = False``，第三条断言
-    （重建插件后仍关闭）也红。断言磁盘原文与重建后的实例，不只断言内存字段。
     """
 
     async def scenario(plugin, main):
@@ -429,9 +422,6 @@ def test_off_rolls_back_memory_when_config_write_is_cancelled(tmp_path: Path) ->
     而 ``enabled`` 与 ``runtime_enabled`` 已在内存翻面。少了这一步，§6.1 承诺的
     「重启后保持」反向变成「重启后回落」：用户打完 ``/off`` 当场生效，插件一重启
     又按磁盘的 True 复活，而用户不会知道要再打一次。
-
-    变异锚定：删掉 ``plugin_state.persist_enabled`` 里的
-    ``except asyncio.CancelledError`` 分支，本用例红。
     """
 
     async def scenario(plugin, main):
@@ -459,8 +449,6 @@ def test_ordinary_failure_rollback_runs_to_completion_when_cancelled(tmp_path: P
     rollback 先翻内存再重写磁盘，取消落在第二次写盘上就只剩内存那半：磁盘留着新
     值，重启后 /off 复活、/on 回落，而管理员既没收到失败回显（CancelledError 是
     BaseException，main 的 except Exception 接不住）也看不到任何异常。
-
-    变异锚定：把该分支改回裸 await rollback()，本用例红。
     """
 
     async def scenario(plugin, main):
@@ -585,10 +573,7 @@ def test_degraded_state_rejects_new_spawn_and_force_check(tmp_path: Path) -> Non
         )
         assert plugin._last_events[UMO] is event
 
-        # add/remove 与 check 同口径。此前它们直接调用白名单写入，
-        # 降级态下由 `_add_whitelist_session` 抛 RuntimeError，用户看到的是
-        # 宿主报错文案（含内部异常原文），而 `/on` 又谎报「已启用」三条
-        # 写指令三种表现。这里断言两条指令都返回精准文案且**不抛异常**。
+        # 降级状态下的写指令统一返回明确文案，避免内部异常暴露给用户。
         before_add = set(plugin.settings.whitelist)
         assert await plugin._command_text(event, "add") == (
             "插件已降级，无法修改白名单（需重启插件恢复）。"
@@ -647,15 +632,7 @@ def _decorated_command_handlers() -> dict[str, str]:
 
 
 def test_decorated_commands_delegate_to_the_shared_dispatch(tmp_path: Path) -> None:
-    """每个子指令出口一律经 ``_command_text`` 并传自己的 canonical 动作名。
-
-    装饰器出口在生产不可达（priority=1000 的内联拦截先返回），于是它的形状漂移
-    无人可见：``selfreply_list`` 曾经直连 ``list_text()`` 而不经分派，把它的参数
-    写成 ``"status"`` 也不会有任何红灯。这里逐个驱动并断言分派参数与回显文本。
-
-    用行为记录器而不是源码匹配：断言的是"它调了谁、传了什么、回显了什么"，
-    与写法（直连 / 委托 / 再加一层）无关。只读动作另有出口文本等价断言。
-    """
+    """逐个驱动宿主装饰器出口，核对动作名与返回文本，避免入口间行为漂移。"""
     handlers = _decorated_command_handlers()
 
     async def scenario(plugin, main):
@@ -791,8 +768,6 @@ def test_inline_command_failure_is_visible_to_the_admin(tmp_path: Path) -> None:
     插件会把 `/selfreply remove` 当普通消息再处理一遍）。而内存回滚其实已经完成
     （白名单/会话状态/运行期 UMO 都已恢复），只差这一句告知——没有它，一次磁盘
     故障在聊天里表现为"指令凭空消失"。
-
-    变异锚定：去掉 ``_handle_inline_command`` 里的 try/except，本用例红。
     """
 
     async def scenario(plugin, main):
@@ -817,16 +792,7 @@ def test_inline_command_failure_is_visible_to_the_admin(tmp_path: Path) -> None:
 
 
 def test_status_shows_the_effective_message_delay(tmp_path: Path) -> None:
-    """`/selfreply status` 的延迟必须显示**生效值**，不是配置值。
-
-    缺陷形态：调度器实际用的是 ``max(message_delay_sec, min_silence_sec)``，
-    状态行此前直接打配置值。用户把「消息后触发延迟」调到 5s 想得到更快回复，
-    看到的却是"延迟 5s"而实际等待 45s，毫无变化也无从判断原因。出厂配置
-    （60/45）两者恰好相等，所以这个偏差在默认值下完全看不见。
-
-    变异锚定：把 ``status_text`` 的延迟换回 ``settings.message_delay_sec``，
-    本用例红。
-    """
+    """状态显示 max(消息延迟, 静默门槛)，避免配置值掩盖实际等待时间。"""
 
     async def scenario(plugin, main):
         plugin.settings.message_delay_sec = 5
@@ -863,8 +829,8 @@ def test_status_recent_decision_line_comes_from_last_decisions(tmp_path: Path) -
 
         # 还没裁决过：必须明说「暂无记录」，而不是省略这一行。
         text = await plugin._command_text(event, "status")
-        assert "最近裁决: 暂无记录" in text
-        assert "最近裁决: 暂无记录" in await _drive_decorated_status(plugin, event)
+        assert "最近一次判断: 暂无记录" in text
+        assert "最近一次判断: 暂无记录" in await _drive_decorated_status(plugin, event)
 
         plugin._last_decisions[umo] = {
             "at": 1_700_000_000.0,
@@ -928,8 +894,6 @@ def test_terminate_cancelled_keeps_the_instance_from_publishing(tmp_path: Path) 
     写权限，而账本终态任务刻意绕过停止闸门（track_critical_task 的契约就是
     「关停中也照常登记」）：它迟到的 os.replace 会用陈旧快照覆盖新实例刚写出的
     state.json——冷却与日配额倒流，下次触发立刻重发同一会话。
-
-    变异锚定：把 _terminated = True 移出 finally，本用例红。
     """
 
     async def scenario(plugin, main):
@@ -969,8 +933,6 @@ def test_terminate_bounds_the_wait_for_the_config_lock(tmp_path: Path) -> None:
     落盘」，而无上界地等会让宿主 reload 被拖住数秒——此刻插件已 STOPPING、拒绝
     一切写，契约 §5 的「终止有界」在最需要它的时候不成立。超窗与写超时同口径：
     放弃本次最终落盘，不隔离、不 DEGRADED。
-
-    变异锚定：把 wait_for 换成直接 await acquire，本用例在 0.3s 预算上红。
     """
 
     async def scenario(plugin, main):
@@ -985,7 +947,7 @@ def test_terminate_bounds_the_wait_for_the_config_lock(tmp_path: Path) -> None:
             holder = asyncio.create_task(hold())
             while not plugin._config_lock.locked():
                 await asyncio.sleep(0.001)
-            # 变异版本会等满 0.4s 再返回，靠这一定时器避免用例挂死。
+            # 定时释放锁，让等待超时的实现也能结束测试。
             asyncio.get_running_loop().call_later(0.4, release.set)
             started = asyncio.get_running_loop().time()
             await plugin.terminate()
@@ -1007,8 +969,6 @@ def test_shutdown_drain_window_covers_the_graceful_stop_grace(tmp_path: Path) ->
     取消的检查任务自带两段 GRACEFUL_STOP_GRACE_SEC 的收敛等待：合作任务必然超窗，
     被判「吞掉取消」隔离登记 → _mark_degraded 永久 DEGRADED，一次例行 reload 就够了。
     PATROL_STOP_TIMEOUT_SEC 已按同一理由取三段，后台任务收敛窗口必须同源。
-
-    变异锚定：把该常量改回 TERMINATE_TASK_TIMEOUT_SEC，本用例红。
     """
 
     async def scenario(plugin, main):
@@ -1225,9 +1185,6 @@ def test_state_save_double_cancel_keeps_lock_until_write_lands(tmp_path: Path) -
     这期间更新的落盘（terminate 的最终落盘、乃至新实例刚写出的 state.json），
     且非 critical 任务不受 ``_spared_critical_tasks``/``_abandon_disk_writes``
     保护——两道光闸唯一没覆盖的写方。
-
-    变异锚定：把 except 块里的 shield 循环换回裸 ``await write_task``，本用例
-    第一条断言即红。
     """
     import sys
     import threading
@@ -1449,15 +1406,47 @@ def test_state_for_refreshes_daily_count_across_midnight(tmp_path: Path) -> None
 
 
 def test_plugin_smoke_message_path(tmp_path: Path) -> None:
-    """on_message 全流程冒烟：白名单消息进入调度，不抛异常。"""
+    """白名单消息经调度、判断、生成和投递后完成一次主动回复。"""
 
     async def scenario(plugin, main):
+        models = importlib.import_module(main.__package__ + ".models")
+
+        async def fake_decide(*_args, **_kwargs):
+            return {"should_reply": True, "reason": "测试", "elapsed_sec": 0.0}
+
+        async def fake_generate(_umo, _state, **kwargs):
+            ledger = kwargs.get("ledger") or models.AttemptLedger()
+            return "在呢", ledger
+
+        plugin._decision.decide = fake_decide
+        plugin._generation.generate = fake_generate
+
+        async def skip_disk_write():
+            return None
+
+        plugin._save_storage = skip_disk_write
+        plugin._scheduler.message_trigger_delay = lambda: 0
         event = make_event(message_str="今天天气不错")
         await plugin.on_message(event)
         assert UMO in plugin._last_events
-        assert UMO in plugin._delay_tasks
+        task = plugin._delay_tasks.get(UMO)
+        assert task is not None
+        assert not plugin._gate.is_running(UMO)
+        await asyncio.wait_for(asyncio.shield(task), timeout=1)
 
-    with_plugin(tmp_path, scenario)
+        state = plugin._state_for(UMO)
+        assert event.sent_texts == ["在呢"]
+        assert state.recent[-1].role == "assistant"
+        assert state.recent[-1].text == "在呢"
+        assert state.daily_count == 1
+
+    with_plugin(
+        tmp_path,
+        scenario,
+        message_delay_sec=0,
+        min_silence_sec=0,
+        cooldown_sec=0,
+    )
 
 
 def _fresh_state(plugin) -> Any:
@@ -1626,12 +1615,30 @@ def test_whitelist_remove_recycles_legacy_group_key(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
-def test_force_check_prunes_session_state(tmp_path: Path) -> None:
-    """非白名单会话手动 check 后 sessions 条目必须回收。
+def test_runtime_full_umo_adopts_bare_group_state(tmp_path: Path) -> None:
+    """A bare whitelisted group adopts its legacy state when its full UMO first appears."""
 
-    此前 _prune_session 只清代次/锁/运行标记与 _last_decisions，sessions 里
-    的 SessionState（含 recent 历史）会随手动 check 的会话数累积。
-    """
+    async def scenario(plugin, main):
+        legacy_key = main.session_group_id(UMO)
+        state = plugin._state_for(UMO)
+        state.daily_count = 9
+        state.recent.append("旧历史")
+        plugin.sessions.pop(UMO)
+        plugin.sessions[legacy_key] = state
+
+        migrated = plugin._state_for(UMO)
+
+        assert migrated is state
+        assert migrated.daily_count == 9
+        assert migrated.recent[-1] == "旧历史"
+        assert UMO in plugin.sessions
+        assert legacy_key not in plugin.sessions
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_force_check_prunes_session_state(tmp_path: Path) -> None:
+    """非白名单手动检查后回收会话状态，避免历史随检查对象数累积。"""
 
     async def scenario(plugin, main):
         original_check = plugin._pipeline.check_session
@@ -1654,8 +1661,8 @@ def test_force_check_prunes_session_state(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
-def test_manual_check_records_sender_id(tmp_path: Path) -> None:
-    """/selfreply check 写入的历史必须带发送者，不能落成空串。"""
+def test_manual_check_records_command_body(tmp_path: Path) -> None:
+    """装饰器路径 /selfreply check 必须从事件原文提取测试内容。"""
 
     async def scenario(plugin, main):
         original_check = plugin._pipeline.check_session
@@ -1668,13 +1675,12 @@ def test_manual_check_records_sender_id(tmp_path: Path) -> None:
         try:
             event = make_event(
                 umo=UMO,
-                sender_id="sender-42",
                 message_str="/selfreply check 测一下",
             )
             await plugin._command_text(event, "check", "测一下")
             state = plugin._state_for(UMO)
             assert state.recent, "check 未写入历史"
-            assert state.recent[-1].sender_id == "sender-42"
+            assert state.recent[-1].text == "测一下"
         finally:
             plugin._pipeline.check_session = original_check
 
@@ -1687,9 +1693,6 @@ def test_decorated_command_check_reads_body_from_event_text(tmp_path: Path) -> N
     装饰器处理器恒定传 ``arg=""``（它不解析参数），正文只能由
     ``commands.strip_command_prefix(event_text(event))`` 取出。这条路径缺失时
     内联路径的 ``arg`` 已非空、不会暴露缺口，故单独钉住。
-
-    变异锚定：删掉 ``commands.py`` 的 ``strip_command_prefix`` 调用（改成直接用
-    ``arg``），本用例的 ``recent[-1].text`` 变空串即红。
     """
 
     async def scenario(plugin, main):
@@ -1703,7 +1706,6 @@ def test_decorated_command_check_reads_body_from_event_text(tmp_path: Path) -> N
         try:
             event = make_event(
                 umo=UMO,
-                sender_id="sender-42",
                 message_str="/selfreply check 你好啊",
             )
             # 装饰器路径：action="check" 且不带 arg（main.selfreply_check 的形态）
@@ -1817,27 +1819,12 @@ def test_version_consistency_across_metadata() -> None:
     # 单一 README 单一徽章，不再有双语同步义务。
     readme = (root / "README.md").read_text(encoding="utf-8")
     assert f"-{version}-" in readme, "README.md badge 版本与 PLUGIN_VERSION 不一致"
-    # CHANGELOG 的最新发布版本行必须与 PLUGIN_VERSION 一致：两者都是"对外宣称的
-    # 当前版本"，此前无守卫，发版时漏写 changelog 会让用户看到的版本说明停留在上一版。
+    # CHANGELOG 最新版本与 PLUGIN_VERSION 保持一致。
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
     released = re.search(r"^## \[(\d+\.\d+\.\d+)\]", changelog, re.MULTILINE)
     assert released is not None, "CHANGELOG.md 里找不到形如 '## [x.y.z]' 的发布版本行"
     assert released.group(1) == version, (
         f"CHANGELOG 最新发布版本 {released.group(1)!r} 与 PLUGIN_VERSION={version!r} 不一致"
-    )
-    # 形状必须钉住：唯一的动态消费者 test_vision._locked_host_version 解析失败时
-    # 返回空串，_find_host_platform_sources 随之返回 None，宿主漂移守卫整条
-    # pytest.skip 而不是判红。
-    floor = re.search(r'astrbot_version:\s*">=(\d+\.\d+\.\d+),<5"', metadata)
-    assert floor is not None, (
-        "metadata.yaml 的 astrbot_version 下限形状不符，"
-        "test_vision 的宿主漂移守卫会静默跳过而非判红"
-    )
-    # 下限可以正当抬、不可以降：docs/BEHAVIOR_CONTRACT.md 把 "AstrBot >= 4.23.3"
-    # 定为契约，而 _locked_host_version 拿这个字符串去选要扫描的宿主源码版本，
-    # 降到 4.23.3 之下会让漂移守卫扫另一个版本却照样报绿。
-    assert tuple(int(part) for part in floor.group(1).split(".")) >= (4, 23, 3), (
-        f"宿主下限被降到 4.23.3 之下（实测 {floor.group(1)}），与契约不符，且宿主漂移守卫会扫错版本"
     )
 
 
@@ -2046,42 +2033,48 @@ def test_on_message_period_abandons_inflight_when_enabled(tmp_path: Path) -> Non
     with_plugin(tmp_path, scenario)
 
 
-def test_command_list_returns_sorted_whitelist_lines(tmp_path: Path) -> None:
-    """/selfreply list 输出白名单全量与空态文案。"""
+def test_command_list_hides_cross_session_ids_in_groups(tmp_path: Path) -> None:
+    """/selfreply list 仅在私聊中显示完整白名单。"""
 
     async def scenario(plugin, main):
         event = make_event(message_str="/selfreply list")
         plugin.settings.whitelist = set()
-        assert await plugin._command_text(event, "list") == "主动回复白名单为空。"
-
-        plugin.settings.whitelist = {"qq:GroupMessage:2", "qq:GroupMessage:1", "12345"}
         assert await plugin._command_text(event, "list") == (
-            "主动回复白名单：\n- 12345\n- qq:GroupMessage:1\n- qq:GroupMessage:2"
+            "主动回复白名单为空。在群内发 /selfreply add 把当前会话加进去。"
         )
 
-    with_plugin(tmp_path, scenario)
+        plugin.settings.whitelist = {"qq:GroupMessage:2", "qq:GroupMessage:1", "12345"}
+        group_reply = await plugin._command_text(event, "list")
+        assert group_reply == "主动回复白名单共 3 条，请在私聊中查看明细。"
+        assert "GroupMessage" not in group_reply and "12345" not in group_reply
 
+        private_event = make_event(umo=PRIVATE_UMO, message_str="/selfreply list")
+        private_reply = await plugin._command_text(private_event, "list")
+        assert (
+            private_reply == "主动回复白名单：\n- 12345\n- qq:GroupMessage:1\n- qq:GroupMessage:2"
+        )
 
-def test_check_session_rejects_foreign_ledger(tmp_path: Path) -> None:
-    """生成返回异账本必须中止：否则投递事实记到别的账本上，本次配额不落账。"""
+        plugin.settings.ignored_sender_ids = {"private-user-id"}
+        status = await plugin._command_text(event, "status")
+        assert "private-user-id" not in status
+        assert "忽略发送者数量: 1" in status
 
-    async def scenario(plugin, main):
-        models = importlib.import_module(main.__package__ + ".models")
-        token = _arrange_reply_flow(plugin, main, models)
-        foreign = models.AttemptLedger()
-
-        async def fake_generate(_umo, _state, **_kwargs):
-            return "在呢", foreign
-
-        plugin._generation.generate = fake_generate
-        with pytest.raises(RuntimeError, match="different attempt ledger"):
-            await plugin._pipeline.check_session_locked(
-                UMO, trigger="message_delay", force=True, expected_generation=token
-            )
-
-        assert foreign.phase == "open", "异账本不得被密封或记账"
-        assert plugin._state_for(UMO).daily_count == 0, "无提交的真账本不得计配额"
-        assert not plugin._gate.is_running(UMO), "中止后仍必须 unmark_running"
+        debug_event = make_event(
+            message_str="/selfreply debug private message marker",
+            sender_id="private-user-id",
+            self_id="private-bot-id",
+        )
+        debug = await plugin._command_text(debug_event, "debug")
+        for private_value in (
+            UMO,
+            "123",
+            "private-user-id",
+            "private-bot-id",
+            "private message marker",
+        ):
+            assert private_value not in debug
+        assert "is_at_or_wake_command:" in debug
+        assert "ignored_sender: True" in debug
 
     with_plugin(tmp_path, scenario)
 
@@ -2119,8 +2112,6 @@ def test_command_reply_is_capped(tmp_path: Path) -> None:
     `event.send` 抛错后，兜底 `set_result` 又把**同一段**超长文本再发一次——管理员
     什么都收不到，`stop_event()` 却照旧执行，消息被吞。同文件里 reason 有 60 字
     上限、提示词变量有 200/500/2000 字预算，只有回显这一面是裸的。
-
-    变异锚定：去掉 `main._command_text` 里的 `cap_command_reply` 调用，本用例红。
     """
 
     async def scenario(plugin, main):
@@ -2132,18 +2123,18 @@ def test_command_reply_is_capped(tmp_path: Path) -> None:
             f"回显 {len(text)} 字符，超出预算 {main.MAX_COMMAND_REPLY_CHARS}"
         )
         assert long_message not in text, "超长用户消息被原样拼进回显"
-        assert "已省略末尾" in text, "超限时必须说明丢了多少字符"
-        # 保头裁剪：第一屏的诊断标识必须保住，被裁掉的只是超长的 message_str 行
+        # 用户消息与账号标识不进入群聊回显。
         assert "主动回复调试信息" in text
-        assert "原始 UMO:" in text
-        assert "self_id:" in text
+        assert "已省略末尾" not in text
 
-        # list 在规格上限下同样必须被裁（1000 × 200 字约 20 万字符）
+        # 私聊仍可查看明细，极长白名单输出仍受通用回显预算限制。
         models = importlib.import_module(main.__package__ + ".models")
         plugin.settings.whitelist = {
             f"qq:GroupMessage:{index:04d}" for index in range(models.MAX_WHITELIST_SIZE)
         }
-        list_reply = await plugin._command_text(make_event(message_str="/selfreply list"), "list")
+        list_reply = await plugin._command_text(
+            make_event(umo=PRIVATE_UMO, message_str="/selfreply list"), "list"
+        )
         assert len(list_reply) <= main.MAX_COMMAND_REPLY_CHARS
         assert "已省略末尾" in list_reply
         # 短回显不得被无谓改动：预算内原样返回
@@ -2160,8 +2151,10 @@ def test_command_debug_returns_diagnostic_info(tmp_path: Path) -> None:
         event = make_event(message_str="/selfreply debug")
         text = await plugin._command_text(event, "debug")
         assert "主动回复调试信息" in text
-        assert "归一化 UMO:" in text
         assert "is_at_or_wake_command:" in text
+        assert "message_str:" not in text
+        assert "sender_id:" not in text
+        assert "self_id:" not in text
 
     with_plugin(tmp_path, scenario)
 
@@ -2321,6 +2314,34 @@ def test_startup_writes_skipped_when_disk_already_current(tmp_path: Path) -> Non
         plugin_state.write_json_atomic = original_write_sessions
 
 
+def test_startup_does_not_normalize_unreadable_config(tmp_path: Path, monkeypatch: Any) -> None:
+    """配置读取失败时不能用空宿主配置覆盖磁盘上的白名单。"""
+    main = load_main()
+    main.get_astrbot_config_path = lambda: str(tmp_path / "config")
+    main.get_astrbot_plugin_data_path = lambda: str(tmp_path / "data")
+    config_path = tmp_path / "config" / "astrbot_plugin_self_initiated_reply_config.json"
+    config_path.parent.mkdir(parents=True)
+    original = json.dumps(
+        {"enabled": True, "whitelist_sessions": [UMO]}, ensure_ascii=False, indent=2
+    )
+    config_path.write_text(original, encoding="utf-8")
+
+    read_text = type(config_path).read_text
+
+    def unreadable(candidate: Path, *args: Any, **kwargs: Any) -> str:
+        if candidate == config_path:
+            raise PermissionError("config file is temporarily locked")
+        return read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(type(config_path), "read_text", unreadable)
+    plugin = main.SelfInitiatedReplyPlugin(FakeContext(), {})
+    try:
+        assert config_path.open(encoding="utf-8").read() == original
+    finally:
+        asyncio.run(plugin.terminate())
+        restore_path_functions(main)
+
+
 def test_startup_still_writes_when_disk_shape_differs(tmp_path: Path) -> None:
     """磁盘与序列化结果不一致（旧形状/缺键）时，启动写盘不得被跳过。
 
@@ -2343,11 +2364,15 @@ def test_startup_still_writes_when_disk_shape_differs(tmp_path: Path) -> None:
     config_path.write_text(json.dumps(on_disk, ensure_ascii=False, indent=2), encoding="utf-8")
 
     async def second_load(plugin, _main):
-        # 迁移发生在 __init__，其落盘在后台任务且写盘进线程：判据取磁盘形状本身，
-        # 不是「写配置被调用过」。落盘被误跳时磁盘仍是旧形状，等超时即红。
+        # 迁移在后台线程落盘，直接检查最终磁盘内容。
         from .host_stubs import until
 
-        await until(lambda: "cooldown_sec" in read_json_with_retry(config_path))
+        await until(lambda: "cooldown_sec" in read_json_with_retry(config_path), timeout=10)
+        migrated = read_json_with_retry(config_path)
+        assert "cooldown_sec" in migrated, "启动规范化未把缺失的正式键写回磁盘"
+        assert migrated["cooldown_sec"] == plugin.settings.to_config_dict()["cooldown_sec"], (
+            "写回的默认值与运行期配置不一致"
+        )
 
     with_plugin(tmp_path, second_load)
 

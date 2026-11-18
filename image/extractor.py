@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from astrbot.api import logger
 
 from ..models import PLUGIN_ID
-from ..utils import event_message_id
+from ..utils import event_message_id, redact_exc_text
 from ._support import HTTP_SCHEMES, URL_SCHEMES, ImageInfo, url_scheme
 
 if TYPE_CHECKING:
@@ -19,19 +19,19 @@ if TYPE_CHECKING:
 
 
 _IMAGE_TYPES = {"image", "img", "picture", "photo"}
+_PEER_FILE_PATH_PLATFORMS = frozenset({"aiocqhttp", "satori"})
 _CQ_PREFIX = "[CQ:"
 
 
 def _parse_raw_cq_components(raw: Any) -> list[dict[str, Any]]:
     """Recover image segments when an adapter exposes only raw CQ text.
 
-    线性扫描而不是正则：原正则的两段字符类（类型段与正文段）在同一段输入上竞争，
-    缺右括号时每个起点都要逐字符回退，复杂度 O(n²)——对端可控的 raw 串（或行为
-    异常的适配器）能用一条上百 KB 的消息把事件循环按住数秒（16KB 已到百毫秒级），
-    而本函数在消息热路径上对每条消息同步执行两遍。语义与正则一致：类型非空、以第一个右括号结束，
-    不匹配时原正则从下一位重扫，这里同样逐位前移。唯一例外是类型段只有空白
-    （``[CQ: ,[CQ:image,file=a]]``）：原正则已消费整段、返回空；这里从下一位
-    重扫会捡到内层段。更宽松一侧，不影响正确性。
+    线性扫描：正则的两段字符类（类型段与正文段）会在同一段输入上竞争，缺右括号
+    时每个起点都要逐字符回退，复杂度 O(n²)——对端可控的 raw 串（或行为异常的
+    适配器）能用一条上百 KB 的消息把事件循环按住数秒（16KB 已到百毫秒级），
+    而本函数在消息热路径上对每条消息同步执行两遍。语义相同：类型非空、以第一个
+    右括号结束、不匹配时逐位前移。类型段只有空白（``[CQ: ,[CQ:image,file=a]]``）
+    时从下一位重扫，会捡到内层段；这一侧比正则更宽松，不影响正确性。
     """
     if isinstance(raw, bytes):
         # errors="replace" 下 bytes.decode 不会抛。
@@ -54,7 +54,7 @@ def _parse_raw_cq_components(raw: Any) -> list[dict[str, Any]]:
         cursor = end + 1
         component_type = head.strip().lower()
         if not component_type:
-            # 原正则要求类型至少一个字符，不匹配时从下一位重扫。
+            # 类型段不能为空，空则从下一位重扫。
             cursor = start + 1
             continue
         if component_type not in _IMAGE_TYPES:
@@ -243,7 +243,7 @@ class ImageExtractor:
         对每个图片组件：判定表情包、在归一化组件与原始 OneBot 组件之间取回
         可用来源（AstrBot 可能已把 Image 规范化为临时文件）、按 scheme 把 URL
         与本地路径归位。``trusted_local_path`` 只作宿主临时图的**快照分流提示**；
-        本地读取的放行判据与之无关，唯一判据是路径落在允许根内（契约 §7.1）。
+        本地读取的放行判据与之无关，唯一判据是路径落在允许根内。
 
         失败时整体 try 包裹，任何宿主结构异常只记 debug 并返回已抽到的部分
         （宁少不炸，图片缺失只降级为纯文本主动回复）。
@@ -251,6 +251,8 @@ class ImageExtractor:
         images: list[ImageInfo] = []
         try:
             message_id = event_message_id(event)
+            get_platform_name = getattr(event, "get_platform_name", None)
+            platform_name = get_platform_name() if callable(get_platform_name) else ""
             for component, raw_component in _eligible_image_entries(
                 event, skip_stickers=skip_stickers
             ):
@@ -291,6 +293,9 @@ class ImageExtractor:
                         if not raw_file:
                             raw_file = raw_url
                         raw_url = ""
+                if platform_name in _PEER_FILE_PATH_PLATFORMS:
+                    # OneBot file and Satori src values are peer-controlled, not host temp files.
+                    raw_file = ""
                 if not raw_url and not raw_file:
                     continue
                 images.append(
@@ -303,7 +308,7 @@ class ImageExtractor:
                     )
                 )
         except Exception as exc:
-            logger.debug("[%s] image extraction failed: %s", PLUGIN_ID, exc)
+            logger.debug("[%s] image extraction failed: %s", PLUGIN_ID, redact_exc_text(exc))
         return images
 
     @staticmethod

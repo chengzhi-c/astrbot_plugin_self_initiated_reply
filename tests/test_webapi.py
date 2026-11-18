@@ -106,35 +106,33 @@ def test_parse_config_updates_str_keys_accept_strings_and_none() -> None:
     assert long_value["judge_provider_id"] == "p" * 300
 
 
-def test_str_provider_keys_truncate_on_persist(tmp_path) -> None:
+@pytest.mark.parametrize("key", ["judge_provider_id", "proactive_provider_id"])
+def test_str_provider_keys_truncate_on_persist(tmp_path, key: str) -> None:
     """超长 provider id 经读侧 coerce 截断到 MAX_PROVIDER_ID_LEN 并留 warning。"""
 
     async def scenario(plugin, main):
         models = sys.modules[f"{PACKAGE}.models"]
         web = sys.modules["astrbot.api.web"]
-        web.request.payload = {"judge_provider_id": "p" * (models.MAX_PROVIDER_ID_LEN + 50)}
+        web.request.payload = {key: "p" * (models.MAX_PROVIDER_ID_LEN + 50)}
 
         result = await webapi_module(main)._api_post_config(plugin)
 
         assert result["ok"] is True
-        assert len(result["config"]["judge_provider_id"]) == models.MAX_PROVIDER_ID_LEN
-        assert plugin.settings.judge_provider_id == "p" * models.MAX_PROVIDER_ID_LEN
+        assert len(result["config"][key]) == models.MAX_PROVIDER_ID_LEN
+        assert getattr(plugin.settings, key) == "p" * models.MAX_PROVIDER_ID_LEN
 
     with_plugin(tmp_path, scenario)
 
 
 def test_parse_config_updates_whitelist_rules() -> None:
     webapi = _webapi()
-    # 超长拒绝
-    with pytest.raises(ValueError):
+    # 每条拒绝都核对文案：只断言 ValueError 时，函数顶部一句无差别 raise
+    # 能让下面全部行保持绿。
+    with pytest.raises(ValueError, match="条目过长"):
         webapi._parse_config_updates({"whitelist_sessions": ["ok", "x" * 201]})
-    # 非法字符拒绝
-    with pytest.raises(ValueError):
-        webapi._parse_config_updates({"whitelist_sessions": ['bad"quote']})
-    with pytest.raises(ValueError):
-        webapi._parse_config_updates({"whitelist_sessions": ["bad\\slash"]})
-    with pytest.raises(ValueError):
-        webapi._parse_config_updates({"whitelist_sessions": ["has\ttab"]})
+    for bad in ('bad"quote', "bad\\slash", "has\ttab"):
+        with pytest.raises(ValueError, match="条目含非法字符"):
+            webapi._parse_config_updates({"whitelist_sessions": [bad]})
     # 200 边界接受
     ok = webapi._parse_config_updates({"whitelist_sessions": ["x" * 200]})
     assert ok["whitelist_sessions"] == ["x" * 200]
@@ -201,60 +199,45 @@ def test_parse_config_updates_rejects_container_types_for_text() -> None:
 # ============================================================================
 
 
-def test_provider_config_helpers_dict_variants() -> None:
-    webapi = _webapi()
-    assert webapi._provider_config({"provider_config": {"id": "a"}}) == {"id": "a"}
-    assert webapi._provider_config({"config": {"id": "b"}}) == {"id": "b"}
-    assert webapi._provider_config({"id": "c"}) == {"id": "c"}
-    assert webapi._provider_id({"provider_id": "pid"}, "fb") == "pid"
-    assert webapi._provider_id({}, "") == ""
-    assert webapi._provider_id({"id": "  "}, "fb") == ""
-    # 非 dict 配置（如普通对象属性值）走 getattr 分支
-    assert webapi._config_value("cfg", "id", "dft") == "dft"
-    # label 等于 provider_id 时不重复拼接
-    assert webapi._provider_label({"model": "gpt"}, "gpt") == "gpt"
-    assert webapi._provider_label({}, "only-id") == "only-id"
-    # 空 id 的 provider 不产出 option
-    assert webapi._provider_option({}, "") is None
-
-
 def test_collect_provider_options_from_context(tmp_path) -> None:
+    """选项取自身配置并按 label 小写排序；无 id 的条目丢弃。"""
+
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]
-        plugin.context.get_all_providers = lambda: {
-            "p1": SimpleNamespace(provider_config={"id": "pid1", "display_name": "模型A"}),
-            "p2": SimpleNamespace(provider_config={"id": "pid2", "model": "gpt"}),
-        }
+        plugin.context.get_all_providers = lambda: [
+            SimpleNamespace(provider_config={"id": "b", "model": "Beta"}),
+            SimpleNamespace(provider_config={}),
+            SimpleNamespace(provider_config={"id": "a", "model": "alpha"}),
+        ]
         options = webapi._collect_provider_options(plugin)
-        # 按 label 排序（"gpt (pid2)" 排在 "模型A (pid1)" 前）
+        # 插入序是 b→a，大小写敏感排序也是 b→a；只有按 label.lower() 才会是 a→b。
         assert options == [
-            {"id": "pid2", "label": "gpt (pid2)"},
-            {"id": "pid1", "label": "模型A (pid1)"},
+            {"id": "a", "label": "alpha (a)"},
+            {"id": "b", "label": "Beta (b)"},
         ]
 
     with_plugin(tmp_path, scenario)
 
 
 def test_collect_provider_options_dedup_and_manager_fallback(tmp_path) -> None:
+    """同 id 保留首条；inst_map 的键作 fallback id；get_all_providers 失败走兜底。"""
+
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]
-        # 同 id 去重
         plugin.context.get_all_providers = lambda: [
-            ("k1", SimpleNamespace(provider_config={"id": "x", "name": "A"})),
-            ("k2", SimpleNamespace(provider_config={"id": "x", "model": "B"})),
+            ("k1", SimpleNamespace(provider_config={"id": "x", "model": "first"})),
+            ("k2", SimpleNamespace(provider_config={"id": "x", "model": "second"})),
         ]
         options = webapi._collect_provider_options(plugin)
-        assert len(options) == 1
-        assert options[0]["id"] == "x"
-        # 无 get_all_providers → manager inst_map 兜底
+        assert options == [{"id": "x", "label": "first (x)"}]
+
         del plugin.context.get_all_providers
         plugin.context.provider_manager = SimpleNamespace(
-            inst_map={"pm": SimpleNamespace(config={"id": "m1", "model": "M"})}
+            inst_map={"m1": SimpleNamespace(provider_config={"model": "M"})}
         )
         options = webapi._collect_provider_options(plugin)
-        assert options[0]["id"] == "m1"
+        assert options == [{"id": "m1", "label": "M (m1)"}]
 
-        # get_all_providers 抛异常 → 同样兜底
         def boom():
             raise RuntimeError("boom")
 
@@ -303,22 +286,11 @@ def test_api_providers_happy_and_error(tmp_path) -> None:
 
 
 def test_api_status(tmp_path) -> None:
-    """状态端点的字段级读数必须与插件实况一致，不能是恒真的 ``is`` 比较。
-
-    缺陷形态：宿主桩默认 ``enabled=True`` / ``decision_model_enabled=False``，而
-    场景从不翻面运行态，``status["runtime_enabled"] is plugin.runtime_enabled``
-    退化成 ``True is True``；gate 段两条只是键存在性断言。把这些字段换成硬编码
-    常量，旧用例全绿——而 ``runtime_enabled`` 正是排障时判断"插件是不是还活着"
-    的承重字段（持久配置在 DEGRADED 下仍显示 True），字段级谎报直接指向错误方向。
-
-    变异锚定：把 ``_api_status`` 里的 ``plugin.runtime_enabled`` 换成硬编码
-    ``True``、``decision_model_enabled`` 换成硬编码 ``False``、或把 gate 两张表
-    换成 ``{}`` / ``[]``，本用例红。
-    """
+    """状态端点核对实际聚合值，同时检查敏感明细未出现在响应。"""
 
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]
-        # 翻面：不翻的话 `is` 比较恒真，硬编码常量也能全绿
+        # 使用相反开关值，区分实际读数和常量响应。
         plugin.runtime_enabled = False
         plugin.settings.decision_model_enabled = True
         status = await webapi._api_status(plugin)
@@ -327,21 +299,9 @@ def test_api_status(tmp_path) -> None:
         assert status["whitelist_count"] == len(plugin.settings.whitelist)
         assert status["decision_model_enabled"] is True, status["decision_model_enabled"]
         assert "pipeline_mode" not in status
-        # 代次与运行集按内容断言：键存在性放不掉硬编码空表
+        # 聚合计数按值断言：换成常量就与实况不符
         plugin._gate.advance(UMO)
         plugin._gate.mark_running(UMO)
-        status = await webapi._api_status(plugin)
-        assert status["gate"]["generation"].get(UMO) == plugin._gate.current(UMO), (
-            f"代次表内容与实况不符：{status['gate']['generation']}"
-        )
-        assert status["gate"]["running"] == sorted(plugin._gate.running_sessions_view), (
-            f"运行集内容与实况不符：{status['gate']['running']}"
-        )
-        assert UMO in status["gate"]["running"], status["gate"]["running"]
-        # 调试面板导出：任务数/缓存规模/最近裁决
-        assert set(status["tasks"]) == {"delay", "running_check", "background"}
-        assert set(status["caches"]) == {"events", "image_events", "sessions"}
-        assert isinstance(status["last_decisions"], dict)
         plugin._last_decisions["s1"] = {
             "at": 1.0,
             "trigger": "patrol",
@@ -349,7 +309,15 @@ def test_api_status(tmp_path) -> None:
             "reason": "冷却中",
         }
         status = await webapi._api_status(plugin)
-        assert status["last_decisions"]["s1"]["reason"] == "冷却中"
+        assert status["gate"] == {"sessions": 1, "running": 1}, status["gate"]
+        assert status["decisions"] == 1, status["decisions"]
+        # 会话 UMO 与派生自群聊原文的 reason 不得出现在响应里
+        assert UMO not in str(status), status
+        assert "s1" not in str(status), status
+        assert "冷却中" not in str(status), status
+        # 任务数/缓存规模
+        assert set(status["tasks"]) == {"delay", "running_check", "background"}
+        assert set(status["caches"]) == {"events", "image_events", "sessions"}
 
     with_plugin(tmp_path, scenario)
 
@@ -422,10 +390,7 @@ def test_ui_prefs_corrupt_logs_warning(tmp_path, caplog) -> None:
     回退本身是对的，但下一次 POST /ui/theme 会整块写 theme/dim/bold 三个字段，
     原本存着的偏好于是被静默改掉，而日志里没有任何一行——排障者只看到「主题变
     回去了」，无从判断是文件坏了还是用户改的（契约 §9「不记则无从定位」；同仓库
-    state.json 的损坏路径记了两条 ERROR，这边一条都没有）。
-
-    变异锚定：删掉那条 ``logger.warning``，本用例红。
-    """
+    state.json 的损坏路径记了两条 ERROR，这边一条都没有）。"""
     import logging
 
     async def scenario(plugin, main):
@@ -586,52 +551,22 @@ def test_api_post_ui_theme_paths(tmp_path) -> None:
 # ============================================================================
 
 
-def test_request_json_fallbacks(tmp_path) -> None:
+def test_request_json_uses_quart_reader(tmp_path) -> None:
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]
         original = webapi.request
 
         class OnlyGetJson:
+            @property
+            async def json(self):
+                return await self.get_json()
+
             async def get_json(self, silent=False):
                 return {"via": "get_json"}
-
-        class Nothing:
-            pass
-
-        class Boom:
-            async def json(self, default=None):
-                raise RuntimeError("json read failed")
-
-        class TypeErrBoom:
-            # json(default=...) 签名不兼容 → 回退无参调用
-            async def json(self):
-                return {"via": "bare"}
-
-        class BodyTypeErr:
-            def __init__(self) -> None:
-                self.calls = 0
-
-            async def json(self, default=None):
-                self.calls += 1
-                raise TypeError("reader body failed")
 
         try:
             webapi.request = OnlyGetJson()
             assert await webapi._request_json() == {"via": "get_json"}
-            webapi.request = Nothing()
-            with pytest.raises(RuntimeError):
-                await webapi._request_json()
-            webapi.request = TypeErrBoom()
-            assert await webapi._request_json() == {"via": "bare"}
-            reader = BodyTypeErr()
-            webapi.request = reader
-            with pytest.raises(TypeError, match="reader body failed"):
-                await webapi._request_json()
-            assert reader.calls == 1
-            # _api_post_ui_theme 在 json 读取失败时回退空 dict → 无效主题
-            webapi.request = Boom()
-            result = await webapi._api_post_ui_theme(plugin)
-            assert result["ok"] is False
         finally:
             webapi.request = original
 
@@ -654,6 +589,65 @@ def test_post_config_unreadable_body_differs_from_empty_object(tmp_path) -> None
     async def scenario(plugin, main):
         result = await webapi_module(main)._api_post_config(plugin)
         assert result == {"ok": False, "error": "请求体不是合法 JSON"}
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_post_config_rejects_missing_or_invalid_content_length(tmp_path) -> None:
+    """无有效 Content-Length 的配置请求在读取 JSON 前拒绝。"""
+
+    async def scenario(plugin, main):
+        webapi = webapi_module(main)
+        original = webapi.request
+
+        class InvalidLengthRequest:
+            def __init__(self, headers):
+                self.headers = headers
+                self.json_called = False
+
+            async def json(self, default=None):
+                self.json_called = True
+                return {"cooldown_sec": 999}
+
+        try:
+            for headers in ({}, {"content-length": "abc"}, {"content-length": "-1"}):
+                request = InvalidLengthRequest(headers)
+                webapi.request = request
+                result = await webapi._api_post_config(plugin)
+                assert result == (
+                    {"ok": False, "error": "请求体需提供有效的 Content-Length"},
+                    411,
+                )
+                assert request.json_called is False
+            assert plugin.settings.cooldown_sec != 999
+        finally:
+            webapi.request = original
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_post_config_rejects_oversized_content_length_before_json(tmp_path) -> None:
+    async def scenario(plugin, main):
+        webapi = webapi_module(main)
+        original = webapi.request
+
+        class OversizedRequest:
+            headers = {"content-length": str(1024 * 1024 + 1)}
+            json_called = False
+
+            async def json(self, default=None):
+                self.json_called = True
+                return {"cooldown_sec": 999}
+
+        request = OversizedRequest()
+        webapi.request = request
+        try:
+            result = await webapi._api_post_config(plugin)
+            assert result == ({"ok": False, "error": "请求体过大"}, 413)
+            assert request.json_called is False
+            assert plugin.settings.cooldown_sec != 999
+        finally:
+            webapi.request = original
 
     with_plugin(tmp_path, scenario)
 
@@ -741,11 +735,7 @@ def test_api_post_config_body_read_does_not_hold_the_config_lock(tmp_path) -> No
     缺陷形态：``await _request_json()`` 跑在 ``async with plugin._config_lock``
     里面，一个慢/挂死的上传就连坐 ``terminate()`` 与一切 ``/selfreply`` 写指令
     （它们同一把 ``_config_lock``）。§7 的「在 ``_config_lock`` 内比较 revision」
-    不受影响——比较仍在锁内、且在任何变更之前。
-
-    变异锚定：把 ``await _request_json()`` 挪回 ``async with
-    plugin._config_lock`` 内，本用例红（terminate 被连坐阻塞）。
-    """
+    不受影响——比较仍在锁内、且在任何变更之前。"""
 
     async def scenario(plugin, main):
         webapi = webapi_module(main)
@@ -832,12 +822,49 @@ def test_api_post_config_returns_normalized_values(tmp_path) -> None:
             == models.CONFIG_SPEC_BY_KEY["decision_temperature"].maximum
         )
         assert len(config["decision_prompt_template"]) == models.MAX_PROMPT_LENGTH
+        # 集合值按规范顺序取容量内的前缀，不受提交顺序影响。
         assert config["whitelist_sessions"] == sorted(whitelist)[: models.MAX_WHITELIST_SIZE]
         assert config["whitelist_sessions"] == sorted(config["whitelist_sessions"])
         assert plugin.settings.to_config_dict() == config
         # 运行态必须回传：前端徽标按 result.runtime_enabled 刷新（缺失时 ?? 链会
         # 静默回退到保存前的旧值，切换总开关后徽标不更新）。
         assert "runtime_enabled" in result
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_api_post_config_oversize_list_validates_tail_and_keeps_canonical_head(tmp_path) -> None:
+    """超限列表校验容量外条目，并按规范顺序保留容量内的合法条目。"""
+
+    async def scenario(plugin, main):
+        models = sys.modules[f"{PACKAGE}.models"]
+        web = sys.modules["astrbot.api.web"]
+        limit = models.MAX_IGNORED_SENDER_IDS
+        submitted = [f"z{index:04d}" for index in range(limit)] + [
+            f"a{index:04d}" for index in range(limit)
+        ]
+        web.request.payload = {"ignored_sender_ids": submitted}
+        result = await webapi_module(main)._api_post_config(plugin)
+
+        assert result["ok"] is True
+        assert result["adjusted_fields"] == ["ignored_sender_ids"]
+        assert len(plugin.settings.ignored_sender_ids) == models.MAX_IGNORED_SENDER_IDS
+        assert result["config"]["ignored_sender_ids"] == sorted(submitted)[:limit]
+        saved_before_invalid_update = set(plugin.settings.ignored_sender_ids)
+        at_limit = [f"s{index:04d}" for index in range(limit)]
+
+        # 把非法值放在容量边界之外，也必须整体拒绝，而不能先截断再验证。
+        web.request.payload = {"ignored_sender_ids": at_limit + [None]}
+        result = await webapi_module(main)._api_post_config(plugin)
+        assert result["ok"] is False
+        assert "条目必须是字符串" in result["error"]
+        assert plugin.settings.ignored_sender_ids == saved_before_invalid_update
+
+        # 正好等于上限的提交不得被算成「已调整」：容量判定不能提前一格。
+        web.request.payload = {"ignored_sender_ids": at_limit}
+        result = await webapi_module(main)._api_post_config(plugin)
+        assert result["ok"] is True
+        assert result["adjusted_fields"] == []
 
     with_plugin(tmp_path, scenario)
 
@@ -852,11 +879,7 @@ def test_cancelled_post_config_write_does_not_land_after_rollback(tmp_path) -> N
     决定：旧值先落、新值后落时，磁盘留下的是**已被驳回**的新配置，而内存已是旧值
     ——磁盘与运行期 Settings 持久不一致且不会自愈（重启加载到这份被驳回的配置，
     ``config_revision`` 由内存算也与磁盘脱节）。同一 hazard 在
-    ``plugin_state.save_storage`` 有显式防护，配置写盘这条路径没有。
-
-    变异锚定：把 ``apersist_settings_config`` 的 shield 等待改回裸
-    ``await asyncio.to_thread(...)``，本用例红。
-    """
+    ``plugin_state.save_storage`` 有显式防护，配置写盘这条路径没有。"""
     import threading
     import time
 
@@ -903,7 +926,7 @@ def test_cancelled_post_config_write_does_not_land_after_rollback(tmp_path) -> N
             except asyncio.CancelledError:
                 pass
             # 被取消的那次写盘必须真的落地再断言：裸 await 的旧实现里线程仍在跑，
-            # 断言会在它 os.replace 之前通过，变异就守不住了。
+            # 等写盘线程完成后再核对磁盘，避免读取中间状态。
             await until(lambda: landed.is_set())
         finally:
             plugin._persist_config = original_persist
@@ -929,10 +952,7 @@ def test_rollback_completes_before_the_config_lock_is_released(tmp_path) -> None
     ``_api_post_config`` 的 ``async with _config_lock`` 随之释放锁，而回滚任务
     仍在跑且**不持锁**。此时一次新的 POST /config（或 /selfreply add|remove，同一把
     锁）能拿到锁并完整落盘；回滚任务随后用它开服时取的旧快照再写一次盘，把那
-    次**成功**的保存静默撤销——重启后丢失，且全程无告警。
-
-    变异锚定：把回滚的 shield 等待改回「等一次就放弃」，本用例红。
-    """
+    次**成功**的保存静默撤销——重启后丢失，且全程无告警。"""
 
     async def scenario(plugin, main):
         webapi = webapi_module(main)
@@ -1018,10 +1038,7 @@ def test_api_post_config_huge_int_reports_field_not_body(tmp_path) -> None:
     json.loads 对几百位整数产出任意精度 int，``float()`` 抛 OverflowError。
     它是 ArithmeticError 而非 ValueError，会逃到 ``_api_post_config`` 最外层
     ``except Exception``：用户看到一句与字段无关的兜底文案，而前端按「错误文案
-    以键名 + 空格前缀」定位字段的规则随之失效（契约 §7.1 要字段级文案）。
-
-    变异锚定：去掉 ``_strict_float`` 里的 ``except OverflowError``，本用例红。
-    """
+    以键名 + 空格前缀」定位字段的规则随之失效（契约 §7.1 要字段级文案）。"""
 
     async def scenario(plugin, main):
         web = sys.modules["astrbot.api.web"]
@@ -1044,10 +1061,7 @@ def test_api_post_config_nel_wrapped_item_is_not_reported_adjusted(tmp_path) -> 
     trim 过」，而条目规范化用的是 ``js_trim``（设置页 ``String.prototype.trim``
     的那一套，刻意不剥 NEL）。分歧在这一处的方向是误报：值一个字节都没改，
     却弹出「配置已保存，已规范化：主动回复白名单会话」（契约 §7 要求
-    adjusted_fields 只列**实际被调整的**键）。
-
-    变异锚定：把 ``js_trim(item)`` 换回 ``item.strip()``，本用例红。
-    """
+    adjusted_fields 只列**实际被调整的**键）。"""
 
     async def scenario(plugin, main):
         web = sys.modules["astrbot.api.web"]
@@ -1144,31 +1158,36 @@ def test_apply_vision_change_clears_parser_cache(tmp_path, payload) -> None:
     with_plugin(tmp_path, scenario)
 
 
-def test_rollback_reschedules_check_scheduled_inside_the_window(tmp_path) -> None:
-    """apply 窗口内新排的延迟检查，回滚后必须被重排而不是静默丢掉。
-
-    缺陷形态：快照只记 ``delay_umos``（快照**时刻**的集合）。消息若落在 apply
-    窗口内（``await _persist_config()`` / ``_save_storage()``）会排出一条**新的**
-    延迟检查；保存随后失败，禁用路径把它取消，而回滚只重排快照集合——那条检查
-    既不复活也不重排，其代次又被 ``SessionGate.restore`` 退回，最终在
-    ``_wait_initial_delay_and_validate`` 静默出局：无日志、无裁决，只能等该会话
-    下一条消息或巡检轮次才恢复。
-
-    变异锚定：去掉 ``_apply_config_updates`` 里 ``window_delay_umos`` 的采集或
-    ``extra_delay_umos`` 的传递，本用例红。
-    """
+@pytest.mark.parametrize("invalidate_after_cancel", [False, True])
+def test_rollback_reschedules_check_scheduled_inside_the_window(
+    tmp_path, invalidate_after_cancel: bool
+) -> None:
+    """禁用配置应用失败后，保留保存窗口收到的消息并重排其检查。"""
 
     async def scenario(plugin, main):
         # 1) 先让延迟表空着：快照的 delay_umos 因此不含本会话
+        # 配置下限会把 0 夹到 5，这里直接改运行期字段，省掉每轮 5 秒空等。
+        plugin.settings.message_delay_sec = 0
+        decisions = []
+        original_decide = plugin._decision.decide
+
+        async def track_decide(*args, **kwargs):
+            decisions.append(args[0])
+            return await original_decide(*args, **kwargs)
+
+        plugin._decision.decide = track_decide
         await plugin.on_message(make_event(umo=UMO, message_str="先来一条"))
         await until(lambda: not plugin._delay_tasks, timeout=10)
-        decisions_before = dict(plugin._last_decisions)
+        assert decisions == [UMO]
+        other_umo = "fake:group:456"
 
         # 2) 让应用在拓扑切换**之后**失败：禁用路径已经取消过延迟检查
         original_stop = plugin._scheduler.stop_patrol
 
         async def failing_stop():
             await original_stop()
+            if invalidate_after_cancel:
+                plugin._coordinator.invalidate(UMO)
             raise OSError("stop patrol failed")
 
         plugin._scheduler.stop_patrol = failing_stop
@@ -1180,6 +1199,7 @@ def test_rollback_reschedules_check_scheduled_inside_the_window(tmp_path) -> Non
         async def window_save():
             if not delivered.is_set():
                 await plugin.on_message(make_event(umo=UMO, message_str="窗口内的消息"))
+                await plugin.on_message(make_event(umo=other_umo, message_str="另一个会话的消息"))
                 delivered.set()
             await original_save()
 
@@ -1196,15 +1216,16 @@ def test_rollback_reschedules_check_scheduled_inside_the_window(tmp_path) -> Non
         assert result.get("ok") is False, "场景没走到回滚路径"
         assert delivered.is_set(), "窗口内的消息没投递出去"
         assert plugin.runtime_enabled is True, "回滚没把运行态恢复成启用"
+        assert (UMO in plugin._last_events) is not invalidate_after_cancel
+        assert plugin._last_events.get(other_umo) is not None
 
         # 4) 那条检查必须仍在（被回滚重排），并最终产出一次新裁决
         await until(lambda: not plugin._delay_tasks, timeout=10)
-        new_decision = plugin._last_decisions.get(UMO)
-        assert new_decision is not None and new_decision != decisions_before.get(UMO), (
-            "窗口内消息的延迟检查被回滚静默丢掉：没有新裁决、也没有日志"
-        )
+        assert decisions[0] == UMO
+        expected = [other_umo] if invalidate_after_cancel else [UMO, other_umo]
+        assert sorted(decisions[1:]) == expected, f"判断调用次数不符：{decisions}"
 
-    with_plugin(tmp_path, scenario, message_delay_sec=0)
+    with_plugin(tmp_path, scenario, whitelist_sessions=["123", "456"])
 
 
 def test_rollback_drops_unknown_delay_umo(tmp_path) -> None:
@@ -1232,14 +1253,7 @@ def test_rollback_drops_unknown_delay_umo(tmp_path) -> None:
 
 
 def test_rollback_reschedule_failure_is_logged(tmp_path) -> None:
-    """回滚重调度抛异常时只记录 debug 日志，不中断回滚。
-
-    变异锚定：本用例同时钉住「回滚的后续步骤真的被执行」只断言
-    ``ok is False`` 是假绿（重调度异常被 re-raise 中断回滚时，外层同样返回
-    False），而 ``_restore_plugin_state`` 里 ``clear_parsers`` 之后的
-    ``ensure_patrol`` / ``ensure_image_cleanup`` 全部被跳过。故这里加 spy，
-    断言回滚收尾的三个步骤各发生一次。
-    """
+    """回滚重调度抛异常时只记录 debug 日志，不中断回滚。"""
 
     async def scenario(plugin, main):
         plugin.sessions[UMO] = plugin._state_for(UMO)
@@ -1289,6 +1303,33 @@ def test_rollback_reschedule_failure_is_logged(tmp_path) -> None:
         assert calls["clear_parsers"] == 1, "回滚未丢弃 parser 缓存"
         assert calls["ensure_patrol"] == 1, "重调度异常后回滚被中断，巡检拓扑未恢复"
         assert calls["ensure_image_cleanup"] == 1, "重调度异常后回滚被中断，图片清理拓扑未恢复"
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_rollback_persistence_log_redacts_exception(tmp_path, caplog) -> None:
+    async def scenario(plugin, main):
+        webapi = webapi_module(main)
+        original_persist = plugin._persist_config
+        secret = "https://user:pa55@example.com/config?api_key=sk-private"
+
+        async def fail_persist() -> bool:
+            raise OSError(secret)
+
+        plugin._persist_config = fail_persist
+        try:
+            web = sys.modules["astrbot.api.web"]
+            web.request.payload = {"cooldown_sec": 777}
+            with capture_logs(caplog, webapi.logger):
+                result = await webapi._api_post_config(plugin)
+        finally:
+            plugin._persist_config = original_persist
+
+        messages = "\n".join(record.getMessage() for record in caplog.records)
+        assert result["ok"] is False
+        assert "config rollback persistence failed" in messages
+        assert "pa55" not in messages
+        assert "sk-private" not in messages
 
     with_plugin(tmp_path, scenario)
 
@@ -1346,10 +1387,7 @@ def test_unknown_config_key_error_is_sanitized() -> None:
 
     缺陷形态：键名是客户端可控输入，原样拼进「未知配置键: ...」后既进响应也进
     服务端日志。带换行的键名能伪造日志行（含 ANSI 转义），键多/键长时一行能写出
-    数 KB 的假日志。
-
-    变异锚定：去掉 shown 的字符过滤，本用例红。
-    """
+    数 KB 的假日志。"""
     webapi = _webapi()
     with pytest.raises(ValueError) as excinfo:
         webapi._parse_config_updates({"evil\n[astrbot_plugin] fake: enabled=False": 1})

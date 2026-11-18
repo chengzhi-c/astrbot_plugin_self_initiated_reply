@@ -6,8 +6,8 @@
 
 不拥有：图片来源的提取（``extractor``）、缓存索引与内存预算
 （``session_coordinator``）、provider 选择（``adapters``）、何时解析
-（``vision_runtime``）。文件刻意不拆：传输层私有名被 ``tests/test_vision.py``
-按本模块对象 monkeypatch，而生产侧只有一个调用方。
+（``vision_runtime``）。文件刻意不拆：传输层私有名只在按本模块对象 monkeypatch 时生效，
+拆开后替换点会分叉，而生产侧只有一个调用方。
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import re
 import socket
 import ssl
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,7 @@ from ..models import (
     PLUGIN_ID,
 )
 from ..storage import fsync_dir, replace_with_retry
-from ..utils import redact_exc_text, redact_url, response_text
+from ..utils import redact_exc_text, redact_url, response_text, strip_log_control
 from ._support import (
     ALLOWED_IMAGE_PORTS,
     HTTP_SCHEMES,
@@ -52,7 +53,7 @@ from ._support import (
     to_data_url,
     url_scheme,
 )
-from .recorder_bridge import MessageRecorderBridge
+from .recorder_bridge import RECORDER_PLUGIN_NAME, MessageRecorderBridge
 
 # 顶层常量：prompt 模板是描述缓存的语义键之一。
 # VISION_PROMPT_VERSION 直接由模板内容派生，模板一改缓存键自动变，
@@ -73,7 +74,7 @@ _UNABLE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 # 命中的拒答片段之外，剩余正文短于该值才判为拒答。
-# 实测标定（tests/test_vision.py 双向钉住）：真拒答的剩余正文最长 8 字符，
+# 实测标定：真拒答的剩余正文最长 8 字符，
 # 有效描述最短 12 字符，阈值取 10 留余量。不设「正文过短即拒答」的独立分支：
 # 有效描述也可能只有七个字，空描述由调用方处理。
 _UNABLE_RESIDUAL_MIN_LENGTH = 10
@@ -86,6 +87,7 @@ _HASH_CHUNK_BYTES = 1 << 16
 # 在 _is_safe_public_address，传输层与预检共用。
 _NAT64_NETWORK = ipaddress.ip_network("64:ff9b::/96")
 _SSL_CONTEXT: ssl.SSLContext | None = None
+_DNS_RESOLVER_SLOTS = threading.BoundedSemaphore(VISION_MAX_CONCURRENT)
 
 _CacheEntry = tuple[float, Path, int, Path]
 
@@ -191,8 +193,8 @@ def _remove_over_quota_cache_files(
 def _remove_empty_cache_directories(directories: list[Path], resolved_root: Path) -> None:
     """Remove empty directories, re-checking that each one belongs to the cache.
 
-    The scan already filters by ownership; this second check is deliberate
-    defence in depth, because ``rmdir`` is unrecoverable once executed.
+    The scan already filters by ownership; this second check covers the window
+    between snapshot and ``rmdir`` (``rmdir`` is unrecoverable once executed).
     """
     for directory in sorted(directories, reverse=True):
         try:
@@ -200,8 +202,6 @@ def _remove_empty_cache_directories(directories: list[Path], resolved_root: Path
         except (OSError, ValueError):
             continue
         try:
-            if next(directory.iterdir(), None) is not None:
-                continue
             directory.rmdir()
         except OSError:
             pass
@@ -229,7 +229,7 @@ def _atomic_write(path: Path, content: bytes) -> None:
             )
         except FileNotFoundError:
             # 清理线程在 mkdir 之后、mkstemp 之前把这个空 shard 目录 rmdir 了
-            # （_remove_empty_cache_directories 的 iterdir→rmdir 与这里分处两个
+            # （_remove_empty_cache_directories 与这里分处两个
             # to_thread 线程）。重建一次即可，不是内容层面的失败。
             path.parent.mkdir(parents=True, exist_ok=True)
             descriptor, temporary_name = tempfile.mkstemp(
@@ -341,6 +341,19 @@ def _resolve_global_address(host: str) -> str | None:
     return addresses[0] if addresses else None
 
 
+class _DNSResolverBusy(Exception):
+    """当前图片 DNS 名额已满；不排队占用共享线程池。"""
+
+
+def _resolve_with_slot(resolver: Any, host: str) -> str | None:
+    if not _DNS_RESOLVER_SLOTS.acquire(blocking=False):
+        raise _DNSResolverBusy("image DNS resolver capacity reached")
+    try:
+        return resolver(host)
+    finally:
+        _DNS_RESOLVER_SLOTS.release()
+
+
 class _FixedAddressBackend(httpcore.AsyncNetworkBackend):
     """Delegate sockets while replacing only the TCP destination address."""
 
@@ -408,7 +421,7 @@ class _FixedResponseStream(httpx.AsyncByteStream):
 
 
 class _ImageAddressBlocked(httpx.ConnectError):
-    """传输层按安全判据主动拒绝，与网络故障区分：前者值得 WARNING（契约 §9）。"""
+    """传输层按安全判据主动拒绝，与网络故障区分：前者值得 WARNING。"""
 
 
 class _FixedAddressTransport(httpx.AsyncBaseTransport):
@@ -437,7 +450,7 @@ class _FixedAddressTransport(httpx.AsyncBaseTransport):
         # 解析并重新做公网校验（host 虽复用，地址不缓存）。
         address = self._address
         self._address = None
-        address = address or await asyncio.to_thread(resolver, host)
+        address = address or await asyncio.to_thread(_resolve_with_slot, resolver, host)
         try:
             checked_address = ipaddress.ip_address(str(address))
         except ValueError:
@@ -518,7 +531,11 @@ class ImageParser:
             try:
                 self._source_cache_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
-                logger.warning("[%s] image cache directory unavailable: %s", PLUGIN_ID, exc)
+                logger.warning(
+                    "[%s] image cache directory unavailable: %s",
+                    PLUGIN_ID,
+                    redact_exc_text(exc),
+                )
             # 固化为绝对路径：_file_to_data_url 只接受绝对路径，相对缓存目录
             # 会让每张冻结图永久读不回（prepare 仍回报 True、文件已落盘），
             # 而宿主给相对插件数据目录路径是完全可能的。
@@ -527,17 +544,27 @@ class ImageParser:
         # 宿主 aiocqhttp 用对端可控的 OneBot 原始值装配 Image 的 file 字段，
         # 被控协议端能把 file 写成任意绝对路径。
         #
-        # <data> 根必须在表内：宿主合法生产者写的裸绝对路径都在它下面
-        # （wecom temp、webchat 等），只留 image_cache 会拒掉这些真图片；
-        # 未注入 data_root 的调用方（含既有测试）不能丢掉缓存根。
+        # 宿主本地媒体只落在这些固定目录；整个 <data> 不能作为根，否则
+        # 对端可控的 file 字段能指向其他插件或用户数据。
         roots: set[Path] = set()
-        for candidate in (self._source_cache_dir, Path(data_root) if data_root else None):
+        data_path = Path(data_root) if data_root else None
+        host_media_roots = (
+            data_path / "temp" if data_path else None,
+            data_path / "webchat" / "imgs" if data_path else None,
+            data_path / "attachments" if data_path else None,
+            data_path / "plugin_data" / RECORDER_PLUGIN_NAME if data_path else None,
+        )
+        for candidate in (self._source_cache_dir, *host_media_roots):
             if candidate is None:
                 continue
             try:
                 roots.add(candidate.resolve())
             except OSError as exc:
-                logger.warning("[%s] local image root unavailable: %s", PLUGIN_ID, exc)
+                logger.warning(
+                    "[%s] local image root unavailable: %s",
+                    PLUGIN_ID,
+                    redact_exc_text(exc),
+                )
         self._allowed_local_roots = roots
 
     async def prepare(self, image_info: ImageInfo) -> bool:
@@ -600,7 +627,11 @@ class ImageParser:
             if isinstance(result, BaseException):
                 if isinstance(result, asyncio.CancelledError):
                     raise result
-                logger.debug("[%s] image batch step failed: %r", PLUGIN_ID, result)
+                logger.debug(
+                    "[%s] image batch step failed: %s",
+                    PLUGIN_ID,
+                    redact_exc_text(result),
+                )
                 normalized.append(error_value)
             else:
                 normalized.append(result)
@@ -633,7 +664,7 @@ class ImageParser:
             return False
         try:
             # 这条路径的 file 值来自对端可控的 OneBot 原始值，可信度判定统一
-            # 交给 _file_to_data_url 的 allowlist（契约 §7.1）。
+            # 交给 _file_to_data_url 的 allowlist。
             data_url = await asyncio.to_thread(self._file_to_data_url, path)
             if not data_url:
                 return False
@@ -651,7 +682,11 @@ class ImageParser:
         except Exception as exc:
             # 捕获面对齐 prepare()：窄捕获会让漏网异常穿过 gather 连带取消同批
             # 其余快照；单图快照失败只该让这张图不可用。
-            logger.debug("[%s] host image snapshot failed: %s", PLUGIN_ID, exc)
+            logger.debug(
+                "[%s] host image snapshot failed: %s",
+                PLUGIN_ID,
+                redact_exc_text(exc),
+            )
             return False
 
     async def prepare_batch(
@@ -787,8 +822,8 @@ class ImageParser:
         3. ``file_path``，http(s) 走下载；
         4. ``url`` 远程下载。
 
-        本地路径一律由 ``_allowed_local_roots`` 判定，不留任何例外分支
-        （契约 §7.1）：不采信提取层的可信推断，宿主 aiocqhttp 的 ``Image.file``
+        本地路径一律由 ``_allowed_local_roots`` 判定，不留任何例外分支：
+        不采信提取层的可信推断，宿主 aiocqhttp 的 ``Image.file``
         是对端可控的 OneBot 原始值，提取层的信任推断可伪造。失败即继续下一路，
         全部失败返回 ``None``；``file`` 下载失败不终局，否则对端填个坏 file_path
         就能屏蔽 url 分支。
@@ -822,7 +857,7 @@ class ImageParser:
                 if data_url:
                     return data_url
                 # 网络故障记 INFO；地址策略拒绝已由
-                # _download_image_data_url 自己记 WARNING（契约 §9）。
+                # _download_image_data_url 自己记 WARNING。
                 # 两者分级的原因是否则第一种会把第二种淹没。
                 logger.info("[%s] image URL download failed: %s", PLUGIN_ID, redact_url(file_value))
             path = Path(file_value)
@@ -911,7 +946,7 @@ class ImageParser:
                 os.utime(target, None)
             return target
         except OSError as exc:
-            logger.debug("[%s] image cache write failed: %s", PLUGIN_ID, exc)
+            logger.debug("[%s] image cache write failed: %s", PLUGIN_ID, redact_exc_text(exc))
             return None
 
     def _file_to_data_url(self, path: Path) -> str | None:
@@ -922,8 +957,12 @@ class ImageParser:
             if not any(
                 candidate == root or root in candidate.parents for root in self._allowed_local_roots
             ):
+                # 文件名可含控制字符（Linux 允许换行）：直接插值能把一条警告
+                # 拆成两行，伪造出后续日志。
                 logger.warning(
-                    "[%s] rejected local image outside trusted roots: %s", PLUGIN_ID, path
+                    "[%s] rejected local image outside trusted roots: %s",
+                    PLUGIN_ID,
+                    strip_log_control(path),
                 )
                 return None
             return MessageRecorderBridge.image_to_data_url(candidate)
@@ -934,7 +973,7 @@ class ImageParser:
     def _warn_policy_refusal(url: str, reason: str) -> None:
         """地址策略拒绝的统一出口：WARNING + 脱敏 URL。
 
-        与网络故障的 INFO 分开（契约 §9）。URL 必须脱敏：它是聊天里出现的远端
+        与网络故障的 INFO 分开。URL 必须脱敏：它是聊天里出现的远端
         地址，query 可能带签名凭证，而这条日志要能给运维看。
         """
         logger.warning(
@@ -965,20 +1004,30 @@ class ImageParser:
         TLS 证书验证、重定向上限 3 跳、体积双重设限（content-length 先看，
         流式读取再累计校验）、MIME 由载荷嗅探决定。
 
-        日志分级（契约 §9）：**地址策略**拒绝记 WARNING——它说明有对端在敲被拦的
+        日志分级：**地址策略**拒绝记 WARNING——它说明有对端在敲被拦的
         门（私网、非白名单端口、逐跳重解析后落回内网），运维必须看得见；网络故障
         记 INFO。三处预检必须自己留痕：只靠传输层那条 WARNING 时，策略拒绝在预检
-        处就被挡回去、走不到传输层，§9 想保住的那个信号实际是丢的。
+        处就被挡回去、走不到传输层，「有人在探被拦端口」这个信号实际是丢的。
         """
         try:
             parsed = urlparse(url)
             if parsed.scheme not in HTTP_SCHEMES or not parsed.hostname:
                 self._warn_policy_refusal(url, "scheme not allowed")
                 return None
-            if parsed.port is not None and parsed.port not in ALLOWED_IMAGE_PORTS:
-                self._warn_policy_refusal(url, f"port {parsed.port} not in allowlist")
+            try:
+                port = parsed.port
+            except ValueError:
+                # 越界（>65535）或非数字端口：urlparse 的 ``port`` 属性在这里抛
+                # ValueError，若不接住就会落到函数底部的通用 ``except`` 记 DEBUG，
+                # 把「有人在敲被拦的端口」这条必须可见的信号变成噪音。
+                self._warn_policy_refusal(url, "malformed port")
                 return None
-            address = await asyncio.to_thread(_resolve_global_address, parsed.hostname)
+            if port is not None and port not in ALLOWED_IMAGE_PORTS:
+                self._warn_policy_refusal(url, f"port {port} not in allowlist")
+                return None
+            address = await asyncio.to_thread(
+                _resolve_with_slot, _resolve_global_address, parsed.hostname
+            )
             if not address:
                 self._warn_policy_refusal(url, "no global address for host")
                 return None
@@ -991,9 +1040,22 @@ class ImageParser:
                 max_redirects=3,
                 trust_env=False,
                 transport=transport,
+                # 明确不协商传输压缩：与下面「拒绝非 identity 编码」的判定同源，
+                # 让守规矩的服务端直接返回原始字节，而不是先被解码再被拒。
+                headers={"Accept-Encoding": "identity"},
             ) as client:
                 async with client.stream("GET", url) as response:
                     if response.status_code >= _HTTP_ERROR_STATUS_MIN:
+                        return None
+                    # aiter_bytes 会先解压再交回数据，事后计数挡不住解压时的内存膨胀。
+                    # 在读 body 前拒绝传输压缩，使体积检查覆盖实际分配的载荷。
+                    encoding = str(response.headers.get("content-encoding") or "").strip().lower()
+                    if encoding not in ("", "identity"):
+                        logger.warning(
+                            "[%s] image download refused: unsupported content-encoding %s",
+                            PLUGIN_ID,
+                            encoding,
+                        )
                         return None
                     content_length = response.headers.get("content-length")
                     try:
@@ -1014,7 +1076,11 @@ class ImageParser:
                         return None
                     return to_data_url(content_type, bytes(content))
         except _ImageAddressBlocked as exc:
-            logger.warning("[%s] image download refused by address policy: %s", PLUGIN_ID, exc)
+            logger.warning(
+                "[%s] image download refused by address policy: %s",
+                PLUGIN_ID,
+                redact_exc_text(exc),
+            )
             return None
         except Exception as exc:
             logger.debug("[%s] image download failed: %s", PLUGIN_ID, redact_exc_text(exc))

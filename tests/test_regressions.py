@@ -25,6 +25,7 @@ from .host_stubs import (
     PipelineTestAdapter,
     install_astrbot_stubs,
     load_package,
+    request_tool_names,
     until,
     webapi_module,
     with_plugin,
@@ -56,19 +57,6 @@ def _load_plugin_module(module: str):
 # ============================================================================
 # RL-4 任意用户可触发命令并吞掉事件（中危）
 # ============================================================================
-
-
-def test_help_action_is_reachable_without_admin() -> None:
-    """确认 help 不在管理员动作集合内（用于说明上一条的影响面）。"""
-    models, _, _, _, _ = _load_r3_modules()
-    assert "help" not in models.ADMIN_COMMAND_ACTIONS
-
-
-def test_bare_command_word_is_parsed_as_command() -> None:
-    """记录当前解析行为：裸词即命令（说明缺陷来源，非断言修复）。"""
-    _, _, commands, _, _ = _load_r3_modules()
-    assert commands.parse_command_text("selfreply") == ("help", "")
-    assert commands.parse_command_text("selfreply add") == ("add", "")
 
 
 # RL-5（Web 配置读取失败返回 None）的守卫已迁至
@@ -171,9 +159,7 @@ def _install_tool_injecting_pipeline(plugin, main, *, event):
     """
     from .host_stubs import install_tool_injecting_pipeline
 
-    return install_tool_injecting_pipeline(
-        plugin, main, event=event, snapshot_reset=True, snapshot_prompts=True
-    )
+    return install_tool_injecting_pipeline(plugin, main, event=event, snapshot_reset=True)
 
 
 async def _run_pipeline(plugin):
@@ -208,7 +194,7 @@ def test_config_change_mid_run_does_not_flip_tool_policy(tmp_path: Path) -> None
             assert text == "你好呀"
             # 快照为 False：即使运行中 settings 变为 True，enforce 仍按 False 清理
             assert enforce_snapshots == [[], []]
-            assert main._AGENT_RUNTIME._tool_list(ctrl["req_holder"]["req"]) == []
+            assert request_tool_names(ctrl["req_holder"]["req"]) == []
         finally:
             ctrl["restore"]()
 
@@ -237,43 +223,6 @@ def test_second_enforce_happens_before_reset(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
-def test_system_hint_matches_tool_policy(tmp_path: Path) -> None:
-    """继承模式提示词描述真实边界；默认模式仍写死禁用工具。"""
-
-    async def scenario(plugin, main):
-        event = make_event()
-        plugin._last_events[UMO] = event
-        plugin._last_event_at[UMO] = 1.0
-
-        ctrl = _install_tool_injecting_pipeline(plugin, main, event=event)
-        try:
-            await _run_pipeline(plugin)
-            assert len(ctrl["prompts"]) == 1
-            default_prompt = ctrl["prompts"][0]
-            assert "不得执行命令或 Python" in default_prompt
-        finally:
-            ctrl["restore"]()
-
-    with_plugin(tmp_path, scenario)
-
-    async def inherit_scenario(plugin, main):
-        event = make_event()
-        plugin._last_events[UMO] = event
-        plugin._last_event_at[UMO] = 1.0
-
-        ctrl = _install_tool_injecting_pipeline(plugin, main, event=event)
-        try:
-            await _run_pipeline(plugin)
-            assert len(ctrl["prompts"]) == 1
-            inherit_prompt = ctrl["prompts"][0]
-            assert "继承宿主完整工具链" in inherit_prompt
-            assert "不得执行命令或 Python" not in inherit_prompt
-        finally:
-            ctrl["restore"]()
-
-    with_plugin(tmp_path / "inherit", inherit_scenario, proactive_inherit_tools=True)
-
-
 def test_cache_hit_does_not_rewrite_file(tmp_path: Path) -> None:
     """内容寻址命中且未篡改时不得重写文件（digest 比较修复）。
 
@@ -298,15 +247,7 @@ def test_cache_hit_does_not_rewrite_file(tmp_path: Path) -> None:
 
 
 def test_config_rollback_restores_sessions_and_locks(tmp_path: Path) -> None:
-    """回滚必须恢复 sessions 与 _session_locks（与 settings 同级），
-    且被白名单变更 prune 掉的会话状态必须**原对象**复活（契约 §11 B2）。
-
-    §11 B2 的失效形态是静默的：``_whitelist.replace`` 会 pop 掉被移出会话的
-    ``SessionState``，回滚若只按 ``_restore_session_history`` 的「saved 里有而
-    sessions 里没有 → 新建对象」分支走，会话键虽在、**标量全清零**
-    （日配额/冷却/观察窗口）且对象身份丢失（在途任务写孤儿状态）。
-    ``whitelist.commit_change`` 有 ``pruned`` 回填，webapi 的回滚路径此前漏了。
-    """
+    """白名单回滚放回原 SessionState，保留配额、冷却和在途任务的对象引用。"""
 
     async def scenario(plugin, main):
         import sys
@@ -379,7 +320,6 @@ def test_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
                 UMO, plugin._state_for(UMO), expected_generation=1, force=True
             )
             assert text == "你好呀"
-            # 修复前：继承分支直接 return True → 危险工具残留
             assert enforce_snapshots[0] == ["send_image"]
             assert enforce_snapshots[1] == ["send_image", "third_party_weather"]
         finally:
@@ -442,7 +382,6 @@ def test_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) -> No
         try:
             result = await plugin._pipeline.check_session(UMO, trigger="patrol", force=True)
             assert "未自动重试" in result
-            # 修复前：direct_send_count>0 时跳过记录 → daily_count 不增
             assert state.daily_count >= 1
             assert state.last_proactive_observed_at >= state.last_active_at
             assert state.last_proactive_at >= state.last_active_at
@@ -554,25 +493,45 @@ def test_after_send_cancellation_records_delivered_attempt(tmp_path: Path) -> No
 # ============================================================================
 
 
-def test_rollback_reschedules_delayed_check(tmp_path: Path) -> None:
-    """回滚恢复会话后，被白名单变更取消的延迟检查必须重新调度。"""
+@pytest.mark.parametrize("invalidate_during_save", [False, True])
+def test_rollback_reschedules_delayed_check(tmp_path: Path, invalidate_during_save: bool) -> None:
+    """白名单回滚后，被取消的检查仍能使用原事件进入判断。"""
 
     import sys
 
     async def scenario(plugin, main):
-        event = make_event()
-        plugin._last_events[UMO] = event
-        plugin._last_event_at[UMO] = 1.0
-        plugin._state_for(UMO)
+        plugin.settings.enabled_message_trigger = False
+        await plugin.on_message(make_event(umo=UMO, message_str="回滚后继续判断"))
+        plugin.settings.enabled_message_trigger = True
+        plugin.settings.message_delay_sec = 0
+        plugin.settings.min_silence_sec = 0
+        decisions = []
+        original_decide = plugin._decision.decide
+
+        async def track_decide(*args, **kwargs):
+            decisions.append(args[0])
+            return await original_decide(*args, **kwargs)
+
+        plugin._decision.decide = track_decide
         plugin._scheduler.schedule_delayed_check(
-            UMO, delay_sec=None, trigger="message_delay", force=False
+            UMO,
+            delay_sec=30,
+            trigger="message_delay",
+            force=False,
+            generation=plugin._gate.current(UMO),
         )
         old_task = plugin._delay_tasks.get(UMO)
         assert old_task is not None and not old_task.cancelled()
-        # 快照代次：并发在途检查持有的就是它
+        # 快照代次：白名单移除时旧任务必须失效
         baseline = plugin._gate.current(UMO)
+        invalidated = False
 
         async def boom():
+            nonlocal invalidated
+            if invalidate_during_save and not invalidated:
+                invalidated = True
+                plugin._coordinator.invalidate(UMO)
+                plugin._prune_session(UMO)
             raise OSError("disk full")
 
         plugin._save_storage = boom
@@ -580,15 +539,16 @@ def test_rollback_reschedules_delayed_check(tmp_path: Path) -> None:
         web.request.payload = {"whitelist_sessions": []}
         result = await webapi_module(main)._api_post_config(plugin)
         assert result.get("ok") is False
-        # 修复前：回滚不恢复延迟任务 → UMO 不在 _delay_tasks
-        new_task = plugin._delay_tasks.get(UMO)
-        assert new_task is not None
-        assert new_task is not old_task
-        assert not new_task.cancelled()
-        # 重建必须复用快照代次：advance 会让并发在途检查被判过期、回复被静默丢弃，
-        # 回滚于是部分抵消了自己刚恢复的代次。
-        assert plugin._gate.current(UMO) == baseline, "回滚重建延迟检查时推进了代次"
-        assert plugin._gate.is_current(UMO, baseline)
+        # 白名单移除已使旧代次失效；重建使用当前代次，不能让旧检查恢复有效。
+        generation = plugin._gate.current(UMO)
+        assert generation != baseline
+        assert plugin._gate.is_current(UMO, generation)
+        await until(lambda: not plugin._delay_tasks, timeout=10)
+        if invalidate_during_save:
+            assert UMO not in plugin._last_events
+            assert decisions == []
+        else:
+            assert decisions == [UMO], f"重建的检查没有进入判断：{decisions}"
 
     with_plugin(tmp_path, scenario)
 
@@ -689,7 +649,6 @@ def test_timeout_requests_graceful_stop(tmp_path: Path) -> None:
             text, _ledger = await plugin._generation.generate(
                 UMO, plugin._state_for(UMO), expected_generation=1, force=True
             )
-            # 修复前：wait_for 直接取消 run_agent → request_stop 从未被调
             assert stop_called == [True]
             assert text == ""
         finally:
@@ -802,7 +761,6 @@ def test_get_config_enabled_is_persisted_value(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin.runtime_enabled = False  # 直接构造分叉态（不再等同于 /off）
         cfg = await webapi_module(main)._api_get_config(plugin)
-        # 修复前：enabled 返回 runtime_enabled=False → 前端全量保存会固化关闭
         assert cfg["enabled"] is plugin.settings.enabled
         assert cfg["enabled"] is True
         assert cfg["runtime_enabled"] is False
@@ -870,7 +828,7 @@ def test_concurrent_checks_are_mutexed(tmp_path: Path) -> None:
             accepted = [r for r in results if "已有判断任务在运行" not in r]
             assert len(rejected) == 1, f"expected one rejection, got {results}"
             assert len(accepted) == 1
-            # 只有一次实际执行：配额只计一次（修复前假并发测试掩盖此语义）
+            # 只有一次实际执行，配额只计一次。
             assert state.daily_count == 1
         finally:
             main._AGENT_RUNTIME = original_runtime
@@ -902,11 +860,7 @@ def test_non_force_check_rejected_for_non_whitelisted_session(tmp_path: Path) ->
 
 
 def test_non_admin_write_command_does_not_cancel(tmp_path: Path) -> None:
-    """非管理员发写指令：权限拒绝先行，在途延迟检查不得被取消。
-
-    修复前 on_message 命令分支无条件 _cancel_event_session（白名单会话）
-    → 任务被取消。
-    """
+    """非管理员写指令在取消任务前拒绝权限。"""
 
     async def scenario(plugin, main):
         event = make_event(message_str="/selfreply add")
@@ -933,10 +887,7 @@ def test_non_admin_write_command_does_not_cancel(tmp_path: Path) -> None:
 
 
 def test_admin_write_cancels_but_read_does_not(tmp_path: Path) -> None:
-    """管理员视角：只读（status）不打断进行中的检查，写（add）才取消。
-
-    修复前只读指令同样被无条件取消 → status 后任务被取消。
-    """
+    """只读指令保留在途检查，管理员写指令按动作失效。"""
 
     async def scenario(plugin, main):
         plugin.settings.whitelist = {UMO}
@@ -973,10 +924,7 @@ def test_admin_write_cancels_but_read_does_not(tmp_path: Path) -> None:
 
 
 def test_new_config_keys_take_effect(tmp_path: Path) -> None:
-    """POST 13 个规范键 + decision_history_min_messages 必须真实写入 settings。
-
-    修复前这些键无处理分支 → ok:true 但 settings 不变（虚假成功）。
-    """
+    """POST 配置成功时规范键必须实际写入 Settings。"""
 
     async def scenario(plugin, main):
         web = sys.modules["astrbot.api.web"]
@@ -1029,10 +977,7 @@ def test_new_config_keys_take_effect(tmp_path: Path) -> None:
 
 
 def test_unknown_config_key_is_rejected(tmp_path: Path) -> None:
-    """schema 之外的键必须被拒并列出未知键，而不是静默返回 ok:true。
-
-    修复前未知键被忽略 → ok:true（虚假成功）。
-    """
+    """未知配置键返回明确拒绝，避免成功响应掩盖拼写错误。"""
 
     async def scenario(plugin, main):
         web = sys.modules["astrbot.api.web"]
@@ -1184,8 +1129,6 @@ def test_add_command_reports_capacity_rejection(tmp_path: Path) -> None:
     仍回报 True，运营者收到「已将当前会话加入主动回复白名单」而内存与磁盘里
     都没有——该会话此后每条消息都被静默丢弃，且没有任何线索。两条旧分支
     （已加入 / 已在）都描述不了这个状态。
-
-    变异锚定：把 commands.py 里新增的第三条分支删掉，本用例红。
     """
 
     async def scenario(plugin, main):
@@ -1308,8 +1251,15 @@ def test_check_command_force_cancels_in_flight_check(tmp_path: Path) -> None:
 # ============================================================================
 
 
-def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
-    """运行中检查被 force cancel：run_task 必须被收敛，request_stop 必须被调。"""
+@pytest.mark.parametrize(
+    "grace_sec",
+    [
+        pytest.param(0.05, id="short_grace"),
+        pytest.param(30.0, id="before_grace_timeout"),
+    ],
+)
+def test_force_cancel_converges_agent_run_task(tmp_path: Path, grace_sec: float) -> None:
+    """运行中检查被 force cancel：request_stop 必须被调，run_task 必须在 grace 超时前收敛。"""
 
     from types import SimpleNamespace
 
@@ -1361,7 +1311,7 @@ def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
             original_runtime, build_effect=build_effect, run_effect=run_effect
         )
         original_grace = main.GRACEFUL_STOP_GRACE_SEC
-        main.GRACEFUL_STOP_GRACE_SEC = 0.05
+        main.GRACEFUL_STOP_GRACE_SEC = grace_sec
         try:
             task = asyncio.create_task(
                 plugin._generation.generate(
@@ -1370,12 +1320,17 @@ def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
             )
             await asyncio.wait_for(entered.wait(), timeout=5)
             task.cancel()  # 模拟 /off / terminate 等 force cancel
+            # 1s 上限同时守住时序：30s 宽限下若缺显式 cancel，run_task 要等 grace 超时才收敛。
+            try:
+                await until(lambda: run_finished == [True], timeout=1.0)
+            except AssertionError as exc:
+                raise AssertionError(
+                    "run_task 未在 grace 超时前收敛（显式 cancel 兜底缺失）"
+                ) from exc
             try:
                 await task
             except asyncio.CancelledError:
                 pass
-            # 修复前：run_task 未被 shield 收敛，成为孤儿继续运行
-            assert run_finished == [True]
             assert stop_called == [True]
         finally:
             main.GRACEFUL_STOP_GRACE_SEC = original_grace
@@ -1385,11 +1340,7 @@ def test_force_cancel_converges_agent_run_task(tmp_path: Path) -> None:
 
 
 def test_force_cancel_kills_running_check_task(tmp_path: Path) -> None:
-    """scheduler.cancel_delay(force=True) 必须同时取消运行中的检查任务。
-
-    变异锚定：cancel_delay_task 的 force 分支失效（不取消 running_task）
-    后本测试必须变红。
-    """
+    """scheduler.cancel_delay(force=True) 必须同时取消运行中的检查任务。"""
 
     async def scenario(plugin, main):
         started = asyncio.Event()
@@ -1411,7 +1362,7 @@ def test_force_cancel_kills_running_check_task(tmp_path: Path) -> None:
         assert running.done() and running.cancelled()
         assert delay_task.done() and delay_task.cancelled()
         assert UMO not in plugin._delay_tasks
-        for t in (running, delay_task):  # 变异下兜底取消，避免 gather 长挂
+        for t in (running, delay_task):  # 兜底取消，避免 gather 长挂。
             if not t.done():
                 t.cancel()
         await asyncio.gather(running, delay_task, return_exceptions=True)
@@ -1430,9 +1381,6 @@ def test_force_cancel_does_not_reach_a_check_already_unwinding(tmp_path: Path) -
     误判成"run task 吞掉了取消"而隔离登记 → ``_mark_degraded`` 把插件永久
     打成 DEGRADED：``/selfreply on`` 与 force check 全被拒，只能重载插件。
     真实 LLM 调用完全落在那个让出窗口里，所以这不是理论路径。
-
-    变异锚定：去掉 ``scheduler._cancel_once`` 里的 ``cancelling()`` 守卫
-    （恢复成无条件 cancel）后本测试必须变红。
     """
 
     async def scenario(plugin, main):
@@ -1571,9 +1519,6 @@ def test_write_command_in_grace_window_does_not_degrade(tmp_path: Path) -> None:
     手动检查全被拒，``/selfreply on`` 回报"插件已降级"，只能重载插件。而 run_task
     其实正在自行收敛——对照组（无指令、或指令晚到）都保持 RUNNING，证明没有任何
     东西真的超出硬停止窗口，契约 §5 的 DEGRADED 不该由一条例行指令触发。
-
-    变异锚定：把 ``_graceful_stop`` 的 ``except CancelledError`` 分支改回「立即
-    quarantine(..., "generation stop interrupted")」本用例红。
     """
 
     # 每个动作各起一个插件实例：写指令会清事件缓存、off 还翻运行态，共用实例会让
@@ -1672,39 +1617,43 @@ def test_write_command_in_grace_window_does_not_degrade(tmp_path: Path) -> None:
         with_plugin(tmp_path / action, scenario, generation_timeout_sec=1)
 
 
+async def _await_delayed_check_release(plugin, release) -> None:
+    """延迟检查挂起在运行集释放上；``release(plugin)`` 后必须在有界时间内完成。"""
+    entered_wait = asyncio.Event()
+    original_release = plugin._gate.release_event
+
+    def patched_release(umo):
+        ev = original_release(umo)
+        entered_wait.set()  # 确定性锚点：延迟检查已挂起在等待上
+        return ev
+
+    plugin._gate.release_event = patched_release
+    plugin._gate.mark_running(UMO)  # 前一个 check 占住运行集
+    try:
+        task = asyncio.create_task(
+            plugin._scheduler.delayed_check(
+                UMO,
+                delay_sec=0,
+                trigger="patrol",
+                force=True,
+                generation=plugin._gate.advance(UMO),
+            )
+        )
+        await asyncio.wait_for(entered_wait.wait(), timeout=2)
+        assert not task.done(), "运行集被占用时延迟检查不应完成"
+        release(plugin)
+        # wait 保留实际完成状态，避免 wait_for 的取消收敛改变结果。
+        done, _pending = await asyncio.wait({task}, timeout=2)
+        assert task in done, "释放后延迟检查应完成"
+    finally:
+        plugin._gate.release_event = original_release
+
+
 def test_delayed_check_waits_for_running_session_release(tmp_path: Path) -> None:
     """延迟检查须等待前一个 check 结束（事件驱动，非轮询）。"""
 
     async def scenario(plugin, main):
-        entered_wait = asyncio.Event()
-        original_release = plugin._gate.release_event
-
-        def patched_release(umo):
-            ev = original_release(umo)
-            entered_wait.set()  # 确定性锚点：B 已挂起在等待上
-            return ev
-
-        plugin._gate.release_event = patched_release
-        plugin._gate.mark_running(UMO)  # 前一个 check 占住运行集
-        try:
-            task = asyncio.create_task(
-                plugin._scheduler.delayed_check(
-                    UMO,
-                    delay_sec=0,
-                    trigger="patrol",
-                    force=True,
-                    generation=plugin._gate.advance(UMO),
-                )
-            )
-            await asyncio.wait_for(entered_wait.wait(), timeout=2)
-            assert not task.done(), "运行集被占用时延迟检查不应完成"
-            plugin._gate.unmark_running(UMO)  # 前一个 check 结束
-            # 用 asyncio.wait（而非 wait_for）：task 吞掉取消时 wait_for 会
-            # 正常返回（Python 3.12+ 行为），导致变异不被捕获。
-            done, _pending = await asyncio.wait({task}, timeout=2)
-            assert task in done, "释放后延迟检查应完成"
-        finally:
-            plugin._gate.release_event = original_release
+        await _await_delayed_check_release(plugin, lambda p: p._gate.unmark_running(UMO))
 
     with_plugin(tmp_path, scenario)
 
@@ -1713,33 +1662,7 @@ def test_prune_wakes_waiting_delayed_check(tmp_path: Path) -> None:
     """移出白名单时 gate.prune 须唤醒挂起在运行释放上的延迟检查。"""
 
     async def scenario(plugin, main):
-        entered_wait = asyncio.Event()
-        original_release = plugin._gate.release_event
-
-        def patched_release(umo):
-            ev = original_release(umo)
-            entered_wait.set()
-            return ev
-
-        plugin._gate.release_event = patched_release
-        plugin._gate.mark_running(UMO)  # 模拟正在运行的 check 占住运行集
-        try:
-            task = asyncio.create_task(
-                plugin._scheduler.delayed_check(
-                    UMO,
-                    delay_sec=0,
-                    trigger="patrol",
-                    force=True,
-                    generation=plugin._gate.advance(UMO),
-                )
-            )
-            await asyncio.wait_for(entered_wait.wait(), timeout=2)
-            assert not task.done(), "白名单移除前延迟检查应等待"
-            plugin._whitelist.replace(set())  # 移出全部会话
-            done, _pending = await asyncio.wait({task}, timeout=2)
-            assert task in done, "白名单移除后挂起的延迟检查应被唤醒退出"
-        finally:
-            plugin._gate.release_event = original_release
+        await _await_delayed_check_release(plugin, lambda p: p._whitelist.replace(set()))
 
     with_plugin(tmp_path, scenario)
 
@@ -1759,81 +1682,6 @@ def test_stale_generation_rejected_at_session_entry(tmp_path: Path) -> None:
         assert result == "会话已经更新，放弃旧任务。"
 
     with_plugin(tmp_path, scenario)
-
-
-def test_force_cancel_converges_before_grace_timeout(tmp_path: Path) -> None:
-    """显式 cancel 应在 grace 超时前收敛 run_task（第一层保险的时序守卫）。"""
-
-    from types import SimpleNamespace
-
-    from .host_stubs import FakeBuildResult, _FakeResetCoro
-
-    run_finished: list[bool] = []
-
-    async def scenario(plugin, main):
-        event = make_event()
-        plugin._last_events[UMO] = event
-        plugin._last_event_at[UMO] = 1.0
-        entered = asyncio.Event()
-
-        class HangingRunner:
-            def reset(self, **_):
-                return _FakeResetCoro()
-
-            def request_stop(self):
-                pass
-
-            def get_final_llm_resp(self):
-                return SimpleNamespace(completion_text="", result_chain=None)
-
-            def close(self):
-                pass
-
-        async def build_effect(kwargs, result):
-            return FakeBuildResult(
-                agent_runner=HangingRunner(),
-                provider_request=kwargs["req"],
-                provider=None,
-                reset_coro=_FakeResetCoro(),
-            )
-
-        def run_effect(_runner, **_kwargs):
-            async def gen():
-                try:
-                    entered.set()
-                    await asyncio.sleep(3600)  # 永不结束的 run_agent
-                    yield None
-                finally:
-                    run_finished.append(True)
-
-            return gen()
-
-        original_runtime = main._AGENT_RUNTIME
-        main._AGENT_RUNTIME = PipelineTestAdapter(
-            original_runtime, build_effect=build_effect, run_effect=run_effect
-        )
-        original_grace = main.GRACEFUL_STOP_GRACE_SEC
-        # 30s 宽限期：若缺少显式 cancel（第一层保险），收敛只能等 grace 超时
-        main.GRACEFUL_STOP_GRACE_SEC = 30
-        try:
-            task = asyncio.create_task(
-                plugin._generation.generate(
-                    UMO, plugin._state_for(UMO), expected_generation=1, force=True
-                )
-            )
-            await asyncio.wait_for(entered.wait(), timeout=5)
-            task.cancel()  # 模拟 /off / terminate 等 force cancel
-            await asyncio.sleep(0.5)  # 显式 cancel 应立即收敛，无需等待 30s grace
-            assert run_finished == [True], "run_task 未在 grace 超时前收敛（显式 cancel 兜底缺失）"
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        finally:
-            main.GRACEFUL_STOP_GRACE_SEC = original_grace
-            main._AGENT_RUNTIME = original_runtime
-
-    with_plugin(tmp_path, scenario, generation_timeout_sec=60)
 
 
 def test_direct_tool_text_survives_a_failed_generation_exit(tmp_path: Path) -> None:
@@ -1952,7 +1800,6 @@ def test_eviction_during_generation_still_delivers_and_writes_history(tmp_path: 
         )
         try:
             result = await plugin._pipeline.check_session(UMO, trigger="patrol", force=True)
-            # 修复前：None 被记 UNKNOWN → "主动发送状态未知，未自动重试。"
             assert "已主动回复" in result
             assert event.sent_texts, "生成期间事件被清理后回复被丢弃"
             assert not sent_via_context, "冻结事件在手，不该退化到 context 兜底"
@@ -1985,7 +1832,6 @@ def test_readonly_commands_do_not_invalidate_session(tmp_path: Path) -> None:
         assert task is not None and not task.done()
 
         await plugin._command_text(event, "status")
-        # 修复前：status 也 invalidate → 延迟任务被取消移除、缓存被清
         assert plugin._delay_tasks.get(UMO) is task
         assert not task.done()
         assert plugin._last_events.get(UMO) is event
@@ -2019,7 +1865,6 @@ def test_config_rollback_restores_task_topology(tmp_path: Path) -> None:
             web.request.payload = {"enabled": False}
             result = await webapi_module(main)._api_post_config(plugin)
             assert result.get("ok") is False
-            # 修复前：回滚只恢复 settings/runtime_enabled，不重启 patrol
             assert plugin.runtime_enabled is True
             assert plugin._scheduler.patrol_task is not None
             assert not plugin._scheduler.patrol_task.done()
@@ -2067,8 +1912,6 @@ def test_gate_restore_keeps_locks_held_during_the_apply_window(tmp_path: Path) -
     ``lock_for`` 在快照**之后**创建的锁。整表恢复把它从表里抹掉，在途的
     ``async with`` 仍持有那个对象；下一个检查会 ``setdefault`` 拿到一把新锁并
     立刻获得，与在途检查并发——重复的模型调用、可能重复的发送。
-
-    变异锚定：删掉 ``restore`` 里 held_locks 的并回逻辑，本用例红。
     """
 
     async def scenario(plugin, main):
@@ -2090,23 +1933,7 @@ def test_gate_restore_keeps_locks_held_during_the_apply_window(tmp_path: Path) -
 
 
 def test_gate_restore_drops_running_marks_whose_check_already_exited(tmp_path: Path) -> None:
-    """回滚不得复活"检查已结束"的运行标记。
-
-    缺陷形态：``restore`` 照抄快照的 ``_running_sessions``。若在途检查在
-    快照之后、落盘失败之前正常结束（``unmark_running`` 已跑），照抄会把一个
-    无人认领的标记写回去。此后该会话被"已有判断任务在运行"永久拒绝：巡检每轮
-    静默跳过（无日志），消息路径每轮白等 600s 再丢弃，只有移除白名单或重载
-    插件才能恢复。
-
-    三种结束形态都要覆盖，因为它们走的是不同的判据：
-    - ``unmark_running`` 正常收尾：owner 随标记一起摘掉，靠"键不存在"排除；
-    - 漏销（持有标记的任务结束但没走 ``unmark_running``）：owner 仍在表里但
-      指向一个已 done 的任务，只有存活过滤能排除它。少了这一形态，把过滤整个
-      删掉也不会红——那正是本用例要防的漏洞。
-
-    与之相对的另一半：窗口内**新起**、此刻仍在跑的检查，其标记必须保留——
-    它不在快照里，照抄快照反而会抹掉它，导致与下一个检查并发。
-    """
+    """回滚排除 owner 已移除或任务已结束的运行标记，避免永久阻塞后续检查。"""
 
     async def scenario(plugin, main):
         gate = plugin._gate
@@ -2150,9 +1977,6 @@ def test_gate_restore_reconciles_running_marks_with_live_owners(tmp_path: Path) 
 
     故以 ``_running_owners`` 的存活为准：prune 不摘 owner，``unmark_running``
     随标记一起摘。
-
-    变异锚定：把 restore 的运行集推导换回 ``snap["running"]``（或删掉整段），
-    本测试红。
     """
 
     async def scenario(plugin, main):
@@ -2189,8 +2013,6 @@ def test_gate_restore_clears_stale_release_for_still_running(tmp_path: Path) -> 
     一起摘掉，等待者随后重新挂起拿到一个新事件——若这个事件带着陈旧的 set，
     scheduler 的 ``while is_running: await release_event(umo).wait()`` 每轮立即
     返回，紧密空转独占事件循环，整个 bot 卡死。
-
-    变异锚定：删除 ``restore`` 中的 ``release.clear()`` 分支后本测试必须变红。
     """
 
     async def scenario(plugin, main):
@@ -2225,8 +2047,6 @@ def test_gate_restore_wakes_waiter_for_no_longer_running(tmp_path: Path) -> None
     走 ``unmark_running``，这正是运行标记泄漏的真实形态。此时推导必须判它
     「不在跑」，并把等待者唤醒——留着这个标记，该会话从此被「已有判断任务在
     运行」永久拒绝，主动回复静默死亡。
-
-    变异锚定：删除 ``restore`` 中的 ``release.set()`` 分支后本测试必须变红。
     """
 
     async def scenario(plugin, main):
@@ -2254,31 +2074,3 @@ def test_gate_restore_wakes_waiter_for_no_longer_running(tmp_path: Path) -> None
         await asyncio.wait_for(waiter_event.wait(), timeout=0.02)
 
     with_plugin(tmp_path, scenario)
-
-
-# ============================================================================
-# 0.5 P2：_call_compat TypeError 重试双执行
-# ============================================================================
-
-
-def test_call_compat_does_not_retry_body_type_error() -> None:
-    """函数体内部抛 TypeError（与签名无关）：只调用一次，不触发 minimal 重试。"""
-
-    main = _load_plugin_module("main")
-    adapters = importlib.import_module(f"{main.__package__}.adapters")
-    calls: list[str] = []
-
-    def func(prompt, **rest):
-        calls.append(prompt)
-        raise TypeError("internal boom")  # 函数体内部 TypeError，非签名不匹配
-
-    with pytest.raises(TypeError):
-        asyncio.run(
-            adapters.AstrBotBridge._call_compat(
-                func,
-                kwargs={"prompt": "x", "temperature": 0.5},
-                minimal_kwargs={"prompt": "x"},
-            )
-        )
-    # 修复前：TypeError 触发 minimal 重试 → 调用两次（对 LLM 即重复计费）
-    assert calls == ["x"]

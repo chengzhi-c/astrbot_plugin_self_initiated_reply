@@ -22,7 +22,6 @@ from .models import (
     LEAK_WARN_SESSION_THRESHOLD,
     LEAK_WARN_TASK_THRESHOLD,
     MAX_CACHED_EVENTS,
-    MAX_PATROL_INACTIVE_SEC,
     MAX_RELEASE_WAIT_ROUNDS,
     MIN_VISION_IMAGE_AGE_SEC,
     PATROL_BACKOFF_DELAY_SEC,
@@ -431,7 +430,12 @@ class SessionScheduler:
     def cleanup_events_if_needed(self) -> None:
         """定期清理没有任务或运行中的陈旧事件。"""
         now = now_ts()
-        if now - self._last_cleanup < EVENT_CLEANUP_INTERVAL_SEC:
+        # 条数上限与时间节流解耦：上限是硬约束，超了必须立刻收，否则一个清理
+        # 周期内的条数上界退化为白名单规模（文档上限的十倍）。热路径每条消息
+        # 调一次，未超限时只多一次 len() 比较。
+        if len(self._last_events) <= MAX_CACHED_EVENTS and (
+            now - self._last_cleanup < EVENT_CLEANUP_INTERVAL_SEC
+        ):
             return
         self._last_cleanup = now
 
@@ -454,7 +458,11 @@ class SessionScheduler:
         # 0 的语义是"不截断"（面板如此承诺），直接进 max() 会被抬成 1 小时：
         # 事件先被回收，_patrol_one_session 随后因"没有可用的最近消息事件"永久
         # 跳过该会话。折算成规格上限仍是有限窗口，条数另由 MAX_CACHED_EVENTS 兜底。
-        patrol_window = self.settings.patrol_inactive_after_sec or MAX_PATROL_INACTIVE_SEC
+        patrol_window = (
+            float("inf")
+            if self.settings.patrol_inactive_after_sec == 0
+            else self.settings.patrol_inactive_after_sec
+        )
         stale_cutoff = max(EVENT_CLEANUP_INTERVAL_SEC, patrol_window)
         stale = [item for item in removable if now - item[0] >= stale_cutoff]
         for active_at, umo in stale:
@@ -644,12 +652,28 @@ class SessionScheduler:
             if self._gate.is_running(umo):
                 return
             generation = self._gate.current(umo)
-            result = await self._check_session(
-                umo,
-                trigger=CheckTrigger.PATROL,
-                force=False,
-                expected_generation=generation,
+            # 走 _run_registered_check 并起独立任务：巡检检查必须登记进
+            # _running_check_tasks，/selfreply check 的 force_cancel 才取消得到它，
+            # 否则手动检查只能等它自然跑完，最终返回「已有判断任务在运行。」。
+            task = self._spawn(
+                self._run_registered_check(
+                    umo,
+                    trigger=CheckTrigger.PATROL,
+                    force=False,
+                    generation=generation,
+                )
             )
+            if task is None:
+                return
+            try:
+                result = await task
+            except asyncio.CancelledError:
+                # 子检查被 force_cancel 取消属单会话收敛，不能连坐巡检循环；
+                # 只有循环自身被取消（stop_patrol/插件停止）才向上抛。
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                return
             logger.debug(
                 "[%s] patrol result session=%s result=%s",
                 PLUGIN_ID,

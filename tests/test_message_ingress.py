@@ -1,10 +1,4 @@
-"""消息入口闸门：message_ingress.handle_incoming_message 的六道守卫。
-
-这个模块此前只被间接覆盖（经 main.on_message 的集成用例），六道早退没有任何
-用例直接锚定：把任一道删掉/改坏，全量套件仍然全绿。它们各自都是用户可见开关
-或资源边界，删掉的后果分别是「开关失效」「内存无上限增长」「过期上下文接话」
-「对空气回复」「重复回应」「非白名单会话占状态」，故在此逐条钉住。
-"""
+"""消息入口的开关、事件资格和资源边界。"""
 
 from __future__ import annotations
 
@@ -28,9 +22,6 @@ def test_message_trigger_switch_off_schedules_no_check(tmp_path) -> None:
     缺陷形态：``_schedule_message_check`` 开头的早退是该开关的唯一执行点
     （``session_check_guard`` 不查它）。删掉早退后开关变成空转——用户以为
     关了消息触发，机器人仍对每条白名单消息主动接话。
-
-    变异锚定：把 ``if not plugin.settings.enabled_message_trigger: return``
-    的条件改成恒真取反，本用例红。
     """
 
     async def scenario(plugin, main):
@@ -50,9 +41,6 @@ def test_message_path_runs_event_cleanup(tmp_path) -> None:
     是默认配置下唯一的回收点（另一处只在巡检循环里，由默认关闭的
     ``enabled_patrol_trigger`` 把守）。删掉它，每个进过插件的会话各留一份事件
     与裁决条目，``GET /status`` 的回显随会话数单调变大。
-
-    变异锚定：删掉 ``plugin._scheduler.cleanup_events_if_needed()`` 这一行，
-    本用例红。
     """
 
     async def scenario(plugin, main):
@@ -80,10 +68,6 @@ def test_ignored_message_invalidates_stale_reply(tmp_path) -> None:
     唯一的代次推进路径——这两类消息都在 ``_record_message`` 之前返回。删掉它，
     群里被拉黑的人发言或有人刷贴纸时，上一轮已经排好的主动回复不作废，机器人
     拿着过期上下文接话，甚至回复到已经翻篇的话题上（契约 §6.3）。
-
-    变异锚定：把 ``if plugin.settings.abandon_stale_on_new_message:`` 的条件
-    改成恒假，本用例红；把它改回 ``_coordinator.invalidate(umo)``，
-    最近事件断言红（契约 §8）。
     """
 
     async def scenario(plugin, main):
@@ -117,8 +101,6 @@ def test_empty_message_is_rejected(tmp_path) -> None:
     ``empty=True``。删掉那道早退，函数落到 ``return clean_text or "[图片]"``，
     一条没有内容的消息被当成图片消息记进历史并触发延迟检查——机器人可能对空气
     主动回复，历史里还会出现假的 ``[图片]``。
-
-    变异锚定：把 ``if empty: return None`` 的条件改成恒假，本用例红。
     """
 
     async def scenario(plugin, main):
@@ -140,8 +122,6 @@ def test_stopped_event_is_dropped(tmp_path) -> None:
     生态里指令框架、过滤器会 ``event.stop()``，本插件装在同一个事件流上；
     删掉这道闸，别人已经接走的消息仍被记状态、排延迟检查，可能和另一个插件
     重复回应。
-
-    变异锚定：删掉 ``or event.is_stopped()`` 子句，本用例红。
     """
 
     async def scenario(plugin, main):
@@ -163,9 +143,6 @@ def test_non_whitelisted_session_is_dropped(tmp_path) -> None:
     群/私聊，每条消息都写进 ``_whitelist_runtime_umos``、事件缓存与落盘状态。
     发送最终仍被 ``session_check_guard`` 挡住（所以不外发），但内存与磁盘被白白
     占用，``GET /status`` 的会话计数也会虚高。
-
-    变异锚定：把 ``if not session_whitelisted(...): return None`` 的条件改成
-    恒假，本用例红。
     """
 
     outsider = "fake:group:999"

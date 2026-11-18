@@ -81,7 +81,7 @@ async function serveStatic(request, response) {
 
 async function installBridge(page, options = {}) {
   await page.addInitScript(
-  ({ config, providers, providersFail, saveMode, theme, dim, bold, refreshConfigPending, themePending, cleanupRemoved, cleanupFail, readyFails }) => {
+  ({ config, providers, providersFail, saveMode, theme, dim, bold, refreshConfigPending, themePending, themePostPending, cleanupRemoved, cleanupFail, readyFails }) => {
       const state = {
         saveMode,
         saveAttempts: 0,
@@ -91,11 +91,14 @@ async function installBridge(page, options = {}) {
         providersFail,
         refreshConfigPending,
         themePending,
+        themePostAttempts: 0,
+        themePostPending,
         cleanupRemoved,
         cleanupFail,
         readyFails,
       };
       window.__bridgeCalls = [];
+      window.__appliedThemeWrites = [];
       window.__bridgeState = state;
       window.AstrBotPluginPage = {
         ready: async () => {
@@ -183,6 +186,22 @@ async function installBridge(page, options = {}) {
               adjusted_fields: state.saveMode === "adjusted" ? ["whitelist_sessions"] : [],
             };
           }
+          if (endpoint === "ui/theme") {
+            state.themePostAttempts += 1;
+            // 落盘时刻即响应返回时刻：两笔写入乱序到达靠这个顺序复现。
+            const land = () => window.__appliedThemeWrites.push(body || {});
+            const response = { ok: true, theme: body?.theme || "auto", removed: 0 };
+            if (state.themePostPending && state.themePostAttempts === 1) {
+              return new Promise((resolve) => {
+                window.__resolveThemePost = () => {
+                  land();
+                  resolve(response);
+                };
+              });
+            }
+            land();
+            return response;
+          }
           if (endpoint === "image-cache/cleanup") {
             // 失败场景走后端 {"ok": false, "error": ...} 形状：前端靠 ok !== true
             // 抛错，不是靠 HTTP 状态码。
@@ -203,6 +222,7 @@ async function installBridge(page, options = {}) {
       bold: Boolean(options.bold),
       refreshConfigPending: Boolean(options.refreshConfigPending),
       themePending: Boolean(options.themePending),
+      themePostPending: Boolean(options.themePostPending),
       cleanupRemoved: options.cleanupRemoved ?? 0,
       cleanupFail: Boolean(options.cleanupFail),
       readyFails: Boolean(options.readyFails),
@@ -217,12 +237,7 @@ async function openPage(page, query = "") {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
   });
   await page.goto(`${baseUrl}${PAGE_PATH}${query}`);
-  // 首屏等待预算显式放宽到页面的看门狗量级（app.js BOOT_TIMEOUT_MS = 12s）。
-  // 默认 5s（playwright.config 的 expect.timeout）是**断言**预算，不是加载预算：
-  // 本套件绝大多数用例共用本 helper，负载高时偶发首屏超过 5s，失败点随机落在当时那条
-  // 用例上（实测 12 轮全量里 2 次，分别报在 893 与 1412 两条互不相干的用例上）。
-  // 这不放松任何断言，页面真加载失败时看门狗仍会隐藏 boot，随后各用例自己的
-  // 读值/toast/errors 断言照旧失败。
+  // 首屏等待采用页面启动预算；控件读值和交互仍使用各自的断言预算。
   await expect(page.locator("#boot")).toHaveClass(/is-hidden/, {
     timeout: BOOT_WAIT_MS,
   });
@@ -280,7 +295,7 @@ for (const variant of [
   });
 }
 
-test("pending save restores the form and a second save succeeds", async ({ page }) => {
+test("an unknown save state remains recoverable without replaying the write", async ({ page }) => {
   await installBridge(page, { saveMode: "pending" });
   const errors = await openPage(page);
   await page.evaluate((timeoutMs) => {
@@ -400,10 +415,7 @@ test("forced refresh also preserves edits made after the request starts", async 
 });
 
 test("a late refresh does not overwrite an edit that was saved meanwhile", async ({ page }) => {
-  // 回归守卫：保存成功后 setDirty(false) 不推进 editEpoch。若刷新开始前表单
-  // 已脏（loadStartedDirty=true），迟到响应到达时 isDirty 已回落，守卫会放行，
-  // 把已保存的值覆盖回刷新请求发出时的旧快照，configRevision 也一并回退，
-  // 下一次保存必撞 STALE_WRITE。
+  // 保存完成后仍须拒绝迟到的旧快照，避免配置值和 revision 一起回退。
   await installBridge(page, { refreshConfigPending: true });
   const errors = await openPage(page);
 
@@ -465,11 +477,7 @@ test("saving returns keyboard focus to the triggering button", async ({ page }) 
 });
 
 test("a late refresh on a form edited after the save names the pending edits", async ({ page }) => {
-  // 上一条守"保存后表单已干净"的中性口径，这一条守它的另一半：保存成功后用户
-  // 又改了字段。此时迟到响应携带的快照早于本次保存，必须仍被协调器作废，
-  // 应用它会把用户保存过的那一版连同他的新编辑一起退回旧值。
-  // toast 必须落到脏表单那句：只说"已保留当前内容"也能满足上面那条干净用例，
-  // 于是"响应未应用、请保存后再刷新"这句可操作的指引在产品里彻底消失。
+  // 保存后继续编辑时，迟到响应须保留新编辑并提示先保存再刷新。
   await installBridge(page, { refreshConfigPending: true });
   const errors = await openPage(page);
   await page.locator("#messageDelayInput").fill("75");
@@ -518,7 +526,7 @@ test("provider failure enables manual input for all provider controls", async ({
     });
     await expect(page.locator(selector)).toBeVisible();
   }
-  await expect(page.locator("#providerListState")).toContainText("三个 Provider 均可手动填写");
+  await expect(page.locator("#providerListState")).toContainText("判断与识图模型可手动填写");
   expect(errors).toEqual([]);
 });
 
@@ -542,7 +550,7 @@ test("a provider list failure keeps the provider already chosen in the form", as
   });
   await page.locator("#refreshBtn").click();
   await page.locator("#refreshBtn").click();
-  await expect(page.locator("#providerListState")).toContainText("三个 Provider 均可手动填写");
+  await expect(page.locator("#providerListState")).toContainText("判断与识图模型可手动填写");
 
   for (const [inputSelector, expected] of [
     ["#judgeProviderInput", "provider-a"],
@@ -566,10 +574,7 @@ test("a provider list failure keeps the provider already chosen in the form", as
 });
 
 test("a shrunk provider list keeps the provider already chosen in the form", async ({ page }) => {
-  // 成功分支同样会先 innerHTML="" 再写回旧值：刷新后列表里已没有当初选的
-  // Provider 时，select.value 写回即归零。catch 分支有「先取值再 sync」的防护，
-  // 成功分支原先没有——配置响应被协调器扣住（编辑/保存在途）或 GET /config
-  // 失败时，表单里已选的值被静默清空，下一次保存就把空串提交回服务端。
+  // 重建 Provider 列表时保留用户选择，避免列表缺少当前值就把空串保存回服务端。
   await installBridge(page, {
     config: { judge_provider_id: "provider-a", vision_provider_id: "provider-b" },
     refreshConfigPending: true,
@@ -618,10 +623,7 @@ test("a rejected bridge handshake falls back to fetch instead of using the bridg
 });
 
 test("theme clicks never submit untouched dim/bold preferences", async ({ page }) => {
-  // 回归守卫：GET ui/theme 在途时点主题，曾把服务端已存的 dim/bold 一并提交为
-  // 当前渲染态（此刻恒为 false）后端语义是「未提交的键保持原值」，但前端每次
-  // 都提交两者，于是服务端的压暗/粗体被静默抹掉。未触碰过的键不得出现在请求体里，
-  // 与 theme 字段同一条规则。
+  // 主题点击只提交用户操作过的字段，保留服务端的压暗和粗体偏好。
   await page.setViewportSize({ width: 1440, height: 1000 });
   await installBridge(page, { themePending: true, theme: "dark", dim: true, bold: true });
   const errors = await openPage(page);
@@ -665,10 +667,7 @@ test("theme clicks never submit untouched dim/bold preferences", async ({ page }
 });
 
 test("topbar height token follows the measured topbar height across breakpoints", async ({ page }) => {
-  // 静态令牌（88/64/62）与实际顶栏高度一直对不上：1024px 断点内实测 83px、
-  // 换行断点实测 115px。令牌被 .sidenav 的 sticky top 与 scroll-margin-top
-  // 消费，脱节即侧栏被顶栏盖住、锚点标题被遮。修法是运行时把实测高度写回令牌，
-  // 并在断点/换行变化后重测，只写一次的实现在窄屏仍是错的。
+  // 侧栏让位与锚点偏移使用实际顶栏高度；断点和换行变化后必须重新测量。
   await page.setViewportSize({ width: 900, height: 800 });
   await installBridge(page);
   const errors = await openPage(page);
@@ -719,8 +718,7 @@ test("topbar height token follows the measured topbar height across breakpoints"
 });
 
 test("anchor jumps keep the section title clear of the wrapped topbar", async ({ page }) => {
-  // 窄屏顶栏换行成两行（实测 115px）而令牌仍是 62px，scroll-margin-top 只有
-  // 78px：锚点跳转后分区标题落在顶栏底下（实测被遮 18px）。
+  // 窄屏顶栏换行后，锚点标题仍须避开实际顶栏。
   await page.setViewportSize({ width: 600, height: 800 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await installBridge(page);
@@ -1083,10 +1081,7 @@ test("vision provider fields lay out on one row like the judge field", async ({ 
     "true",
   );
 
-  // 手动态的列宽：三个 Provider 控件必须同源。只让 judge 挂 manual 类时，
-  // vision 两个字段靠 .provider-field.manual 收成单列，按钮被拉成整行宽
-  // 的历史缺陷实测 373px vs judge 78px。
-  // 阈值取 100px 而非精确 78px：字体栈在不同平台有毫米级差异，这里只要量级判据。
+  // 手动输入时 Provider 控件使用单行布局，避免按钮被拉成整行。
   await page.locator("#visionJudgeProviderManualBtn").click();
   const manual = await page.evaluate(() => {
     const measure = (fieldId, buttonId) => {
@@ -1119,7 +1114,7 @@ test("vision provider fields lay out on one row like the judge field", async ({ 
     ).toBeLessThan(100);
   }
 
-  // 反向锚：切回列表态必须恢复两列（防「恒单列」式的错误修复）
+  // 切回列表态恢复两列，避免手动布局规则残留。
   await page.locator("#visionProviderManualBtn").click();
   await expect(page.locator("#visionProviderManualBtn")).toHaveAttribute(
     "aria-expanded",
@@ -1372,10 +1367,34 @@ test("late theme prefs do not overwrite a theme click already made", async ({ pa
   expect(errors).toEqual([]);
 });
 
+test("two quick theme clicks land in click order, not arrival order", async ({ page }) => {
+  // 模拟首笔主题写入晚于第二笔，最终状态仍须符合最后一次点击。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBridge(page, { theme: "light", themePostPending: true });
+  const errors = await openPage(page);
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+
+  await page.locator("#themeToggle").click();
+  await expect
+    .poll(() => page.evaluate(() => typeof window.__resolveThemePost))
+    .toBe("function");
+  // 首笔仍在途时再点一次：light → dark → auto，最后一次意图是跟随系统。
+  await page.locator("#themeToggle").click();
+  expect(await page.evaluate(() => document.documentElement.hasAttribute("data-theme"))).toBe(
+    false,
+  );
+
+  await page.evaluate(() => window.__resolveThemePost());
+  await expect.poll(() => page.evaluate(() => window.__appliedThemeWrites.length)).toBe(2);
+  const applied = await page.evaluate(() =>
+    window.__appliedThemeWrites.map((write) => write.theme),
+  );
+  expect(applied.at(-1)).toBe("auto");
+  expect(errors).toEqual([]);
+});
+
 test("dim and bold clicks never submit the theme field", async ({ page }) => {
-  // 回归守卫：bindDimBoldButtons 曾把 currentTheme() 一并提交，而 data-theme
-  // 尚未渲染出服务端主题（GET 在途 / localStorage 不可用）时它恒为 "auto"，
-  // 一次压暗就把服务端已存的 dark 静默改成跟随系统。压暗/粗体只改自己那两个字段。
+  // 压暗和粗体只提交自身偏好，避免用未加载的默认主题覆盖服务端选择。
   await page.setViewportSize({ width: 1440, height: 1000 });
   await installBridge(page, { themePending: true, theme: "dark", dim: false, bold: false });
   const errors = await openPage(page);
@@ -1405,10 +1424,7 @@ test("dim and bold clicks never submit the theme field", async ({ page }) => {
 });
 
 test("a dim click during a pending theme GET keeps the untouched sibling from the server", async ({ page }) => {
-  // 回归守卫：restoreTheme 曾用一个「动过没有」的总判据同时决定 dim/bold 两个
-  // 字段是否落地服务端值，而 persistTheme 又用同一个总判据决定提交哪些字段。
-  // GET ui/theme 在途期间点一下压暗，DOM 里的粗体还是本地默认（false），
-  // 提交时把 bold:false 一并写上去，服务端已存的 bold=true 被静默抹掉。
+  // GET 在途时保留用户点击；尚未触碰的兄弟字段继续采用服务端值。
   await page.setViewportSize({ width: 1440, height: 1000 });
   await installBridge(page, { themePending: true, theme: "dark", dim: true, bold: true });
   const errors = await openPage(page);
@@ -1456,10 +1472,7 @@ test("the theme toggle announces the restored theme on a fresh load", async ({ p
 });
 
 test("the theme toggle names each of the three theme states in the label", async ({ page }) => {
-  // 可见标签文本曾由 style.css 的 .theme-label::after content 提供（第二份副本），
-  // 与 theme.mjs 的 THEME_LABELS 各自漂移而无人报错。现在单源在 JS，这条钉住
-  // 三态各自的显示文本与 aria-label 一字不差，并保证首帧（JS 接管前的
-  // localStorage 还原路径）也走到同一条写盘函数。
+  // 可见标签和 aria-label 共用主题名称，首帧缓存还原也保持一致。
   await page.setViewportSize({ width: 1440, height: 1000 });
   const errors = await openPage(await installThemeCyclePage(page));
   const label = page.locator("#themeToggle .theme-label");
@@ -1522,14 +1535,7 @@ test("compact more-actions menu exposes auxiliary controls", async ({ page }) =>
   await expect(page.locator("#boldBtn")).toBeVisible();
   await expect(page.locator("#refreshBtn")).toBeVisible();
 
-  // 菜单项必须是**横向单行项**（占满菜单宽度、文字标签在旁），不是 44px 图标方块。
-  //
-  // 这条断言来自一次真实的层叠事故：这三个按钮的样式锚曾是 #id（特异性 110），
-  // 压过了 `.more-actions-menu .btn`（20），于是窄屏菜单里它们被钉成
-  // `width: var(--tap)` + `padding: 0`，文字被挤成竖排（实测 44px 方块 vs
-  // 本应 118px 单行项）。ID 改类后特异性降到 10，菜单规则才生效。
-  // 断言取"宽 > 高 × 1.5"而非具体像素：尺寸随 --tap 令牌变，而"是不是横向项"
-  // 是设计契约。
+  // 菜单动作保持横向单行。宽高比例避免把断言绑定到具体像素。
   for (const id of ["#dimBtn", "#boldBtn", "#refreshBtn"]) {
     const box = await page.locator(id).boundingBox();
     expect(
@@ -1621,9 +1627,7 @@ test("skip link and invalid whitelist stay keyboard-accessible", async ({ page }
 });
 
 test("invalid whitelist never steals focus on input or blur", async ({ page }) => {
-  // 回归守卫：validateWhitelist 曾同时挂在 input/blur 上并无条件 focus()，
-  // 白名单残留一个非法条目后，鼠标点其他字段会被立刻抢回、键盘 Tab 也逃不出。
-  // 交互路径不得抢焦点；保存路径的聚焦由上面那条用例单独钉住。
+  // 输入和失焦校验保持用户焦点，只有保存失败才定位非法白名单。
   await installBridge(page);
   const errors = await openPage(page);
 
@@ -1805,68 +1809,124 @@ test("image cache cleanup reports the count and surfaces failures", async ({ pag
   expect(errors).toEqual([]);
 });
 
+// 对比度实测：把令牌塞进临时元素取计算值，再按 WCAG 相对亮度算比值。light-dark()
+// 由 color-scheme 决定，所以每个令牌都要在明暗两种主题下各取一次。tokens 的值写
+// null 表示直接取文字色；写另一个令牌名表示该文字色压在它的半透明底上（--warn），
+// 先按 alpha 压到不透明底再算。
+const measureContrast = (page, tokens, surfaces) =>
+  page.evaluate(
+    ({ tokens, surfaces }) => {
+      const probe = (variable, property) => {
+        const el = document.createElement("div");
+        el.style.setProperty(property, `var(${variable})`);
+        document.body.appendChild(el);
+        const value = getComputedStyle(el).getPropertyValue(property);
+        el.remove();
+        return value.trim();
+      };
+      const channels = (color) => color.match(/[\d.]+/g).map(Number);
+      const luminance = (color) => {
+        const [r, g, b] = channels(color).slice(0, 3);
+        const channel = (value) => {
+          const scaled = value / 255;
+          return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4;
+        };
+        return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+      };
+      const composite = (top, bottom) => {
+        const source = channels(top);
+        const base = channels(bottom).slice(0, 3);
+        const alpha = source.length > 3 ? source[3] : 1;
+        const mixed = source.slice(0, 3).map((value, index) =>
+          Math.round(value * alpha + base[index] * (1 - alpha))
+        );
+        return `rgb(${mixed.join(", ")})`;
+      };
+      const rows = [];
+      const push = (theme, token, foreground, background) => {
+        const first = luminance(foreground);
+        const second = luminance(background);
+        const [bright, dim] = [first, second].sort((a, b) => b - a);
+        rows.push({ theme, token, ratio: (bright + 0.05) / (dim + 0.05) });
+      };
+      for (const theme of ["light", "dark"]) {
+        document.documentElement.setAttribute("data-theme", theme);
+        for (const surface of surfaces) {
+          const background = probe(surface, "background-color");
+          for (const [token, over] of Object.entries(tokens)) {
+            push(
+              theme,
+              token,
+              probe(token, "color"),
+              over ? composite(probe(over, "background-color"), background) : background,
+            );
+          }
+        }
+      }
+      return rows;
+    },
+    { tokens, surfaces },
+  );
+
 test("hint tokens clear WCAG AA on both themes and every surface", async ({ page }) => {
   // style.css 的 --faint / --warn 注释各自手算了对比度，但注释里的数字会随令牌
   // 漂移：改浅一档就跌破 AA，而全套用例照绿，小字号提示文字最先不可读。
   // 这里取实际计算值复算，不信任注释。--warn 是武装态刷新按钮的文字色，底是
   // 半透明 --warn-soft，因此按 alpha 压到每种不透明底上再算。
   await openPage(page);
-  const measured = await page.evaluate(() => {
-    const probe = (variable, property) => {
-      const el = document.createElement("div");
-      el.style.setProperty(property, `var(${variable})`);
-      document.body.appendChild(el);
-      const value = getComputedStyle(el).getPropertyValue(property);
-      el.remove();
-      return value.trim();
-    };
-    const channels = (color) => color.match(/[\d.]+/g).map(Number);
-    const luminance = (color) => {
-      const [r, g, b] = channels(color).slice(0, 3);
-      const channel = (value) => {
-        const scaled = value / 255;
-        return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4;
-      };
-      return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
-    };
-    const composite = (top, bottom) => {
-      const source = channels(top);
-      const base = channels(bottom).slice(0, 3);
-      const alpha = source.length > 3 ? source[3] : 1;
-      const mixed = source.slice(0, 3).map((value, index) =>
-        Math.round(value * alpha + base[index] * (1 - alpha))
-      );
-      return `rgb(${mixed.join(", ")})`;
-    };
-    const surfaces = ["--surface", "--surface-2", "--surface-3", "--bg"];
-    const rows = [];
-    const push = (theme, token, foreground, background) => {
-      const first = luminance(foreground);
-      const second = luminance(background);
-      const [bright, dim] = [first, second].sort((a, b) => b - a);
-      rows.push({ theme, token, ratio: (bright + 0.05) / (dim + 0.05) });
-    };
-    for (const theme of ["light", "dark"]) {
-      document.documentElement.setAttribute("data-theme", theme);
-      const faint = probe("--faint", "color");
-      // --muted 是 13px 正文（.muted），按正文级 AA 4.5:1 一并实测：
-      // 它不在 --faint 的 11-12px 手算口径内，遗漏会让调暗一档静默跌破。
-      const muted = probe("--muted", "color");
-      const warn = probe("--warn", "color");
-      const warnSoft = probe("--warn-soft", "background-color");
-      for (const surface of surfaces) {
-        const background = probe(surface, "background-color");
-        push(theme, "--faint", faint, background);
-        push(theme, "--muted", muted, background);
-        push(theme, "--warn", warn, composite(warnSoft, background));
-      }
-    }
-    return rows;
-  });
+  // --muted 是 13px 正文（.muted），按正文级 AA 4.5:1 一并实测：
+  // 它不在 --faint 的 11-12px 手算口径内，遗漏会让调暗一档静默跌破。
+  const measured = await measureContrast(
+    page,
+    { "--faint": null, "--muted": null, "--warn": "--warn-soft" },
+    ["--surface", "--surface-2", "--surface-3", "--bg"],
+  );
 
   expect(measured).toHaveLength(24);
   for (const { theme, token, ratio } of measured) {
     // 4.5:1 是正文级 AA（11-12px 提示文字与武装态按钮文字都属于正文级）。
+    expect(ratio, `${theme} 主题 ${token} 的对比度`).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
+test("functional text tokens clear WCAG AA on both themes and base surfaces", async ({ page }) => {
+  // 这四组是 11-17px 的文字色：--info 是读数标签（.readout.is-info）、--accent-text
+  // 是链接与强调文字、--ok 是保存态（.save-state.is-ok）、--text-soft 是面板正文。
+  // 它们不经过 --faint 的手算注释，调浅一档同样跌破正文级 AA 而全套用例照绿。
+  await openPage(page);
+  const measured = await measureContrast(
+    page,
+    { "--info": null, "--accent-text": null, "--ok": null, "--text-soft": null },
+    ["--surface", "--surface-2"],
+  );
+
+  expect(measured).toHaveLength(16);
+  for (const { theme, token, ratio } of measured) {
+    // 4.5:1 是正文级 AA：这四组令牌落在最小 11.5px 的读数标签与正文上。
+    expect(ratio, `${theme} 主题 ${token} 的对比度`).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
+test("spirit token clears WCAG AA on both themes and card surfaces", async ({ page }) => {
+  // 主题图标色使用正文级 AA，核对明暗两侧实际承载图标的卡片底色。
+  await openPage(page);
+  const measured = await measureContrast(page, { "--spirit": null }, ["--surface", "--surface-2"]);
+
+  expect(measured).toHaveLength(4);
+  for (const { theme, token, ratio } of measured) {
+    expect(ratio, `${theme} 主题 ${token} 的对比度`).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
+test("ornament token clears WCAG AA on the surfaces it actually sits on", async ({ page }) => {
+  // --ornament 只出现在 sidenav 分组标题与图标，容器底色是 --bg / --surface，故不
+  // 断言 --surface-2：该令牌不落在那个底上（暗色侧实测 4.49，差 0.01 就红），硬加
+  // 会逼着为过数字改坏设计。
+  await openPage(page);
+  const measured = await measureContrast(page, { "--ornament": null }, ["--bg", "--surface"]);
+
+  expect(measured).toHaveLength(4);
+  for (const { theme, token, ratio } of measured) {
     expect(ratio, `${theme} 主题 ${token} 的对比度`).toBeGreaterThanOrEqual(4.5);
   }
 });
@@ -1916,17 +1976,14 @@ test("mobile tab click moves both the tab and the sidenav current state", async 
   expect(errors).toEqual([]);
 });
 
-test("topbar must not change its height when the stuck class toggles", async ({ page }) => {
+test("topbar does not self-toggle its stuck state near the scroll threshold", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 520 });
   await installBridge(page);
   const errors = await openPage(page);
   const topbar = page.locator(".topbar");
   await expect(topbar).toBeVisible();
 
-  // is-stuck 曾在粘附时把 padding 从 --sp-7 收到 --sp-5，令占位高度变化约 16px。
-  // topbar 是首位 sticky 元素，占位高度变化会触发浏览器滚动锚定补偿、反过来改写
-  // scrollY；scrollY 又决定 is-stuck 是否保留，只要高度差超过 sticky 阈值
-  // （y > 8）就会自激，表现为页面在接近最上方时疯狂抖动。
+  // 顶栏占位高度变化会触发滚动锚定并反过来改变粘附状态，须保持高度稳定。
   const flipReport = await page.evaluate(async () => {
     const bar = document.querySelector(".topbar");
     // 反复穿过阈值，再停在阈值带内不干预，统计 class 自发放映的次数。
@@ -1970,7 +2027,7 @@ test("whitelist count and summary agree on the same deduplicated input", async (
         .getElementById("whitelistInput")
         .dispatchEvent(new Event("input", { bubbles: true }));
     });
-    // 摘要与计数在 input 事件上 400ms 防抖后写入（逐键播报的修复）。
+    // 摘要和计数在防抖后更新，避免逐键播报。
     await page.waitForTimeout(500);
     return page.evaluate(() => ({
       count: document.getElementById("whitelistCount").textContent,
@@ -1985,7 +2042,7 @@ test("whitelist count and summary agree on the same deduplicated input", async (
   expect(collapsed.summary).toContain("共 1 条");
   expect(collapsed.summary).toContain("存在 1 处重复");
 
-  // 反向锚：两个真正不同的会话不得被折叠成 1（防「恒 1」式的错误修复）
+  // 不同会话保持独立计数。
   await page.locator("#whitelistInput").fill("111\nqq:GroupMessage:222");
   const two = await read();
   expect(two.count).toBe("2");
@@ -2117,5 +2174,156 @@ test("a successful refresh clears stale field errors and the failed-save state",
   await expect(page.locator("#configSaveState")).toHaveText("");
   await expect(page.locator("#saveTopBtn")).not.toHaveClass(/is-failed/);
   await expect(page.locator("#navSaveState")).toHaveText("已同步");
+  expect(errors).toEqual([]);
+});
+
+test("fallback queue restores focus to the moved item for repeat activation", async ({ page }) => {
+  // 每次改动都整表重渲染，焦点必须跟随移动后的项目，否则第二次操作无法连续完成。
+  await installBridge(page, {
+    providers: [
+      { id: "p1", label: "P1" },
+      { id: "p2", label: "P2" },
+      { id: "p3", label: "P3" },
+    ],
+    config: { proactive_fallback_provider_ids: ["p1", "p2", "p3"] },
+  });
+  await openPage(page);
+
+  const rows = () => page.locator("#proactiveFallbackList .fallback-item span");
+  expect(await rows().allTextContents()).toEqual(["1. P1", "2. P2", "3. P3"]);
+
+  // 第二次激活重渲染后重新聚焦的下移按钮，应继续移动同一个项目。
+  const downOnFirst = page
+    .locator("#proactiveFallbackList .fallback-item")
+    .nth(0)
+    .getByRole("button", { name: /^下移/ });
+  await downOnFirst.click();
+  const afterFirst = await rows().allTextContents();
+  expect(afterFirst).toEqual(["1. P2", "2. P1", "3. P3"]);
+  // 第一次点击后焦点应跟着被移动的那一项，而不是掉到 body。
+  const focused = await page.evaluate(() => {
+    const node = document.activeElement;
+    return node?.getAttribute?.("aria-label") || node?.tagName || "";
+  });
+  expect(focused).toMatch(/^下移/);
+
+  await page.evaluate(() => {
+    const node = document.activeElement;
+    node.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  expect(await rows().allTextContents()).toEqual(["1. P2", "2. P3", "3. P1"]);
+});
+
+test("removing a fallback provider keeps focus on a useful next control", async ({ page }) => {
+  await installBridge(page, {
+    providers: [
+      { id: "p1", label: "P1" },
+      { id: "p2", label: "P2" },
+      { id: "p3", label: "P3" },
+    ],
+    config: { proactive_fallback_provider_ids: ["p1", "p2", "p3"] },
+  });
+  await openPage(page);
+
+  const rows = page.locator("#proactiveFallbackList .fallback-item");
+  await rows.nth(1).getByRole("button", { name: /^移除/ }).click();
+  await expect(rows.nth(1).getByRole("button", { name: "移除第 2 项 P3" })).toBeFocused();
+
+  await rows.nth(1).getByRole("button", { name: /^移除/ }).click();
+  await expect(rows.nth(0).getByRole("button", { name: "移除第 1 项 P1" })).toBeFocused();
+
+  await rows.nth(0).getByRole("button", { name: /^移除/ }).click();
+  await expect(page.locator("#proactiveFallbackSelect")).toBeFocused();
+});
+
+test("adding the last fallback moves focus off the disabling button", async ({ page }) => {
+  // 加满后「添加」被禁用，焦点若留在上面等于掉到 body，键盘用户要从头 Tab。
+  await installBridge(page, {
+    providers: [
+      { id: "p1", label: "P1" },
+      { id: "p2", label: "P2" },
+    ],
+    config: {},
+  });
+  await openPage(page);
+
+  for (const id of ["p1", "p2"]) {
+    await page.locator("#proactiveFallbackSelect").selectOption(id);
+    await page.locator("#proactiveFallbackAddBtn").click();
+  }
+
+  await expect(page.locator("#proactiveFallbackAddBtn")).toBeDisabled();
+  const active = await page.evaluate(() => document.activeElement?.id || "");
+  expect(active).toBe("proactiveFallbackSelect");
+});
+
+test("generation model panel loads the configured fallback order", async ({
+  page,
+}) => {
+  // 备用链的顺序就是模型尝试顺序，初始加载应保持后端配置顺序。
+  await installBridge(page, {
+    providers: [
+      { id: "provider-a", label: "Provider A" },
+      { id: "provider-b", label: "Provider B" },
+      { id: "provider-c", label: "Provider C" },
+    ],
+    config: { proactive_fallback_provider_ids: ["provider-c", "provider-a"] },
+  });
+  const errors = await openPage(page);
+
+  const names = await page
+    .locator("#proactiveFallbackList .fallback-item span")
+    .allTextContents();
+  expect(names).toEqual(["1. Provider C", "2. Provider A"]);
+  expect(errors).toEqual([]);
+});
+
+test("generation model panel picks providers from lists and submits every key", async ({
+  page,
+}) => {
+  // 主动回复可以指定自己的模型、备用链与重试次数。模型都只能从列表里选：
+  // 让人手填 Provider ID 等于让他记住宿主内部标识，填错时这一轮静默回落。
+  await installBridge(page, {
+    providers: [
+      { id: "provider-a", label: "Provider A" },
+      { id: "provider-b", label: "Provider B" },
+      { id: "provider-c", label: "Provider C" },
+    ],
+    config: { proactive_provider_id: "provider-a" },
+  });
+  const errors = await openPage(page);
+
+  await expect(page.locator("#sec-model")).toBeVisible();
+  await expect(page.locator("#proactiveProviderSelect")).toHaveValue("provider-a");
+  // 面板里不该再有手填入口。
+  await expect(page.locator("#proactiveProviderInput")).toHaveCount(0);
+
+  await page.locator("#proactiveProviderSelect").selectOption("provider-b");
+
+  // 备用链是有序的：加两个，再把后面的挪到前面。
+  for (const id of ["provider-c", "provider-a"]) {
+    await page.locator("#proactiveFallbackSelect").selectOption(id);
+    await page.locator("#proactiveFallbackAddBtn").click();
+  }
+  await expect(page.locator("#proactiveFallbackList .fallback-item")).toHaveCount(2);
+  await page
+    .locator("#proactiveFallbackList .fallback-item")
+    .nth(1)
+    .getByRole("button", { name: /^上移/ })
+    .click();
+
+  await page.locator("#proactiveRetriesInput").fill("2");
+  await page.locator("#saveTopBtn").click();
+
+  const body = await page.evaluate(() => {
+    const posts = window.__bridgeCalls.filter(
+      (call) => call.method === "POST" && call.endpoint === "config",
+    );
+    return posts[posts.length - 1]?.body || null;
+  });
+  expect(body).not.toBeNull();
+  expect(body.proactive_provider_id).toBe("provider-b");
+  expect(body.proactive_fallback_provider_ids).toEqual(["provider-a", "provider-c"]);
+  expect(body.proactive_request_max_retries).toBe(2);
   expect(errors).toEqual([]);
 });

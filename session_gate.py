@@ -74,7 +74,7 @@ class SessionGate:
         self._running_sessions.add(umo)
         # owner 是运行标记的租约持有人，restore 靠它区分「检查已结束」与
         # 「检查被 prune 过但仍在跑」。拿不到 task（无事件循环的同步调用方）时
-        # 记 None = 未知：推导时保守保留标记——误保留的代价由 §5 的有界等待
+        # 记 None = 未知：推导时保守保留标记——误保留的代价由有界等待
         # 兜底，误丢弃的代价是该会话与在途检查真正并发。
         try:
             self._running_owners[umo] = asyncio.current_task()
@@ -83,7 +83,19 @@ class SessionGate:
         # 新运行周期开始：清掉上一周期的 release 状态，等待者重新挂起
         self._session_release.pop(umo, None)
 
-    def unmark_running(self, umo: str) -> None:
+    def transfer_running_owner(self, umo: str, owner: asyncio.Task[Any]) -> None:
+        """把运行租约转交给覆盖记账窗口的任务。
+
+        二次取消后外层检查任务随即 ``done()``，但记账任务仍在写账；不转交的话
+        ``restore`` 会按 ``owner.done()`` 判"检查已结束"，把仍有记账任务的会话
+        摘出运行集，新的检查就与它在途记账并发。
+        """
+        if umo in self._running_owners:
+            self._running_owners[umo] = owner
+
+    def unmark_running(self, umo: str, *, owner: asyncio.Task[Any] | None = None) -> None:
+        if owner is not None and self._running_owners.get(umo) is not owner:
+            return
         self._running_sessions.discard(umo)
         # owner 必须与标记同步消失：留着它会让 restore 把一个已结束的检查
         # 判成"仍在跑"，正是本机制要防的复活。
@@ -136,33 +148,32 @@ class SessionGate:
                 pass
             if on_round_expired is not None and not on_round_expired():
                 return False
+            if not self.is_running(umo):
+                return True
             rounds += 1
             if rounds >= max_rounds:
                 return False
         return True
 
     def snapshot(self) -> dict[str, Any]:
-        """代次与锁两张表的浅拷贝快照，供配置回滚原地恢复。
+        """锁表快照，供配置回滚恢复等待者持有的锁对象。
 
         运行集**刻意不进快照**：它是在途任务的租约，任务可能在任何时刻结束，
-        快照值在回滚时已经过期。``restore`` 改为按 owner 存活推导（见其
-        docstring），照抄快照会复活已结束检查的标记、也会抹掉窗口内新起的检查。
+        快照值在回滚时已经过期。``restore`` 按 owner 存活推导：照抄快照会复活
+        已结束检查的标记、也会抹掉窗口内新起的检查。
 
         release 表同样**刻意不快照**：等待者持有具体 Event 对象，按值恢复会制造
         孤儿事件或带回陈旧的 set 状态（空转饿死）。正确来源是恢复后的运行集，
         由 ``restore`` 反推。
         """
-        return {
-            "generation": dict(self._session_generation),
-            "locks": dict(self._session_locks),
-        }
+        return {"locks": dict(self._session_locks)}
 
     def restore(self, snap: dict[str, Any]) -> None:
-        """原地恢复代次与锁两张表，并按 owner 存活推导运行集与 release 表。
+        """恢复锁表并按 owner 存活推导运行集与 release 表。
 
         必须原地 clear+update、禁止属性重绑定：等待者与运行中的
         ``async with`` 持有容器与 Event/Lock 对象本身的引用，换掉容器身份会让
-        它们继续读写孤儿表。
+        它们继续读写孤儿表。代次不回滚，以免让已失效任务的旧 token 再次有效。
 
         运行集不照抄快照，改按 ``_running_owners`` 推导：owner 仍活着的会话
         才真的在跑。这同时挡住两个方向——
@@ -175,7 +186,6 @@ class SessionGate:
         紧密空转独占事件循环），已不运行的 set 唤醒等待者。
         """
         held_locks = {umo: lock for umo, lock in self._session_locks.items() if lock.locked()}
-        restore_container_inplace(self._session_generation, snap["generation"])
         restore_container_inplace(self._session_locks, snap["locks"])
         # 窗口内新起、此刻仍被持有的锁是活状态，不是可回滚配置：它在快照之后
         # 才由 lock_for 创建，整表恢复会把它抹掉而在途的 async with 仍持有它。

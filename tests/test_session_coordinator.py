@@ -216,26 +216,6 @@ async def test_drop_older_than_clears_expired_sessions_only() -> None:
     assert [img.cache_key() for img in _images_for(coordinator, "fresh")] == ["keep"]
 
 
-async def test_restore_inplace_keeps_container_identity() -> None:
-    """配置回滚必须写回同一 dict，不能换掉协作对象手里的容器。"""
-    _, coordinator, ctx = _make_coordinator()
-    first = object()
-    coordinator.record_event("s1", first, 1.0)
-    coordinator.capture_images("s1", 1.0, [_Image("a")])
-    snapshot = coordinator.snapshot()
-    coordinator.reset_all()
-    coordinator.record_event("s2", object(), 2.0)
-
-    coordinator.restore_inplace(snapshot)
-
-    assert ctx.events is coordinator._events
-    assert ctx.event_at is coordinator._event_at
-    assert ctx.images is coordinator._images
-    assert ctx.events.get("s1") is first
-    assert "s2" not in ctx.events
-    assert "s1" in ctx.images
-
-
 class _PreparedImage:
     def __init__(self, payload: bytes) -> None:
         import base64
@@ -370,8 +350,6 @@ def test_overflow_keeps_the_index_sorted_and_counters_in_sync() -> None:
     一条时间戳更小的旧消息可能最后完成，插入到队尾会破坏
     ``drop_older_than`` 的 popleft 截断与 ``_evict_oldest_image_event`` 的
     「队首即最旧」前提；deque 的自动淘汰又按插入序摘，丢掉的是稍新条目。
-
-    变异锚定：改回裸 ``append`` + 自动淘汰，本用例的有序性断言与字节账同时红。
     """
     module, coordinator, ctx = _make_coordinator()
     limit = module.MAX_CACHED_IMAGE_EVENTS
@@ -408,17 +386,6 @@ def test_clear_session_releases_image_byte_counters() -> None:
     assert coordinator._total_bytes == _bytes_for(module, ctx.images) == 4
 
 
-def test_restore_inplace_rebuilds_image_byte_counters() -> None:
-    module, coordinator, ctx = _make_coordinator()
-    coordinator.capture_images("s1", 1.0, [_PreparedImage(b"123")])
-    snapshot = coordinator.snapshot()
-    coordinator.reset_all()
-
-    coordinator.restore_inplace(snapshot)
-
-    assert coordinator._total_bytes == _bytes_for(module, ctx.images) == 4
-
-
 def test_drop_older_than_releases_image_byte_counters() -> None:
     module, coordinator, ctx = _make_coordinator()
     coordinator.capture_images("s1", 1.0, [_PreparedImage(b"123")])
@@ -438,8 +405,6 @@ def test_out_of_order_image_freeze_keeps_index_sorted() -> None:
     ``drop_older_than`` 的 ``while events[0][0] < cutoff`` 在队首遇到较新条目就
     整体停止——其后所有过期事件永不回收，``_evict_oldest_image_event`` 也会把
     较新的事件当成"最旧"驱逐，``images_for`` 的 reversed 顺序失真。
-
-    变异锚定：去掉入队处的重排，本用例红。
     """
     module, coordinator, ctx = _make_coordinator()
     coordinator.capture_images("s1", 100.0, [_PreparedImage(b"new")])

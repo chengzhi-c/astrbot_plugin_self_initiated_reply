@@ -51,10 +51,6 @@ class OutboundGateway:
         self._direct_send_count = 0
         self._direct_fail_count = 0
 
-    @property
-    def ledger(self) -> AttemptLedger:
-        return self._ledger
-
     @staticmethod
     def _message_text(message: Any) -> str:
         try:
@@ -126,7 +122,7 @@ class OutboundGateway:
                 raw_result = await raw_result
         except asyncio.CancelledError:
             # 与下方 except Exception 同样分类为 UNKNOWN：提交状态未知，不得
-            # 自动重试（契约 §2）。**故意不重抛取消**——调用方分两类：
+            # 自动重试。**故意不重抛取消**——调用方分两类：
             #   - final_reply：``delivery._send_via_context`` 依赖它正常返回，
             #     以便走完 UNKNOWN 记账（消耗冷却与配额，防止重复直发）；
             #   - tool_direct：``generation`` 的 tracked_send 在 agent run 内

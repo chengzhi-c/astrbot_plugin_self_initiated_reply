@@ -13,8 +13,14 @@ def _load_gateway():
     return load_package(PACKAGE_NAME, "outbound")
 
 
+def _models():
+    install_astrbot_stubs()
+    return load_package(PACKAGE_NAME, "models")
+
+
 def test_tool_direct_send_budget_is_consumed_before_adapter_call() -> None:
     outbound = _load_gateway()
+    ledger = _models().AttemptLedger()
     sent: list[str] = []
 
     class Message:
@@ -27,7 +33,7 @@ def test_tool_direct_send_budget_is_consumed_before_adapter_call() -> None:
         sent.append("sent")
         return None
 
-    gateway = outbound.OutboundGateway(sender, max_direct_sends=2)
+    gateway = outbound.OutboundGateway(sender, max_direct_sends=2, ledger=ledger)
     first = asyncio.run(gateway.send(Message(), kind="tool_direct"))
     second = asyncio.run(gateway.send(Message(), kind="tool_direct"))
     third = asyncio.run(gateway.send(Message(), kind="tool_direct"))
@@ -35,28 +41,15 @@ def test_tool_direct_send_budget_is_consumed_before_adapter_call() -> None:
     assert first.outcome.status.value == "delivered"
     assert second.outcome.status.value == "delivered"
     assert third.outcome.status.value == "suppressed"
-    assert gateway.ledger.direct_send_count == 2
+    assert ledger.direct_send_count == 2
     assert len(sent) == 2
-    assert gateway.ledger.direct_texts == ("工具消息", "工具消息")
+    assert ledger.direct_texts == ("工具消息", "工具消息")
 
 
 def test_tool_direct_false_refunds_budget_and_keeps_count_in_sync() -> None:
-    """红线：sender 返 ``False``（确定未提交）必须退还直发预算。
-
-    不退还时内部计数 ``_direct_send_count`` 停在 1、预算被一次失败白白吃掉：
-    上层 ``main.py`` 的 ``not reply and not direct_send_count`` 因计数非零而不短路，
-    ``delivery.py`` 走"仅有工具直发"分支，于是**扣掉当日配额、推进冷却与观察窗口，
-    并回报"已通过工具主动回复。"，而群里一个字都没收到**。
-
-    变异锚定：删掉 ``outbound.py`` 里 ``self._direct_send_count -= 1`` 这一行，
-    本用例红，断言的是**内部计数**与「一次失败后仍能用满 ``max_direct_sends`` 次」
-    这一行为，两者都随退还与否变化。
-
-    注意不能只断言 ``ledger.direct_send_count``：它是按 attempt 终态派生的视图
-    （只数 DELIVERED/UNKNOWN），失败的 attempt 本就不入账，删掉退还那行它也恒为 0
-    （此前的假绿正是踩了这个不同源）。故这里同时钉内部计数与端到端预算行为。
-    """
+    """sender 确定未提交时退还预算并校正内部计数，避免误走已直发分支扣除配额。"""
     outbound = _load_gateway()
+    ledger = _models().AttemptLedger()
     calls: list[str] = []
 
     class Message:
@@ -68,7 +61,7 @@ def test_tool_direct_false_refunds_budget_and_keeps_count_in_sync() -> None:
         # 第一次失败（确定未提交），之后成功：失败不得吃掉直发预算
         return False if len(calls) == 1 else None
 
-    gateway = outbound.OutboundGateway(sender, max_direct_sends=2)
+    gateway = outbound.OutboundGateway(sender, max_direct_sends=2, ledger=ledger)
 
     first = asyncio.run(gateway.send(Message(), kind="tool_direct"))
     assert first.outcome.status.value == "failed_before_submit"
@@ -85,27 +78,25 @@ def test_tool_direct_false_refunds_budget_and_keeps_count_in_sync() -> None:
         "失败未退还预算：本该用满 2 次的直发预算被一次失败吃掉"
     )
     assert len(calls) == 3, "适配器调用次数应等于 1 次失败 + 2 次成功"
-    assert gateway.ledger.direct_send_count == 2
-    assert gateway.ledger.direct_texts == ("工具消息", "工具消息")
+    assert ledger.direct_send_count == 2
+    assert ledger.direct_texts == ("工具消息", "工具消息")
 
 
 def test_tool_direct_failures_are_bounded_after_refund() -> None:
     """退还预算不得换来无界重试：失败次数自身也要有上限。
 
     退还后 ``_direct_send_count`` 不再随失败增长，若不另计失败次数，不可达目标
-    会被反复调用，界就外借给了宿主迭代上限（契约 §5 明确禁止这种依赖）。
-
-    变异锚定：删掉 ``_direct_fail_count >= self._max_direct_sends`` 那个早退，
-    ``len(calls)`` 会从 2 变成 4，本用例红。
+    会被反复调用，界就外借给了宿主迭代上限（契约要求边界由插件自身持有）。
     """
     outbound = _load_gateway()
+    ledger = _models().AttemptLedger()
     calls: list[str] = []
 
     async def sender(_message):
         calls.append("called")
         return False
 
-    gateway = outbound.OutboundGateway(sender, max_direct_sends=2)
+    gateway = outbound.OutboundGateway(sender, max_direct_sends=2, ledger=ledger)
     statuses = [
         asyncio.run(
             gateway.send(SimpleNamespace(type="tool_direct_result"), kind="tool_direct")
@@ -120,16 +111,17 @@ def test_tool_direct_failures_are_bounded_after_refund() -> None:
         "suppressed",
     ]
     assert len(calls) == 2
-    assert gateway.ledger.direct_send_count == 0
+    assert ledger.direct_send_count == 0
 
 
 def test_tool_direct_exception_is_unknown_and_still_consumes_budget() -> None:
     outbound = _load_gateway()
+    ledger = _models().AttemptLedger()
 
     async def sender(_message):
         raise RuntimeError("adapter disconnected")
 
-    gateway = outbound.OutboundGateway(sender, max_direct_sends=1)
+    gateway = outbound.OutboundGateway(sender, max_direct_sends=1, ledger=ledger)
     first = asyncio.run(
         gateway.send(SimpleNamespace(type="tool_direct_result"), kind="tool_direct")
     )
@@ -139,7 +131,7 @@ def test_tool_direct_exception_is_unknown_and_still_consumes_budget() -> None:
 
     assert first.outcome.status.value == "unknown"
     assert second.outcome.status.value == "suppressed"
-    assert gateway.ledger.direct_send_count == 1
+    assert ledger.direct_send_count == 1
 
 
 def test_none_result_is_delivered_on_both_channels() -> None:
@@ -202,7 +194,7 @@ def test_missing_sender_fails_before_submit() -> None:
 def test_tool_direct_unknown_is_retained_in_the_attempt_ledger() -> None:
     """A tool send that enters the adapter retains UNKNOWN evidence for the pipeline."""
     outbound = _load_gateway()
-    models = load_package(PACKAGE_NAME, "models")
+    models = _models()
 
     async def sender(_message):
         raise RuntimeError("adapter disconnected")
@@ -231,8 +223,6 @@ def test_adapter_exception_detail_is_redacted() -> None:
     写进 WARNING 日志，而平台适配器异常串常形如
     ``... for url 'https://api.example.com/bot<token>/sendMessage?token=...'``。
     判断/生成/投递/webapi 各异常路径都已脱敏，产出 detail 的网关是漏掉的那一个。
-
-    变异锚定：把该处 ``redact_exc_text(exc)`` 换回 ``safe_exc_text(exc)``，本用例红。
     """
     outbound = _load_gateway()
 
@@ -254,18 +244,9 @@ def test_adapter_exception_detail_is_redacted() -> None:
 
 
 def test_unstringable_adapter_exception_still_classifies_and_records() -> None:
-    """``__str__`` 坏掉的 adapter 异常不得让异常逃出 gateway，也不得丢记账。
-
-    缺陷形态：``except`` 块里 ``SendOutcome(status, str(exc))`` 会二次抛出，异常
-    逃出 ``OutboundGateway.send`` → ledger 停在 in-flight、调用方最后一步
-    ``str(exc)`` 也可能再抛 → 该次投递不记账 → 消息若其实已提交则重复发送。
-    修法是 ``safe_exc_text``（``__str__`` 抛时退化为类型名）。
-
-    变异锚定：把 ``outbound.py`` 的 ``safe_exc_text(exc)`` 换回 ``str(exc)``，
-    本用例抛 ``ValueError("__str__ is broken")`` 而非返回 ``OutboundResult``。
-    """
+    """异常文本提取失败时退化为类型名，保留投递分类和账本终态。"""
     outbound = _load_gateway()
-    models = load_package(PACKAGE_NAME, "models")
+    models = _models()
 
     class UnstringableError(RuntimeError):
         def __str__(self) -> str:
@@ -299,7 +280,7 @@ def test_direct_send_gate_exception_degrades_to_rejection() -> None:
     副作用（读设置、打日志）时就会踩上。
     """
     outbound = _load_gateway()
-    models = load_package(PACKAGE_NAME, "models")
+    models = _models()
 
     class Message:
         type = "tool_direct_result"

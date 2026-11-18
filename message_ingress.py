@@ -67,10 +67,10 @@ def _accepted_content(
     empty = not clean_text and not has_images
     if ignored or empty:
         # 语义单点：任何被入口接住的消息（含被忽略与空内容）都推进代次，作废
-        # 未发出的旧回复（契约 §6.3）。**只推进代次**：同函数的正常消息路径
+        # 未发出的旧回复。**只推进代次**：同函数的正常消息路径
         # 也仅 advance，而 ``invalidate`` 会级联 ``clear_session``，把保护窗口内
-        # 的图片索引与最近事件一并抹掉（契约 §8 只允许白名单移除/命令失效/
-        # 终止这样做）。那会让一条表情包或一次 @Bot 就把刚发的图从识图上下文
+        # 的图片索引与最近事件一并抹掉（只有白名单移除/命令失效/终止才该清）。
+        # 那会让一条表情包或一次 @Bot 就把刚发的图从识图上下文
         # 里删掉，并让巡检因「没有可用的最近消息事件」静默跳过该会话。
         # 在途延迟检查不在这里取消：它会在下一道代次闸门自行退出。
         if plugin.settings.abandon_stale_on_new_message:
@@ -186,7 +186,7 @@ async def handle_incoming_message(
             )
         except Exception as exc:
             # 脱敏后进日志：recorder 桥与 provider SDK 的异常文本常带请求 URL
-            # （含签名 token），而日志是 §7.1 要求留在服务端的那一面。
+            # （含签名 token），而日志是应当留在服务端的那一面。
             logger.warning(
                 "[%s] image capture failed session=%s error=%s",
                 PLUGIN_ID,

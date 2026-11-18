@@ -1,16 +1,8 @@
-"""配置热更新一致性守卫。
-
-缺陷链：webapi._apply_config_updates 对 plugin.settings 做整体替换，
-而 decision/delivery/generation/scheduler/whitelist 五组件在构造时各存
-self.settings 旧引用 → 热更新后组件读过期配置，基线测试不暴露
-（现有断言只看 plugin.settings 新值，不看组件侧读取路径）。
-
-修复后契约：Settings 单一实例，热更新与回滚都保持对象身份（apply 原地
-写字段），全部组件经既有引用即时可见新值。
-"""
+"""热更新与回滚保留 Settings 对象身份，使组件通过既有引用读取当前配置。"""
 
 from __future__ import annotations
 
+import asyncio
 import sys
 
 import pytest
@@ -112,13 +104,7 @@ def test_rollback_restore_component_visible_settings(tmp_path) -> None:
 
 
 def test_recent_message_limit_hot_reload_rebuilds_existing_deques(tmp_path) -> None:
-    """recent_message_limit 热更新必须对存量会话生效。
-
-    缺陷：deque 的 maxlen 是构造期常量，`apply()` 只改 Settings 字段，
-    存量会话的 deque 仍持旧上限，调大后新上限永不兑现，且设置页保存
-    不触发插件重载，用户看到的值与实际生效值长期不一致且不报错。
-    修复后契约：读取路径（_state_for）惰性重建，调大调小都即时兑现。
-    """
+    """deque.maxlen 固定于构造期；读取存量会话时重建以应用新上限。"""
 
     async def scenario(plugin, main):
         models = sys.modules[f"{PACKAGE}.models"]
@@ -196,6 +182,135 @@ def test_rollback_restores_session_history_trimmed_during_apply_window(tmp_path)
         assert [item.text for item in restored.recent] == [f"m{i}" for i in range(8)], (
             "回滚未恢复被窗口内裁剪的历史"
         )
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_rollback_preserves_messages_received_during_config_save(tmp_path) -> None:
+    """A failed config write must not erase messages received while it was pending."""
+
+    async def scenario(plugin, main):
+        from types import SimpleNamespace
+
+        from ._support import make_event
+
+        await plugin.on_message(make_event(umo=UMO, message_str="保存前消息"))
+        state = plugin._state_for(UMO)
+        new_umo = "fake:group:456"
+        assert new_umo not in plugin.sessions
+        image = SimpleNamespace(prepared_source="data:image/png;base64,YQ==")
+        plugin._coordinator._max_image_memory_bytes = 8
+        plugin._coordinator._max_session_image_memory_bytes = 8
+        plugin._coordinator.capture_images("old-image-1", 1.0, [image])
+        plugin._coordinator.capture_images("old-image-2", 2.0, [image])
+        assert plugin._coordinator._total_bytes == 8
+        original_persist = plugin._persist_config
+        failed = False
+        during_event = make_event(umo=UMO, message_str="保存期间消息")
+        new_event = make_event(umo=new_umo, message_str="新会话消息")
+
+        async def receive_then_fail():
+            nonlocal failed
+            if not failed:
+                failed = True
+                await asyncio.sleep(0)
+                await plugin.on_message(during_event)
+                await plugin.on_message(new_event)
+                plugin._coordinator.capture_images("new-image", 3.0, [image])
+                assert any(record.text == "保存期间消息" for record in state.recent)
+                raise OSError("disk full")
+            await original_persist()
+
+        plugin._persist_config = receive_then_fail
+        try:
+            web = sys.modules["astrbot.api.web"]
+            web.request.payload = {"cooldown_sec": 777}
+            result = await webapi_module(main)._api_post_config(plugin)
+        finally:
+            plugin._persist_config = original_persist
+
+        assert result["ok"] is False
+        assert failed
+        restored = plugin._state_for(UMO)
+        assert restored is state
+        assert [record.text for record in restored.recent if record.role == "user"] == [
+            "保存前消息",
+            "保存期间消息",
+        ]
+        new_state = plugin.sessions[new_umo]
+        assert [record.text for record in new_state.recent if record.role == "user"] == [
+            "新会话消息",
+        ]
+        assert plugin._last_events[UMO] is during_event
+        assert plugin._last_events[new_umo] is new_event
+        assert plugin._scheduler._runtime_umos_for_whitelist_item("456") == {new_umo}
+        assert plugin._last_event_at[UMO] == restored.last_active_at
+        assert set(plugin._recent_image_events) == {"old-image-2", "new-image"}
+        assert plugin._coordinator._total_bytes == 8
+
+    with_plugin(tmp_path, scenario, whitelist_sessions=["123", "456"])
+
+
+def test_rollback_restores_image_index_pruned_by_whitelist_shrink(tmp_path) -> None:
+    """白名单收缩会摘掉被移除会话的图片索引，回滚必须把它补回来。
+
+    缺这条快照时，保存失败后该会话的近期图片与字节记账一起消失：下一轮
+    识图无上下文，配额也可能与真实占用不一致。
+    """
+
+    async def scenario(plugin, main):
+        from types import SimpleNamespace
+
+        webapi = webapi_module(main)
+        image = SimpleNamespace(prepared_source="data:image/png;base64,YQ==")
+        removed_umo = "fake:group:789"
+        plugin._coordinator.capture_images(removed_umo, 1.0, [image])
+        assert removed_umo in plugin._recent_image_events
+        before_bytes = plugin._coordinator._total_bytes
+
+        original_persist = plugin._persist_config
+        failed = False
+
+        async def fail_once():
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise OSError("disk full")
+            await original_persist()
+
+        plugin._persist_config = fail_once
+        try:
+            web = sys.modules["astrbot.api.web"]
+            web.request.payload = {"whitelist_sessions": ["123"]}
+            result = await webapi._api_post_config(plugin)
+        finally:
+            plugin._persist_config = original_persist
+
+        assert result["ok"] is False
+        assert failed
+        assert removed_umo in plugin._recent_image_events, "回滚未恢复被白名单摘掉的图片索引"
+        assert plugin._coordinator._total_bytes == before_bytes
+
+    with_plugin(tmp_path, scenario, whitelist_sessions=["123", "789"])
+
+    with_plugin(tmp_path, scenario, whitelist_sessions=["123", "456"])
+
+
+def test_rollback_does_not_restore_invalidated_events(tmp_path) -> None:
+    """A failed config save must not revive an event cleared by a concurrent check."""
+
+    async def scenario(plugin, main):
+        webapi = webapi_module(main)
+        event = object()
+        plugin._coordinator.record_event(UMO, event, 1.0)
+        plugin._gate.advance(UMO)
+        snapshot = webapi._snapshot_plugin_state(plugin)
+        plugin._coordinator.invalidate(UMO)
+        generation_after_invalidation = plugin._gate.current(UMO)
+        await webapi._restore_plugin_state(plugin, snapshot)
+        assert plugin._gate.current(UMO) == generation_after_invalidation
+        assert UMO not in plugin._last_events
+        assert UMO not in plugin._last_event_at
 
     with_plugin(tmp_path, scenario)
 

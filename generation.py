@@ -2,7 +2,7 @@
 
 一次生成运行的全部编排：上下文/提示词组装、工具边界安装与恢复、构建配置
 组装、最终工具策略强制（fail-closed 与危险工具拒绝）、生成运行（超时、优雅
-停止、孤儿收敛）与工具直发追踪。行为契约（§2/§3）由 tests 钉住。
+停止、孤儿收敛）与工具直发追踪。
 
 宿主交互经注入回调执行：运行时适配器经 getter 动态读取（测试替换
 ``main._AGENT_RUNTIME`` 后仍生效），工具策略经回调运行时经插件实例查找。
@@ -11,8 +11,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -34,6 +34,7 @@ from .models import (
     ReadHistoryCallback,
     SessionState,
     Settings,
+    chain_timeout_budget,
     proactive_build_config_kwargs,
 )
 from .outbound import OutboundGateway
@@ -42,9 +43,11 @@ from .utils import (
     cap_context_text,
     clean_reply,
     consume_task_result,
+    conversation_history,
     maybe_await,
     redact_exc_text,
     response_text,
+    usable_conversation,
 )
 
 # 宿主的工具状态消息类型：主动运行要把它们挡在会话之外（宿主在 webchat 平台
@@ -79,11 +82,27 @@ _ENVELOPE_TAG = "recent_chat"
 # 这类同名前缀的不同标签误判成信封标签。
 # 引号属性值里允许尖括号：``</recent_chat foo="<">`` 若匹配不到就会原样穿过
 # 中和，而它本身是结构完整的闭合标签——模型据此把其后内容划到信封之外，
-# 正是本函数要堵的逃逸（tests/test_generation_runner.py 钉住）。
+# 正是本函数要堵的逃逸：工具边界必须在 runner 内部生效，外层改写挡不住。
 _ENVELOPE_TAG_RE = re.compile(
     rf"<\s*/?\s*{_ENVELOPE_TAG}(?:\s+(?:[^<>\"']|\"[^\"]*\"|'[^']*')*)?/?\s*>",
     re.IGNORECASE,
 )
+
+
+def provider_label(provider: Any) -> str:
+    """``provider_id/model`` 形式的可读标签；取不到就给类型名。
+
+    只用于日志：各宿主版本的 provider 字段不一致，一律 getattr 兜底。
+    """
+    if provider is None:
+        return "none"
+    config = getattr(provider, "provider_config", None)
+    ident = str(config.get("id") or "") if isinstance(config, dict) else ""
+    get_model = getattr(provider, "get_model", None)
+    model = str(get_model() or "") if callable(get_model) else ""
+    if ident and model:
+        return f"{ident}/{model}"
+    return ident or model or type(provider).__name__
 
 
 def neutralize_envelope_tags(text: str) -> str:
@@ -91,7 +110,7 @@ def neutralize_envelope_tags(text: str) -> str:
 
     攻击面：历史拼接把 ``MessageRecord.text`` 原样放进 ``<recent_chat>`` 信封，
     用户消息里出现 ``</recent_chat>`` 就能提前闭合信封，让其后的文字落到信封
-    之外、与插件自己的尾部指令同层级（tests/test_generation_runner.py 钉住）。
+    之外、与插件自己的尾部指令同层级。
 
     不复用 ``sanitize_prompt_variable``：它不处理信封标签且会截断聊天记录。
     改用全角而非删除：保留攻击痕迹可读、等长、不影响长度预算。本函数是
@@ -107,7 +126,7 @@ def build_proactive_prompt(
 ) -> str:
     """拼装主动回复的提示词。
 
-    安全契约（改文案必须守住，tests/test_generation_runner.py）：
+    安全契约（改文案必须守住）：
     1. ``recent_chat`` 必须被显式声明为不可信内容，且声明在聊天记录之前；
     2. 工具边界措辞随 ``inherit_tools`` 切换，继承态也要点明宿主级危险能力不可用；
     3. 无可用工具时要求直接输出文本，避免模型臆造工具调用；
@@ -154,6 +173,8 @@ class _GenerateRun:
         "tracked_send",
         "build_result",
         "quarantined",
+        "started_at",
+        "build_done_at",
     )
 
     def __init__(
@@ -175,6 +196,9 @@ class _GenerateRun:
         self.inherit_tools = inherit_tools
         self.prompt = prompt
         self.expected_generation = expected_generation
+        # 阶段耗时：超时日志靠它区分「卡在宿主装配」还是「卡在模型/工具循环」。
+        self.started_at = time.monotonic()
+        self.build_done_at: float | None = None
         self.force = force
         self.silence_active_at = silence_active_at
         self.ledger = ledger
@@ -198,6 +222,21 @@ class _GenerateRun:
         if pending is not None:
             pending.close()
         return self.partial_reply()
+
+
+def _chain_providers(run: Any) -> list[Any]:
+    """本次运行实际会用的候选链：主模型 + 备用模型。
+
+    取 build 结果上的真实对象，而不是宿主实例里的全部 provider——后者会把
+    这条链没用到的模型算进来，把「该调多少」指错方向。
+    """
+    result = getattr(run, "build_result", None)
+    if result is None:
+        return []
+    chain = [getattr(result, "provider", None)]
+    runner = getattr(result, "agent_runner", None)
+    chain.extend(getattr(runner, "fallback_providers", None) or ())
+    return [provider for provider in chain if provider is not None]
 
 
 class GenerationRunner:
@@ -226,7 +265,7 @@ class GenerationRunner:
             # 先回调再谈隔离登记：``on_quarantine`` 置 run.quarantined=True，
             # _cleanup_generation_state 靠它决定是否保留 send tracker。把两者
             # 绑在一起会让"没有注入隔离表"（构造默认值）退化成 fail-open——
-            # 存活 agent 的工具直发变成裸发，绕过预算与代次闸门（契约 §5）。
+            # 存活 agent 的工具直发变成裸发，绕过预算与代次闸门。
             if on_quarantine is not None:
                 on_quarantine()
             if self._quarantine_task is None:
@@ -260,7 +299,7 @@ class GenerationRunner:
                 # 不能据此判定"run task 吞掉了取消"：它可能正在自行收敛，而隔离
                 # 登记 → _mark_degraded 是**单向永久**的——一次例行指令、在面板点
                 # 一下禁用、或插件 reload，就能把主动回复永久停摆到重载为止
-                # （契约 §5 把 DEGRADED 留给真的超出硬停止窗口的任务）。
+                # （DEGRADED 留给真的超出硬停止窗口的任务）。
                 run_task.cancel()
                 try:
                     done, _ = await asyncio.wait(
@@ -284,7 +323,7 @@ class GenerationRunner:
             except asyncio.CancelledError:
                 # 这一次等待自己被打断：调用方的取消意图优先，但必须先注入取消并
                 # 走完同一套收敛判定——否则 run_task 既没被取消、也没进入宽限/隔离
-                # 判定，成为继续运行且绕过预算与代次闸门的孤儿（契约 §5）。
+                # 判定，成为继续运行且绕过预算与代次闸门的孤儿。
                 run_task.cancel()
                 if await wait_until(grace_deadline()):
                     consume_task_result(run_task)
@@ -401,18 +440,33 @@ class GenerationRunner:
             if early is not None:
                 return early
             built = await self._build_and_bound_tools(run)
+            run.build_done_at = time.monotonic()
             if built is not None:
                 return built
             await self._run_agent_with_grace(run)
             return self._finalize_text(run)
         except TimeoutError:
+            # 超时是黑盒时最难查的一类：用户只看到"没回复"。把阶段拆开，
+            # build 慢说明卡在宿主装配，build 已完成则卡在模型或工具循环。
+            now = time.monotonic()
+            build_sec = (run.build_done_at - run.started_at) if run.build_done_at else None
             logger.warning(
-                "[%s] main-agent generation timeout ledger_id=%s session=%s timeout=%.1fs",
+                "[%s] main-agent generation timeout ledger_id=%s session=%s "
+                "timeout=%.1fs build=%s waiting_on=%s",
                 PLUGIN_ID,
                 ledger.ledger_id,
                 umo,
                 self.settings.generation_timeout_sec,
+                f"{build_sec:.1f}s" if build_sec is not None else "unfinished",
+                "agent" if run.build_done_at else "build",
             )
+            logger.debug(
+                "[%s] generation stage trace ledger_id=%s total=%.1fs",
+                PLUGIN_ID,
+                ledger.ledger_id,
+                now - run.started_at,
+            )
+            self._warn_timeout_vs_provider(ledger.ledger_id, umo, run)
             return run.partial_reply()
         except Exception as exc:
             # 异常文本常带请求 URL（含凭证），与 decision/webapi 同一脱敏口径；
@@ -443,18 +497,25 @@ class GenerationRunner:
                 run.umo,
             )
             return run.partial_reply()
+
+        def allow_outbound() -> bool:
+            try:
+                return (
+                    not run.quarantined
+                    and run.ledger.accepts_attempts
+                    and self._gate.is_current(run.umo, run.expected_generation)
+                    and not self._is_stopping()
+                    and not self._local_gate(
+                        run.state, force=run.force, silence_active_at=run.silence_active_at
+                    )
+                )
+            except Exception:
+                return False
+
         outbound = OutboundGateway(
             original_send,
             max_direct_sends=MAX_DIRECT_TOOL_SENDS,
-            allow_direct=lambda: (
-                self._gate.is_current(run.umo, run.expected_generation)
-                and not self._is_stopping()
-                and not self._local_gate(
-                    run.state,
-                    force=run.force,
-                    silence_active_at=run.silence_active_at,
-                )
-            ),
+            allow_direct=allow_outbound,
             ledger=run.ledger,
         )
 
@@ -468,9 +529,9 @@ class GenerationRunner:
                     # tool_call_result）。主动运行的中间过程不该进会话，这里补上
                     # 宿主没做的那道拦截。
                     return None
-                if self._is_stopping():
+                if not allow_outbound():
                     logger.info(
-                        "[%s] suppress ordinary agent send after lifecycle stop "
+                        "[%s] suppress ordinary agent send after lifecycle or gate rejection "
                         "ledger_id=%s session=%s",
                         PLUGIN_ID,
                         run.ledger.ledger_id,
@@ -505,7 +566,7 @@ class GenerationRunner:
         return None
 
     async def _build_and_bound_tools(self, run: _GenerateRun) -> tuple[str, AttemptLedger] | None:
-        """build + 双 enforce + hook + reset；早退返回空回复。"""
+        """构建并清理工具；旧宿主补跑请求钩子与延迟 reset。"""
         last_event = run.last_event
         inherit_tools = run.inherit_tools
         req = self._runtime().new_provider_request()
@@ -525,29 +586,38 @@ class GenerationRunner:
             config=self.main_agent_build_config(run.umo),
             req=req,
             apply_reset=False,
+            **(await self._provider_kwargs()),
         )
         if build_result is None:
             return run.abort()
         run.build_result = build_result
-        run.reset_coro = build_result.reset_coro
+        # AstrBot 4.30 resets the runner inside build_main_agent and no longer
+        # returns a reset_coro; older hosts still expose the deferred coroutine.
+        run.reset_coro = getattr(build_result, "reset_coro", None)
+        # 生成用哪个模型是这条链路上唯一查不到的信息：用户只看到「没回复」，
+        # 而判定模型（另一个 provider）明明正常。记一条 INFO，下次能直接对上
+        # 「判定走 A、生成走 B」。
+        logger.info(
+            "[%s] generation provider ledger_id=%s session=%s provider=%s",
+            PLUGIN_ID,
+            run.ledger.ledger_id,
+            run.umo,
+            provider_label(getattr(build_result, "provider", None)),
+        )
 
+        # 4.30 already ran hooks and reset; full schema mode shares req with the runner.
         if not self.enforce_final_tool_policy(req, inherit_tools):
             return run.abort(run.reset_coro)
-
-        if await self._call_hook(
-            last_event,
-            self._runtime().event_type.OnLLMRequestEvent,
-            build_result.provider_request,
-        ):
-            return run.abort(run.reset_coro)
-
-        # Second enforcement point: a hook may have injected tools into the
-        # request between build and reset. Enforce BEFORE reset so that any
-        # tool set the host copies into the runner during reset is already
-        # clean; the runner only ever sees the allowlisted set.
-        if not self.enforce_final_tool_policy(req, inherit_tools):
-            return run.abort(run.reset_coro)
-        if run.reset_coro:
+        if run.reset_coro is not None:
+            if await self._call_hook(
+                last_event,
+                self._runtime().event_type.OnLLMRequestEvent,
+                build_result.provider_request,
+            ):
+                return run.abort(run.reset_coro)
+            # Older hosts defer reset; clean hook-injected tools before that reset.
+            if not self.enforce_final_tool_policy(req, inherit_tools):
+                return run.abort(run.reset_coro)
             await run.reset_coro
         return None
 
@@ -627,6 +697,8 @@ class GenerationRunner:
             raise RuntimeError("run_agent entered finalize without a build_result")
         response = build_result.agent_runner.get_final_llm_resp()
         reply_text = response_text(response)
+        if getattr(response, "role", None) == "err":
+            raise RuntimeError(reply_text or "All chat models failed")
         if reply_text:
             reply_text = clean_reply(
                 reply_text,
@@ -668,11 +740,8 @@ class GenerationRunner:
                             delattr(last_event, "send")
                 except Exception:
                     pass
-        try:
-            if run.tool_boundary_state is not None:
-                self.restore_agent_tool_boundary(last_event, run.tool_boundary_state)
-        except Exception:
-            pass
+        if run.tool_boundary_state is not None:
+            self.restore_agent_tool_boundary(last_event, run.tool_boundary_state)
         try:
             last_event.set_extra("provider_request", None)
         except Exception:
@@ -684,12 +753,15 @@ class GenerationRunner:
         日志级别按可行动性分档：拿不到 conversation 多为宿主环境问题（debug）；
         history 解析失败是真数据损坏（warning）；conversation 结构异常是另一
         类 warning 文案。``BaseException`` 子类（取消）刻意穿透。
+
+        ``req.conversation`` 只回填能承接宿主解引用的对象：4.30 的读结果缺
+        ``cid``，先经宿主的 ``to_legacy_conversation`` 补齐；补不出合格对象
+        时不回填并留 debug，避免宿主 build 内部抛 AttributeError。
         """
         try:
             conversation = await self._runtime().load_session_conversation(
                 last_event, self._context
             )
-            req.conversation = conversation
         except Exception as exc:
             # 同 adapters 的历史读取分支：存储后端的异常串常带连接串凭证
             # （redis://:password@host:port/0），级别低不是豁免理由。
@@ -700,15 +772,20 @@ class GenerationRunner:
                 redact_exc_text(exc),
             )
             return
+        conversation = self._runtime().legacy_conversation(conversation, self._context)
+        if usable_conversation(conversation):
+            req.conversation = conversation
+        else:
+            # 不回填等于放弃人格 system prompt、宿主历史回写与 token 记账：
+            # 形状对不上宿主期待时必须留下可排查的线索。
+            logger.debug(
+                "[%s] conversation not usable as request context session=%s type=%s",
+                PLUGIN_ID,
+                umo,
+                type(conversation).__name__,
+            )
         try:
-            parsed = json.loads(conversation.history)
-            if not isinstance(parsed, list):
-                # 合法 JSON 但形状不对（"null" / 字符串 / 对象）：原样赋给
-                # req.contexts 会把垃圾交给宿主消息装配（字符串按字符迭代、
-                # None 可能直接炸），且那条「数据损坏」告警被跳过——降级路径
-                # 还在，痕迹没了。按同一类损坏处理。
-                raise ValueError(f"history is {type(parsed).__name__}, expected a list")
-            req.contexts = parsed
+            req.contexts = conversation_history(conversation)
         except (TypeError, ValueError) as exc:
             # JSONDecodeError 是 ValueError 子类；history 为 None/非 str 时是
             # TypeError，同属数据损坏。
@@ -812,23 +889,81 @@ class GenerationRunner:
                 # 影响该事件后续的插件归属标记。
                 pass
 
+    async def _provider_kwargs(self) -> dict[str, Any]:
+        """把主动回复要用的模型作为 ``provider=`` 交给宿主。
+
+        宿主 ``build_main_agent`` 的 ``provider`` 参数优先于它自己的会话选择
+        （``provider or await _select_provider(...)``），所以不必去事件对象上写
+        ``selected_provider``——那个事件由本插件按会话缓存复用，跨 await 改写
+        会把用户或别的插件选好的模型一并抹掉。
+
+        ID 找不到时不传：传了宿主会直接把这一轮判成 provider 不存在。
+        """
+        provider_id = str(self.settings.proactive_provider_id or "").strip()
+        if not provider_id:
+            return {}
+        try:
+            get_provider = getattr(self._context, "get_provider_by_id", None)
+            if callable(get_provider):
+                resolved = await maybe_await(get_provider(provider_id))
+            else:
+                resolved = None
+        except Exception:
+            resolved = None
+        if resolved is None:
+            logger.warning(
+                "[%s] proactive_provider_id=%s 在宿主里找不到，本轮沿用会话默认模型",
+                PLUGIN_ID,
+                provider_id,
+            )
+            return {}
+        return {"provider": resolved}
+
+    def _warn_timeout_vs_provider(self, ledger_id: str, umo: str, run: _GenerateRun) -> None:
+        """等待时限短于宿主的模型超时时说清楚：不是没生成，是还没轮到备用模型。
+
+        宿主在主模型超时之后才切备用模型。插件自己先到期，这一轮就什么都不会发，
+        日志里只有一行 timeout——把它和宿主的超时放在一起，才能看出该调哪个数字。
+        """
+        chain = _chain_providers(run)
+        try:
+            needed = chain_timeout_budget(
+                chain, request_attempts=self.settings.proactive_request_max_retries
+            )
+        except Exception:
+            return
+        budget = self.settings.generation_timeout_sec
+        # 相等也要报：主模型跑满 120s 才切备用，预算正好 120 就是同刻到期。
+        if needed is None or budget > needed:
+            return
+        logger.warning(
+            "[%s] generation timeout before the fallback chain was exhausted "
+            "ledger_id=%s session=%s budget=%.0fs chain=%d providers need=%.0fs; "
+            "请求超时预算不含重试间隔；宿主在主模型超时后才切下一个模型，"
+            "调整 generation_timeout_sec 或换更快的模型",
+            PLUGIN_ID,
+            ledger_id,
+            umo,
+            budget,
+            len(chain),
+            needed,
+        )
+
     def main_agent_build_config(self, umo: str) -> Any:
         provider_settings = {}
-        fallback_provider_ids: Any = None
+        model_settings = {}
         try:
             config_obj = getattr(self._context, "astrbot_config", {})
             get_config = getattr(self._context, "get_config", None)
             if umo and callable(get_config):
                 config_obj = get_config(umo)
             provider_settings = dict(config_obj.get("provider_settings", {}) or {})
-            # 宿主三处自己的 MainAgentBuildConfig 构造点都取这个路径
-            # （``agent_runner.config.model.fallback_provider_ids``），主动回复
-            # 漏传就只剩单个候选，模型报错时不回退。
-            fallback_provider_ids = (
-                config_obj.get("agent_runner", {})
-                .get("config", {})
-                .get("model", {})
-                .get("fallback_provider_ids", [])
+            # 回退顺序与每个模型的重试次数必须一起继承会话设置。4.30
+            # 将模型配置从 agent_runner 移到 agent；新路径优先，旧路径兼容。
+            agent_config = config_obj.get("agent", {}).get("config", {}) or {}
+            legacy_agent_config = config_obj.get("agent_runner", {}).get("config", {}) or {}
+            model_settings = dict(
+                agent_config.get("model") or legacy_agent_config.get("model") or {}
             )
         except Exception as exc:
             # 会话级配置是可选能力：get_config(umo) 在旧宿主不存在或返回对象
@@ -840,10 +975,23 @@ class GenerationRunner:
                 umo,
                 redact_exc_text(exc),
             )
+        if self.settings.proactive_fallback_provider_ids:
+            # 插件自己配了备用模型就用它，否则原样沿用宿主会话配置的链。
+            fallbacks = list(self.settings.proactive_fallback_provider_ids)
+            model_settings = {**model_settings, "fallback_provider_ids": fallbacks}
+            # 4.27.2 及以下没有 MainAgentBuildConfig.fallback_provider_ids 字段，
+            # 它们读 provider_settings 里的 fallback_chat_models。两处都写，
+            # 否则那些版本上「备用模型」设了也不生效。
+            provider_settings["fallback_chat_models"] = fallbacks
+        # 回退链原样透传：主模型超时是常态，宿主靠 ``fallback_provider_ids`` 切到
+        # 备选才出得来话。任何"帮它过滤一下"的尝试都会在该配置存的是展示名而非
+        # provider ID 时把有效候选全部丢掉，主动回复退化成单一候选直达超时。
         # 键集合与加载期探针单源（models.proactive_build_config_kwargs）。
         return self._runtime().new_build_config(
             **proactive_build_config_kwargs(
-                provider_settings, fallback_provider_ids=fallback_provider_ids
+                provider_settings,
+                model_settings=model_settings,
+                request_max_retries=self.settings.proactive_request_max_retries,
             )
         )
 
@@ -868,9 +1016,22 @@ class GenerationRunner:
             context_text = cap_context_text(
                 context_text, MAX_GENERATION_CONTEXT_CHARS, marker=CONTEXT_CAP_MARKER
             )
-        image_context = await self._build_image_context(
-            umo,
-            enabled=self.settings.vision_main_enabled,
-            provider_id=self.settings.vision_provider_id,
-        )
+        # 识图是唯一没有内部兜底的外部读数（provider 超时/网络/额度都会抛），异常冒到
+        # generate 的 except 就是整轮空回复；降级成「无识图上下文照常生成」。
+        try:
+            image_context = await self._build_image_context(
+                umo,
+                enabled=self.settings.vision_main_enabled,
+                provider_id=self.settings.vision_provider_id,
+            )
+        except Exception as exc:
+            # 与 prompt build 失败分开写，否则排障会被引向 prompt 组装。
+            logger.warning(
+                "[%s] proactive vision context unavailable, generating without it "
+                "session=%s error=%s",
+                PLUGIN_ID,
+                umo,
+                redact_exc_text(exc),
+            )
+            image_context = ""
         return f"{context_text}\n\n{image_context}" if image_context else context_text

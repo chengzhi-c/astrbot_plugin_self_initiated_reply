@@ -32,7 +32,7 @@ from .utils import (
 
 _MAX_RECORD_SAVE_ATTEMPTS = 2
 # 真实退避间隔：sleep(0) 只让出一个事件循环 tick，磁盘瞬时故障在零退避下
-# 两次必然背靠背失败。0.5s 足以跨过瞬时占用，又不拖出 §5 的收敛边界。
+# 两次必然背靠背失败。0.5s 足以跨过瞬时占用，又不拖出关停的收敛边界。
 _RECORD_SAVE_RETRY_SEC = 0.5
 
 
@@ -94,7 +94,7 @@ class SessionPipeline:
         """一次判断：通过返回 decision dict，早退返回跳过原因（并登记裁决）。"""
         result = await self._decision.decide(umo, state, trigger=trigger, force=force)
         if isinstance(result, str):
-            # 与下方 dict 分支同级：§9 规定的「一次判断一行 INFO」必须覆盖两个
+            # 与下方 dict 分支同级：「一次判断一行 INFO」必须覆盖两个
             # 出口。只打 dict 分支时，模型明确说「不接话」这条最高频排障路径
             # 在默认配置下完全不可见（result 串里已经带着理由）。
             logger.info(
@@ -106,7 +106,7 @@ class SessionPipeline:
             )
             record_decision(self._last_decisions, umo, trigger, should_reply=False, reason=result)
             return result
-        # 决策 INFO 先于代次复核：模型的结论是 §9 留给 INFO 的唯一排障入口，而
+        # 决策 INFO 先于代次复核：模型的结论是留给 INFO 的唯一排障入口，而
         # 代次在判断期间变化恰恰是最需要知道"模型到底说了什么"的一条路径——
         # 放到复核之后，这条路径上运营者既看不到日志也看不到裁决。
         logger.info(
@@ -120,7 +120,7 @@ class SessionPipeline:
         )
         if not self._gate.is_current(umo, expected_generation):
             # 登记丢弃理由而不是模型的结论：否则 /selfreply status 的「最近裁决」
-            # 会显示一条本轮什么都没发生的「接话」（与 local_gate 分支同口径，§13）。
+            # 会显示一条本轮什么都没发生的「接话」（与 local_gate 分支同口径）。
             record_decision(
                 self._last_decisions,
                 umo,
@@ -136,11 +136,6 @@ class SessionPipeline:
             should_reply=bool(result.get("should_reply")),
             reason=str(result.get("reason") or ""),
         )
-        if not result.get("should_reply"):
-            # decide() 的契约：should_reply=False 时必须转成字符串返回。这里
-            # 显式兜底，因为拿到 dict 意味着被注入的 decision 实现退化——那会让
-            # 判断模型明确说"不接话"的会话继续走到生成与发送，且全程无日志。
-            raise RuntimeError("decide() must convert should_reply=False into a string")
         return result
 
     async def check_session(
@@ -157,14 +152,21 @@ class SessionPipeline:
         if pre_guard is not None:
             # 锁前预检：与持锁路径同一门卫，避免为注定早退的会话创建锁表条目。
             return pre_guard
-        lock = self._gate.lock_for(umo)
-        async with lock:
-            return await self.check_session_locked(
-                umo,
-                trigger=trigger,
-                force=force,
-                expected_generation=expected_generation,
-            )
+        while True:
+            lock = self._gate.lock_for(umo)
+            async with lock:
+                if self._gate.lock_for(umo) is not lock:
+                    # release() 立刻置为未锁、waiter 下一个 tick 才真正持锁；这一
+                    # tick 内 prune/restore 会把这把「未锁但有排队者」的锁摘出表，
+                    # 继续跑就与拿到新锁的检查并发。串行性以表里的锁对象为唯一
+                    # 真相源：换过锁就退出重取。
+                    continue
+                return await self.check_session_locked(
+                    umo,
+                    trigger=trigger,
+                    force=force,
+                    expected_generation=expected_generation,
+                )
 
     async def check_session_locked(
         self,
@@ -181,7 +183,7 @@ class SessionPipeline:
         if expected_generation is None:
             # 必须无条件绑定基线：没有代次记录的会话 ``current()`` 返回 0，若把
             # 这个 0 当作"未取到"而保持 None，本轮就没有代次防护——判断期间新
-            # 消息 advance 到 1 也不会让它失效，过期结论照发（契约 §5）。
+            # 消息 advance 到 1 也不会让它失效，过期结论照发。
             expected_generation = self._gate.current(umo)
         state = self._state_for(umo)
         observed_active_at = state.last_active_at
@@ -196,7 +198,7 @@ class SessionPipeline:
             #
             # 但日志取 DEBUG 而非 INFO：这与 ``scheduler.delayed_check`` 把同一句
             # result 降为 DEBUG 是同一条理由——闸门理由是高频成功路径（默认配置下
-            # 每个巡检轮次一条），而 §9 只把「判断结果」那一条留给 INFO。运营者
+            # 每个巡检轮次一条），而日志只把「判断结果」那一条留给 INFO。运营者
             # 的可视答案在 ``/selfreply status``，不在日志流里。
             record_decision(self._last_decisions, umo, trigger, should_reply=False, reason=gate)
             logger.debug(
@@ -227,7 +229,7 @@ class SessionPipeline:
             # 依据的消息；而 build_context_text 读 state.recent 发生在第一个 await
             # 的参数求值里，两者之间没有让出事件循环的机会。
             target_event = self._last_events.get(umo)
-            reply_text, reply_ledger = await self._generation.generate(
+            reply_text, _ = await self._generation.generate(
                 umo,
                 state,
                 expected_generation=expected_generation,
@@ -235,8 +237,6 @@ class SessionPipeline:
                 force=force,
                 silence_active_at=observed_active_at,
             )
-            if reply_ledger is not None and reply_ledger is not ledger:
-                raise RuntimeError("generation returned a different attempt ledger")
             effective_reply = reply_text.strip()
             direct_send_count = ledger.direct_send_count
             if effective_reply and ledger.direct_texts:
@@ -251,6 +251,15 @@ class SessionPipeline:
                     )
                     effective_reply = ""
             if not effective_reply and not direct_send_count:
+                # 判定阶段已经决定接话，生成却交了空文本：这是异常，不是"没话说"。
+                # 不落日志时面板显示已接话而群里什么都没发生，运营者查不到原因。
+                logger.warning(
+                    "[%s] generation produced no text session=%s trigger=%s ledger_id=%s",
+                    PLUGIN_ID,
+                    umo,
+                    trigger,
+                    ledger.ledger_id,
+                )
                 return "管线未生成内容。"
 
             return await self._delivery.deliver_reply(
@@ -268,6 +277,7 @@ class SessionPipeline:
                 target_event=target_event,
             )
         finally:
+            finalizer: Any = None
             try:
                 finalizer = self._track_critical_task(
                     self._finalize_ledger(
@@ -289,7 +299,24 @@ class SessionPipeline:
             finally:
                 # unmark 挂在最外层：finalizer 抛错的路径同样必经，
                 # 否则会话永久卡在 running。
-                self._gate.unmark_running(umo)
+                if finalizer is None or finalizer.done():
+                    # finalizer 没建起来（登记失败）时没有完成回调可挂：必须就地释放，
+                    # 否则会话永久卡在 running，后续检查全被「已有判断任务在运行」拒绝。
+                    self._gate.unmark_running(umo)
+                else:
+                    # 二次取消：只补等一次的那次等待自身又被取消（关停窗口），
+                    # CancelledError 直奔这里，而 record task 还在跑。运行标记必须
+                    # 覆盖整个记账窗口——现在释放，同 umo 的第二个检查会与在途记账
+                    # 并发，实测出现两条 record task 与第二个检查同时存活。这里也
+                    # 不能再等：把关停拖在记账落盘上违反终止有界。因此挂到
+                    # finalizer 的完成回调：本任务立刻收敛，而记账任务是 critical
+                    # task，关停中照常跑完并触发回调，会话不会停在 running。
+                    # 租约必须先转交给 finalizer：本任务随即 done()，配置回滚的
+                    # restore 会把"owner 已结束"当成检查已收尾而摘掉运行标记。
+                    self._gate.transfer_running_owner(umo, finalizer)
+                    finalizer.add_done_callback(
+                        lambda done: self._gate.unmark_running(umo, owner=done)
+                    )
 
     async def _record_ledger(
         self,
@@ -323,25 +350,36 @@ class SessionPipeline:
                 attempt.state for attempt in ledger.attempts if attempt.kind == "final_reply"
             ]
             final_state = final_states[-1] if final_states else None
-            if final_state is AttemptState.DELIVERED:
-                confirmed = True
-                recorded_reply = reply
-            elif ledger.has_unknown:
-                confirmed = False
-                recorded_reply = ""
-            else:
-                confirmed = True
-                recorded_reply = ""
+            delivered_direct = [
+                attempt.text
+                for attempt in ledger.attempts
+                if attempt.kind == "tool_direct"
+                and attempt.state is AttemptState.DELIVERED
+                and attempt.text.strip()
+            ]
+            confirmed = final_state is AttemptState.DELIVERED or bool(delivered_direct)
+            recorded_parts = list(delivered_direct)
+            reply = reply.strip()
+            if final_state is AttemptState.DELIVERED and reply and reply not in recorded_parts:
+                recorded_parts.append(reply)
+            recorded_reply = "；".join(recorded_parts)
 
-            if not recorded_reply.strip() and ledger.direct_texts:
-                # 工具直发已把正文发出去了，记账却只留一个占位符：下一轮判断与
-                # 生成会把「自己说过什么」读成「[工具主动发送 xN]」，去重基准也
-                # 失效。契约 §3 要求生成超时/取消/失败三类出口都不得丢失这份文本。
-                recorded_reply = "；".join(text for text in ledger.direct_texts if text.strip())
+            # remove+readd 会换掉状态对象，已提交的发送仍须记入当前对象。
+            # 非白名单不调用 state_for，避免在移除或回滚期间重建已摘除的条目。
+            target_state = state
+            if session_whitelisted(umo, self._settings.whitelist):
+                current_state = self._state_for(umo)
+                if current_state is not state:
+                    target_state = current_state
+                    logger.info(
+                        "[%s] record proactive into readded session state session=%s",
+                        PLUGIN_ID,
+                        umo,
+                    )
 
             self._delivery.apply_proactive_state(
                 umo,
-                state,
+                target_state,
                 recorded_reply,
                 ledger.direct_send_count,
                 expected_generation=expected_generation,
@@ -402,7 +440,7 @@ class SessionPipeline:
 
         不返回 bool：调用方只等它跑完，结论由 ``ledger.phase`` 单点表达。
         seal() 后这支是重入终态：二次进入直接返回既有结论，不再挂第二条
-        record task（test_attempt_ledger 锚定）。
+        record task。
         """
         ledger.seal()
         if ledger.phase in {LedgerPhase.RECORDED, LedgerPhase.RECORD_FAILED}:

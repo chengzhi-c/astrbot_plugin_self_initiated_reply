@@ -4,26 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrbot_plugin_self_initiated_reply"
-# 版本号不在此处写死：由 [tool.hatch.version] 从 models.PLUGIN_VERSION 读取。
 dynamic = ["version"]
 requires-python = ">=3.12"
 dependencies = [
   "httpx>=0.27,<0.29",
   "httpcore>=1,<1.1",
 ]
-# 远程图片固定地址传输直接使用 httpx/httpcore；其余能力仍复用宿主 AstrBot API。
 
 [project.optional-dependencies]
-# 开发依赖钉版：CI 的 mypy / test / compat 三个作业都跑 `pip install -e ".[dev]"`，
-# 无上界等于每次 CI 都装当日最新版，门禁因上游发版变红时排查成本全落在改动者身上。
-#
-# 取值口径：
-# - 用主版本上界而非精确钉版：test 作业覆盖 3.12-3.14，精确钉版会在新 Python 上
-#   撞到"该版本没有对应 wheel"。
-# - ruff 精确钉版：0.16 系列内格式化输出变过（同一段代码 0.16.1 要求一行、
-#   0.16.5 要求换行），范围会让本地与 CI 的 `ruff format --check` 互相打架。
-#   版本与 ci.yml 的 lint 作业保持一致（那里独立安装同一精确版）。
-# - pytest-asyncio 上界 <2：asyncio_mode = "auto" 的语义历史上随大版本变过。
 dev = [
   "pytest>=8,<10",
   "pytest-asyncio>=1,<2",
@@ -33,42 +21,21 @@ dev = [
 ]
 
 [tool.hatch.version]
-# 版本号单源：wheel 文件名与 dist-info 从 models.PLUGIN_VERSION 派生，面板显示值与
-# pip 记录不同步的情况在结构上无法发生。仍需手工同步的 metadata.yaml 与 README 徽章
-# 由 tests/test_main_runtime.py::test_version_consistency_across_metadata 守，
-# 该用例同时核验本节的 path/pattern 真能取到值。
-#
-# pattern 必须显式写：hatchling 默认只认 __version__ / VERSION 且带行首锚。
 path = "models.py"
 pattern = "PLUGIN_VERSION = ['\"](?P<version>[^'\"]+)['\"]"
 
 [tool.hatch.build.targets.wheel]
-# AstrBot 插件布局：仓库根即包（含 __init__.py），整目录打包验证分发。
 packages = ["."]
-# Web 页面、资源与元数据不在 wheel 默认的 .py 收集中，需显式纳入。
-#
-# **每条都必须带前导 `/` 锚到仓库根**：这些模式是 gitignore 语义，不带斜杠的
-# `LICENSE` / `README.md` / `metadata.yaml` 会在任意深度命中，而 artifacts 优先于
-# exclude，于是被 exclude 排掉的目录里只要存在同名文件就会被重新拉回 wheel
-# （实测一个 venv 落进 .scratch/ 后，site-packages 的第三方同名文件全部进包）。
 artifacts = [
   "/metadata.yaml",
   "/_conf_schema.json",
   "/pages/**",
   "/logo.png",
   "/LICENSE",
-  # 面向用户的两份文档必须随包：下方 exclude 的 `*.md` 会把它们一起排掉，
-  # artifacts 优先于 exclude，故在此显式收回；docs/ 下的维护者文档仍被排除。
   "/README.md",
   "/CHANGELOG.md",
 ]
-# 开发物不进生产 wheel（整目录打包会把 tests/.scratch/scripts/docs/.github 与开发
-# 配置全部打进包）。exclude 与 artifacts 并存时 artifacts 优先。wheel 构建已不属于
-# 发布链（发布走 git archive，见 .gitattributes 与 docs/DECISIONS.md），
-# 本节为任何本地构建保持同样干净的包形。
 exclude = [
-  # assets/ 是 README 的图源（JPG），代码与 pages/、metadata.yaml 的引用数为 0，
-  # README 全部走 raw.githubusercontent 绝对链接，运行时永不读取。
   "assets/**",
   "tests/**",
   "docs/**",
@@ -83,24 +50,15 @@ exclude = [
   "uv.lock",
   "*.md",
   ".gitignore",
-  # 仓库根的开发配置：整目录打包会把这几个一并收进 wheel（从 sdist 构建时
-  # 还多一个 PKG-INFO），它们与宿主加载、设置页渲染都无关。
   ".editorconfig",
   ".gitattributes",
   "pyproject.toml",
   "PKG-INFO",
-  # 覆盖率产物。pytest-cov 的并行数据文件名带主机名与 pid
-  # （.coverage.<host>.pid<N>.<rand>），不以固定后缀结尾，具名条目认不出；
-  # `coverage json` / `--cov-report=xml` 写的是不带点前缀的 coverage.json / xml。
   ".coverage",
   ".coverage.*",
   "coverage.*",
-  # setuptools 遗留物：本仓库用 hatchling 不生成 egg-info，
-  # 但本地一次 `pip install -e .` 留下的 *.egg-info/ 会被整目录打包收进 wheel。
   "*.pyc",
   "*.egg-info/**",
-  # 任意深度的 __pycache__：`__pycache__/**` 带根锚，只排仓库根那一个目录。
-  # 本条不与上方 `*.pyc` 冗余：后者只管后缀，该目录下的非 .pyc 文件仍要靠本条排掉。
   "**/__pycache__/**",
   ".pytest_cache/**",
   ".ruff_cache/**",
@@ -112,14 +70,10 @@ exclude = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-# RUF100 只报一件事：为「本仓库未启用的规则」写的 noqa，那种指令让人
-# 以为某处已被忽略，实际没有。
 lint.select = ["E", "F", "I", "UP", "B", "RUF100"]
-lint.ignore = []  # 按存量修复后的实际结果收敛
+lint.ignore = []
 
 [tool.ruff.lint.per-file-ignores]
-# main.py 的 E402 是设计使然：_AGENT_RUNTIME 必须先实例化探测宿主符号
-# （call_event_hook/路径函数），模块级名字供测试替换，无法整体上移。
 "main.py" = ["E402"]
 
 [tool.ruff.format]
@@ -128,37 +82,22 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-# 协程未 await 是异步用例的经典假绿来源：GC 阶段以 RuntimeWarning 或
-# PytestUnraisableExceptionWarning 上报，两种都要当失败，否则门禁抓不到它。
-# 当前全套在该口径下已全绿，加门禁零成本。
+asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
     "error::RuntimeWarning",
     "error::pytest.PytestUnraisableExceptionWarning",
 ]
-# 覆盖率默认不开启：本地单测保持快速；跑门槛时由 CI test 作业显式加 --cov。
 
 [tool.coverage.run]
-# 生产口径：`--cov=.` 会把 tests/ 计入分母，scripts/ 经 runpy 加载也会进入统计。
 omit = ["tests/*", "scripts/*"]
-# 只量行会让「if 只走真分支」的用例满额得分，故开分支：行与分支合并计入同一个
-# 覆盖率百分比，与 fail_under 比较。实测值随用例变化，以 CI 上传的 coverage
-# 工件为准，不在此处写死。
 branch = true
 
 [tool.coverage.report]
-# 门槛 89%：生产口径（omit tests/）按"实测减 5%"留缓冲定档。
-# 调整一律以实测覆盖率工件为准，口径本身见上方 [tool.coverage.run]。
 fail_under = 89
 
 [tool.mypy]
-# 仓库目录名含连字符，mypy 无法按包发现：显式列出生产源码文件（`__init__.py`
-# 只有一行 docstring、无可检查代码，故不在列），并忽略宿主
-# astrbot/quart 缺失 stub（宿主兼容层，不设 strict 门槛）。
 explicit_package_bases = true
 ignore_missing_imports = true
-# 打开后「参数与返回全无注解」的函数体也进检查，而不是静默跳过。当前生产代码已无
-# 此类函数，故为前瞻性保留。另：ignore_missing_imports 让 astrbot.* 全解析为 Any，
-# 涉及宿主类型的注解只有文档价值，不产生类型检查力。
 check_untyped_defs = true
 files = [
   "main.py",

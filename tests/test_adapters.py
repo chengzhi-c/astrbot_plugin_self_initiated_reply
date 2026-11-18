@@ -1,14 +1,7 @@
-"""AstrBotBridge 兼容分支。
-
-覆盖 adapters.py 的全部兼容分支：_supported_kwargs 异常回退、_call_compat
-的 minimal 降级语义、_call_first_supported 的调用形态探测、
-llm_generate / llm_generate_direct / resolve_provider_id /
-read_astrbot_history 的宿主接口差异分支。
-"""
+"""公开宿主 API 的判断调用、识图直调、Provider 选择与历史读取。"""
 
 from __future__ import annotations
 
-import inspect
 import json
 from typing import Any
 
@@ -31,259 +24,21 @@ def bridge():
     return _load_adapters().AstrBotBridge
 
 
-# ============================================================================
-# _supported_kwargs
-# ============================================================================
-
-
-def test_supported_kwargs_filters_unknown(bridge) -> None:
-    def target(a: int, b: int) -> None:  # pragma: no cover - 仅签名
-        pass
-
-    kwargs = {"x": 1, "y": 2}
-    result = bridge._supported_kwargs(target, kwargs, {"x": ("x", "a"), "y": ("y", "b")})
-    assert result == {"a": 1, "b": 2}
-
-
-def test_supported_kwargs_returns_all_for_varkw(bridge) -> None:
-    def target(**kwargs) -> None:  # pragma: no cover - 仅签名
-        pass
-
-    kwargs = {"a": 1, "b": 2}
-    assert bridge._supported_kwargs(target, kwargs) == kwargs
-
-
-def test_supported_kwargs_returns_all_when_signature_unavailable(bridge) -> None:
-    class NoSignature:
-        @property
-        def __signature__(self):  # 模拟 inspect 拿不到签名
-            raise TypeError("no signature")
-
-    assert bridge._supported_kwargs(NoSignature(), {"a": 1}) == {"a": 1}
-
-
-# ============================================================================
-# _call_compat
-# ============================================================================
-
-
-async def test_call_compat_direct_call(bridge) -> None:
-    calls: list[dict[str, Any]] = []
-
-    async def target(**kwargs):
-        calls.append(kwargs)
-        return "ok"
-
-    result = await bridge._call_compat(target, kwargs={"a": 1}, minimal_kwargs={"a": 0})
-    assert result == "ok"
-    assert calls == [{"a": 1}]
-
-
-async def test_call_compat_binds_via_aliases_without_fallback(bridge) -> None:
-    calls: list[dict[str, Any]] = []
-
-    def target(a: int) -> str:
-        calls.append(a)
-        return f"a={a}"
-
-    result = await bridge._call_compat(
-        target, kwargs={"b": 2}, minimal_kwargs={"a": 1}, aliases={"b": ("b", "a")}
-    )
-    # kwargs 的 b 映射到 a（受支持），直接成功，不降级
-    assert result == "a=2"
-    assert calls == [2]
-
-
-async def test_call_compat_minimal_rebind_succeeds(bridge) -> None:
-    """kwargs 全部不被支持时，用 minimal_kwargs 重试成功。"""
-
-    calls: list[dict[str, Any]] = []
-
-    def target(a: int) -> str:
-        calls.append(a)
-        return f"a={a}"
-
-    result = await bridge._call_compat(target, kwargs={"b": 2}, minimal_kwargs={"a": 1})
-    assert result == "a=1"
-    assert calls == [1]
-
-
-async def test_call_compat_minimal_same_as_call_raises(bridge) -> None:
-    """minimal == call_kwargs 时不再重试，直接上抛。"""
-    calls: list[Any] = []
-
-    def target(a: int) -> str:  # pragma: no cover - 不应被调用
-        calls.append(a)
-        return f"a={a}"
-
-    with pytest.raises(TypeError, match="missing a required argument"):
-        await bridge._call_compat(target, kwargs={"b": 2}, minimal_kwargs={"b": 2})
-    # 若误实现为继续调用 func(**minimal)（{}），缺参 TypeError 消息与原始 bind
-    # 错误相同，仅靠 match 无法区分；必须断言 target 未被调用
-    assert calls == []
-
-
-async def test_call_compat_minimal_also_type_error_raises_original(bridge) -> None:
-    """minimal 重试也抛 TypeError（函数体内）时，上抛原始 bind 错误。"""
-    calls: list[Any] = []
-
-    def target(a: int) -> str:
-        calls.append(a)
-        raise TypeError("inner boom")
-
-    with pytest.raises(TypeError, match="missing a required argument"):
-        await bridge._call_compat(target, kwargs={"z": 1}, minimal_kwargs={"a": 1})
-    # match 区分"原始 bind 错误"（missing 'z'）与函数体内 TypeError（inner boom）；
-    # calls == [1] 证明 minimal 重试确实执行过（与上例零调用形成对照）
-    assert calls == [1]
-
-
-async def test_call_compat_signature_unavailable_direct_call(bridge) -> None:
-    class NoSignature:
-        def __call__(self, **kwargs):
-            return "called"
-
-        @property
-        def __signature__(self):
-            raise ValueError("no signature")
-
-    result = await bridge._call_compat(NoSignature(), kwargs={"a": 1}, minimal_kwargs={"a": 0})
-    assert result == "called"
-
-
-# ============================================================================
-# _method_call_options / _call_first_supported
-# ============================================================================
-
-
-def test_method_call_options_signature_unavailable(bridge) -> None:
-    class NoSignature:
-        @property
-        def __signature__(self):
-            raise TypeError("no signature")
-
-    options = bridge._method_call_options(NoSignature(), "umo1")
-    # 只断言第一个候选：签名不可探测时 ``first_bindable_args`` 直接取首个，
-    # 后两个按语义永不被选中。把它们写进等式等于让一条用例去钉死代码的形状
-    # （生产侧删掉这两个候选时，本条会以「行为没变」为由误红）。
-    assert options[0] == ((), {"umo": "umo1"})
-
-
-def test_method_call_options_varkw(bridge) -> None:
-    def target(**kwargs) -> None:  # pragma: no cover - 仅签名
-        pass
-
-    # 位置候选同样保留：``def f(umo, /, **kw)`` 这类形态下名字候选绑不上，
-    # 少了它 first_bindable_args 会落到空调用——宿主方法被无参调用。
-    assert bridge._method_call_options(target, "umo1") == [
-        ((), {"umo": "umo1"}),
-        (("umo1",), {}),
-        ((), {}),
-    ]
-
-
-def test_method_call_options_positional_only_with_varkw(bridge) -> None:
-    def target(umo: str, /, **kwargs: object) -> None:  # pragma: no cover - 仅签名
-        pass
-
-    options = bridge._method_call_options(target, "umo1")
-    assert options == [((), {"umo": "umo1"}), (("umo1",), {}), ((), {})]
-    bindable = [candidate for candidate in options if _binds(target, candidate)]
-    assert bindable == [(("umo1",), {})]
-
-
-def test_method_call_options_named_umo(bridge) -> None:
-    def target(umo: str) -> None:  # pragma: no cover - 仅签名
-        pass
-
-    # 位置候选必须跟在关键字候选之后：形如 ``def f(umo, /)`` 的宿主方法
-    # 无法按名字绑定，只给关键字候选会让 first_bindable_args 返回 None，
-    # 调用方静默降级而不是 fail loud。
-    assert bridge._method_call_options(target, "umo1") == [
-        ((), {"umo": "umo1"}),
-        (("umo1",), {}),
-        ((), {}),
-    ]
-
-
-def test_method_call_options_named_umo_positional_only(bridge) -> None:
-    def target(umo: str, /) -> None:  # pragma: no cover - 仅签名
-        pass
-
-    options = bridge._method_call_options(target, "umo1")
-    assert options == [((), {"umo": "umo1"}), (("umo1",), {}), ((), {})]
-    # 关键字候选绑不上位置专属形参，必须有一个能绑上的候选：否则
-    # first_bindable_args 返回 None，调用方静默降级而不是 fail loud。
-    bindable = [candidate for candidate in options if _binds(target, candidate)]
-    assert bindable == [(("umo1",), {})]
-
-
-def _binds(target: Any, candidate: tuple[tuple[Any, ...], dict[str, Any]]) -> bool:
-    args, kwargs = candidate
-    try:
-        inspect.signature(target).bind(*args, **kwargs)
-    except TypeError:
-        return False
-    return True
-
-
-def test_method_call_options_positional(bridge) -> None:
-    def target(uid: str) -> None:  # pragma: no cover - 仅签名
-        pass
-
-    assert bridge._method_call_options(target, "umo1") == [(("umo1",), {}), ((), {})]
-
-
-def test_method_call_options_no_params(bridge) -> None:
-    def target() -> None:  # pragma: no cover - 仅签名
-        pass
-
-    assert bridge._method_call_options(target, "umo1") == [((), {})]
-
-
-async def test_call_first_supported_does_not_retry_body_type_error(bridge) -> None:
-    calls: list[str] = []
-
-    async def target(umo=None):
-        calls.append(str(umo))
-        raise TypeError("body boom")
-
-    with pytest.raises(TypeError, match="body boom"):
-        await bridge._call_first_supported(target, "umo1", "probe")
-    assert calls == ["umo1"]
-
-
-async def test_call_first_supported_raises_business_error(bridge) -> None:
-    def target(**kwargs):
-        raise OSError("db down")
-
-    with pytest.raises(OSError, match="db down"):
-        await bridge._call_first_supported(target, "umo1", "probe")
-
-
-async def test_call_first_supported_all_unsupported_returns_none(bridge) -> None:
-    calls = 0
-
-    def target(*, required: int) -> str:
-        nonlocal calls
-        calls += 1
-        return "unreachable"
-
-    assert await bridge._call_first_supported(target, "umo1", "probe") is None
-    assert calls == 0
-
-
-# ============================================================================
-# llm_generate
-# ============================================================================
-
-
-async def test_llm_generate_requires_context_method(bridge) -> None:
+async def test_direct_llm_body_type_error_is_not_retried(bridge) -> None:
     from types import SimpleNamespace
 
-    ctx = SimpleNamespace()
-    with pytest.raises(RuntimeError, match="llm_generate"):
-        await bridge(ctx).llm_generate(provider_id="p1", prompt="hi")
+    calls = 0
+
+    class Provider:
+        async def text_chat(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise TypeError("body boom")
+
+    ctx = SimpleNamespace(get_provider_by_id=lambda pid: Provider())
+    with pytest.raises(TypeError, match="body boom"):
+        await bridge(ctx).llm_generate_direct(provider_id="p1", prompt="hi", image_urls=["u1"])
+    assert calls == 1
 
 
 async def test_llm_generate_rejects_unsupported_images(bridge) -> None:
@@ -293,7 +48,7 @@ async def test_llm_generate_rejects_unsupported_images(bridge) -> None:
         return "ok"
 
     ctx = SimpleNamespace(llm_generate=llm_generate)
-    with pytest.raises(RuntimeError, match="不支持图片输入"):
+    with pytest.raises(TypeError, match="image_urls"):
         await bridge(ctx).llm_generate(provider_id="p1", prompt="hi", image_urls=["u1"])
 
 
@@ -324,31 +79,6 @@ async def test_llm_generate_full_kwargs(bridge) -> None:
     assert captured["image_urls"] == ["u1"]
 
 
-async def test_llm_generate_does_not_guess_parameter_aliases(bridge) -> None:
-    """llm_generate 侧对形参名不匹配的 Context 必须 fail-loud。
-
-    语义是"不猜别名"：第三方 Context 若用别的形参名，直接抛 TypeError，
-    而不是被别名表悄悄适配上去。重新引入别名表则调用意外成功，此处变红。
-    """
-    from types import SimpleNamespace
-
-    calls: list[Any] = []
-
-    async def llm_generate(provider_id, content):  # 形参名与宿主不同
-        calls.append((provider_id, content))
-        return "ok"
-
-    ctx = SimpleNamespace(llm_generate=llm_generate)
-    with pytest.raises(TypeError):
-        await bridge(ctx).llm_generate(provider_id="p1", prompt="hi")
-    assert calls == []
-
-
-# ============================================================================
-# llm_generate_direct
-# ============================================================================
-
-
 async def test_llm_generate_direct_requires_provider_id(bridge) -> None:
     from types import SimpleNamespace
 
@@ -373,69 +103,27 @@ async def test_llm_generate_direct_via_context(bridge) -> None:
             captured.update(kwargs)
             return "direct"
 
-    async def get_provider_by_id(pid):
-        return Provider() if pid == "p1" else None
-
-    ctx = SimpleNamespace(get_provider_by_id=get_provider_by_id)
-    result = await bridge(ctx).llm_generate_direct(provider_id="p1", prompt="hi", image_urls=["u1"])
-    assert result == "direct"
-    assert captured["image_urls"] == ["u1"]
-
-
-async def test_llm_generate_direct_passes_temperature_and_max_tokens(bridge) -> None:
-    from types import SimpleNamespace
-
-    captured: dict[str, Any] = {}
-
-    class Provider:
-        async def text_chat(self, **kwargs):
-            captured.update(kwargs)
-            return "direct"
-
-    async def get_provider_by_id(pid):
+    def get_provider_by_id(pid):
         return Provider() if pid == "p1" else None
 
     ctx = SimpleNamespace(get_provider_by_id=get_provider_by_id)
     result = await bridge(ctx).llm_generate_direct(
-        provider_id="p1", prompt="hi", image_urls=["u1"], temperature=0.7, max_tokens=128
+        provider_id="p1",
+        prompt="hi",
+        image_urls=["u1"],
+        temperature=0.7,
+        max_tokens=128,
     )
     assert result == "direct"
+    assert captured["image_urls"] == ["u1"]
     assert captured["temperature"] == 0.7
     assert captured["max_tokens"] == 128
-
-
-async def test_llm_generate_direct_via_provider_manager(bridge) -> None:
-    from types import SimpleNamespace
-
-    class Provider:
-        def text_chat(self, **kwargs):
-            return "managed"
-
-    class Manager:
-        async def get_provider_by_id(self, pid):
-            return Provider()
-
-    ctx = SimpleNamespace(provider_manager=Manager())
-    result = await bridge(ctx).llm_generate_direct(provider_id="p1", prompt="hi", image_urls=["u1"])
-    assert result == "managed"
-
-
-async def test_llm_generate_direct_via_inst_map(bridge) -> None:
-    from types import SimpleNamespace
-
-    class Provider:
-        def text_chat(self, **kwargs):
-            return "instmap"
-
-    ctx = SimpleNamespace(provider_manager=SimpleNamespace(inst_map={"p1": Provider()}))
-    result = await bridge(ctx).llm_generate_direct(provider_id="p1", prompt="hi", image_urls=["u1"])
-    assert result == "instmap"
 
 
 async def test_llm_generate_direct_rejects_bad_provider(bridge) -> None:
     from types import SimpleNamespace
 
-    async def get_provider_by_id(pid):
+    def get_provider_by_id(pid):
         return None
 
     ctx = SimpleNamespace(get_provider_by_id=get_provider_by_id)
@@ -447,17 +135,12 @@ async def test_llm_generate_direct_rejects_images_unsupported(bridge) -> None:
     from types import SimpleNamespace
 
     class Provider:
-        def text_chat(self, prompt, contexts):
+        async def text_chat(self, *, prompt, contexts, system_prompt=""):
             return "no-images"
 
     ctx = SimpleNamespace(get_provider_by_id=lambda pid: Provider())
-    with pytest.raises(RuntimeError, match="不支持图片输入"):
+    with pytest.raises(TypeError, match="image_urls"):
         await bridge(ctx).llm_generate_direct(provider_id="p1", prompt="hi", image_urls=["u1"])
-
-
-# ============================================================================
-# resolve_provider_id
-# ============================================================================
 
 
 async def test_resolve_provider_id_preferred_wins(bridge) -> None:
@@ -476,7 +159,7 @@ async def test_resolve_provider_id_via_current_chat(bridge) -> None:
     assert await bridge(ctx).resolve_provider_id("umo1", "") == "p-curr"
 
 
-async def test_resolve_provider_id_falls_back_when_current_provider_is_missing(bridge) -> None:
+async def test_resolve_provider_id_returns_empty_when_current_provider_is_missing(bridge) -> None:
     from types import SimpleNamespace
 
     ProviderNotFoundError = type(
@@ -485,108 +168,30 @@ async def test_resolve_provider_id_falls_back_when_current_provider_is_missing(b
         {"__module__": "astrbot.core.exceptions"},
     )
 
-    class CurrentProviderNotFoundError(ProviderNotFoundError):
-        pass
-
-    calls = 0
-
     async def get_current_chat_provider_id(umo: str) -> str:
-        raise CurrentProviderNotFoundError("missing current provider")
+        raise ProviderNotFoundError("missing current provider")
 
-    async def get_using_provider(umo: str):
-        nonlocal calls
-        calls += 1
-        return SimpleNamespace(meta=lambda: {"id": "p-fallback"})
-
-    ctx = SimpleNamespace(
-        get_current_chat_provider_id=get_current_chat_provider_id,
-        get_using_provider=get_using_provider,
-    )
-
-    assert await bridge(ctx).resolve_provider_id("umo1", "") == "p-fallback"
-    assert calls == 1
+    ctx = SimpleNamespace(get_current_chat_provider_id=get_current_chat_provider_id)
+    assert await bridge(ctx).resolve_provider_id("umo1", "") == ""
 
 
 async def test_resolve_provider_id_propagates_current_provider_errors(bridge) -> None:
     from types import SimpleNamespace
 
-    calls = 0
-
     async def get_current_chat_provider_id(umo: str) -> str:
         raise OSError("provider storage unavailable")
 
-    async def get_using_provider(umo: str):
-        nonlocal calls
-        calls += 1
-        return None
-
-    ctx = SimpleNamespace(
-        get_current_chat_provider_id=get_current_chat_provider_id,
-        get_using_provider=get_using_provider,
-    )
+    ctx = SimpleNamespace(get_current_chat_provider_id=get_current_chat_provider_id)
 
     with pytest.raises(OSError, match="provider storage unavailable"):
         await bridge(ctx).resolve_provider_id("umo1", "")
-    assert calls == 0
 
 
-async def test_resolve_provider_id_ignores_get_using_provider_id(bridge) -> None:
-    """``get_using_provider_id`` 不再被探测。
-
-    宿主 4.23.3 Context 无此方法。若未来某个第三方 Context 提供它，本插件
-    也不再调用它，落到 ``get_using_provider`` 兜底或返回空串。
-    """
+async def test_resolve_provider_id_via_synchronous_host(bridge) -> None:
     from types import SimpleNamespace
 
-    calls: list[str] = []
-
-    async def get_using_provider_id(umo):  # pragma: no cover - 不应被调用
-        calls.append(umo)
-        return "p-using"
-
-    ctx = SimpleNamespace(get_using_provider_id=get_using_provider_id)
-    assert await bridge(ctx).resolve_provider_id("umo1", "") == ""
-    assert calls == []
-
-
-async def test_resolve_provider_id_via_using_provider_meta(bridge) -> None:
-    from types import SimpleNamespace
-
-    class UsingProvider:
-        def meta(self):
-            return {"id": "p-meta"}
-
-    ctx = SimpleNamespace(get_using_provider=lambda: UsingProvider())
-    assert await bridge(ctx).resolve_provider_id("umo1", "") == "p-meta"
-
-
-async def test_resolve_provider_id_empty_when_unavailable(bridge) -> None:
-    from types import SimpleNamespace
-
-    ctx = SimpleNamespace()
-    assert await bridge(ctx).resolve_provider_id("umo1", "") == ""
-
-
-async def test_provider_id_from_meta_forms(bridge) -> None:
-    from types import SimpleNamespace
-
-    assert await bridge._provider_id_from_meta(None) == ""
-    assert await bridge._provider_id_from_meta(SimpleNamespace(meta=lambda: {"id": "d1"})) == "d1"
-    assert (
-        await bridge._provider_id_from_meta(SimpleNamespace(meta=lambda: SimpleNamespace(id="o1")))
-        == "o1"
-    )
-
-    class BrokenMeta:
-        def meta(self):
-            raise OSError("meta broken")
-
-    assert await bridge._provider_id_from_meta(BrokenMeta()) == ""
-
-
-# ============================================================================
-# read_astrbot_history
-# ============================================================================
+    ctx = SimpleNamespace(get_current_chat_provider_id=lambda umo: "p-sync")
+    assert await bridge(ctx).resolve_provider_id("umo1", "") == "p-sync"
 
 
 async def test_read_history_no_manager(bridge) -> None:
@@ -601,23 +206,6 @@ async def test_read_history_empty_cid(bridge) -> None:
     class Manager:
         async def get_curr_conversation_id(self, umo):
             return ""
-
-    ctx = SimpleNamespace(conversation_manager=Manager())
-    assert await bridge(ctx).read_astrbot_history("umo1", limit=5) == []
-
-
-async def test_read_history_parse_error(bridge) -> None:
-    from types import SimpleNamespace
-
-    class Conversation:
-        history = "{broken json"
-
-    class Manager:
-        async def get_curr_conversation_id(self, umo):
-            return "cid1"
-
-        async def get_conversation(self, umo, cid):
-            return Conversation()
 
     ctx = SimpleNamespace(conversation_manager=Manager())
     assert await bridge(ctx).read_astrbot_history("umo1", limit=5) == []
@@ -652,24 +240,31 @@ async def test_read_history_filters_and_maps(bridge) -> None:
     records = await bridge(ctx).read_astrbot_history("umo1", limit=6)
     assert len(records) == 3
     assert records[0].role == "user"
-    assert records[0].sender_id == ""
     assert records[1].role == "user"
     assert records[1].name == "用户"
-    assert records[1].sender_id == "u1"
     assert records[2].role == "assistant"
     assert records[2].name == "Bot"
     assert records[2].at == 0.0
     # limit=5 收缩窗口：before limit 被截断，无效项过滤后只剩末尾有效记录
     records2 = await bridge(ctx).read_astrbot_history("umo1", limit=5)
     assert len(records2) == 2
-    assert records2[0].sender_id == "u1"
 
 
-async def test_read_history_non_list_history(bridge) -> None:
+@pytest.mark.parametrize(
+    "history",
+    [
+        pytest.param("{broken json", id="parse_error"),
+        pytest.param({"not": "list"}, id="non_list_history"),
+    ],
+)
+async def test_read_history_malformed_history_returns_empty(bridge, history) -> None:
+    """坏 JSON 与非 list history 都退化为空历史，不让读取失败扩散。"""
     from types import SimpleNamespace
 
     class Conversation:
-        history = {"not": "list"}
+        pass
+
+    Conversation.history = history
 
     class Manager:
         async def get_curr_conversation_id(self, umo):
@@ -683,12 +278,7 @@ async def test_read_history_non_list_history(bridge) -> None:
 
 
 async def test_read_history_non_positive_limit_returns_nothing(bridge) -> None:
-    """limit<=0 必须返回空，不能悄悄退回全量历史。
-
-    缺陷形态：``history[-limit:]`` 在 ``limit=0`` 时是 ``history[0:]``（全量）、
-    ``limit=-1`` 时只丢最旧一条。两个生产调用点都有规格下限夹取，这里兜住
-    直传（含未来新调用点）——「要 0 条却拿回全部」会把整个会话历史塞进提示词。
-    """
+    """零条请求返回空，避免 -0 切片意外读取全量历史。"""
     from types import SimpleNamespace
 
     history = json.dumps(

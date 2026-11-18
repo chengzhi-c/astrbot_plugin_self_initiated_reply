@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import math
 import re
+from collections.abc import Iterator
 from typing import Any
 from urllib.parse import urlparse
 
@@ -45,9 +47,36 @@ _TOOL_CALL_LEAK_PATTERN = re.compile(r"^\s*\[(?:historical )?tool call\]", re.IG
 _TOOL_CALL_INLINE_PATTERN = re.compile(r"\[(?:historical\s+)?tool\s+call\][^\n]*", re.IGNORECASE)
 # 提示词/回复文本的剥离正则：静态模式，提前编译。
 _TRUNCATED_JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
-_JSON_BODY_PATTERN = re.compile(r"\{[\s\S]*\}")
+# 判断模型输出的 JSON 定位器：从每个左花括号起点 raw_decode 试解，字符串内花括号、
+# 转义引号由标准库处理（贪婪正则与括号计数都会在这两处截错）。
+_JSON_DECODER = json.JSONDecoder()
+# raw_decode 失败时标准库按 doc.count("\n", 0, pos) 算行列号构造 JSONDecodeError，
+# 单次失败 O(n)，文本里 n 个左花括号就是 O(n²) 同步卡死事件循环。真正的成本是每次
+# 尝试从起点扫到失败点（未闭合的嵌套会扫到文末）的字符量，与对象个数无关：模型先铺
+# 若干示例对象属于正常输出，按对象数封顶会把「合法 JSON 在后段」误判成没有 JSON。
+# 故主预算按累计扫描字符计，次数只留作防死循环的宽松兜底。
+_JSON_SCAN_MAX_ATTEMPTS = 2048
+# 累计扫描字符预算 = min(len(text) * 倍数, 绝对上限)：正常噪声只占全文一小部分，倍数
+# 给「几乎全文都是候选」的长输出留余量；绝对上限让再长的文本也不放大单轮成本（实测
+# 2048 次尝试 ~5 ms；未闭合的长字符串一次就扫到文末，单次即越预算）。
+_JSON_SCAN_BUDGET_FACTOR = 8
+_JSON_SCAN_BUDGET_MAX_CHARS = 200_000
 _REPLY_FENCE_PATTERN = re.compile(r"^```(?:text)?\s*|\s*```$", re.IGNORECASE)
 _REPLY_PREFIX_PATTERN = re.compile(r"^(?:回复|答复)\s*[:：]\s*")
+# 控制字符不是空白：``\s`` 不含 \x00-\x08 与 \x0e-\x1f，回复里出现会原样发到
+# 平台（部分平台遇 \x00 直接截断消息）。\t 与换行保留，换行还要给多行模式用。
+_REPLY_CONTROL_REMOVAL = {
+    **{code: None for code in range(0x00, 0x09)},
+    **{code: None for code in (0x0B, 0x0C, 0x7F)},
+    **{code: None for code in range(0x0E, 0x20)},
+    # C1 与 DEL 同属控制字符，模型转述乱码时也会带出来。
+    **{code: None for code in range(0x80, 0xA0)},
+}
+# 历史正文里的换行会把一条消息拆成提示词里的多行，群友据此伪造独立轮次（一行
+# "SYSTEM: ..." 或另一条 "Bot: ..."）。发言人名字侧已单行化（history_display_name），
+# 正文侧必须对称；只在渲染成提示词时折行，存储的原文不受影响。
+# 字符集对齐 str.splitlines()：只认 CR/LF 时 U+2028 之类仍能裂出独立一行。
+_LINEBREAK_RUN_PATTERN = re.compile(r"\s*[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]+\s*")
 _SENTENCE_TAIL_PATTERN = re.compile(r"^([\s\S]*[。！？.!?])[^。！？.!?]*$")
 
 # 日志/对外文本中 URL 的最大呈现长度（含脱敏标记）。
@@ -57,11 +86,23 @@ LOG_URL_MAX_CHARS = 80
 MODEL_JSON_TRUE_WORDS = frozenset({"true", "yes", "1", "是"})
 MODEL_JSON_FALSE_WORDS = frozenset({"false", "no", "0", "否"})
 _REDACTED_QUERY_MARK = "?<redacted>"
+_REDACTED_PATH_MARK = "/<redacted>"
 # 凭证运行的最小形态：``&key=`` / ``;key=`` 起头的一段。query 之外的位置
-# （netloc、path）出现它同样是凭证——urlparse 不会把它归进 query，而原实现
-# 原样复制 netloc 与 path，``https://h/v1/chat&api_key=sk-...`` 之类因此
-# 整段幸存（实测占泄漏输入的最大一类）。
+# （netloc、path）出现它同样是凭证：urlparse 不会把它归进 query，只按 query
+# 处理会让 ``https://h/v1/chat&api_key=sk-...`` 整段幸存，这是实测占泄漏
+# 输入最多的一类。
 _AUTHORITY_KEY_RUN = re.compile(r"[&;][^\s/]*=")
+# 日志兜底文本里的 C0 控制字符（含 CR/LF）与 DEL 一律剔除：换行能把一段
+# 可疑 URL 拆成独立日志行，其余 C0 在 URL 里没有合法含义。兜底分支与
+# netloc 都要过一遍——urlparse 只剥 \t\r\n，剥不掉 \x00 / \x0b / \x7f。
+# C1（0x80–0x9F）、U+2028 / U+2029 与 C0 同样能把一行拆成两行：``str.splitlines``
+# 与 ``\s`` 都把它们当换行，只挡 C0 时 U+2028 仍可伪造后续日志行。
+_LOG_CONTROL_REMOVAL = dict.fromkeys((*range(0x20), 0x7F, *range(0x80, 0xA0), 0x2028, 0x2029))
+# 有 scheme 但缺 ``//`` 的畸形 URL（``http:/host/p?key=...``）与协议相对 URL：
+# urlparse 都给不出 netloc，落入兜底分支。这类形状必须按 URL 处理（path 也要
+# 抹掉），不能当本地路径原样放行。scheme 至少两个字符：单字母 ``C:`` 是
+# Windows 盘符；``data:`` 这类不带 ``/`` 的 opaque scheme 也不是本模式。
+_URL_SHAPED_PATTERN = re.compile(r"^(?:[a-zA-Z][a-zA-Z0-9+.-]+:/|//)")
 # 判断模型 reason 的对外呈现长度上限：超长截断，只进日志/前端展示。
 DECISION_REASON_MAX_CHARS = 200
 # UMO（unified message object）为 platform:message_type:session_id 三段式。
@@ -85,21 +126,37 @@ _EXCEPTION_URL_PATTERN = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>]+")
 _EXCEPTION_RELATIVE_URL_PATTERN = re.compile(
     r"(?<![\w/])(?:[\w.\-]+:\d+)?/[^\s'\"<>]*\?[^\s'\"<>]+"
 )
+# 不带 scheme、也不以 ``/`` 开头的裸 host/path 不单独建模式：按参数名抹值
+# 已覆盖它的凭证，连带保留 host/path 更利于排查。
+# 凭证兜底：不认 URL 形状，只认 ``?key=`` / ``&key=`` 这类参数名，把值换成标记。
+# 上面两条模式按 URL 边界切分，切不到的形态（无路径的 ``host?key=…``、单标签
+# 主机、无 scheme 的 IPv6）靠它收口。
+_QUERY_CREDENTIAL_PATTERN = re.compile(
+    r"(?i)([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret"
+    r"|password|passwd|signature|sig|auth[_-]?key|key)=)[^\s&'\"<>]+"
+)
+# 无 scheme 的 ``user:pass@host``：切不出 URL 形状时密码整段幸存。邮箱没有冒号。
+_USERINFO_PATTERN = re.compile(r"(?<![\w/])[^\s'\"<>@/:]+:[^\s'\"<>@/]+@")
 
 
 def _redact_relative_url(text: str) -> str:
-    """相对路径 URL：保留路径，query 与 fragment 一律抹掉。
+    """相对路径 URL：保留 host:port，路径与 query/fragment 一律抹掉。
 
     与 ``redact_url`` 分开是因为后者要求 scheme+netloc，路径形态会被它原样
     放行（只截断），凭证因此漏出去。截断预算与 ``redact_url`` 同一口径：
     这段文本同样经 ``redact_exc_text`` 进 reason 并由 GET /status 出网。
     """
-    cut = len(text)
-    for mark in ("?", "#"):
-        index = text.find(mark)
-        if index != -1:
-            cut = min(cut, index)
-    return text[:cut][: LOG_URL_MAX_CHARS - len(_REDACTED_QUERY_MARK)] + _REDACTED_QUERY_MARK
+    authority = text.split("/", 1)[0]
+    return (
+        authority[: LOG_URL_MAX_CHARS - len(_REDACTED_PATH_MARK) - len(_REDACTED_QUERY_MARK)]
+        + _REDACTED_PATH_MARK
+        + _REDACTED_QUERY_MARK
+    )
+
+
+def strip_log_control(text: Any) -> str:
+    """日志插值前的控制字符剔除：换行能把一条日志拆成两行（伪造后续记录）。"""
+    return str(text if text is not None else "").translate(_LOG_CONTROL_REMOVAL)
 
 
 def safe_exc_text(exc: BaseException) -> str:
@@ -118,36 +175,68 @@ def safe_exc_text(exc: BaseException) -> str:
 def _redact_url_fallback(text: str) -> str:
     """urlparse 分解不了（畸形 IPv6 等）或没有 netloc 时的脱敏兜底。
 
-    与 happy path 同一口径：去 userinfo、去 query/fragment、去 ``&key=`` 运行、
+    与 happy path 同一口径：去 userinfo、路径、query/fragment 与 ``&key=`` 运行、
     截断到 ``LOG_URL_MAX_CHARS``。全部按字符串边界做，不依赖 urlparse——
     分解失败恰恰是最需要脱敏的形状（残缺 IPv6 主机带着 userinfo 与 query）。
+    本地路径与 opaque scheme 没有 authority 可剥，只抹凭证承载面、保留文件名
+    （``redact_url`` 的调用方也传落盘路径，日志要能定位到具体文件）。
     """
+    # C0 控制字符先剔除再按字符边界重拼：\n / \r 原样落到 logger 输出会把
+    # 一条日志变成两条（伪造行），其余 C0 在 URL 里没有合法含义。
+    text = text.translate(_LOG_CONTROL_REMOVAL)
+    if not _URL_SHAPED_PATTERN.match(text):
+        cut = len(text)
+        for mark in ("?", "#"):
+            index = text.find(mark)
+            if index != -1:
+                cut = min(cut, index)
+        head = text[:cut]
+        # userinfo 只在第一个路径分隔符之前才算 userinfo。
+        slash = head.find("/")
+        at = head.rfind("@", 0, slash if slash != -1 else len(head))
+        if at != -1:
+            head = head[at + 1 :]
+        key_run = _AUTHORITY_KEY_RUN.search(head)
+        if key_run:
+            head = head[: key_run.start()]
+        suffix = _REDACTED_QUERY_MARK if cut < len(text) else ""
+        return head[: LOG_URL_MAX_CHARS - len(suffix)] + suffix
     scheme_end = text.find("://")
-    authority_start = scheme_end + 3 if scheme_end != -1 else 0
+    if scheme_end != -1:
+        authority_start = scheme_end + 3
+    elif text.startswith("//"):
+        # 协议相对 URL（``//host/path?key=...``）没有 scheme，authority 从
+        # 第二根斜杠之后开始；否则 host 会被当成空 authority 丢掉。
+        authority_start = 2
+    else:
+        # 畸形 scheme（``http:/host/path?key=...``）：urlparse 认得出 scheme
+        # 却给不出 netloc，按 ``:/`` 切出 host 仍能保留失败对象。
+        colon = text.find(":/")
+        authority_start = colon + 2 if colon > 0 else 0
     authority_end = len(text)
     for mark in ("/", "?", "#"):
         index = text.find(mark, authority_start)
         if index != -1:
             authority_end = min(authority_end, index)
-    at = text.rfind("@", authority_start, authority_end)
+    authority = text[authority_start:authority_end]
+    at = authority.rfind("@")
     if at != -1:
-        text = text[:authority_start] + text[at + 1 :]
-        authority_end -= at + 1 - authority_start
-    cut = len(text)
-    for mark in ("?", "#"):
-        index = text.find(mark)
-        if index != -1:
-            cut = min(cut, index)
-    key_run = _AUTHORITY_KEY_RUN.search(text[:cut])
+        authority = authority[at + 1 :]
+    key_run = _AUTHORITY_KEY_RUN.search(authority)
     if key_run:
-        cut = min(cut, key_run.start())
-    suffix = _REDACTED_QUERY_MARK if cut < len(text) else ""
-    return text[:cut][: LOG_URL_MAX_CHARS - len(suffix)] + suffix
+        authority = authority[: key_run.start()]
+    prefix = text[:authority_start]
+    has_path = authority_end < len(text) and text[authority_end] == "/"
+    has_query = "?" in text[authority_end:] or "#" in text[authority_end:] or key_run is not None
+    suffix = (_REDACTED_PATH_MARK if has_path else "") + (_REDACTED_QUERY_MARK if has_query else "")
+    return (prefix + authority)[: LOG_URL_MAX_CHARS - len(suffix)] + suffix
 
 
 def redact_url(value: str) -> str:
-    """去掉 userinfo 与 query/fragment 后再截断，避免凭证进日志或对外文本。"""
-    text = str(value or "").strip()
+    """去掉 userinfo、path 与 query/fragment 后再截断，避免凭证进日志或对外文本。"""
+    # 先剔换行类字符再解析：``http://h\u2028x/a?k=v`` 的 netloc 里留着 U+2028 时，
+    # 返回值能把一条日志拆成两行。
+    text = str(value or "").translate(_LOG_CONTROL_REMOVAL).strip()
     if not text:
         return ""
     try:
@@ -157,18 +246,25 @@ def redact_url(value: str) -> str:
         # 可疑的事实，改走同口径的边界兜底。
         return _redact_url_fallback(text)
     if not parsed.scheme or not parsed.netloc:
+        # 无 netloc 不等于「不是 URL」：``http:/host/p``（畸形 scheme）与
+        # ``//host/p``（协议相对）都能带 query 凭证，统一走边界兜底。
         return _redact_url_fallback(text)
     # netloc 含 user:password@ 形态的 userinfo，必须去掉；从 netloc 尾部截取
     # 而非拼 hostname+port：后者要处理 IPv6 方括号，且 ``parsed.port`` 对
     # 越界/非数字端口抛 ValueError，本函数跑在异常处理路径上。
-    netloc = parsed.netloc.rsplit("@", 1)[-1]
-    clean = f"{parsed.scheme}://{netloc}{parsed.path}"
-    # ``&key=`` / ``;key=`` 运行可能落在 netloc 或 path（urlparse 不把它们归进
-    # query）：出现即视为凭证段整体截掉，宁可多截也不留 key。
-    key_run = _AUTHORITY_KEY_RUN.search(clean)
+    # netloc 还可能是 urlparse 不剥离的 C0（``\x0b``/``\x00``/``\x7f``），
+    # 不剔除就能把一条日志拆成两行。
+    netloc = parsed.netloc.rsplit("@", 1)[-1].translate(_LOG_CONTROL_REMOVAL)
+    # ``&key=`` / ``;key=`` 运行可能落在 netloc（urlparse 不把它们归进 query）。
+    key_run = _AUTHORITY_KEY_RUN.search(netloc)
     if key_run:
-        clean = clean[: key_run.start()]
-    suffix = _REDACTED_QUERY_MARK if (parsed.query or parsed.fragment or key_run) else ""
+        netloc = netloc[: key_run.start()]
+    clean = f"{parsed.scheme}://{netloc}"
+    if parsed.path:
+        clean += _REDACTED_PATH_MARK
+    suffix = (
+        _REDACTED_QUERY_MARK if (parsed.query or parsed.fragment or key_run is not None) else ""
+    )
     return clean[: LOG_URL_MAX_CHARS - len(suffix)] + suffix
 
 
@@ -182,9 +278,16 @@ def redact_exc_text(exc: BaseException) -> str:
     两种 URL 形态都要收：绝对 URL（scheme://）与相对路径（urllib3
     ``MaxRetryError`` 的 ``url: /path?key=...``）。漏掉后者时凭证照样经
     reason 出网，而它恰恰是 httpx/requests/urllib3 连接失败的标准文本。
+
+    最后两步不依赖 URL 边界：按参数名抹值，再抹 ``user:pass@`` 的 userinfo。
+    无路径的 ``host?key=…``、单标签主机、无 scheme 的 IPv6 都切不出 URL
+    形状，靠这两步收口。
     """
-    text = _EXCEPTION_URL_PATTERN.sub(lambda m: redact_url(m.group(0)), safe_exc_text(exc))
-    return _EXCEPTION_RELATIVE_URL_PATTERN.sub(lambda m: _redact_relative_url(m.group(0)), text)
+    text = safe_exc_text(exc).translate(_LOG_CONTROL_REMOVAL)
+    text = _EXCEPTION_URL_PATTERN.sub(lambda m: redact_url(m.group(0)), text)
+    text = _EXCEPTION_RELATIVE_URL_PATTERN.sub(lambda m: _redact_relative_url(m.group(0)), text)
+    text = _USERINFO_PATTERN.sub("<redacted>@", text)
+    return _QUERY_CREDENTIAL_PATTERN.sub(r"\1<redacted>", text)
 
 
 async def maybe_await(value: Any) -> Any:
@@ -234,27 +337,89 @@ async def build_history_text(
                 umo,
                 redact_exc_text(exc),
             )
-    # 先按时间取窗口、再去重：dedupe 把重复文本合并到**最早**出现的位置，先去重
-    # 会让最新一条（内容与更早某条重复时，聊天里"1"/"哈哈"极常见）被抬到列表
-    # 前部、随后被尾部截断丢掉——判断与生成共用这条路径，最新消息因此从提示词里
-    # 消失（契约 §14.3 的"保尾"要求）。
+    # Apply the history limit before merging overlapping host/local copies.
     windowed = records[-limit:] if limit > 0 else []
     return format_message_records(dedupe_message_records(windowed), limit=limit)
 
 
-def parse_json(text: str) -> Any:
-    text = str(text or "").strip()
-    text = _TRUNCATED_JSON_FENCE_PATTERN.sub("", text).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = _JSON_BODY_PATTERN.search(text)
-        if not match:
-            return None
+_MISSING = object()
+
+
+def conversation_history(conversation: Any) -> list[Any]:
+    """会话历史：老宿主是 ``history``（JSON 串），4.30 读结果是 ``content`` 列表。
+
+    两个字段都取不到时抛 AttributeError，让调用方按「结构不认识」留痕，而
+    不是静默失去上下文；形状不对同样抛，由调用方分档告警。
+    """
+    raw = getattr(conversation, "history", _MISSING)
+    if raw is _MISSING:
+        raw = getattr(conversation, "content", _MISSING)
+    if raw is _MISSING:
+        raise AttributeError("conversation has no history/content field")
+    if isinstance(raw, list):
+        return raw
+    if raw is None:
+        # 4.30 的读结果在没请求历史时 content 为 None。
+        return []
+    if not isinstance(raw, str):
+        raise TypeError(f"history is {type(raw).__name__}, expected str or list")
+    parsed = json.loads(raw)
+    if not isinstance(parsed, list):
+        raise ValueError(f"history is {type(parsed).__name__}, expected a list")
+    return parsed
+
+
+def usable_conversation(conversation: Any) -> bool:
+    """能否回填给 ``req.conversation``：宿主 build 用它建 event writer 并读 cid。"""
+    return conversation is not None and hasattr(conversation, "cid")
+
+
+def _iter_json_values(text: str) -> Iterator[Any]:
+    """从每个左花括号起点尝试 ``raw_decode``，产出所有能独立解析的 JSON 值。
+
+    模型输出会在 JSON 前后夹解释文字、连排多个对象，正则贪婪匹配（或括号计数）
+    都会把整段并成一个无效 JSON。``raw_decode`` 允许从任意下标起解，且由标准库
+    自己处理字符串内花括号与转义引号，不需要外部猜边界。
+    """
+    attempts = 0
+    scanned = 0
+    budget = min(len(text) * _JSON_SCAN_BUDGET_FACTOR, _JSON_SCAN_BUDGET_MAX_CHARS)
+    index = text.find("{")
+    while index != -1:
+        if attempts >= _JSON_SCAN_MAX_ATTEMPTS or scanned > budget:
+            # 上限必须留痕：否则运维无法区分「模型没给 JSON」与「解析器主动放弃」。
+            logger.warning(
+                "[%s] json scan aborted reason=%s scanned_chars=%d discarded_chars=%d attempts=%d",
+                PLUGIN_ID,
+                "attempts" if attempts >= _JSON_SCAN_MAX_ATTEMPTS else "chars",
+                scanned,
+                len(text) - index,
+                attempts,
+            )
+            return
+        attempts += 1
         try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None
+            value, end = _JSON_DECODER.raw_decode(text, index)
+        except json.JSONDecodeError as exc:
+            # 失败点到起点的距离即本次扫描成本（pos 是含 idx 偏移的绝对下标）。
+            scanned += exc.pos - index + 1
+            index = text.find("{", index + 1)
+            continue
+        except RecursionError:
+            # C 扫描器对深嵌套抛 RecursionError（RuntimeError 子类，不是
+            # JSONDecodeError）；漏捕会让异常穿出 parse_decision_json。递归上限处
+            # 必然中止，单次成本与文本长度无关，按 1 字符计。
+            scanned += 1
+            index = text.find("{", index + 1)
+            continue
+        yield value
+        scanned += end - index + 1
+        index = text.find("{", end)
+
+
+def _json_candidates(text: Any) -> Iterator[Any]:
+    raw = str(text or "").strip()
+    return _iter_json_values(_TRUNCATED_JSON_FENCE_PATTERN.sub("", raw).strip())
 
 
 def parse_decision_json(text: str) -> dict[str, Any] | None:
@@ -266,12 +431,18 @@ def parse_decision_json(text: str) -> dict[str, Any] | None:
     Returns:
         规范化后的字典 {"should_reply": bool, "reason": str}，解析失败返回 None
     """
-    parsed = parse_json(text)
-    if not isinstance(parsed, dict):
+    # 跳过不相关 JSON（如模型先吐 {"status": "ok"}）。出现两个及以上含 should_reply
+    # 的对象说明模型自相矛盾（草稿 + 结论、或复读了提示词里的示例），此时不接话：
+    # 这是判断环节，宁可少说一句，也不能按其中任意一段去开口。
+    decisions = [
+        value
+        for value in _json_candidates(text)
+        if isinstance(value, dict) and "should_reply" in value
+    ]
+    if len(decisions) > 1:
         return None
-
-    # 必须包含 should_reply
-    if "should_reply" not in parsed:
+    parsed = decisions[0] if decisions else None
+    if parsed is None:
         return None
 
     # 规范化 should_reply 为布尔值（字面量集合单源见 MODEL_JSON_TRUE_WORDS）。
@@ -280,7 +451,7 @@ def parse_decision_json(text: str) -> dict[str, Any] | None:
         should_reply = raw_reply
     elif isinstance(raw_reply, str):
         should_reply = raw_reply.strip().lower() in MODEL_JSON_TRUE_WORDS
-    elif isinstance(raw_reply, (int, float)):
+    elif isinstance(raw_reply, (int, float)) and math.isfinite(raw_reply):
         should_reply = bool(raw_reply)
     else:
         return None  # 无效类型
@@ -354,13 +525,7 @@ def event_components(event: AstrMessageEvent) -> list[Any]:
 
 
 def raw_umo(event: AstrMessageEvent) -> str:
-    value = getattr(event, "unified_msg_origin", "")
-    if callable(value):
-        try:
-            value = value()
-        except Exception:
-            value = ""
-    return str(value or "").strip()
+    return str(getattr(event, "unified_msg_origin", "") or "").strip()
 
 
 def event_group_id(event: AstrMessageEvent) -> str:
@@ -389,7 +554,7 @@ def is_full_umo(value: str) -> bool:
 
     与 :func:`session_group_id` 同源但不等价：会话 ID 自身含冒号时两者结论
     相反。该分歧是良性的：入口按白名单项**逐字**登记 ``_whitelist_runtime_umos``，
-    走裸号分支照样能查到它（tests/test_storage_and_umo.py 的分歧守卫用例）。
+    走裸号分支照样能查到它。
     不要"顺手统一"成 ``>=``：那会把两段畸形条当成可直接巡检的 UMO。
     """
     return str(value or "").count(":") == _UMO_PARTS - 1
@@ -421,7 +586,7 @@ def whitelist_storage_key(umo: str) -> str:
     """状态键就是完整 UMO 本身（仅去空白）。价值在作为**唯一命名接缝**存在：
     「状态键 = 完整 UMO」这个决定只有一处可改。绝不能退化成裸群号：
     ``session_whitelisted`` 接受裸群号通配，状态键若同样退化，两个平台上
-    同号的群会共用一条状态记录，配额与冷却互相污染（tests/test_security.py 钉住）。
+    同号的群会共用一条状态记录，配额与冷却互相污染。
     """
     return str(umo or "").strip()
 
@@ -471,25 +636,8 @@ def event_sender_name(event: AstrMessageEvent) -> str:
 
 
 def event_extra(event: AstrMessageEvent, key: str, default: Any = None) -> Any:
-    """读取宿主事件的 extra 字段，跨宿主签名差异做两级调用回退。
-
-    本函数在消息热路径上，不用 ``first_bindable_args`` 的签名预检（那要把
-    签名解析开销花在每条消息上）；``get_extra`` 是纯读，重复读取无害。
-    有副作用风险的宿主调用（LLM、落盘）仍走 ``first_bindable_args``，
-    "预检绝不调用"的契约不变。
-    """
-    get_extra = getattr(event, "get_extra", None)
-    if not callable(get_extra):
-        return default
-    try:
-        value = get_extra(key, default)
-    except TypeError:
-        try:
-            value = get_extra(key)
-        except Exception:
-            return default
-    except Exception:
-        return default
+    """读取事件 extra，显式 None 同缺省值处理。"""
+    value = event.get_extra(key, default)
     return default if value is None else value
 
 
@@ -533,13 +681,7 @@ def is_admin_event(event: AstrMessageEvent, admin_ids: set[str]) -> bool:
 
 
 def is_at_or_wake_command_event(event: AstrMessageEvent) -> bool:
-    value = getattr(event, "is_at_or_wake_command", False)
-    if callable(value):
-        try:
-            value = value()
-        except Exception:
-            return False
-    return bool(value)
+    return bool(getattr(event, "is_at_or_wake_command", False))
 
 
 def is_explicit_direct_call(event: AstrMessageEvent, text: str) -> bool:
@@ -581,17 +723,35 @@ def clean_chat_text(text: str) -> str:
 
 
 def dedupe_message_records(records: list[MessageRecord]) -> list[MessageRecord]:
+    """合并重复消息，保留位置不变、取信息更完整的那条。
+
+    宿主历史不带时间戳（``at=0``），同一批消息在本插件缓存里带着真实时间与昵称。
+    两条来源要按「角色 + 正文」认成同一条，否则提示词里会出现两遍相同轮次；
+    两条来源都有时间时按「角色 + 昵称 + 正文 + 时间」区分，不同成员说同一句话
+    不会被并成一条。
+    """
     deduped: list[MessageRecord] = []
-    index: dict[tuple[str, str], int] = {}
+    exact: dict[tuple[str, str, str, float], int] = {}
+    loose: dict[tuple[str, str], int] = {}
     for item in records:
         text = collapse_whitespace(item.text)
         if not text:
             continue
-        key = (str(item.role or ""), text)
-        if key in index:
-            deduped[index[key]] = item
+        role = str(item.role or "")
+        at = float(item.at)
+        key = (role, history_display_name(role, item.name), text, at)
+        pos = exact.get(key)
+        if pos is None:
+            candidate = loose.get((role, text))
+            if candidate is not None:
+                known = float(deduped[candidate].at)
+                if not known or not at:
+                    pos = candidate
+        if pos is not None:
+            if at >= float(deduped[pos].at):
+                deduped[pos] = item
             continue
-        index[key] = len(deduped)
+        exact[key] = loose[(role, text)] = len(deduped)
         deduped.append(item)
     return deduped
 
@@ -605,7 +765,8 @@ def format_message_records(records: list[MessageRecord], *, limit: int) -> str:
     lines = []
     for item in rows:
         name = history_display_name(item.role, item.name)
-        lines.append(f"{name}: {item.text}")
+        # 一条消息恒为一行（换行折成单空格）：理由见 _LINEBREAK_RUN_PATTERN。
+        lines.append(f"{name}: {_LINEBREAK_RUN_PATTERN.sub(' ', str(item.text))}")
     return "\n".join(lines)
 
 
@@ -718,6 +879,8 @@ def clean_reply(text: str, *, allow_multiline: bool, max_chars: int) -> str:
         text = "\n".join(line for line in lines if line).strip()
     else:
         text = collapse_whitespace(text)
+
+    text = text.translate(_REPLY_CONTROL_REMOVAL)
 
     if not text:
         return ""

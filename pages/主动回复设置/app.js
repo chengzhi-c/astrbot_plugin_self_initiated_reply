@@ -1,6 +1,14 @@
-import { FETCH_TIMEOUT_MS, requestPluginApi } from "./frontend-core.mjs";
+import {
+	FETCH_TIMEOUT_MS,
+	MAX_FALLBACK_PROVIDERS,
+	requestPluginApi,
+} from "./frontend-core.mjs";
 import { renderPromptTemplateHtml } from "./config-form.mjs";
-import { createProviderControl } from "./providers.mjs";
+import {
+	createProviderControl,
+	createProviderListControl,
+	createProviderQueueControl,
+} from "./providers.mjs";
 import {
 	THEME_KEY,
 	applyTheme,
@@ -173,15 +181,29 @@ function renderPromptPreview() {
 const providerDeps = {
 	getOptions: () => providerOptions,
 	isListAvailable: () => providerListAvailable,
+	maxItems: MAX_FALLBACK_PROVIDERS,
 	showToast,
 	onDirty: () => configIo.setDirty(true),
 };
 
-/* 三个 Provider 控件同构，差异只在占位文案。
-   容器类（manual）由控件内部的 setManual 统一挂载，三个控件都必须
-   传 field，否则该类只会挂到 judge 上，vision 两个字段切手动后会落回基类列定义、
-   按钮被拉成整行宽。元素在此直接取：它们不参与其余逻辑，不必再进 getEls。 */
+/* Provider 控件只接收各自使用的元素；只有手动/列表切换控件需要包裹层。 */
 const PROVIDER_CONTROLS = [
+	// 生成模型与备用模型只能从列表里选：让用户手填 Provider ID 等于让他记住
+	// 宿主内部标识，填错时这一轮静默回落，日志里也看不出是配置问题。
+	{
+		name: "proactive",
+		select: $("proactiveProviderSelect"),
+		placeholder: "使用当前会话模型",
+		listOnly: true,
+	},
+	{
+		name: "proactiveFallback",
+		select: $("proactiveFallbackSelect"),
+		list: $("proactiveFallbackList"),
+		button: $("proactiveFallbackAddBtn"),
+		status: $("proactiveFallbackStatus"),
+		queue: true,
+	},
 	{
 		name: "vision",
 		field: $("visionProviderField"),
@@ -196,7 +218,7 @@ const PROVIDER_CONTROLS = [
 		select: $("visionJudgeProviderSelect"),
 		input: $("visionJudgeProviderInput"),
 		button: $("visionJudgeProviderManualBtn"),
-		placeholder: "与识图模型一致",
+		placeholder: "与判断模型一致",
 	},
 	{
 		name: "judge",
@@ -210,7 +232,10 @@ const PROVIDER_CONTROLS = [
 
 const providerControlsByName = {};
 const providerControlList = PROVIDER_CONTROLS.map((spec) => {
-	const control = createProviderControl(spec, providerDeps);
+	let control;
+	if (spec.queue) control = createProviderQueueControl(spec, providerDeps);
+	else if (spec.listOnly) control = createProviderListControl(spec, providerDeps);
+	else control = createProviderControl(spec, providerDeps);
 	providerControlsByName[spec.name] = control;
 	return control;
 });
@@ -270,9 +295,9 @@ async function loadProviders() {
 		providerControlList.forEach((control, index) => control.sync(preserved[index]));
 		if (els.providerListState) {
 			els.providerListState.textContent =
-				"Provider 列表不可用，三个 Provider 均可手动填写";
+				"Provider 列表不可用，判断与识图模型可手动填写";
 		}
-		showToast("无法加载 Provider 列表，可手动填写");
+		showToast("无法加载 Provider 列表");
 		return { listAvailable: false };
 	}
 }

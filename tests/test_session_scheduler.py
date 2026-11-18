@@ -167,6 +167,24 @@ async def test_wait_release_gives_up_silently_when_run_eligibility_lost(
     )
 
 
+async def test_wait_release_accepts_release_on_last_round(tmp_path: Path, monkeypatch) -> None:
+    scheduler_mod, _, scheduler, _, _ = _make_scheduler(tmp_path)
+    monkeypatch.setattr(scheduler_mod, "RELEASE_WAIT_TIMEOUT_SEC", 10)
+    monkeypatch.setattr(scheduler_mod, "MAX_RELEASE_WAIT_ROUNDS", 1)
+    gate = scheduler._gate
+    umo = "s1"
+    generation = gate.advance(umo)
+    gate.mark_running(umo)
+
+    waiting = asyncio.create_task(
+        scheduler._wait_for_previous_check_release(umo, "message_delay", generation)
+    )
+    await asyncio.sleep(0)
+    gate.unmark_running(umo)
+
+    assert await waiting is True, "最后一轮里正常释放后应允许新检查运行"
+
+
 async def _noop_coro():
     await asyncio.sleep(10)
 
@@ -393,12 +411,7 @@ def test_cleanup_events_live_session_protection(tmp_path: Path) -> None:
 
 
 def test_cleanup_events_reaps_stale_last_decisions(tmp_path: Path) -> None:
-    """陈旧会话的「最近裁决」必须随其事件缓存一并回收。
-
-    此前 janitor 只回收事件/图片索引/运行时 UMO 三张表，``_last_decisions`` 无人
-    认领：静默白名单会话的裁决条目一直滞留（上限只是白名单规模 1000），还被
-    ``GET /status`` 整表回显。裁决是跟随事件的诊断信息，事件没了它就是孤儿。
-    """
+    """最近裁决跟随事件回收，避免静默会话留下孤立诊断记录。"""
     _, models, scheduler, _, _ = _make_scheduler(tmp_path)
     scheduler._last_cleanup = 0.0
     stale_umo = "g1:user:a"
@@ -432,8 +445,6 @@ def test_cleanup_events_respects_a_patrol_window_wider_than_the_default(tmp_path
     ``_patrol_one_session`` 的「没有可用的最近消息事件」判据会让该会话永久跳过，
     于是 ``patrol_inactive_after_sec`` 上限 604800 中超过 1h 的部分完全无效——
     用户把窗口调到 7 天，实际行为仍是 1 小时。
-
-    变异锚定：把阈值改回常量，本用例红。
     """
     _, _, scheduler, _, _ = _make_scheduler(tmp_path, {"patrol_inactive_after_sec": 604800})
     scheduler._last_cleanup = 0.0
@@ -527,8 +538,6 @@ async def test_stop_patrol_does_not_recancel_an_already_cancelled_task(
     ``_background_tasks`` 里，已被取消一次）→ ``stop_patrol()``。第二次取消落进
     巡检内联检查自己的有界收敛窗口，被 ``_graceful_stop`` 判成"吞掉取消"，
     隔离登记 → ``_mark_degraded`` 把插件永久打成 DEGRADED，只能重载。
-
-    变异锚定：去掉 ``if not task.cancelling()`` 守卫，本用例红。
     """
     _, _, scheduler, _, _ = _make_scheduler(tmp_path)
     cancelled_once = asyncio.Event()
@@ -614,6 +623,7 @@ async def test_prune_keeps_held_lock_and_reclaims_after_release() -> None:
     await LLM 的旧检查并发；只有当代次门之外的锁互斥也成立，运行边界
     才完整。锁释放后的下一次 prune 负责回收。
     """
+    _load_modules()
     gate = _gate_module().SessionGate()
     lock = gate.lock_for("s1")
     await lock.acquire()
@@ -765,8 +775,6 @@ async def test_delayed_check_error_log_is_redacted_without_traceback(
     原文并列出现在同一行日志里，脱敏契约在巡检/延迟检查这两条最高频异常路径上
     实际不成立。口径同 delivery/generation 的失败分支（那边早就注明"不开
     exc_info，traceback 帧常持有 request"）。
-
-    变异锚定：把该处 ``exc_info=True`` 加回来，本用例红。
     """
     scheduler_mod, _, scheduler, _, _ = _make_scheduler(tmp_path)
     umo = "s1"
@@ -803,17 +811,7 @@ async def test_delayed_check_error_log_is_redacted_without_traceback(
 
 
 async def test_patrol_loop_outer_backoff_on_cleanup_error(tmp_path: Path, monkeypatch: Any) -> None:
-    """循环级异常（清理阶段）：走外层 except 的退避重试路径。
-
-    变异锚定：删掉 ``scheduler.py`` 外层 except 里的退避 ``sleep``，本用例红。
-
-    只断言「≥2 次失败」是假绿：``check_interval_sec=0`` 时退避实参
-    ``min(60, 0) == 0``，与循环顶部的实参同为 0，**有没有那行都能立刻重试**。
-    这里把 ``check_interval_sec`` 设为 300（> ``PATROL_BACKOFF_DELAY_SEC``），
-    使顶部长睡与退避长睡**取值可分辨**（300 vs 60），再把 ``asyncio.sleep`` 换
-    成只记录、不真等的替身，于是「出现过一次 60 秒的 sleep」就是退避行存在的
-    直接证据，删除即红。
-    """
+    """循环间隔和错误退避取不同值，以区分正常等待和重试等待。"""
     _, models, scheduler, _, _ = _make_scheduler(tmp_path, {"enabled_patrol_trigger": True})
     scheduler.settings.check_interval_sec = 300
     flags = _run_flags(scheduler)
@@ -951,13 +949,14 @@ def test_cleanup_events_overflow_prunes_oldest(tmp_path: Path) -> None:
     """超过 MAX_CACHED_EVENTS 的缓存按最旧优先回收（无任务会话）。"""
     _, models, scheduler, _, _ = _make_scheduler(tmp_path)
     now = models.now_ts()
+    cap = models.MAX_CACHED_EVENTS
     scheduler._last_cleanup = now - 4000.0  # 跨过清理间隔门槛
-    for i in range(105):
+    for i in range(cap + 5):
         umo = f"plat:GroupMessage:{i}"
         scheduler._last_events[umo] = object()
         scheduler._last_event_at[umo] = now + i * 0.001  # 全部新鲜，仅比先后
     scheduler.cleanup_events_if_needed()
-    assert len(scheduler._last_events) == 100
+    assert len(scheduler._last_events) == cap
     for i in range(5):  # 最旧的 5 个被回收
         assert f"plat:GroupMessage:{i}" not in scheduler._last_events
 
@@ -1048,8 +1047,6 @@ def test_cleanup_events_treats_a_zero_patrol_window_as_unbounded(tmp_path: Path)
     缺陷形态：陈旧阈值写成 max(EVENT_CLEANUP_INTERVAL_SEC, 0)，面板承诺的
     「不截断」实际只有一小时：静默一小时以上的会话事件先被回收，巡检随后因
     「没有可用的最近消息事件」永久跳过它。
-
-    变异锚定：把 or 折算回裸 max()，本用例红。
     """
     _, _, scheduler, _, _ = _make_scheduler(tmp_path, {"patrol_inactive_after_sec": 0})
     scheduler._last_cleanup = 0.0
@@ -1062,4 +1059,112 @@ def test_cleanup_events_treats_a_zero_patrol_window_as_unbounded(tmp_path: Path)
 
     assert umo in scheduler._last_events, (
         "「不截断」被折成 1 小时：事件在 2h 时就被回收了，该会话将永久跳过巡检"
+    )
+
+
+def _coordinator_for(scheduler) -> Any:
+    """按真插件的装配口径接好 cancel_delay。
+
+    ``_make_scheduler`` 里的协调器用 no-op 桩（它只被借来当 clear_event 用），
+    测 force_cancel 触达路径必须换成 ``scheduler.cancel_delay``。
+    """
+    coordinator_mod = importlib.import_module(f"{PACKAGE_NAME}.session_coordinator")
+    return coordinator_mod.SessionCoordinator(
+        last_events=scheduler._last_events,
+        last_event_at=scheduler._last_event_at,
+        recent_image_events=scheduler._recent_image_events,
+        gate=scheduler._gate,
+        cancel_delay=lambda umo, force: scheduler.cancel_delay(umo, force=force),
+        notify_silence=lambda umo: None,
+    )
+
+
+def _patrol_blocking_check(scheduler, models, tmp_path: Path):
+    """装配单会话巡检 + 阻塞检查，返回 (umo, started, ended, release, flags)。"""
+    scheduler.settings.check_interval_sec = 0
+    scheduler.settings.patrol_inactive_after_sec = 0
+    flags = _run_flags(scheduler)
+    umo = "qq:GroupMessage:1"
+    scheduler.settings.whitelist = {umo}
+    scheduler._last_events[umo] = object()
+    scheduler._last_event_at[umo] = models.now_ts()
+    scheduler._state_for(umo).last_active_at = models.now_ts()
+
+    started = asyncio.Event()
+    ended = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_check(umo_, *, trigger, force, expected_generation):
+        started.set()
+        try:
+            await release.wait()
+        finally:
+            ended.set()
+        return "ok"
+
+    scheduler._check_session = blocking_check
+    return umo, started, ended, release, flags
+
+
+async def test_patrol_check_force_cancel_stops_check_not_loop(tmp_path: Path) -> None:
+    """巡检检查必须登记进 _running_check_tasks，force_cancel 才能取消它。
+
+    缺陷形态：``_patrol_one_session`` 直接 ``await self._check_session(...)``，
+    表里没有它，``/selfreply check`` 的 force_cancel 取消不到，等满 2s 预算后
+    返回「已有判断任务在运行。」。取消只收敛该会话的检查，巡检循环要活着。
+    """
+    _, models, scheduler, _, _ = _make_scheduler(tmp_path, {"enabled_patrol_trigger": True})
+    umo, started, ended, release, flags = _patrol_blocking_check(scheduler, models, tmp_path)
+    coordinator = _coordinator_for(scheduler)
+
+    task = asyncio.create_task(scheduler._patrol_loop())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        assert scheduler._running_check_tasks.get(umo) is not None, (
+            "巡检检查未登记到 _running_check_tasks：force_cancel 取消不到它"
+        )
+        coordinator.invalidate(umo, force_cancel=True)
+        await asyncio.wait_for(ended.wait(), timeout=2)
+        assert not task.done(), "force_cancel 连带取消了巡检循环"
+    finally:
+        flags["run"] = False
+        release.set()
+        await _cancel_and_await(task)
+
+
+async def test_patrol_loop_cancel_ends_loop_while_check_runs(tmp_path: Path) -> None:
+    """直接取消巡检循环必须真的结束它：单会话的取消收敛不能吞掉循环自身。"""
+    _, models, scheduler, _, _ = _make_scheduler(tmp_path, {"enabled_patrol_trigger": True})
+    _umo, started, _ended, release, flags = _patrol_blocking_check(scheduler, models, tmp_path)
+
+    task = asyncio.create_task(scheduler._patrol_loop())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=2)
+        assert done, "巡检循环未响应取消：循环自身的取消被单会话取消逻辑吞掉了"
+    finally:
+        flags["run"] = False
+        release.set()
+        await _cancel_and_await(task)
+
+
+def test_event_cap_is_enforced_inside_cleanup_interval(tmp_path: Path) -> None:
+    """条数硬上限必须与清理节流解耦：节流窗口内超限也要立刻收。
+
+    上限段原先排在 ``now - _last_cleanup < EVENT_CLEANUP_INTERVAL_SEC`` 的早退
+    之后，而 ``cleanup_events_if_needed`` 的两个调用点（消息热路径、巡检轮）都
+    在窗口内高频触发——上限于是只在每 1 小时那一轮生效，实际条数上界退化为
+    白名单规模，是文档上限的十倍。
+    """
+    _, models, scheduler, _, _ = _make_scheduler(tmp_path)
+    now = models.now_ts()
+    scheduler._last_cleanup = now
+    for i in range(models.MAX_CACHED_EVENTS + 5):
+        umo = f"plat:GroupMessage:{i}"
+        scheduler._last_events[umo] = object()
+        scheduler._last_event_at[umo] = now
+    scheduler.cleanup_events_if_needed()
+    assert len(scheduler._last_events) <= models.MAX_CACHED_EVENTS, (
+        "节流窗口内事件缓存超过硬上限：上限段被间隔早退挡在门外"
     )

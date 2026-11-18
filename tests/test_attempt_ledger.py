@@ -30,8 +30,11 @@ def test_each_ledger_has_explicit_unique_id() -> None:
     assert first.ledger_id != second.ledger_id
 
 
-def test_seal_marks_inflight_attempt_unknown_and_ignores_late_delivery() -> None:
-    """A cancellation after adapter entry remains an unconfirmed submission."""
+@pytest.mark.parametrize("late_status", ["DELIVERED", "FAILED_BEFORE_SUBMIT"])
+def test_seal_marks_inflight_attempt_unknown_and_ignores_late_delivery(
+    late_status: str,
+) -> None:
+    """Seal freezes evidence: any late adapter outcome leaves the pessimistic UNKNOWN."""
     models = _models()
     ledger = models.AttemptLedger()
 
@@ -41,10 +44,15 @@ def test_seal_marks_inflight_attempt_unknown_and_ignores_late_delivery() -> None
 
     assert sealed[0].state is models.AttemptState.UNKNOWN
     assert ledger.phase == "sealed"
-    assert ledger.resolve(attempt, models.SendStatus.DELIVERED) is False
+    assert ledger.resolve(attempt, getattr(models.SendStatus, late_status)) is False
     assert attempt.state is models.AttemptState.UNKNOWN
     assert ledger.has_submission is True
     assert ledger.has_unknown is True
+    # 冻结后不得改写任何派生的额度/去重证据
+    assert ledger.direct_send_count == 1
+    assert ledger.direct_texts == ("tool result",)
+    with pytest.raises(RuntimeError):
+        ledger.reserve("final_reply", "reply")
 
 
 def test_seal_marks_unstarted_attempt_abandoned_without_submission() -> None:
@@ -79,18 +87,7 @@ def test_recording_phase_has_one_task_and_failure_is_terminal() -> None:
 
 
 async def test_gate_blocked_check_records_decision_and_logs(tmp_path: Path, caplog: object) -> None:
-    """被网关拦下的检查必须登记裁决；日志取 DEBUG。
-
-    缺陷形态：``check_session_locked`` 的 local_gate 分支此前只打 DEBUG 且不调
-    ``record_decision``。默认 cooldown 900s、日配额 5，冷却/配额拦截是**最常见**的
-    路径，于是「机器人为什么不接话」这个最高频问题在默认日志级别下毫无痕迹；更糟的是
-    `/selfreply status` 的「最近裁决」还显示着上一轮**过期**的"接话"——运营者读到的是
-    "判断说该回"，实际被冷却拦着，反向误导。
-
-    闸门原团每个巡检轮次都会命中（默认 12 条/小时/群），而 §9 只把「判断结果」留给 INFO；
-    同一句 result 在 scheduler.delayed_check 里也已经是 DEBUG。
-    变异锚定：把 local_gate 分支改回只打 DEBUG 且不 record_decision，本用例红。
-    """
+    """网关拦截更新最近裁决，避免 status 显示旧结论；高频闸门日志使用 DEBUG。"""
     install_astrbot_stubs()
     package = f"{PACKAGE_NAME}_gate_log"
     pipeline_mod = load_package(package, "session_pipeline")
@@ -159,6 +156,9 @@ async def test_pipeline_record_retry_does_not_apply_state_twice() -> None:
     pipeline = object.__new__(pipeline_mod.SessionPipeline)
     delivery = FakeDelivery()
     pipeline._delivery = delivery
+    # _record_ledger 按白名单重解析记账目标（契约 §1）；空白名单即「不迁移」。
+    pipeline._settings = models.Settings.from_config({})
+    pipeline._state_for = lambda _umo: models.SessionState()
     state = models.SessionState()
     ledger = models.AttemptLedger()
     attempt = ledger.reserve("final_reply")
@@ -190,6 +190,10 @@ def _pipeline_with_delivery(package_name: str, delivery: object):
     models = load_package(package_name, "models")
     pipeline = object.__new__(pipeline_mod.SessionPipeline)
     pipeline._delivery = delivery
+    # _record_ledger 会按白名单重解析记账目标（契约 §1），替身必须给出这两个依赖：
+    # 空白名单即「不迁移」，与这些用例的意图一致。
+    pipeline._settings = models.Settings.from_config({})
+    pipeline._state_for = lambda _umo: models.SessionState()
     return pipeline, models
 
 
@@ -261,11 +265,7 @@ async def test_pipeline_persist_exhaustion_marks_record_failed_next_run_independ
 
 
 class _ContractDelivery:
-    """把 ``confirmed`` 原样交给真实 ``SessionState`` 的记账桩。
-
-    其余桩写死 ``confirmed=True``（只为走通持久化循环），于是「未确认投递」在桩里被
-    当作「已确认」历史里凭空多一条 assistant，而测试照样全绿。
-    """
+    """将真实 confirmed 交给 SessionState，区分已确认投递和未知投递的历史写入。"""
 
     def __init__(self) -> None:
         self.apply_calls = 0
@@ -324,33 +324,79 @@ async def test_pipeline_unknown_delivery_consumes_quota_without_history_entry() 
     assert state.last_proactive_text == ""
 
 
-async def test_pipeline_finalize_cancel_still_converges_record_task() -> None:
+@pytest.mark.parametrize(
+    ("final_state", "expected_reply"),
+    [
+        ("delivered", "工具直发；最终回复"),
+        ("unknown", "工具直发"),
+    ],
+)
+async def test_pipeline_records_confirmed_direct_text_with_final_result(
+    final_state: str,
+    expected_reply: str,
+) -> None:
+    delivery = _ContractDelivery()
+    pipeline, models = _pipeline_with_delivery(
+        f"{PACKAGE_NAME}_direct_{final_state}",
+        delivery,
+    )
+    state = models.SessionState()
+    ledger = models.AttemptLedger()
+    direct = ledger.reserve("tool_direct", "工具直发")
+    ledger.mark_in_flight(direct)
+    ledger.resolve(direct, models.SendStatus.DELIVERED)
+    final = ledger.reserve("final_reply")
+    ledger.mark_in_flight(final)
+    if final_state == "delivered":
+        ledger.resolve(final, models.SendStatus.DELIVERED)
+    ledger.seal()
+    ledger.start_recording(object())
+
+    await pipeline._record_ledger(
+        "s1",
+        state,
+        ledger,
+        "最终回复",
+        expected_generation=None,
+        observed_active_at=42.0,
+    )
+
+    assert delivery.apply_kwargs[0]["reply"] == expected_reply
+    assert delivery.apply_kwargs[0]["confirmed"] is True
+    assert state.last_proactive_text == expected_reply
+
+
+class _BlockingDelivery:
+    """``persist_proactive_state`` 卡在 release 上，直到用例显式放行。"""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.apply_calls = 0
+        self.persist_calls = 0
+
+    def apply_proactive_state(self, _umo, state, reply, _direct_count, **_kwargs) -> None:
+        self.apply_calls += 1
+        state.record_proactive_attempt(confirmed=True, text=reply, at=1.0)
+
+    async def persist_proactive_state(self) -> bool:
+        self.persist_calls += 1
+        self.started.set()
+        await self.release.wait()
+        return True
+
+
+@pytest.fixture
+def delivery() -> _BlockingDelivery:
+    """落盘卡在 release 上的投递替身，取消/重入用例共用。"""
+    return _BlockingDelivery()
+
+
+async def test_pipeline_finalize_cancel_still_converges_record_task(
+    delivery: _BlockingDelivery,
+) -> None:
     """finalize 被取消时仍 shield 等待 record task，配额只记一次。"""
-    install_astrbot_stubs()
-    package_name = f"{PACKAGE_NAME}_finalize_cancel"
-    pipeline_mod = load_package(package_name, "session_pipeline")
-    models = load_package(package_name, "models")
-
-    class HangingDelivery:
-        def __init__(self) -> None:
-            self.started = asyncio.Event()
-            self.release = asyncio.Event()
-            self.apply_calls = 0
-            self.persist_calls = 0
-
-        def apply_proactive_state(self, _umo, state, reply, _direct_count, **_kwargs) -> None:
-            self.apply_calls += 1
-            state.record_proactive_attempt(confirmed=True, text=reply, at=1.0)
-
-        async def persist_proactive_state(self) -> bool:
-            self.persist_calls += 1
-            self.started.set()
-            await self.release.wait()
-            return True
-
-    delivery = HangingDelivery()
-    pipeline = object.__new__(pipeline_mod.SessionPipeline)
-    pipeline._delivery = delivery
+    pipeline, models = _pipeline_with_delivery(f"{PACKAGE_NAME}_finalize_cancel", delivery)
     pipeline._track_critical_task = asyncio.create_task
     state = models.SessionState()
     ledger = _delivered_sealed_ledger(models)
@@ -367,9 +413,7 @@ async def test_pipeline_finalize_cancel_still_converges_record_task() -> None:
     )
     await delivery.started.wait()
     finalizer.cancel()
-    await asyncio.sleep(0)  # 让取消投递到 finalizer
-    # 取消必须只结束「外层等待」，不能跳过 shield：此时 record task 仍被 release 卡住，
-    # finalizer 必须还没结束。去掉 shield 的实现在这里立刻 done，断言即红。
+    await asyncio.sleep(0)  # 将取消交给 finalizer。
     assert not finalizer.done(), "finalize 被取消时不得提前返回（仍需等待落盘）"
     assert delivery.persist_calls == 1
     delivery.release.set()
@@ -382,39 +426,11 @@ async def test_pipeline_finalize_cancel_still_converges_record_task() -> None:
     assert state.daily_count == 1
 
 
-async def test_pipeline_finalize_reentry_reuses_single_record_task() -> None:
-    """二次进入 ``_finalize_ledger`` 必须复用既有 record task，不得另起一条记账。
-
-    缺陷形态：重入时 phase 仍是 ``RECORDING``（未终态），若在此直接
-    ``_track_critical_task(_record_ledger(...))``，就会挂出第二条记账任务——
-    两个任务各自 ``apply_proactive_state``，日配额与历史被记两遍，还会竞争同一次
-    落盘。修法是先读 ``ledger.record_task``，非空即复用。
-    """
-    install_astrbot_stubs()
-    package_name = f"{PACKAGE_NAME}_finalize_reentry"
-    pipeline_mod = load_package(package_name, "session_pipeline")
-    models = load_package(package_name, "models")
-
-    class BlockingDelivery:
-        def __init__(self) -> None:
-            self.started = asyncio.Event()
-            self.release = asyncio.Event()
-            self.apply_calls = 0
-            self.persist_calls = 0
-
-        def apply_proactive_state(self, _umo, state, reply, _direct_count, **_kwargs) -> None:
-            self.apply_calls += 1
-            state.record_proactive_attempt(confirmed=True, text=reply, at=1.0)
-
-        async def persist_proactive_state(self) -> bool:
-            self.persist_calls += 1
-            self.started.set()
-            await self.release.wait()
-            return True
-
-    delivery = BlockingDelivery()
-    pipeline = object.__new__(pipeline_mod.SessionPipeline)
-    pipeline._delivery = delivery
+async def test_pipeline_finalize_reentry_reuses_single_record_task(
+    delivery: _BlockingDelivery,
+) -> None:
+    """收尾重入复用 record_task，避免重复记账与并发落盘。"""
+    pipeline, models = _pipeline_with_delivery(f"{PACKAGE_NAME}_finalize_reentry", delivery)
     pipeline._track_critical_task = asyncio.create_task
     state = models.SessionState()
     ledger = _delivered_sealed_ledger(models)
@@ -510,19 +526,7 @@ class _BrokenStrDelivery:
 async def test_pipeline_record_survives_exception_whose_str_raises(
     tmp_path: Path, caplog: object
 ) -> None:
-    """异常处理路径自己抛异常时，已算好的结果与账本结论都不得被丢掉。
-
-    缺陷形态：``except`` 块把 ``exc`` 原样喂给 ``%s``、并把 ``str(exc)`` 交给
-    ``mark_record_failed``。``exc.__str__`` 一旦自身抛异常（上游 SDK 的异常见过，
-    见 ``test_log_redaction.test_exception_text_extraction_survives_broken_str``），
-    RuntimeError 会从 ``_record_ledger`` 逃出 ``_finalize_ledger`` →
-    ``check_session_locked`` 的 finally，把已经算好的返回值整段丢掉，账本停在
-    RECORDING、落盘重试再也不会发生。修法是先经 ``redact_exc_text`` 取一次文本，
-    再喂给两者。
-
-    变异锚定：把 ``detail = redact_exc_text(exc)`` 改回直接吃 ``exc`` /
-    ``str(exc)``，本用例红。
-    """
+    """异常的 __str__ 也可能抛错，错误格式化须保留账本结果和落盘重试。"""
     install_astrbot_stubs()
     package_name = f"{PACKAGE_NAME}_record_broken_str"
     pipeline_mod = load_package(package_name, "session_pipeline")
@@ -530,6 +534,9 @@ async def test_pipeline_record_survives_exception_whose_str_raises(
 
     delivery = _BrokenStrDelivery()
     pipeline = object.__new__(pipeline_mod.SessionPipeline)
+    # _record_ledger 按白名单重解析记账目标（契约 §1）；空白名单即「不迁移」。
+    pipeline._settings = models.Settings.from_config({})
+    pipeline._state_for = lambda _umo: models.SessionState()
     pipeline._delivery = delivery
     pipeline._track_critical_task = asyncio.create_task
     state = models.SessionState()

@@ -8,7 +8,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ..models import MAX_IMAGE_BYTES, PLUGIN_ID
-from ..utils import maybe_await
+from ..utils import maybe_await, redact_exc_text
 from ._support import sniff_image_mime, to_data_url
 
 RECORDER_PLUGIN_NAME = "astrbot_plugin_message_recorder"
@@ -39,7 +39,11 @@ class MessageRecorderBridge:
             self._api = await maybe_await(get_api())
             return self._api is not None
         except Exception as exc:
-            logger.debug("[%s] message recorder bridge unavailable: %s", PLUGIN_ID, exc)
+            logger.debug(
+                "[%s] message recorder bridge unavailable: %s",
+                PLUGIN_ID,
+                redact_exc_text(exc),
+            )
             return False
 
     async def get_local_image_path(self, message_id: str, image_url: str = "") -> Path | None:
@@ -80,7 +84,7 @@ class MessageRecorderBridge:
                 return None
             return await self.resolve_relative_path(local_path)
         except Exception as exc:
-            logger.debug("[%s] recorder image lookup failed: %s", PLUGIN_ID, exc)
+            logger.debug("[%s] recorder image lookup failed: %s", PLUGIN_ID, redact_exc_text(exc))
             return None
 
     async def resolve_relative_path(self, value: str) -> Path | None:
@@ -94,7 +98,11 @@ class MessageRecorderBridge:
             path = Path(path) if path else None
             return path if path and path.exists() and path.is_file() else None
         except Exception as exc:
-            logger.debug("[%s] recorder path resolution failed: %s", PLUGIN_ID, exc)
+            logger.debug(
+                "[%s] recorder path resolution failed: %s",
+                PLUGIN_ID,
+                redact_exc_text(exc),
+            )
             return None
 
     @staticmethod

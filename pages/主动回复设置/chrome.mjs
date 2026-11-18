@@ -249,7 +249,7 @@ export function boldWasTouched() {
 // GET /ui/theme 在途期间点一下 dim，DOM 里的 bold 还是本地默认 false，
 // 一并提交就把服务端上没动过的开关静默抹掉了。
 /* 主题与压暗/粗体同属"用户即时选择优先于迟到服务端值"：GET ui/theme 在途最长
-   FETCH_TIMEOUT_MS，期间点过主题就不得被旧响应覆盖（DECISIONS「设置页 chrome」）。 */
+   FETCH_TIMEOUT_MS，期间点过主题就不得被旧响应覆盖：后到的旧响应只丢弃，不回写。 */
 let themeTouched = false;
 export function markThemeTouched() {
   themeTouched = true;

@@ -73,9 +73,8 @@ def _bootstrap() -> _BootstrapState:
     删除必须发生在 cwd 复原之后（Windows 上反序删正被占为 cwd 的目录会
     PermissionError）。
 
-    import 本模块必须无副作用：tests/test_runtime_adapter.py 只为取
-    EXPECTED_HANDLER_NAMES 而 import，模块级 chdir 会把 pytest 进程的工作目录
-    切到临时目录、假包注册会顶掉 sys.modules 里的同名真包。
+    import 本模块必须无副作用：调用方只为取 EXPECTED_HANDLER_NAMES 而 import，
+    模块级 chdir 会改掉调用方的工作目录、假包注册会顶掉 sys.modules 里的同名真包。
     """
     # astrbot 包 import 会在 cwd 生成运行时 data/ 目录：切到临时目录防污染工作区
     previous_cwd = Path(os.getcwd())
@@ -127,18 +126,89 @@ def _discard_workdir(workdir: Path) -> None:
 DANGEROUS_TOOL_MODULES = [
     "astrbot.core.tools.cron_tools",
     "astrbot.core.tools.knowledge_base_tools",
+    "astrbot.core.tools.computer_tools.cua",
     "astrbot.core.tools.computer_tools.fs",
     "astrbot.core.tools.computer_tools.shell",
     "astrbot.core.tools.computer_tools.python",
     "astrbot.core.tools.computer_tools.shipyard_neo.browser",
+    "astrbot.core.tools.computer_tools.shipyard_neo.neo_skills",
 ]
+
+# 只在较新宿主才引入的危险模块：缺失时容忍，否则兼容下限（旧宿主）这条腿会变红。
+# 逐条登记而不是"整片缺失才报"：后者会让单个危险模块改名/搬迁后完全静默。
+# 新增条目须确实搞清是版本差而非改名；tests 里有白名单台账断言，加条目会同时红。
+HOST_VERSION_OPTIONAL_TOOL_MODULES = frozenset(
+    {
+        # 4.23.3 无，4.27.2 起有
+        "astrbot.core.tools.computer_tools.cua",
+        # 4.29.4 新增
+        "astrbot.core.tools.computer_tools.shipyard_neo.neo_skills",
+    }
+)
+
+# 与 DANGEROUS_TOOL_MODULES 互补的两份名单，三份合起来必须覆盖
+# ``astrbot.core.tools`` 包下的**每一个**模块。
+#
+# 这三份名单要一起看：只维护危险名单时，宿主新增一个危险模块（4.29.4 的
+# cua.py / neo_skills.py 正是如此）不会被任何检查发现——枚举本身只看名单。
+# ``_tool_package_gaps`` 因此反向遍历包内模块，未登记即报漂移，
+# 逼着每次宿主升级对新增模块做一次显式归类。
+TOOL_PACKAGE = "astrbot.core.tools"
+TOOL_PACKAGE_FALLBACK = "astrbot.core.astr_agent_runtime.tools"
+# 非工具模块：注册表与工具函数，不含 FunctionTool 子类。
+NON_TOOL_MODULES = frozenset(
+    {
+        TOOL_PACKAGE,
+        f"{TOOL_PACKAGE}.registry",
+        f"{TOOL_PACKAGE}.util",
+        f"{TOOL_PACKAGE}.computer_tools.util",
+    }
+)
+# 判定为安全的宿主工具模块：搜索与消息工具不越过危险能力边界。
+SAFE_TOOL_MODULES = frozenset(
+    {
+        f"{TOOL_PACKAGE}.message_tools",
+        f"{TOOL_PACKAGE}.web_search_tools",
+    }
+)
+
+
+def _active_tool_package() -> str:
+    """Return the built-in tool package used by the installed host."""
+    import importlib
+
+    for package in (TOOL_PACKAGE, TOOL_PACKAGE_FALLBACK):
+        try:
+            importlib.import_module(package)
+        except ModuleNotFoundError:
+            continue
+        return package
+    return TOOL_PACKAGE
+
+
+def _active_tool_modules() -> tuple[set[str], set[str], set[str]]:
+    """Resolve dangerous, safe, and non-tool module names for the host layout."""
+    package = _active_tool_package()
+
+    def remap(module: str) -> str:
+        return module.replace(TOOL_PACKAGE, package, 1)
+
+    dangerous = {remap(module) for module in DANGEROUS_TOOL_MODULES}
+    safe = {remap(module) for module in SAFE_TOOL_MODULES}
+    non_tool = {remap(module) for module in NON_TOOL_MODULES}
+    if package == TOOL_PACKAGE_FALLBACK:
+        # 4.30 moved agent delegation into the built-in runtime. It can send
+        # messages and launch work outside this reply, so it remains denied.
+        dangerous.add(f"{package}.subagent")
+        non_tool.add(f"{package}.output")
+    return dangerous, safe, non_tool
 
 
 # 本检查真正走一遍注解解析的处理器名单：on_message + 9 个 /selfreply 子指令。
 # 指令组本体（selfreply）已被宿主装饰器换成 RegisteringCommandable，原函数从类
 # 属性取不到，故扫不到它；这不构成盲区：宿主只对 CommandFilter 做注解解析，
 # 指令组与 on_message 的注解宿主本身就不解析。加指令时同步改这里，
-# tests/test_runtime_adapter.py 经 import 引用本名单（单源）。
+# 本名单是单源：别处不要再抄一份。
 #
 # 刻意按名字列名单而不是数个数：数个数会把「指令组恰好不可调用」这个宿主内部
 # 细节变成计数口径，RegisteringCommandable 一旦获得 __call__，两个消费方对同一
@@ -211,7 +281,8 @@ def _enumerate_tool_names() -> dict[str, set[str] | None]:
     from astrbot.core.agent.tool import FunctionTool
 
     found: dict[str, set[str] | None] = {}
-    for mod_name in DANGEROUS_TOOL_MODULES:
+    dangerous_modules, _, _ = _active_tool_modules()
+    for mod_name in sorted(dangerous_modules):
         try:
             mod = importlib.import_module(mod_name)
         except ModuleNotFoundError:
@@ -226,18 +297,73 @@ def _enumerate_tool_names() -> dict[str, set[str] | None]:
     return found
 
 
+def _walk_tool_package() -> tuple[list[str], list[str]]:
+    """遍历 ``astrbot.core.tools``：返回（叶子模块名, 遍历中导入失败的模块名）。
+
+    只遍历模块名，不 import 叶子：这里要的正是"宿主新增了什么"，而 import 未知
+    模块会执行它的副作用（并在缺可选依赖时抛错，把漂移报成导入失败）。
+
+    ``walk_packages`` 必须传 ``onerror``：子包 import 抛错时它既不报错、也不产出
+    该子树的任何模块名。``computer_tools/__init__`` 顶层就 import 各危险模块，
+    改名一个子模块即让整片目录静默消失，"未归类"与 denylist 枚举同时失效。
+
+    包本身取不到时返回空：那种情况由 ``_enumerate_tool_names`` 逐个模块报
+    "缺失，宿主私有 API 漂移"，在这里再报一次只会把同一件事说两遍。
+    """
+    import importlib
+    import pkgutil
+
+    package_name = _active_tool_package()
+    try:
+        tools_pkg = importlib.import_module(package_name)
+    except ModuleNotFoundError:
+        return [], []
+
+    failed: list[str] = []
+    # 包本身（``__init__``）不装工具，只有叶子模块需要归类。
+    found = [
+        module.name
+        for module in pkgutil.walk_packages(
+            tools_pkg.__path__, package_name + ".", onerror=failed.append
+        )
+        if not module.ispkg
+    ]
+    return found, failed
+
+
+def _tool_package_gaps() -> list[str]:
+    """包形状漂移：未归类模块 + 遍历时导入失败的子树（空 = 三份名单已覆盖全包）。"""
+    dangerous, safe, non_tool = _active_tool_modules()
+    known = dangerous | safe | non_tool
+    found, failed = _walk_tool_package()
+    gaps = [
+        f"{mod} 未归类：新增到 DANGEROUS_TOOL_MODULES（并补 HOST_DANGEROUS_TOOL_IDS）"
+        f"或 SAFE_TOOL_MODULES"
+        for mod in sorted(set(found) - known)
+    ]
+    gaps.extend(f"{mod} 导入失败，其子树未纳入检查（宿主私有 API 漂移）" for mod in sorted(failed))
+    return gaps
+
+
 def _denylist_gaps() -> list[str]:
     """宿主危险工具全集与 HOST_DANGEROUS_TOOL_IDS 的缺口（空 = 全覆盖）。"""
     from astrbot_plugin_self_initiated_reply.models import HOST_DANGEROUS_TOOL_IDS
 
-    gaps: list[str] = []
+    gaps = _tool_package_gaps()
+    optional_modules = {
+        module.replace(TOOL_PACKAGE, _active_tool_package(), 1)
+        for module in HOST_VERSION_OPTIONAL_TOOL_MODULES
+    }
     for mod, names in _enumerate_tool_names().items():
         if names is None:
-            gaps.append(f"{mod} 缺失，宿主私有 API 漂移")
+            # 旧宿主没有较新宿主才引入的模块是版本差，不是漂移：只容忍白名单里的条目。
+            # 不能改成"整片缺失才报"——单个危险模块改名/搬迁同样要报。
+            if mod not in optional_modules:
+                gaps.append(f"{mod} 缺失，宿主私有 API 漂移")
             continue
-        missing = sorted(names - HOST_DANGEROUS_TOOL_IDS)
-        if missing:
-            gaps.append(f"denylist 未覆盖 {mod}: {', '.join(missing)}")
+        missing_names = sorted(names - HOST_DANGEROUS_TOOL_IDS)
+        if missing_names:
+            gaps.append(f"denylist 未覆盖 {mod}: {', '.join(missing_names)}")
     return gaps
 
 

@@ -403,6 +403,18 @@
             <li>
               <a
                 class="sidenav-link"
+                href="#sec-model"
+                data-target="sec-model"
+                data-group="sec-scope"
+              >
+                <svg class="sidenav-icon" aria-hidden="true">
+                  <use href="#i-power" /></svg
+                ><span class="sidenav-text">生成模型</span>
+              </a>
+            </li>
+            <li>
+              <a
+                class="sidenav-link"
                 href="#sec-triggers"
                 data-target="sec-triggers"
                 data-group="sec-scope"
@@ -523,9 +535,10 @@
               </div>
               <textarea
                 id="whitelistInput"
+                class="whitelist-input"
                 data-config-key="whitelist_sessions"
                 data-config-transform="whitelist"
-                rows="5"
+                rows="2"
                 spellcheck="false"
                 aria-describedby="whitelistError whitelistSummary"
                 placeholder="留空则任何会话都不会主动回复&#10;群聊可填完整 UMO，也可直接填 QQ 群号（也支持逗号分隔）"
@@ -570,6 +583,88 @@
               />
               <span>被点名后本批消息不再主动接话</span>
             </label>
+          </section>
+
+          <!-- 生成用什么模型。聊天那个模型慢的话，主动回复整轮都在陪它等超时 -->
+          <section class="panel" id="sec-model">
+            <div class="panel-head">
+              <h2>
+                <svg class="panel-icon" aria-hidden="true">
+                  <use href="#i-power" /></svg
+                >生成模型
+              </h2>
+            </div>
+
+            <div
+              class="provider-field"
+              id="proactiveProviderField"
+              data-config-key="proactive_provider_id"
+              data-config-control="proactive"
+              data-provider-manual="off"
+            >
+              <label class="field-label" for="proactiveProviderSelect"
+                >主动回复使用的模型</label
+              >
+              <div class="provider-control">
+                <select
+                  id="proactiveProviderSelect"
+                  aria-describedby="proactiveProviderHint"
+                >
+                  <option value="">使用当前会话模型</option>
+                </select>
+              </div>
+              <p class="field-hint" id="proactiveProviderHint">
+                留空则跟随会话聊天用的模型。
+              </p>
+            </div>
+
+            <div
+              class="field"
+              id="proactiveFallbackField"
+              data-config-key="proactive_fallback_provider_ids"
+              data-config-control="proactiveFallback"
+            >
+              <label class="field-label" for="proactiveFallbackSelect">备用模型</label>
+              <div class="provider-control">
+                <select
+                  id="proactiveFallbackSelect"
+                  aria-describedby="proactiveFallbackHint"
+                ></select>
+                <button type="button" class="btn-link" id="proactiveFallbackAddBtn">
+                  添加
+                </button>
+              </div>
+              <ol class="fallback-list" id="proactiveFallbackList"></ol>
+              <span
+                class="sr-status"
+                id="proactiveFallbackStatus"
+                role="status"
+                aria-live="polite"
+              ></span>
+              <p class="field-hint" id="proactiveFallbackHint">
+                主模型失败或超时后按这个顺序依次尝试；留空则沿用 AstrBot 里配置的备用顺序。
+              </p>
+            </div>
+
+            <div class="field-grid model-grid">
+              <label class="field">
+                <span class="field-label" id="proactiveRetriesLabel">单模型请求尝试次数</span>
+                <input
+                  type="number"
+                  id="proactiveRetriesInput"
+                  aria-labelledby="proactiveRetriesLabel"
+                  data-integer
+                  data-config-key="proactive_request_max_retries"
+                  aria-describedby="proactiveRetriesHint"
+                  min="1"
+                  max="10"
+                  step="1"
+                />
+                <p class="field-hint" id="proactiveRetriesHint">
+                  最大次数含首次请求。默认 1，超时即切下一个模型。
+                </p>
+              </label>
+            </div>
           </section>
 
           <!-- 第三层：什么时候开口。按「量的是什么」分组，显式标注起算点 -->
@@ -836,7 +931,7 @@
                   <option value="random">按概率引用</option>
                 </select>
                 <p class="field-hint" id="quoteModeHint">
-                  引用本次回复依据的消息，不支持时降级
+                  引用本次回复依据的消息；平台不支持引用时降级为普通发送
                 </p>
               </label>
               <label class="field">
@@ -863,7 +958,7 @@
                   <option value="random">按概率 @</option>
                 </select>
                 <p class="field-hint" id="mentionModeHint">
-                  @ 本次回复依据消息的发送者
+                  @ 本次回复依据消息的发送者；取不到发送者时降级为普通发送
                 </p>
               </label>
               <label class="field">
@@ -939,7 +1034,7 @@
                   id="visionSkipStickersInput"
                   data-config-key="vision_skip_stickers"
                 />
-                <span>跳过表情包识图（按 QQ 图片标记过滤）</span>
+                <span>跳过表情包识图</span>
               </label>
 
               <div class="field-grid">
@@ -990,7 +1085,7 @@
                   >
                     <div class="provider-control">
                       <select id="visionJudgeProviderSelect">
-                        <option value="">与识图模型一致</option>
+                        <option value="">与判断模型一致</option>
                       </select>
                       <button
                         type="button"
@@ -1070,9 +1165,7 @@
                 >
               </div>
 
-              <p class="muted">
-                两个开关独立，只开主模型识图更省 Token；图片描述不写入会话历史。
-              </p>
+              <p class="muted">图片描述不写入会话历史。</p>
             </div>
           </details>
 
@@ -1089,7 +1182,6 @@
               id="configSaveState"
               aria-live="polite"
             ></span>
-            <span class="muted form-actions-hint">改动后需要保存才会生效</span>
           </div>
         </form>
       </main>

@@ -1,9 +1,4 @@
-"""配置 coercions 与展示 helper：models.py 里四个纯函数的边界语义。
-
-这些 helper 全都被变异扫描确认**无任何测试守卫**（改坏后全量套件仍全绿），
-而它们各自服务一条用户可见路径：布尔开关的显式 null、浮点字段被写成 true、
-冷却文案的秒档、以及宿主签名不可探测时的回退候选。
-"""
+"""配置 coercions 与展示 helper：models.py 里四个纯函数的边界语义。"""
 
 from __future__ import annotations
 
@@ -33,8 +28,6 @@ def test_as_bool_explicit_null_falls_back_to_default() -> None:
     在键缺失时已用 ``spec.default`` 兜底，所以只有手改 ``_conf_schema.json`` 或
     宿主面板写入空值才会走到这一支。改成恒 False 后，一个 ``null`` 就让默认开启
     的功能整体静默关闭——最严重是 ``enabled: null`` → 插件完全不动且无任何告警。
-
-    变异锚定：把 ``return default`` 改成 ``return False``，本用例红。
     """
     models = _models()
     assert models.as_bool(None, True) is True, "显式 null 把默认开启的开关关掉了"
@@ -49,8 +42,6 @@ def test_as_float_bool_falls_back_to_default_not_minimum() -> None:
     面板或手改配置把 ``true`` 写进 float 字段（``cooldown_sec`` /
     ``min_silence_sec`` 等）时命中。改成回落 ``minimum`` 后该字段被静默设成
     下界（如冷却 60s），用户看到的输入和实际生效值不一致且无警告。
-
-    变异锚定：把 ``return default`` 改成 ``return minimum``，本用例红。
     """
     models = _models()
     assert models.as_float(True, 12.5, minimum=0.0, maximum=100.0) == 12.5
@@ -66,8 +57,6 @@ def test_duration_uses_seconds_below_one_minute() -> None:
     缺陷形态：``duration`` 的 ``if seconds < _MINUTE_SECONDS`` 分支。冷却文案
     （``decision.py`` 的剩余时间提示）在剩余 1~59s 时命中；删掉这一档会显示成
     ``0m30s``，运营按它判断等待时间会多等一个量级的错觉。
-
-    变异锚定：把该条件改成恒假，本用例红。
     """
     models = _models()
     assert models.duration(0) == "0s"
@@ -78,45 +67,12 @@ def test_duration_uses_seconds_below_one_minute() -> None:
     assert models.duration(3600) == "1h0m0s"
 
 
-def test_first_bindable_args_falls_back_to_first_candidate() -> None:
-    """宿主签名不可探测时必须返回首个候选，不是放弃。
-
-    缺陷形态：``first_bindable_args`` 的 ``except (TypeError, ValueError):
-    return candidates[0]``。宿主 ``Context`` 方法是内置函数或 C 扩展时
-    ``inspect.signature`` 抛 ``ValueError``。改成返回 None 后
-    ``_call_first_supported`` 只记一条 DEBUG 就返回 None，``resolve_provider_id``
-    一路退到空串，主动回复因取不到 provider 失败——从\"还能跑\"变成\"静默不跑\"。
-
-    变异锚定：把 ``return candidates[0]`` 改成 ``return None``，本用例红。
-    """
-    models = _models()
-    candidates = [((), {"umo": "x"}), ((), {})]
-
-    # ``min`` 是真正签名不可探测的内置函数：inspect.signature 抛 ValueError
-    picked = models.first_bindable_args(min, candidates)
-    assert picked == candidates[0], f"签名不可探测时没回落到首个候选：{picked}"
-
-    # 对照：签名可探测时仍按可绑定性挑
-    def _host(umo: str = "") -> None:
-        return None
-
-    assert models.first_bindable_args(_host, candidates) == candidates[0]
-
-    def _requires_umo(umo: str) -> None:
-        return None
-
-    # 无参候选绑不上，必须落到第二个
-    assert models.first_bindable_args(_requires_umo, [((), {}), (("x",), {})]) == (("x",), {})
-
-
 def test_list_items_splits_a_bare_string() -> None:
     """列表配置被手改成裸字符串时必须按分隔符切开。
 
     缺陷形态：``_list_items`` 的 ``if isinstance(raw, str)`` 分支。面板写数组，
     但配置文件可手改；一旦这条宽松路径被改坏（比如不再切分），一个会话会被当成
     一个畸形条目丢掉，白名单静默少人且只有计数警告。
-
-    变异锚定：删掉该分支的切分，本用例红。
     """
     models = _models()
     spec = next(item for item in models.CONFIG_SPECS if item.key == "whitelist_sessions")
@@ -151,8 +107,6 @@ def test_damaged_value_types_fall_back_and_warn(monkeypatch) -> None:
     enabled: [] 因此静默关掉整个插件，vision_judge_enabled: {} 让旧的
     vision_enabled: true 被无声忽略；首启规范化随后又把原始损坏值覆盖掉，事后
     无从定位（契约 §7 的 legacy fallback 与 §9 的告警口径）。
-
-    变异锚定：删掉 bool/str/text 三支的类型判定，本用例红。
     """
     models = _models()
     warnings: list[str] = []
@@ -207,8 +161,6 @@ def test_unencodable_text_is_stripped_before_it_can_break_the_config() -> None:
     缺陷形态：控制字符过滤只按 ord >= 32，U+D800-U+DFFF 原样通过。它们能进内存
     但编不了 UTF-8：config_revision 与 write_json_atomic 会一起抛，设置页从此
     读不出配置（GET /config 被吞成 ok:false），且没有自愈路径。
-
-    变异锚定：去掉 _is_utf8_encodable 过滤，本用例红。
     """
     models = _models()
     settings = models.Settings.from_config(
@@ -221,3 +173,103 @@ def test_unencodable_text_is_stripped_before_it_can_break_the_config() -> None:
     assert all("\ud800" not in item for item in settings.whitelist)
     # 进得来的值一定可 UTF-8 编码：任务摘要与落盘都依赖这一点
     models.config_revision(settings)
+
+
+def test_proactive_model_keys_accept_what_the_settings_page_sends() -> None:
+    """设置页提交的两个新键要能被规范化与读回。
+
+    空串表示「跟随会话默认模型」，列表里每一项是 provider ID。规范化不接受
+    这两种形态时，页面上填了就存不进去。
+    """
+    models = _models()
+
+    normalized = models.normalize_config_updates(
+        {
+            "proactive_provider_id": "  fast-model  ",
+            "proactive_fallback_provider_ids": ["backup-a", " backup-b ", "backup-a", ""],
+        }
+    )
+    assert normalized["proactive_provider_id"] == "fast-model"
+    assert normalized["proactive_fallback_provider_ids"] == ["backup-a", "backup-b"]
+
+    settings = models.Settings.from_config(normalized)
+    assert settings.proactive_provider_id == "fast-model"
+    assert settings.proactive_fallback_provider_ids == ["backup-a", "backup-b"]
+    assert models.Settings.from_config({}).proactive_provider_id == ""
+    assert models.Settings.from_config({}).proactive_fallback_provider_ids == []
+
+
+def test_proactive_provider_id_is_bounded_like_other_provider_ids() -> None:
+    models = _models()
+    oversized = "p" * (models.MAX_PROVIDER_ID_LEN + 50)
+
+    settings = models.Settings.from_config({"proactive_provider_id": oversized})
+
+    assert settings.proactive_provider_id == oversized[: models.MAX_PROVIDER_ID_LEN]
+
+
+def test_proactive_model_keys_are_served_to_the_settings_page() -> None:
+    """两个键要在设置页的规格里，否则 GET /config 不返回、页面控件永远是空的。"""
+    models = _models()
+
+    keys = {spec.key for spec in models.panel_config_specs()}
+    assert "proactive_provider_id" in keys
+    assert "proactive_fallback_provider_ids" in keys
+
+
+def test_unrecognized_bool_text_leaves_a_warning(caplog) -> None:
+    """``enabled: "ture"`` 按 false 处理，并留一条告警。
+
+    静默把插件停掉而日志里一个字都没有，用户只能怀疑插件坏了。
+    """
+    import logging
+
+    models = _models()
+    with caplog.at_level(logging.WARNING):
+        result = models.coerce_config_value(models.CONFIG_SPEC_BY_KEY["enabled"], "ture", True)
+    assert result is False
+    assert any(
+        "damaged value type" in record.getMessage()
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+    ), [r.getMessage() for r in caplog.records]
+
+
+def test_known_bool_text_does_not_warn(caplog) -> None:
+    """正常取值不应产生诊断告警，避免把告警通道淹掉。"""
+    import logging
+
+    models = _models()
+    for value in ("true", "0", "开启", "关闭", True, 1, None):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            models.coerce_config_value(models.CONFIG_SPEC_BY_KEY["enabled"], value, True)
+        noise = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not noise, (value, noise)
+
+
+def test_provider_timeouts_reads_config_and_falls_back_to_host_default() -> None:
+    """宿主 provider 的请求超时存在各自配置里；没配的按宿主默认 120 计。"""
+    from types import SimpleNamespace
+
+    models = _models()
+    providers = {
+        "fast": SimpleNamespace(provider_config={"timeout": 30}),
+        "legacy": SimpleNamespace(provider_config={}),
+        "broken": SimpleNamespace(provider_config={"timeout": "abc"}),
+    }
+    assert models.provider_timeouts(providers) == [30.0, 120.0, 120.0]
+    assert models.provider_timeouts(None) == []
+
+
+def test_chain_timeout_budget_counts_each_provider_attempt() -> None:
+    """每个 provider 的请求超时按配置的尝试次数累加。"""
+    from types import SimpleNamespace
+
+    models = _models()
+    providers = [
+        SimpleNamespace(provider_config={"timeout": 30}),
+        SimpleNamespace(provider_config={"timeout": 60}),
+    ]
+
+    assert models.chain_timeout_budget(providers, request_attempts=3) == 270

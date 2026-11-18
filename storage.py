@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import tempfile
 import time
 from collections import deque
@@ -29,60 +30,41 @@ from .models import (
     Settings,
     as_int,
     as_timestamp,
-    first_bindable_args,
     history_display_name,
     now_ts,
 )
-from .utils import is_full_umo, session_group_id, session_whitelisted, whitelist_storage_key
-
-
-def _config_to_dict(config_obj: Any) -> dict[str, Any]:
-    if config_obj is None:
-        return {}
-    if isinstance(config_obj, dict):
-        return dict(config_obj)
-    if hasattr(config_obj, "items"):
-        try:
-            return {str(key): value for key, value in config_obj.items()}
-        except Exception:
-            # 宿主配置对象的形状不受本插件约束，静默继续走下方 dict() 兜底。
-            pass
-    try:
-        return dict(config_obj)
-    except Exception:
-        return {}
+from .utils import (
+    is_full_umo,
+    redact_exc_text,
+    session_group_id,
+    session_whitelisted,
+    whitelist_storage_key,
+)
 
 
 def _update_config_obj(config_obj: Any, data: dict[str, Any]) -> bool:
-    if config_obj is None:
-        return True
     try:
-        if hasattr(config_obj, "clear"):
-            config_obj.clear()
-            config_obj.update(data)
-        else:
-            for key, value in data.items():
-                config_obj[key] = value
+        config_obj.clear()
+        config_obj.update(data)
         return True
     except Exception as exc:
-        logger.warning("[%s] failed to update AstrBot config object: %s", PLUGIN_ID, exc)
+        logger.warning(
+            "[%s] failed to update AstrBot config object: %s",
+            PLUGIN_ID,
+            redact_exc_text(exc),
+        )
         return False
 
 
 def _persist_config_obj(config_obj: Any, data: dict[str, Any]) -> bool:
-    if config_obj is None or not hasattr(config_obj, "save_config"):
+    save_config = getattr(config_obj, "save_config", None)
+    if save_config is None:
         return True
-    save_config = config_obj.save_config
-    picked = first_bindable_args(save_config, [((data,), {}), ((), {})])
-    if picked is None:
-        logger.warning("[%s] unsupported AstrBot config save signature", PLUGIN_ID)
-        return False
-    args, _kwargs = picked
     try:
-        save_config(*args, **_kwargs)
+        save_config(data)
         return True
     except Exception as exc:
-        logger.warning("[%s] failed to save AstrBot config: %s", PLUGIN_ID, exc)
+        logger.warning("[%s] failed to save AstrBot config: %s", PLUGIN_ID, redact_exc_text(exc))
     return False
 
 
@@ -92,8 +74,6 @@ def _json_file_matches(path: Path, expected: dict[str, Any]) -> bool:
     文件缺失/损坏/非对象一律返回 False，确保首启创建与旧形状迁移照常写。
     """
     try:
-        if not path.exists():
-            return False
         disk = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return False
@@ -133,6 +113,71 @@ def replace_with_retry(src: Path, dst: Path) -> None:
             time.sleep(_REPLACE_RETRY_DELAY_SEC)
 
 
+def _read_text_with_retry(path: Path) -> str:
+    """``Path.read_text`` 的瞬时占用重试包装。
+
+    Windows 上杀毒软件、并发读写的另一个进程、以及刚被 ``os.replace`` 换掉的
+    句柄都会让读瞬时失败（``PermissionError``）。这类失败**不代表
+    文件内容坏了**：不重试就落进"损坏→备份→空状态"分支，等于把一份完好的状态
+    直接清空。
+    """
+    for attempt in range(_REPLACE_RETRY_ATTEMPTS):
+        try:
+            return path.read_text(encoding="utf-8-sig")
+        except PermissionError:
+            # 只重试「被占用」这一类瞬时失败。网络盘的 EIO/超时属于真故障，
+            # 重试 5 次只会把启动阻塞放大 5 倍。
+            if attempt == _REPLACE_RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAY_SEC)
+    raise AssertionError("unreachable")
+
+
+def _backup_unmigrated_legacy_state(path: Path, keys: set[str]) -> None:
+    """Keep the source file before filtering ambiguous legacy session keys."""
+    backup = path.with_name(f"{path.name}.unmigrated-{time.time_ns()}")
+    try:
+        shutil.copy2(path, backup)
+    except OSError as exc:
+        _block_writes(path)
+        logger.error(
+            "[%s] could not preserve unmigrated legacy sessions %s; state saving is disabled: %s",
+            PLUGIN_ID,
+            sorted(keys),
+            redact_exc_text(exc),
+        )
+        return
+    logger.warning(
+        "[%s] ambiguous legacy session keys %s were preserved in %s before filtering",
+        PLUGIN_ID,
+        sorted(keys),
+        backup.name,
+    )
+
+
+# 本次运行中读取失败过的路径。必须是内存态而非文件锁：读只在启动发生一次，
+# 文件锁得靠「下次读成功」才撤，一旦某次瞬时读失败（占用/杀软扫描），锁会跨重启
+# 一直留着，插件从此再也不落盘。内存态下次启动自然清零，重试即恢复。
+_write_blocked: set[str] = set()
+
+
+def _block_writes(path: Path) -> None:
+    """读取失败后禁止本次运行写回该路径。
+
+    读失败时内存里是空状态，此刻写回去就是拿空白覆盖用户的配额、冷却与历史。
+    只留副本不够——副本自己也可能因为同一把文件锁而失败。
+    """
+    _write_blocked.add(str(path))
+    logger.error(
+        "[%s] state file could not be read; saving is disabled until the next restart",
+        PLUGIN_ID,
+    )
+
+
+def _unblock_writes(path: Path) -> None:
+    _write_blocked.discard(str(path))
+
+
 def fsync_dir(path: Path) -> None:
     """replace 之后补一次目录 fsync（尽力而为）。
 
@@ -168,6 +213,13 @@ def write_json_atomic(
     """
     tmp_path: Path | None = None
     try:
+        if str(path) in _write_blocked:
+            # 本次启动读这个文件失败过：内存里是空状态，写回去就是覆盖用户的配额
+            # 与历史。放弃本次写入，重启后重新读取即可恢复。
+            logger.warning(
+                "[%s] skipped writing %s: an earlier load failed this run", PLUGIN_ID, path.name
+            )
+            return False
         path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -188,9 +240,10 @@ def write_json_atomic(
         fsync_dir(path)
         return True
     except (OSError, UnicodeEncodeError, TypeError, ValueError) as exc:
-        logger.warning("[%s] failed to write %s: %s", PLUGIN_ID, path, exc)
+        logger.warning("[%s] failed to write %s: %s", PLUGIN_ID, path, redact_exc_text(exc))
     except Exception as exc:
-        logger.error("[%s] unexpected error writing %s: %s", PLUGIN_ID, path, exc, exc_info=True)
+        # 不开 exc_info：traceback 末尾是 str(exc) 原文，会绕过 redact_exc_text。
+        logger.error("[%s] unexpected error writing %s: %s", PLUGIN_ID, path, redact_exc_text(exc))
     finally:
         if tmp_path is not None and tmp_path.exists():
             try:
@@ -200,77 +253,103 @@ def write_json_atomic(
     return False
 
 
-def load_config_data(path: Path, config_obj: Any) -> dict[str, Any]:
-    """Load plugin config with the on-disk JSON taking precedence."""
-    data = _config_to_dict(config_obj)
-    if path.exists():
-        try:
-            disk_data = json.loads(path.read_text(encoding="utf-8-sig"))
-            if isinstance(disk_data, dict):
-                data.update(disk_data)
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
-            logger.warning("[%s] failed to load config file: %s", PLUGIN_ID, exc)
-        except Exception as exc:
-            logger.error("[%s] unexpected error loading config: %s", PLUGIN_ID, exc, exc_info=True)
-    return data
+def load_config_data(path: Path, config_obj: Any) -> tuple[dict[str, Any], bool]:
+    """Load plugin config and report whether startup normalization may write it back."""
+    data = dict(config_obj)
+    try:
+        disk_data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return data, True
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # 配置损坏会被默认值覆盖：白名单、延迟、判断模型全回到出厂值。留下
+        # 备份，用户至少能把白名单抄回来。
+        logger.warning("[%s] failed to load config file: %s", PLUGIN_ID, redact_exc_text(exc))
+        _backup_file(path)
+    except OSError as exc:
+        logger.warning("[%s] failed to read config file: %s", PLUGIN_ID, redact_exc_text(exc))
+        return data, False
+    except Exception as exc:
+        logger.error("[%s] unexpected error loading config: %s", PLUGIN_ID, redact_exc_text(exc))
+        return data, False
+    else:
+        if isinstance(disk_data, dict):
+            data.update(disk_data)
+        else:
+            logger.warning("[%s] config file is not an object; backing it up", PLUGIN_ID)
+            _backup_file(path)
+    return data, True
 
 
-def _backup_state_file(path: Path) -> None:
-    """Move a damaged/incompatible state file aside so the cause is recoverable."""
-    if not path.exists():
-        # 版本不符分支已把文件移走，调用方随后的解析失败会再进来一次；第二次
-        # replace 必抛 FileNotFoundError，落进下面的 OSError 分支打出一条
-        # "损坏文件将被覆盖"的假告警，把真实的备份成功记录成失败。
-        return
+def _backup_file(path: Path) -> None:
+    """Move a damaged file aside so the cause is recoverable."""
     try:
         backup = path.with_name(f"{path.name}.corrupt-{time.time_ns()}")
         replace_with_retry(path, backup)
-        logger.error("[%s] state file backed up to %s", PLUGIN_ID, backup.name)
+        logger.error("[%s] file backed up to %s", PLUGIN_ID, backup.name)
+    except FileNotFoundError:
+        # 版本不符分支已把文件移走，调用方随后解析失败时无需重复告警。
+        return
     except OSError:
-        # 备份失败时不阻断加载，但必须说清后果：损坏文件没被移走，后续任何一次
-        # 状态写入都会把它覆盖掉，用户再无从查证原始数据。
+        # 备份失败时不阻断加载，但必须说清后果：损坏文件没被移走，后续写入可能
+        # 会把它覆盖掉，用户再无从查证原始数据。
         logger.error(
-            "[%s] failed to back up state file %s; the damaged file will be overwritten "
-            "by the next state save",
+            "[%s] failed to back up file %s; the damaged file may be overwritten by the next write",
             PLUGIN_ID,
             path,
         )
 
 
 def _read_state_document(path: Path) -> dict[Any, Any]:
-    if not path.exists():
-        return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        data = json.loads(_read_text_with_retry(path))
         if not isinstance(data, dict):
             # 解析成功但不是对象（顶层数组/null/裸标量）同样是被外部改坏的文件：
             # 不备份不记录的话，下一次状态落盘会静默覆盖它，用户无从查证。
             # 空对象 {} 是合法空状态，必须继续走下方解析而不是备份。
             raise json.JSONDecodeError("state document is not a JSON object", str(path), 0)
         file_version = data.get("version")
-        if file_version is not None and file_version != STATE_VERSION:
+        # 归一成字符串再比：手改/迁移脚本会写出 "4"，严格 != 把同一版本判成不符，
+        # 日志冒出 file=4 expected=4 的假矛盾，还平白备份走原文件。
+        if file_version is not None and str(file_version).strip() != str(STATE_VERSION):
             logger.error(
-                "[%s] state version mismatch: file=%s expected=%s; backing up",
+                "[%s] state version mismatch: file=%r(%s) expected=%r(%s); backing up",
                 PLUGIN_ID,
                 file_version,
+                type(file_version).__name__,
                 STATE_VERSION,
+                type(STATE_VERSION).__name__,
             )
-            _backup_state_file(path)
+            _backup_file(path)
+        _unblock_writes(path)
         raw_sessions = data.get("sessions", {})
         if not isinstance(raw_sessions, dict):
             # 顶层是对象但 sessions 不是对象，同样是被外部改坏的文件：不备份不
             # 记录的话，load_sessions 把它当空表，而 save_storage 发现 payload
             # 不匹配就 os.replace 上去，原始内容被静默覆盖、用户无从查证。
-            # 与顶层非对象走同一条备份+ERROR 路径（契约 §8「不静默丢数据」）。
+            # 与顶层非对象走同一条备份+ERROR 路径（不静默丢数据）。
             # 键缺失时 get 返回 {}，那是合法空状态，不走到这里。
             raise json.JSONDecodeError("state sessions is not a JSON object", str(path), 0)
         return raw_sessions
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
-        logger.error("[%s] failed to load state (backing up): %s", PLUGIN_ID, exc)
-        _backup_state_file(path)
+    except FileNotFoundError:
+        # 明确的文件不存在与 stat() 的其它 OSError 不同：Path.exists() 会把后者
+        # 也折成 False，空状态随后落盘就会覆盖原状态。
+        _unblock_writes(path)
+        return {}
+    except OSError as exc:
+        # 读不到 ≠ 内容坏了。这条分支绝不能 move 原文件：换掉一份完好的状态
+        # 等于把用户的配额、冷却与历史一次清空（Windows 上杀毒/并发读会触发）。
+        logger.error("[%s] state file could not be read: %s", PLUGIN_ID, redact_exc_text(exc))
+        _block_writes(path)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        logger.error("[%s] failed to load state (backing up): %s", PLUGIN_ID, redact_exc_text(exc))
+        _backup_file(path)
+        # 原文件已经移到 .corrupt-*，磁盘上不再有会被空状态覆盖的内容。
+        _unblock_writes(path)
     except Exception as exc:
-        logger.error("[%s] unexpected error loading state: %s", PLUGIN_ID, exc, exc_info=True)
-        _backup_state_file(path)
+        # 不开 exc_info：traceback 末尾是 str(exc) 原文，会把刚脱掉的内容带回同一条
+        # 日志（口径同 scheduler.py 的 delayed check 分支）。
+        logger.error("[%s] unexpected error loading state: %s", PLUGIN_ID, redact_exc_text(exc))
+        _backup_file(path)
     return {}
 
 
@@ -294,7 +373,6 @@ def _load_recent_records(
                 role=role,
                 name=history_display_name(role, item.get("name")),
                 text=text,
-                sender_id=str(item.get("sender_id") or ""),
                 at=as_timestamp(item.get("at"), now=load_now),
             )
         )
@@ -318,6 +396,7 @@ def _load_session_record(raw: dict[Any, Any], recent_limit: int, load_now: float
 def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[str, SessionState]:
     """从 state.json 载入会话状态，只保留仍在白名单内的会话。
 
+    顺序固定为「解析全部条目 → 迁移 legacy 裸群号键 → 白名单过滤 → 补空状态」。
     白名单内但文件中缺失的会话补空状态。``recent`` 用 ``maxlen=recent_limit``
     的 deque 承载，配置调小后自动裁剪。
 
@@ -337,7 +416,7 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
 
     for raw_umo, raw in raw_sessions.items():
         umo = str(raw_umo or "").strip()
-        if not umo or not session_whitelisted(umo, whitelist):
+        if not umo:
             continue
         if not isinstance(raw, dict):
             # docstring 第 2 条承诺「单个会话条目畸形，记 warning 后跳过该条」。
@@ -354,11 +433,29 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
             key = whitelist_storage_key(umo)
             sessions[key] = _load_session_record(raw, recent_limit, load_now)
         except Exception as exc:
-            logger.warning("[%s] skipped malformed session state %s: %s", PLUGIN_ID, umo, exc)
+            logger.warning(
+                "[%s] skipped malformed session state %s: %s",
+                PLUGIN_ID,
+                umo,
+                redact_exc_text(exc),
+            )
 
-    # 迁移必须先于补空状态：反过来时目标键已被塞进空壳「占位」，
+    # 迁移必须先于白名单过滤：裸群号不是任何白名单写法，先过滤就把它丢掉，迁移
+    # 再也看不到它，升级用户的当日配额与历史当场归零（version 匹配不备份，下一次
+    # 落盘即永久覆盖）。
+    # 迁移也必须先于补空状态：反过来时目标键已被塞进空壳「占位」，
     # 迁移判据会把空壳当成"目标已有自己的状态"而丢弃 legacy 数据。
-    _migrate_legacy_group_keys(sessions, whitelist)
+    unmigrated_keys = _migrate_legacy_group_keys(sessions, whitelist)
+    filtered_legacy_keys = {
+        key for key in unmigrated_keys if not session_whitelisted(key, whitelist)
+    }
+    # 白名单过滤会删掉这些歧义键，先复制原文件以免下一次落盘永久覆盖状态。
+    if filtered_legacy_keys:
+        _backup_unmigrated_legacy_state(path, filtered_legacy_keys)
+
+    sessions = {
+        key: state for key, state in sessions.items() if session_whitelisted(key, whitelist)
+    }
 
     for umo in whitelist:
         key = str(umo).strip()
@@ -369,7 +466,7 @@ def load_sessions(path: Path, whitelist: set[str], recent_limit: int) -> dict[st
     return sessions
 
 
-def _migrate_legacy_group_keys(sessions: dict[str, SessionState], whitelist: set[str]) -> None:
+def _migrate_legacy_group_keys(sessions: dict[str, SessionState], whitelist: set[str]) -> set[str]:
     """把历史裸群号键的状态并入唯一匹配的完整 UMO。
 
     迁移必须一次性在此完成：热路径迁移在多平台同群号时由首个访问者继承整份
@@ -383,9 +480,19 @@ def _migrate_legacy_group_keys(sessions: dict[str, SessionState], whitelist: set
         candidate = str(key).strip()
         if is_full_umo(candidate):
             candidates.add(candidate)
+    unmigrated: set[str] = set()
     for legacy_key in [key for key in sessions if not is_full_umo(key)]:
         matched = {key for key in candidates if session_group_id(key) == legacy_key}
         if len(matched) != 1:
+            unmigrated.add(legacy_key)
+            # 歧义时不猜平台：白名单里没有完整 UMO 时，此刻不存在可安全选择的目标。
+            logger.warning(
+                "[%s] legacy session key %s cannot be migrated: %d matching full UMOs; refusing "
+                "to guess the platform",
+                PLUGIN_ID,
+                legacy_key,
+                len(matched),
+            )
             continue
         target = next(iter(matched))
         if target in sessions:
@@ -393,6 +500,7 @@ def _migrate_legacy_group_keys(sessions: dict[str, SessionState], whitelist: set
             del sessions[legacy_key]
             continue
         sessions[target] = sessions.pop(legacy_key)
+    return unmigrated
 
 
 def build_sessions_payload(
@@ -417,7 +525,6 @@ def build_sessions_payload(
                     "role": item.role,
                     "name": item.name,
                     "text": item.text,
-                    "sender_id": item.sender_id,
                     "at": item.at,
                 }
                 for item in list(state.recent)[-recent_limit:]

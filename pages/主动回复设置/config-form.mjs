@@ -1,5 +1,5 @@
 // 空串在此即非法：validateField 凭它拦下保存，序列化侧因此不必再兜底。
-// integer 由控件 data-integer 标注，与后端 kind=="int" 一一对应（契约测试钉）：
+// integer 由控件 data-integer 标注，与后端 kind=="int" 一一对应：
 // 后端 _strict_int 拒绝一切非 int、_strict_float 接受任意有限小数，step 属性
 // 只是滑杆增量（message_delay_sec step=5 但 47 合法），不能拿来当整除判据。
 export function numberFieldError(raw, min, max, integer = false) {
@@ -81,7 +81,7 @@ export function summarizeWhitelist(text, parsedItems = null) {
   return base;
 }
 const PROMPT_PREVIEW_VALUES = {
-  session: "aiocqhttp:GroupMessage:123456789",
+  session: "aiocqhttp:GroupMessage:demo_group_001",
   trigger: "message_delay",
   bot_aliases: "阿绪, 咕咕",
   latest_message: "这个问题有没有更稳一点的做法？",

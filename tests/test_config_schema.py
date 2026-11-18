@@ -90,6 +90,40 @@ def test_set_normalization_deduplicates_before_capacity() -> None:
     assert first == set(sorted(unique)[:limit])
 
 
+def test_api_mode_set_capacity_applies_after_canonical_sort() -> None:
+    """api 模式同样「先去重排序，再截容量」：提交排列不得改变保留值。
+
+    缺陷形态：``normalize_string_list`` 在规范化前就 ``raw = raw[:max_items]``，
+    于是 1000 个 ``z-*`` 打头就整批占满容量，排序后本应保住的 ``a-*`` 全被丢弃。
+    """
+    models = _models()
+    spec = models.CONFIG_SPEC_BY_KEY["whitelist_sessions"]
+    limit = int(spec.max_items)
+    later = [f"z-{index:04d}" for index in range(limit)]
+    earlier = [f"a-{index:04d}" for index in range(limit)]
+    assert models.normalize_string_list(spec, later + earlier, mode="api") == earlier
+    assert models.normalize_string_list(spec, earlier + later, mode="api") == earlier
+
+
+def test_api_mode_validates_items_beyond_capacity() -> None:
+    """容量之外的尾部条目仍要过类型与长度校验，不得因截断被跳过。
+
+    缺陷形态：前置截断让 ``[1000 条合法项, None]`` 整体成功保存——尾部非法项
+    从未被检查，用户提交里的 None/超长/非法字符被静默吞掉。
+    """
+    models = _models()
+    spec = models.CONFIG_SPEC_BY_KEY["whitelist_sessions"]
+    legal = [f"s-{index:04d}" for index in range(int(spec.max_items))]
+    cases = (
+        ([*legal, None], "条目必须是字符串"),
+        ([*legal, "q" * (models.MAX_STRING_LIST_ITEM_LEN + 1)], "条目过长"),
+        ([*legal, 'bad"quote'], "条目含非法字符"),
+    )
+    for submitted, message in cases:
+        with pytest.raises(ValueError, match=message):
+            models.normalize_string_list(spec, submitted, mode="api")
+
+
 def test_api_mode_rejects_non_string_list_items() -> None:
     """api 模式拒收非字符串条目：str(None) 会变成活条目 "None"。
 
@@ -232,12 +266,7 @@ def test_schema_slider_bounds_match_python_clamps() -> None:
 
 
 # ============================================================================
-# CONFIG_SPECS 规格表必须能完整表达 _conf_schema.json
-#
-# 这是替换四个消费者（Settings 字段/from_config/to_config_dict/
-# CONFIG_SCHEMA_KEYS/_parse_config_updates）的前提证明：若表表达不了现有
-# schema，重构就会退化成「表 + 一堆例外」，那不如不做。故此处逐字段双向比对，
-# 不留「大致一致」的余地。
+# CONFIG_SPECS 规格表必须能完整表达 _conf_schema.json 的机器可校验部分
 # ============================================================================
 
 
@@ -253,11 +282,10 @@ def test_spec_table_covers_schema_keys_in_order() -> None:
 
 
 def test_spec_table_expresses_every_schema_field() -> None:
-    """schema 的每个机器可校验字段都必须能由规格表复现。
+    """schema 的机器可校验字段必须能由规格表复现。
 
-    覆盖 type / default / slider(min,max,step) / options / _special /
-    editor_mode / editor_language。文案字段（description/hint）有意不进表，
-    因此不比对，它们是纯 UI 拷贝，进表只会变成 schema 的第二份副本。
+    覆盖 type / default / slider(min,max) / options。文案字段（description/hint）
+    与 slider 的 step 是纯 UI 拷贝，不进表。
     """
     models = _models()
     schema = _schema()
@@ -266,8 +294,9 @@ def test_spec_table_expresses_every_schema_field() -> None:
     for spec in models.CONFIG_SPECS:
         entry = schema[spec.key]
 
-        if entry["type"] != spec.schema_type:
-            drift.append(f"{spec.key}: type schema={entry['type']} spec={spec.schema_type}")
+        want_type = "string" if spec.kind in {"enum", "str"} else spec.kind
+        if entry["type"] != want_type:
+            drift.append(f"{spec.key}: type schema={entry['type']} spec={want_type}")
 
         # 默认值：list 型比较排序后的字符串，避免顺序噪音
         want, got = entry.get("default"), spec.default
@@ -282,7 +311,6 @@ def test_spec_table_expresses_every_schema_field() -> None:
             for name, spec_value in (
                 ("min", spec.minimum),
                 ("max", spec.maximum),
-                ("step", spec.step),
             ):
                 if spec_value is None or float(slider[name]) != float(spec_value):
                     drift.append(
@@ -295,21 +323,16 @@ def test_spec_table_expresses_every_schema_field() -> None:
 
         if tuple(entry.get("options", ())) != spec.options:
             drift.append(f"{spec.key}: options schema={entry.get('options')} spec={spec.options}")
-        if str(entry.get("_special", "")) != spec.special:
-            drift.append(f"{spec.key}: _special schema={entry.get('_special')} spec={spec.special}")
-        if bool(entry.get("editor_mode", False)) != spec.editor_mode:
-            drift.append(f"{spec.key}: editor_mode 漂移")
-        if str(entry.get("editor_language", "")) != spec.editor_language:
-            drift.append(f"{spec.key}: editor_language 漂移")
 
     assert not drift, "规格表无法表达 schema：\n" + "\n".join(drift)
 
 
 def test_every_schema_ui_field_is_known_to_the_spec_table() -> None:
-    """schema 里不得出现规格表不认识的字段，否则表驱动会静默丢掉它。
+    """schema 里出现的字段必须都是已知字段，且取值与规格表一致。
 
-    这条是防「未来给某个键加了新 UI 属性，表没跟上」：新属性要么进表，
-    要么显式记入已知文案字段白名单，不允许无声漂移。
+    只校验字段名会让 ``_special`` / ``editor_mode`` 这类纯 UI 声明与规格表脱钩：
+    某键在 schema 声明了 select_provider 而规格表漏写，Web API 与前端控件就按
+    两套规则走。
     """
     known = {
         "type",
@@ -322,39 +345,49 @@ def test_every_schema_ui_field_is_known_to_the_spec_table() -> None:
         "editor_mode",
         "editor_language",
     }
+    models = _models()
     unknown: list[str] = []
+    drift: list[str] = []
     for key, entry in _schema().items():
         for field in entry:
             if field not in known:
                 unknown.append(f"{key}.{field}")
-    assert not unknown, f"schema 出现规格表未覆盖的字段: {sorted(unknown)}"
+        spec = models.CONFIG_SPEC_BY_KEY[key]
+        if entry.get("_special", "") != spec.special:
+            drift.append(f"{key}: _special schema={entry.get('_special')!r} spec={spec.special!r}")
+        if bool(entry.get("editor_mode", False)) != spec.editor_mode:
+            drift.append(
+                f"{key}: editor_mode schema={entry.get('editor_mode')!r} spec={spec.editor_mode!r}"
+            )
+        if str(entry.get("editor_language", "")) != spec.editor_language:
+            drift.append(
+                f"{key}: editor_language schema={entry.get('editor_language')!r} "
+                f"spec={spec.editor_language!r}"
+            )
+    assert not unknown, f"schema 出现未知字段: {sorted(unknown)}"
+    assert not drift, "schema 的 UI 字段与规格表漂移：\n" + "\n".join(drift)
 
 
-def test_enabled_private_sessions_defaults_on_and_dual_panel() -> None:
-    """私聊主动回复默认开；自定义页与 Dashboard 共用同一键。"""
+@pytest.mark.parametrize(
+    ("key", "expected_default"),
+    [
+        ("enabled_private_sessions", True),
+        ("abandon_stale_on_new_message", False),
+    ],
+)
+def test_bool_config_defaults_and_dual_panel(key: str, expected_default: bool) -> None:
+    """bool 键的 Python 默认、规格表声明与 schema 面板声明必须一致。
+
+    自定义页与 Dashboard 共用同一键；默认值漂移会让面板显示与实际生效相反。
+    """
     models = _models()
     settings = models.Settings.from_config({})
-    assert getattr(settings, "enabled_private_sessions", None) is True
-    spec = models.CONFIG_SPEC_BY_KEY.get("enabled_private_sessions")
+    assert getattr(settings, key, None) is expected_default
+    spec = models.CONFIG_SPEC_BY_KEY.get(key)
     assert spec is not None
     assert spec.kind == "bool"
-    assert spec.default is True
+    assert spec.default is expected_default
     assert spec.surfaces == frozenset({"host", "panel"})
-    schema = _schema()
-    assert schema["enabled_private_sessions"]["type"] == "bool"
-    assert schema["enabled_private_sessions"]["default"] is True
-
-
-def test_abandon_stale_on_new_message_defaults_off_and_dual_panel() -> None:
-    """新消息放弃旧任务默认关；自定义页与 Dashboard 共用同一键。"""
-    models = _models()
-    settings = models.Settings.from_config({})
-    assert getattr(settings, "abandon_stale_on_new_message", None) is False
-    spec = models.CONFIG_SPEC_BY_KEY.get("abandon_stale_on_new_message")
-    assert spec is not None
-    assert spec.kind == "bool"
-    assert spec.default is False
-    assert spec.surfaces == frozenset({"host", "panel"})
-    schema = _schema()
-    assert schema["abandon_stale_on_new_message"]["type"] == "bool"
-    assert schema["abandon_stale_on_new_message"]["default"] is False
+    entry = _schema()[key]
+    assert entry["type"] == "bool"
+    assert entry["default"] is expected_default

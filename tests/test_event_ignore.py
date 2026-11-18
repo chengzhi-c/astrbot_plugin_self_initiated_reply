@@ -112,19 +112,7 @@ def test_cq_at_requires_identifier_boundary() -> None:
 
 
 def test_at_component_alone_marks_a_direct_call() -> None:
-    """At **组件**（而不是文本）单独就足以判定点名。
-
-    缺陷形态：OneBotv11 类适配器的 @ 到达时是 `At` 组件，不一定会同时
-    出现在 `message_str` 里。`utils.is_explicit_direct_call` 的组件分支
-    （`event_components` → `isinstance(comp, At)`）是唯一覆盖它的路径。
-
-    这条分支在整个套件里从未被驱动：`FakeEvent` 没有 `get_messages()`
-    也没有 `message_obj`，`event_components` 恒返回 `[]`。变异证据：把分支条件
-    改成 `False and isinstance(comp, At)` 后整个套件仍然全绿——即破坏它不会被发现，
-    而用户可见的后果是机器人开始回复那些 @ 它的消息。
-
-    变异锚定：删掉组件分支本用例红。
-    """
+    """适配器可能只提供 At 组件，文本未出现 @ 时仍需识别点名。"""
     from astrbot.api import message_components as components
 
     events = _events_module()
@@ -195,12 +183,7 @@ def _spy_scheduler(plugin) -> list[str]:
 
 
 def test_image_capture_failure_does_not_break_the_scheduling_chain(tmp_path, caplog) -> None:
-    """图片抓取抛异常不得阻断消息调度链。
-
-    ``handle_incoming_message`` 把 ``_capture_images`` 包在 try/except 里，失败
-    只记 WARNING，之后仍要走事件回收与延迟检查。该不变量此前只由代码结构成立、
-    无用例锚定，重构掉 try/except 或把调度挪进 try 之前都不会有测试变红。
-    """
+    """图片抓取失败后仍执行事件清理和延迟调度，避免整条消息链中断。"""
     from .host_stubs import capture_logs, messages_at_least, with_plugin
 
     async def scenario(plugin, main):

@@ -150,8 +150,6 @@ async def test_decision_result_log_stays_at_info(tmp_path: Path, caplog: object)
     例外。这个例外必须留痕：降到 DEBUG 会让「机器人为什么不接话」这个最高频问题
     失去默认可见性——而它恰好是用户最常来问的那个。契约原文已写明理由，本条测试
     是它的执行侧锚点。
-
-    变异锚定：把 session_pipeline 的这条 logger.info 换成 debug，本用例红。
     """
     install_astrbot_stubs()
     pipeline_mod = load_modules(PACKAGE_NAME, "session_pipeline", "models", "session_gate")[0]

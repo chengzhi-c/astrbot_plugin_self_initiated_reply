@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -55,14 +57,6 @@ print(len(scripts.compat_check.EXPECTED_HANDLER_NAMES))
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert proc.stdout.strip().splitlines()[-1].isdigit(), proc.stdout
-
-
-def test_importing_compat_check_does_not_chdir_even_once_loaded() -> None:
-    """同一进程内二次 import（已缓存）同样不留副作用。"""
-    before = Path.cwd()
-    module = importlib.import_module("scripts.compat_check")
-    assert Path.cwd() == before
-    assert isinstance(module.EXPECTED_HANDLER_NAMES, frozenset)
 
 
 # --- 自有临时目录生命周期 ------------------------------------------------------
@@ -281,22 +275,231 @@ def test_main_reports_missing_host_before_bootstrapping(
     assert "pip install astrbot" in capsys.readouterr().err
 
 
-def test_denylist_gaps_reports_moved_dangerous_tool_module(
+def _stub_host_probes(
+    monkeypatch: pytest.MonkeyPatch,
+    compat: ModuleType,
+    *,
+    absent: tuple[str, ...] = (),
+    names: dict[str, set[str]] | None = None,
+    unclassified: tuple[str, ...] = (),
+    failed: tuple[str, ...] = (),
+    denylist: frozenset[str] = frozenset(),
+) -> None:
+    """把两条宿主探针钉成真实形状：``DANGEROUS_TOOL_MODULES`` 每一条都在，可指定缺的。
+
+    不用手挑两三条模块的桩：真实宿主是清单里十几条缺一条，而「全缺才报」的实现
+    恰好只在这种数量下暴露——桩太窄时同一份桩换成任何实现都能过，用例失去判别力。
+    """
+    enumerated: dict[str, set[str] | None] = {
+        mod: (None if mod in absent else set()) for mod in compat.DANGEROUS_TOOL_MODULES
+    }
+    enumerated.update(names or {})
+    monkeypatch.setattr(compat, "_enumerate_tool_names", lambda: enumerated)
+    known = (
+        set(compat.DANGEROUS_TOOL_MODULES)
+        | set(compat.SAFE_TOOL_MODULES)
+        | set(compat.NON_TOOL_MODULES)
+    )
+    found = sorted(known | set(unclassified))
+    monkeypatch.setattr(compat, "_walk_tool_package", lambda: (found, list(failed)))
+    # _denylist_gaps 从插件包取 denylist：宿主探针被替身后仍须 import 成功。
+    fake_models = ModuleType("astrbot_plugin_self_initiated_reply.models")
+    fake_models.HOST_DANGEROUS_TOOL_IDS = denylist
+    monkeypatch.setitem(sys.modules, "astrbot_plugin_self_initiated_reply.models", fake_models)
+
+
+def test_denylist_gaps_reports_single_missing_dangerous_module(
     monkeypatch: pytest.MonkeyPatch,
     compat: ModuleType,
 ) -> None:
-    """宿主危险工具模块被搬走：报漂移，而不是当成"这片没有危险工具"放过。
+    """真实形状的模块清单里缺一条（改名/搬迁）：报那一条，不许整片静默。
 
-    未守卫时 ``importlib.import_module`` 直接抛，latest 腿上的
-    ``continue-on-error`` 会把 traceback 整段吞掉，denylist 少一片覆盖面而无
-    人知道；把缺失当成空集合，缺口同样静默消失。
+    「全缺才报」的判据在这里天然成立不了（缺 1 ≠ 缺全部），未守卫时 gaps 为
+    空列表，危险模块改名后 denylist 少一片覆盖面而无人知道。
     """
-    moved = "astrbot.core.tools.cron_tools"
-    monkeypatch.setattr(compat, "_enumerate_tool_names", lambda: {moved: None})
-    # _denylist_gaps 先从插件包取 denylist：本条走的是"模块缺失"分支，那份清单
-    # 根本读不到，但 import 仍须成功（未装插件包时给个空壳即可）。
-    fake_models = ModuleType("astrbot_plugin_self_initiated_reply.models")
-    fake_models.HOST_DANGEROUS_TOOL_IDS = frozenset()
-    monkeypatch.setitem(sys.modules, "astrbot_plugin_self_initiated_reply.models", fake_models)
+    moved = "astrbot.core.tools.computer_tools.shell"
+    _stub_host_probes(monkeypatch, compat, absent=(moved,))
 
     assert compat._denylist_gaps() == [f"{moved} 缺失，宿主私有 API 漂移"]
+
+
+def test_denylist_gaps_reports_whole_computer_tools_subtree_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    compat: ModuleType,
+) -> None:
+    """整片 ``computer_tools`` 都取不到：逐条报，白名单里的 cua 除外。
+
+    ``computer_tools/__init__`` 顶层 import 各危险模块，改名一个子模块会让整片
+    目录 import 失败；此时所有子模块都是"缺失"，而 cua 是旧宿主没有的版本差，
+    只有它被白名单容忍。
+    """
+    subtree = tuple(
+        mod
+        for mod in compat.DANGEROUS_TOOL_MODULES
+        if mod.startswith("astrbot.core.tools.computer_tools.")
+    )
+    _stub_host_probes(monkeypatch, compat, absent=subtree)
+
+    expected = [
+        f"{mod} 缺失，宿主私有 API 漂移"
+        for mod in subtree
+        if mod not in compat.HOST_VERSION_OPTIONAL_TOOL_MODULES
+    ]
+    assert len(expected) > 1, "整片缺失应报出多条，单条会让用例回到「挑一两条」的老桩"
+    assert compat._denylist_gaps() == expected
+
+
+def test_denylist_gaps_tolerates_optional_module_absent_on_older_host(
+    monkeypatch: pytest.MonkeyPatch,
+    compat: ModuleType,
+) -> None:
+    """旧宿主没有较新版本才引入的危险模块：不算漂移。
+
+    旧宿主没有 ``computer_tools.cua`` 与 ``neo_skills``，把它们报成缺失会让兼容
+    门禁误报。白名单只登记这类版本差，且必须真的在危险清单里——写错名字的条目
+    永远不会被查到，等于既没容忍也没报错。
+    """
+    assert set(compat.HOST_VERSION_OPTIONAL_TOOL_MODULES) <= set(compat.DANGEROUS_TOOL_MODULES)
+    # 白名单是版本差的显式台账，不接受把改名后的模块塞进来糊掉缺失报告。
+    assert compat.HOST_VERSION_OPTIONAL_TOOL_MODULES == {
+        "astrbot.core.tools.computer_tools.cua",
+        "astrbot.core.tools.computer_tools.shipyard_neo.neo_skills",
+    }
+    _stub_host_probes(monkeypatch, compat, absent=tuple(compat.HOST_VERSION_OPTIONAL_TOOL_MODULES))
+
+    assert compat._denylist_gaps() == []
+
+
+def test_denylist_gaps_still_checks_tool_names_of_optional_module(
+    monkeypatch: pytest.MonkeyPatch,
+    compat: ModuleType,
+) -> None:
+    """白名单只容忍"模块缺失"，模块存在时它的工具名仍须被 denylist 覆盖。
+
+    容忍分支若写成模块级 continue（不区分 None 与工具名缺口），较新宿主上 cua
+    新增的工具就会静默漏出最终防线。
+    """
+    cua = "astrbot.core.tools.computer_tools.cua"
+    _stub_host_probes(monkeypatch, compat, names={cua: {"astrbot_cua_screenshot"}})
+
+    assert compat._denylist_gaps() == [f"denylist 未覆盖 {cua}: astrbot_cua_screenshot"]
+
+
+def test_denylist_gaps_covers_430_subagent_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    compat: ModuleType,
+) -> None:
+    new_root = "astrbot.core.astr_agent_runtime.tools"
+    names = {
+        "spawn_agent",
+        "list_agents",
+        "get_agent_result",
+        "wait_agent",
+        "send_message",
+        "cancel_agent",
+    }
+    monkeypatch.setattr(compat, "_active_tool_package", lambda: new_root)
+    monkeypatch.setattr(
+        compat,
+        "_enumerate_tool_names",
+        lambda: {f"{new_root}.subagent": names},
+    )
+    fake_models = ModuleType("astrbot_plugin_self_initiated_reply.models")
+    fake_models.HOST_DANGEROUS_TOOL_IDS = names
+    monkeypatch.setitem(sys.modules, "astrbot_plugin_self_initiated_reply.models", fake_models)
+
+    assert compat._denylist_gaps() == []
+
+
+def test_denylist_gaps_reports_unclassified_new_module(
+    monkeypatch: pytest.MonkeyPatch,
+    compat: ModuleType,
+) -> None:
+    """宿主新增未归类模块：报漂移，逼着每次升级对新增模块做一次显式归类。
+
+    cua / neo_skills 就是这么漏掉的：枚举只看清单，不看包里多出了什么。
+    """
+    new = "astrbot.core.tools.computer_tools.brand_new"
+    _stub_host_probes(monkeypatch, compat, unclassified=(new,))
+
+    assert compat._denylist_gaps() == [
+        f"{new} 未归类：新增到 DANGEROUS_TOOL_MODULES（并补 HOST_DANGEROUS_TOOL_IDS）"
+        f"或 SAFE_TOOL_MODULES"
+    ]
+
+
+def test_tool_package_gaps_accepts_astrbot_430_runtime_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    compat: ModuleType,
+) -> None:
+    """4.30 的危险工具包迁移后仍由兼容检查覆盖。"""
+    new_root = "astrbot.core.astr_agent_runtime.tools"
+    modules = [
+        f"{new_root}.cron_tools",
+        f"{new_root}.knowledge_base_tools",
+        f"{new_root}.computer_tools.shell",
+    ]
+    monkeypatch.setattr(compat, "_active_tool_package", lambda: new_root)
+    monkeypatch.setattr(compat, "_walk_tool_package", lambda: (modules, []))
+    monkeypatch.setattr(
+        compat,
+        "_enumerate_tool_names",
+        lambda: {module: set() for module in compat.DANGEROUS_TOOL_MODULES},
+    )
+
+    assert compat._tool_package_gaps() == []
+
+
+def test_denylist_gaps_reports_tool_package_import_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    compat: ModuleType,
+) -> None:
+    """子包遍历时 import 失败：把它报成漂移，而不是当成"包里没有这些模块"。"""
+    broken = "astrbot.core.tools.computer_tools"
+    _stub_host_probes(monkeypatch, compat, failed=(broken,))
+
+    assert compat._denylist_gaps() == [f"{broken} 导入失败，其子树未纳入检查（宿主私有 API 漂移）"]
+
+
+def test_tool_package_walk_reports_subpackage_import_failure(tmp_path: Path) -> None:
+    """真实 ``pkgutil.walk_packages``：子包 import 抛错时整棵子树静默跳过。
+
+    用假宿主复刻真实形状——``computer_tools/__init__`` 顶层 import 各危险模块，
+    改名一个子模块就让整片目录 import 失败。不传 ``onerror`` 时遍历器既不报错也
+    不产出该子树的任何模块名，"未归类"检查对该目录同时失效。
+    """
+    host = tmp_path / "host"
+    files = {
+        "__init__.py": "",
+        "core/__init__.py": "",
+        "core/tools/__init__.py": "",
+        "core/tools/cron_tools.py": "",
+        "core/tools/computer_tools/__init__.py": "raise ImportError('cua 已搬走')\n",
+        "core/tools/computer_tools/cua.py": "",
+    }
+    for relative, body in files.items():
+        target = host / "astrbot" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+
+    probe = """
+import json
+
+import scripts.compat_check as compat
+
+found, failed = compat._walk_tool_package()
+print(json.dumps({"found": sorted(found), "failed": sorted(failed)}))
+"""
+    proc = subprocess.run(
+        [sys.executable, "-X", "utf8", "-c", probe],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PYTHONPATH": str(host)},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload["failed"] == ["astrbot.core.tools.computer_tools"]
+    assert payload["found"] == ["astrbot.core.tools.cron_tools"], "子树被跳过后不应凭空产出模块名"

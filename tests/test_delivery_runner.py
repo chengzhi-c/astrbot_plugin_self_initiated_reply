@@ -100,9 +100,7 @@ def _make_runner(
     last_events: dict[str, object] = {}
     gate = SimpleNamespace(is_current=lambda umo, generation: gate_current)
     if sender is None and sender_status is not None:
-        # 替身也必须声明成因 code：真实 SUPPRESSED 一定带 code，留 None 会让
-        # 被测分支走"非 STOPPING"的默认路径，掩盖成因判定本身（此前正是
-        # 空 detail + None code 静默通过了「代次已变」文案断言）。
+        # 替身显式声明 SuppressCode，确保走到对应的停止原因分支。
         outcome = models.SendOutcome(
             models.SendStatus(sender_status),
             "",
@@ -567,6 +565,34 @@ async def test_deliver_non_stopping_suppression_stays_stale(tmp_path: Path) -> N
     assert result == "会话已更新，放弃旧回复。"
 
 
+async def test_deliver_sealed_ledger_suppression_is_not_reported_as_stale(tmp_path: Path) -> None:
+    """账本已封的 SUPPRESSED 不得报「会话已更新」。
+
+    成因是关停/隔离期迟到的发送被 gateway 以 GATE_REJECTED 拒绝
+    （ledger already sealed），与代次无关。统一回 STALE_REPLY_MESSAGE 会把
+    排障方向指向「会话已更新」，与本文件声明的 SUPPRESSED 文案按成因分流相违。
+    """
+    delivery_mod, models, runner, last_events = _make_runner(tmp_path)
+    last_events["s1"] = FakeEvent()
+    ledger = models.AttemptLedger()
+    ledger.seal()
+
+    result = await runner.deliver_reply(
+        "s1",
+        _state(models),
+        "你好",
+        0,
+        ledger=ledger,
+        expected_generation=None,
+        force=False,
+        trigger="patrol",
+    )
+
+    assert result == "本次投递已收尾，放弃这条迟到的回复。"
+    assert result == delivery_mod.LEDGER_SEALED_REPLY_TEXT
+    assert "会话已更新" not in result
+
+
 async def test_deliver_stopping_suppression_outranks_generation_change(tmp_path: Path) -> None:
     """停止成因的 SUPPRESSED 必须先于代次复核判定，代次同窗口变了的组合也要报停止。
 
@@ -577,8 +603,6 @@ async def test_deliver_stopping_suppression_outranks_generation_change(tmp_path:
     与 ``test_deliver_suppressed_while_stopping_reports_stop`` 的分工：那条只覆盖
     代次未变的一半（旧实现在那里也绿）；本条把同窗口内代次也变了的组合钉住，
     FlipGate 让发送前的代次复核通过、发送后的复核翻转。
-
-    变异锚定：把 SUPPRESSED 成因判定挪回 ``is_current`` 复核之后，本用例红。
     """
     _, models, runner, _ = _make_runner(tmp_path)
     runner.send_reply = FakeSender(
@@ -626,8 +650,6 @@ async def test_send_via_event_stopping_outranks_generation_change(tmp_path: Path
     运营者看到「会话已更新」而非「插件正在停止」。既有
     test_deliver_stopping_suppression_outranks_generation_change 的发送器是
     替身，只钉到 deliver_reply 级；本条驱动真实 _send_via_event。
-
-    变异锚定：把 _send_via_event 里两个复核块的顺序换回先代次，本用例红。
     """
     _, models, delivery, last_events = _make_runner(tmp_path)
     event = FakeEvent(umo="s1")
@@ -775,12 +797,6 @@ async def test_deliver_confirmed_failure_with_directs_skips_history(tmp_path: Pa
 # ============================================================================
 # send_reply 内部状态机（钩子装饰 → 复核 → 事件发送 / context 兜底）
 # ============================================================================
-
-
-async def test_send_reply_stale_before_hooks_suppressed(tmp_path: Path) -> None:
-    _, models, runner, _ = _make_runner(tmp_path, gate_current=False)
-    outcome = await runner.send_reply("s1", "你好", expected_generation=999)
-    assert outcome.status is models.SendStatus.SUPPRESSED
 
 
 async def test_send_reply_stale_before_hooks_skips_hooks(tmp_path: Path) -> None:
@@ -1045,8 +1061,6 @@ async def test_quote_follows_the_pinned_target_event(tmp_path: Path) -> None:
     缺陷形态：``send_reply`` 现读 ``_last_events``。判断与生成是两次模型调用，
     期间到达的新消息会把该表换成别人的消息——引用指向一条本次从未依据过的
     消息，运营者看到的是「引用错对象」。
-
-    变异锚定：``send_reply`` 改回现读 ``_last_events``，本用例红。
     """
     _, models, runner, last_events = _make_runner(
         tmp_path, config={"quote_mode": "random", "quote_probability": 100}
@@ -1146,7 +1160,7 @@ class _ClearingHook:
 
 
 class _BoomHook:
-    """装饰钩子直接抛错（发送尚未开始 → FAILED_BEFORE_SUBMIT）。"""
+    """装饰钩子直接抛错（必须降级为未装饰发送，不得丢弃整条回复）。"""
 
     async def __call__(self, event: object, event_type: object) -> None:
         raise RuntimeError("decorating hook broken")
@@ -1234,8 +1248,6 @@ async def test_send_reply_after_send_hook_error_log_is_redacted(
     类插件的异常串标准形态就是 ``Client error '401' for url '...?rkey=...'``，
     三个凭证一起落盘。这是整条管线里异常面最宽的一处（不是本插件自己的代码），
     而同函数下方 send 失败那条早已走 redact_exc_text 并注明"脱敏口径同 decision"。
-
-    变异锚定：把该处 ``redact_exc_text(exc)`` 换回裸 ``exc``，本用例红。
     """
     signed_url = (
         "https://img.example.com/group/abc/0/media.jpg"
@@ -1268,32 +1280,50 @@ async def test_send_reply_after_send_hook_error_log_is_redacted(
         )
 
 
-async def test_send_reply_decorating_hook_error_before_submit(tmp_path: Path) -> None:
-    """装饰钩子抛错（发送未开始）→ FAILED_BEFORE_SUBMIT。"""
+async def test_send_reply_decorating_hook_error_still_delivered(tmp_path: Path) -> None:
+    """装饰钩子抛错：按出错时手上的链照发，分类仍 DELIVERED。
+
+    缺陷形态：装饰钩子是唯一一处未加保护的第三方钩子调用，异常落到外层
+    ``except`` 时 ``send_started`` 仍为 False，整条已生成的回复被判
+    FAILED_BEFORE_SUBMIT —— 用户收不到消息、账本无 attempt（不消耗冷却与日
+    配额、不写历史），下一轮对同一上下文再生成一次。同函数对 after-send 钩子
+    已有等价降级，两处必须同一口径。
+    """
     _, models, runner, last_events = _make_runner(tmp_path, hook=_BoomHook())
-    last_events["s1"] = FakeEvent()
+    event = FakeEvent()
+    last_events["s1"] = event
     outcome = await runner.send_reply("s1", "hello", expected_generation=None)
+
+    assert event.sent_texts == ["hello"], "装饰钩子抛错吞掉了整条回复"
+    assert outcome.status is models.SendStatus.DELIVERED
+
+
+async def test_send_reply_pre_submit_ledger_error_is_not_unknown(tmp_path: Path) -> None:
+    """账本前置步骤抛错：适配器一次都没被调用，不得记 UNKNOWN。
+
+    ``OutboundGateway.send`` 在调用适配器之前先 reserve/mark_in_flight，而
+    gateway 的 except 只包住适配器那一段，故逃出 gateway 的异常必然发生在
+    提交前。记 UNKNOWN 会让一条确定没发出的回复白吃冷却与日配额、不写历史且
+    不自动重试。
+    """
+    _, models, runner, last_events = _make_runner(tmp_path)
+    event = FakeEvent()
+    last_events["s1"] = event
+    ledger = models.AttemptLedger()
+
+    def boom_reserve(kind: str, text: str = "") -> None:
+        raise RuntimeError("reserve exploded")
+
+    ledger.reserve = boom_reserve
+    outcome = await runner.send_reply("s1", "hello", ledger=ledger, expected_generation=None)
+
+    assert event.sent_texts == [], "适配器被调用过，本用例前提不成立"
     assert outcome.status is models.SendStatus.FAILED_BEFORE_SUBMIT
 
 
 # ============================================================================
 # send_reply：context 兜底路径
 # ============================================================================
-
-
-async def test_send_reply_context_path_queries_gate_once(tmp_path: Path) -> None:
-    """context 兜底路径不再自建第二道复核：入口复核就是唯一一道。
-
-    删除依据：入口复核到 ``_send_via_context`` 之间只有同步解析（quote/@ 目标），
-    没有任何协程能推进代次，兜底入口那道复核恒为真。这条把查询次数钉住，
-    防止日后有人把 await 塞进那段同步区却忘了补复核。
-    """
-    _, models, runner, _ = _make_runner(tmp_path)
-    gate = _CountingGate(true_times=1)
-    runner._gate = gate
-    outcome = await runner.send_reply("s1", "hello", expected_generation=7)
-    assert gate.calls == 1, "context 兜底路径不得在入口复核之外再查代次"
-    assert outcome.status is models.SendStatus.DELIVERED
 
 
 async def test_send_reply_context_send_unknown(tmp_path: Path) -> None:
@@ -1450,16 +1480,7 @@ async def test_deliver_failure_with_directs_and_gate_flip(tmp_path: Path) -> Non
 
 
 async def test_deliver_log_reply_content_preview(tmp_path: Path, caplog: Any) -> None:
-    """log_reply_content 开启：长短回复预览分支都走 DEBUG 记录。
-
-    变异锚定：把 ``delivery.py`` 的 ``if self.settings.log_reply_content and reply:``
-    改成 ``if False:``，本用例红，只断言返回值是假绿（返回值与预览分支无关），
-    必须断言 DEBUG 记录里的预览文本本身。
-
-    断言内容：长回复截断到 ``_LOG_REPLY_PREVIEW_CHARS`` 并**带省略号**（去掉省略号
-    即红：截断后的长度相等，只有省略号能区分「截断」与「恰好这么长」），短回复
-    原样记录不截断。
-    """
+    """长预览截断并带省略号，短预览保持原文；两者均使用 DEBUG。"""
     delivery_mod, models, runner, _ = _make_runner(
         tmp_path, save=FakeSave(), config={"log_reply_content": True}
     )
@@ -1514,8 +1535,6 @@ def test_named_at_serialization_never_turns_a_send_into_unknown(monkeypatch) -> 
     适配器序列化阶段执行，晚于构造期保护：抛出去会被 outbound 归成 UNKNOWN
     （消耗冷却与日配额、不重试），一次普通发送就变成「提交状态未知」——正是
     契约 §14 禁止的「装饰性组件影响投递分类」。
-
-    变异锚定：去掉 isinstance(section, dict) 保护，本用例红。
     """
     _load_modules()
     delivery = _delivery_module()

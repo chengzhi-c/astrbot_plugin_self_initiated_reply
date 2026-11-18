@@ -3,10 +3,6 @@
 - 多会话消息循环后取消收敛：后台任务/延迟任务/运行检查表/释放事件表必须回基线
 - terminate 幂等：连续两次调用不抛、不卡
 - 被放过的关键落盘任务必须放弃后续写入权限，不得覆盖新实例的状态
-
-变异锚定（先红后绿）：
-- ``_discard_delay_task`` 不 pop ``_delay_tasks`` → delay 表残留
-- ``_delayed_check`` finally 不 pop ``_running_check_tasks`` → 运行检查表残留
 """
 
 from __future__ import annotations
@@ -122,26 +118,7 @@ def test_terminate_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_spared_critical_task_abandons_later_state_writes(tmp_path: Path) -> None:
-    """被放过的关键落盘任务必须放弃后续写入，但最终落盘必须照常写。
-
-    缺陷形态：``_wait_background_tasks`` 对超出硬窗口的 critical task 只放过不
-    取消，却没有相应的放弃机制。宿主不等待隔离任务就构造新实例，这个慢写随后
-    落地会用陈旧快照覆盖新实例刚写出的 ``state.json``——与最终落盘超时是同一个
-    hazard，只是入口不同。
-
-    放弃判据按**任务身份**而不是全局标志：被豁免的任务自己放弃发布，而
-    ``terminate()`` 里随后执行的最终落盘是另一个任务、必须照常写（它在
-    ``terminate()`` 返回之前完成，不暴露在那个跨实例竞态里）。用全局标志会把
-    最终落盘一起挡掉，静默丢掉「最后一次记录之后的内存变更」。
-
-    变异锚定：删掉 ``_wait_background_tasks`` 里 critical 分支的
-    ``self._spared_critical_tasks.add(task)``，或让 ``save_storage`` 的
-    ``abandoned()`` 不再看该集合，本用例红。
-
-    注意 ``release.set()`` 之前必须**再造一处内存变更**：被豁免任务的 payload
-    若与磁盘逐字相同，``save_storage`` 的跳写判据会代为满足"没有发布"，放弃
-    机制从未被执行——那条 mtime 断言绿得空洞（实测只删 spare 注册仍全绿）。
-    """
+    """按任务身份放弃迟到落盘，保留最终保存；让 payload 不同以排除跳写干扰。"""
 
     async def scenario(plugin, main):
         restore_windows = shorten_shutdown_windows(main)

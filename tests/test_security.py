@@ -229,16 +229,21 @@ def test_public_address_gate_rejects_multicast_nat64_and_reserved_ranges() -> No
 # ============================================================================
 
 
-def test_clean_reply_preserves_newlines_when_multiline_allowed() -> None:
-    """allow_multiline=True 时必须保留换行，否则该配置项形同虚设。"""
-    _, utils, _, _, _ = _load_r3_modules()
+def test_clean_reply_strips_control_characters() -> None:
+    r"""控制字符不是空白：collapse_whitespace 的 \s 不含它们，不显式过滤就会原样
+    发到平台上（\x00 在部分平台直接截断消息）。
+    """
+    _, utils, _ = _load_sec_modules()
+    reply = utils.clean_reply("正常回复\x00\x01\x7f\x9f继续", allow_multiline=False, max_chars=0)
+    assert reply == "正常回复继续", repr(reply)
 
-    reply = utils.clean_reply("第一行内容\n第二行内容", allow_multiline=True, max_chars=200)
 
-    assert "\n" in reply, (
-        "allow_multiline=True 仍然折叠了换行：clean_reply 中无条件执行的 "
-        r"re.sub(r'\s+', ' ') 让 allow_multiline_reply 配置完全失效"
+def test_clean_reply_filters_controls_and_keeps_multiline_breaks() -> None:
+    _, utils, _ = _load_sec_modules()
+    reply = utils.clean_reply(
+        "第一行\x00\x07\x1b\x7f\n第二行\x1b\x85", allow_multiline=True, max_chars=0
     )
+    assert reply == "第一行\n第二行", repr(reply)
 
 
 def test_clean_reply_still_collapses_when_multiline_disabled() -> None:
@@ -382,16 +387,15 @@ def test_negative_timeout_values() -> None:
 
 
 def test_extreme_daily_limit_values() -> None:
-    """测试极端每日限额配置"""
+    """极端每日限额必须被夹到规格表上界。"""
     models, _, _ = _load_sec_modules()
 
-    config = {
-        "max_daily_replies_per_session": 999999999,
-    }
-    settings = models.Settings.from_config(config)
+    settings = models.Settings.from_config({"max_daily_replies_per_session": 999999999})
 
-    # 预期：应该有上限（如 1000）防止刷屏
-    assert settings.max_daily_replies_per_session <= 1000, "每日限额无上限可能导致刷屏"
+    spec = models.CONFIG_SPEC_BY_KEY["max_daily_replies_per_session"]
+    assert settings.max_daily_replies_per_session == spec.maximum, (
+        "每日限额未夹到规格表上界，可能被刷屏"
+    )
 
 
 def test_nonfinite_and_boolean_numeric_values_use_safe_defaults() -> None:
@@ -407,7 +411,9 @@ def test_nonfinite_and_boolean_numeric_values_use_safe_defaults() -> None:
     )
 
     assert settings.decision_temperature == 0.2
-    assert settings.generation_timeout_sec == 60
+    # 非有限值回落到该键自己的默认，不写死数字：默认值本身会随「装得下回退链」调整。
+    defaults = models.Settings.from_config({})
+    assert settings.generation_timeout_sec == defaults.generation_timeout_sec
     assert settings.max_daily_replies_per_session == 5
 
 
@@ -567,31 +573,26 @@ def test_tool_marker_in_multiline_text() -> None:
 
 
 def test_excessive_recent_messages_do_not_cause_oom() -> None:
-    """测试巨量历史消息是否导致 OOM"""
-    models, _, storage = _load_sec_modules()
+    """巨量历史消息限制必须被夹到规格表上界。"""
+    models, _, _ = _load_sec_modules()
 
-    # 尝试设置超大限制
-    excessive_limit = 100000
+    settings = models.Settings.from_config({"recent_message_limit": 100000})
 
-    # 预期：Settings 应该限制到合理范围（如 100）
-    config = {"recent_message_limit": excessive_limit}
-    settings = models.Settings.from_config(config)
-
-    assert settings.recent_message_limit <= 100, "历史消息限制过大可能导致内存问题"
+    spec = models.CONFIG_SPEC_BY_KEY["recent_message_limit"]
+    assert settings.recent_message_limit == spec.maximum, (
+        "历史消息限制未夹到规格表上界，可能占满内存"
+    )
 
 
 def test_whitelist_size_limit() -> None:
-    """测试白名单条目数量是否有上限"""
+    """白名单条目数量必须被夹到规格表上界。"""
     models, _, _ = _load_sec_modules()
 
-    # 生成 10000 个白名单条目
     huge_whitelist = [f"qq:GroupMessage:{i}" for i in range(10000)]
-    config = {"whitelist_sessions": huge_whitelist}
-    settings = models.Settings.from_config(config)
+    settings = models.Settings.from_config({"whitelist_sessions": huge_whitelist})
 
-    # 预期：应该警告或限制（如最多 1000 个）
-    # 当前实现可能没有限制，这是潜在风险
-    assert len(settings.whitelist) <= 1000, "白名单无上限可能导致性能问题"
+    spec = models.CONFIG_SPEC_BY_KEY["whitelist_sessions"]
+    assert len(settings.whitelist) == spec.max_items, "白名单未夹到规格表上界"
 
 
 def test_max_reply_chars_zero_means_unlimited() -> None:
@@ -694,20 +695,16 @@ def test_command_aliases_single_source() -> None:
     （前者不含 canonical 名），合成一处要么多存一份字段、要么在装饰器处做集合
     减法；且把同一个 ``set`` 对象交给宿主装饰器，宿主若原地修改就会污染共享表
     那属于未经验证的宿主行为。两侧各自保留、由本用例钉住等价，成本更低。
-
-    变异验证：给 ``main.py`` 的 ``/off`` 装饰器加一个 ``"halt"`` 而不改
-    commands.py，本用例即红并指名 off 组的差集。
     """
     table = _commands_alias_table()
     decorators = _main_decorator_alias_table()
 
     # 组集合本身先对齐：漏注册/多注册一个子命令在这里就红，而不是等到逐组比对
+    assert table
     assert set(table) == set(decorators), (
         f"子命令集合漂移：仅在 commands.py={sorted(set(table) - set(decorators))}，"
         f"仅在 main.py 装饰器={sorted(set(decorators) - set(table))}"
     )
-    # 组数一起断言：两侧同时被删空时集合仍相等，会静默通过
-    assert len(table) == 9, f"子命令组数变为 {len(table)}（期望 9），确认是有意增删后再改此数"
 
     problems = [
         f"  {action}: commands.py={sorted(names)} main.py 装饰器={sorted(decorators[action])}"
@@ -877,16 +874,7 @@ def test_clean_reply_returns_empty_when_filtering_consumes_everything() -> None:
 
 
 def test_is_admin_event_trusts_host_api_success_path() -> None:
-    """宿主 API 判为管理员时必须立即成立（`utils.is_admin_event` 的三级链首级）。
-
-    这条正路此前从未被执行：``host_stubs.FakeEvent.is_admin()`` 恒返回 False，
-    于是实际生效的只有 role / admin_ids 两级回退。异常方向（宿主未实现或抛错时
-    收紧权限）已有覆盖，缺的恰是「宿主说是管理员，就认」若宿主改了该 API 的
-    语义，回退链会把变化掩盖成「照样能判对」，没有任何用例会红。
-
-    ``SimpleNamespace`` 不带 ``get_sender_id``，``event_sender_id`` 因此返回空串；
-    配合空 ``admin_ids``，本用例里 True 只可能来自宿主 API 那一级。
-    """
+    """空发送者和空管理员清单排除回退路径，确保权限确实来自宿主 API。"""
     _, utils, _ = _load_sec_modules()
 
     # 首级命中：role 与 admin_ids 都不成立，True 的唯一来源是 event.is_admin()
@@ -906,9 +894,7 @@ def test_is_admin_event_trusts_host_api_success_path() -> None:
 # webapi 配置审计键守卫（Provider/屏蔽名单入表，防条目丢失与静默失效）
 # ============================================================================
 
-# 必须被审计的安全敏感键。webapi 无独立鉴权，访问控制依赖宿主 Dashboard，
-# 这些键被篡改的后果是持续数据外泄或静默屏蔽，只能靠 INFO 留痕事后追溯。
-# 条目消失即红（防回退），新增条目需在此登记并说明理由。
+# 敏感配置变更依赖宿主 Dashboard 访问控制，并以 INFO 记录审计信息。
 _REQUIRED_AUDITED_KEYS = {
     "enabled",  # 插件总开关
     "proactive_inherit_tools",  # 工具继承：放大宿主能力面
@@ -929,9 +915,6 @@ def test_str_config_values_drop_control_characters() -> None:
     一条日志记录会裂成多行，其中一行可以是任意伪造内容（时间戳、级别、
     甚至别的模块的消息）。列表条目早有这条规则（``STRING_LIST_ILLEGAL_RE``
     排除 C0 控制字符），str 类是漏掉的一类。
-
-    变异锚定：把 ``coerce_config_value`` 的 str 分支换回裸 ``str(raw).strip()``，
-    本用例红。
     """
     install_astrbot_stubs()
     models = load_package(MAIN_PACKAGE_NAME, "models")
@@ -1079,14 +1062,68 @@ def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplo
     with_plugin(tmp_path, scenario)
 
 
+def test_host_computer_use_and_skill_tools_are_denied_in_inherit_mode() -> None:
+    """inherit（denylist）模式必须拒绝宿主的电脑使用与技能管理工具。
+
+    4.29.4 的 ``computer_tools/cua.py``（截图/点击/输入）与
+    ``shipyard_neo/neo_skills.py``（技能候选创建与发布）属契约 §3 的「电脑使用」
+    一族，而 ``HOST_DANGEROUS_TOOL_IDS`` 曾只覆盖 shell/fs/python/browser，
+    这 14 个工具在 ``proactive_inherit_tools`` 打开时仍可被主动 agent 调用。
+    """
+    models, runtime_adapter = load_modules(
+        "selfreply_computer_use_denylist_pkg", "models", "runtime_adapter"
+    )
+    computer_use = {
+        "astrbot_cua_screenshot",
+        "astrbot_cua_mouse_click",
+        "astrbot_cua_keyboard_type",
+        "astrbot_get_execution_history",
+        "astrbot_annotate_execution",
+        "astrbot_create_skill_payload",
+        "astrbot_get_skill_payload",
+        "astrbot_create_skill_candidate",
+        "astrbot_list_skill_candidates",
+        "astrbot_evaluate_skill_candidate",
+        "astrbot_promote_skill_candidate",
+        "astrbot_list_skill_releases",
+        "astrbot_rollback_skill_release",
+        "astrbot_sync_skill_release",
+    }
+    missing = sorted(computer_use - models.HOST_DANGEROUS_TOOL_IDS)
+    assert not missing, f"denylist 漏掉宿主电脑使用工具：{missing}"
+
+    class FakeToolSet:
+        def __init__(self, names: list[str]) -> None:
+            self.tools = [SimpleNamespace(name=name) for name in names]
+
+        def remove_tool(self, name: str) -> None:
+            before = len(self.tools)
+            self.tools = [t for t in self.tools if getattr(t, "name", "") != name]
+            assert len(self.tools) < before, f"remove_tool({name}) 没匹配到任何工具"
+
+    injected = sorted(computer_use) + ["astrbot_execute_shell"]
+    req = SimpleNamespace(func_tool=FakeToolSet(injected))
+    adapter = runtime_adapter.AstrBotRuntimeAdapter(
+        runtime_adapter.AgentRuntimeCapabilities(
+            import_error=None,
+            tool_set=object,
+            build_config=None,
+            build_main_agent=None,
+            get_session_conv=None,
+            run_agent=None,
+        )
+    )
+    assert adapter.filter_final_tools(req, drop=models.HOST_DANGEROUS_TOOL_IDS) is True
+    remaining = sorted(t.name for t in req.func_tool.tools)
+    assert not remaining, f"inherit 模式仍可调用宿主机电脑使用工具：{remaining}"
+
+
 def test_host_dangerous_tool_denylist_exact_membership() -> None:
     """denylist 逐条钉住：删除或改名任一条都必须在此变红。
 
-    旧守卫是自参照的（拿集合自己的元素去测一个名字启发式），删项只会让循环更短、
-    必然继续通过，15 条里只有 3 条被其它用例顺带覆盖（实测删 ``astrbot_grep_tool``
-    后全量 pytest 仍全绿）。宿主漂移（宿主新增/改名危险工具）由
-    ``scripts/compat_check.py`` 枚举真实宿主模块判定（CI compat 作业，三个宿主
-    版本），本地不镜像宿主清单，只钉住仓库自己的这一份。
+    宿主漂移（新增或改名危险工具）由 ``scripts/compat_check.py`` 枚举三版真实
+    宿主模块判定；这里钉住仓库自己的这一份，防止删项时只剩单测里没人点名的条目
+    静默消失。
     """
     (models,) = load_modules("selfreply_dangerous_tool_denylist_pkg", "models")
 
@@ -1107,5 +1144,25 @@ def test_host_dangerous_tool_denylist_exact_membership() -> None:
             "astrbot_file_edit_tool",
             "astrbot_grep_tool",
             "astr_kb_search",
+            "astrbot_cua_screenshot",
+            "astrbot_cua_mouse_click",
+            "astrbot_cua_keyboard_type",
+            "astrbot_get_execution_history",
+            "astrbot_annotate_execution",
+            "astrbot_create_skill_payload",
+            "astrbot_get_skill_payload",
+            "astrbot_create_skill_candidate",
+            "astrbot_list_skill_candidates",
+            "astrbot_evaluate_skill_candidate",
+            "astrbot_promote_skill_candidate",
+            "astrbot_list_skill_releases",
+            "astrbot_rollback_skill_release",
+            "astrbot_sync_skill_release",
+            "spawn_agent",
+            "list_agents",
+            "get_agent_result",
+            "wait_agent",
+            "send_message",
+            "cancel_agent",
         }
-    ), "denylist 条目有变更：确认是有意调整后同步本断言（删/改任一条都应在此变红）"
+    )

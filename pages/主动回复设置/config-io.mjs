@@ -342,10 +342,10 @@ export function createConfigIo(deps) {
 		clearTimeout(whitelistErrorTimer);
 		if (errors.length > 0) {
 			const first = errors[0];
-			// 按码点截断：按 UTF-16 码元切会切出孤立高位代理，界面显示成乱码。
-			const chars = [...first.item];
-			const shown = chars.slice(0, 24).join("") + (chars.length > 24 ? "…" : "");
-			const msg = `第 ${first.line} 项${first.reason}：${shown}`;
+			// 「第 N 项」与条目分两行，条目整条给全：截断 24 码位切掉的正是用户
+			// 唯一能定位错误的线索（出错的条目原文）。分行由 .field-error 的
+			// white-space: pre-line 承接。
+			const msg = `第 ${first.line} 项${first.reason}：\n${first.item}`;
 			e.whitelistInput.setAttribute("aria-invalid", "true");
 			// #whitelistError 是 role="alert"：同样的道理见 updateWhitelistFeedback，
 			// 逐字相同就不写；逐键路径再等停顿，避免中间态把播报队列塞满。
@@ -499,7 +499,7 @@ export function createConfigIo(deps) {
 		}
 		const e = getEls();
 		// 保存按钮 disabled 时浏览器把焦点丢给 body，成功后要能回到触发点。
-		// 契约用例会在没有 DOM 的 node 环境里直接跑 saveConfig，故先探 document。
+		// 没有 DOM 的环境里也会走到这里，故先探 document。
 		const trigger = typeof document === "undefined" ? null : document.activeElement;
 		setState({ savingConfig: true });
 		setSaving(true);
@@ -521,15 +521,18 @@ export function createConfigIo(deps) {
 			// 自己声明的默认语义（见 app.js PROVIDER_CONTROLS 的 placeholder），
 			// 由 providerNeedsManualInput 的空串分支放行。
 			const listAvailable = isProviderListAvailable();
+			// 取值可能是单个 ID，也可能是有序列表（备用模型）。逐条比对：把数组
+			// 整体丢进 providerNeedsManualInput 会被 String() 拼成 "a,b"，
+			// 与任何单个 ID 都不相等，于是两条以上备用模型时每次都误报「不在列表」。
 			const offList =
 				listAvailable &&
-				providerConfigKeys(e.configForm).some((key) =>
-					providerNeedsManualInput(
-						body[key],
-						getProviderOptions(),
-						listAvailable,
-					),
-				);
+				providerConfigKeys(e.configForm).some((key) => {
+					const value = body[key];
+					const ids = Array.isArray(value) ? value : [value];
+					return ids.some((id) =>
+						providerNeedsManualInput(id, getProviderOptions(), listAvailable),
+					);
+				});
 			if (offList) {
 				showToast("部分 Provider ID 不在列表中，已继续保存，请确认拼写无误");
 			}
@@ -545,8 +548,7 @@ export function createConfigIo(deps) {
 			if (!result || result.ok !== true) {
 				const errorText = result?.error || "保存失败";
 				if (result?.error_code === "STALE_WRITE") {
-					// stale 之后必须刷新才能再提交（契约 §7 / DECISIONS 的
-					// 「设置页配置写入与请求协调」）。新 revision 先收着：
+					// stale 之后必须刷新才能再提交。新 revision 先收着：
 					// requiresConfigRefresh 已挡住一切提交，它只在刷新成功后
 					// 经 applyConfigPayload 被整体替换，但服务端给了就记下，
 					// 免得将来放松前置守卫时这里又悄悄用回旧值。

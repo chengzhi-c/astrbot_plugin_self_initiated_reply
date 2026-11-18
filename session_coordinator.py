@@ -22,7 +22,6 @@ from .models import (
     MAX_SESSION_IMAGE_MEMORY_BYTES,
     PLUGIN_ID,
     now_ts,
-    restore_container_inplace,
 )
 from .session_gate import SessionGate
 
@@ -267,22 +266,25 @@ class SessionCoordinator:
         self._session_bytes.clear()
         self._total_bytes = 0
 
-    def snapshot(self) -> dict[str, Any]:
-        """复制三张协作表，供配置回滚。容器身份仍由 restore_inplace 保持。"""
+    def snapshot_images(self) -> dict[str, deque[tuple[float, list[Any]]]]:
+        """复制图片事件表，供配置回滚。
+
+        事件表 ``_events``/``_event_at`` 不在此列：失效后的代次必须保持失效，
+        回滚把它们写回会复活已被并发检查清掉的事件。
+        """
         return {
-            "last_events": dict(self._events),
-            "last_event_at": dict(self._event_at),
-            "recent_image_events": {
-                key: deque(values, maxlen=MAX_CACHED_IMAGE_EVENTS)
-                for key, values in self._images.items()
-            },
+            key: deque(values, maxlen=MAX_CACHED_IMAGE_EVENTS)
+            for key, values in self._images.items()
         }
 
-    def restore_inplace(self, snapshot: dict[str, Any]) -> None:
-        """原地写回三张协作表，不换 dict 对象（契约 §11）。"""
-        restore_container_inplace(self._events, snapshot["last_events"])
-        restore_container_inplace(self._event_at, snapshot["last_event_at"])
-        restore_container_inplace(self._images, snapshot["recent_image_events"])
+    def restore_images(self, snapshot: dict[str, Any]) -> None:
+        """补回白名单变更摘掉的图片索引，不换 dict 对象（契约 §11）。
+
+        只补当前仍缺席的键：保存期间新收到的图片留在表里，整体替换会把它们抹掉。
+        """
+        for key, values in snapshot.items():
+            if key not in self._images:
+                self._images[key] = deque(values, maxlen=MAX_CACHED_IMAGE_EVENTS)
         self._recount()
 
     # ------------------------------------------------------------------
