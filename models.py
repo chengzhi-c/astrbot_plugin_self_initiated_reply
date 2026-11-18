@@ -375,6 +375,7 @@ def proactive_build_config_kwargs(
     provider_settings: dict[str, Any] | None = None,
     *,
     model_settings: dict[str, Any] | None = None,
+    persona_settings: dict[str, Any] | None = None,
     request_max_retries: int = 1,
 ) -> dict[str, Any]:
     """主动运行传给宿主 ``MainAgentBuildConfig`` 的键集合（唯一来源）。
@@ -386,7 +387,15 @@ def proactive_build_config_kwargs(
     """
     settings = provider_settings or {}
     model = model_settings or {}
+    persona = persona_settings or {}
     fallback_provider_ids = model.get("fallback_provider_ids", [])
+    # Safe Mode 的默认值跟普通人格一致：宿主在普通回复里从人格配置取它
+    # （4.29.4 astr_agent_tool_exec.py:609、4.30 main_agent/config.py:128），
+    # 而主动回复带显式 ``req`` 走的是宿主不代读的路径。写死 True 时，人格关掉
+    # Safe Mode 的用户会看到主动回复多出一段 Safe Mode 系统提示：system 前缀
+    # 与普通回复不同，缓存无法复用，两条路径的行为也不一致。
+    safety_default = as_bool(persona.get("safety_mode"), True)
+    strategy_default = str(persona.get("safety_mode_strategy") or "system_prompt")
     return {
         # 夹取必须能防抛：provider_settings 是宿主配置里可手改的外部输入，
         # "60s" 之类的非数字串若在 try 之外 int() 抛出，会让所有主动生成
@@ -404,10 +413,8 @@ def proactive_build_config_kwargs(
         ),
         "kb_agentic_mode": False,
         "file_extract_enabled": False,
-        "llm_safety_mode": bool(settings.get("llm_safety_mode", True)),
-        "safety_mode_strategy": str(
-            settings.get("safety_mode_strategy", "system_prompt") or "system_prompt"
-        ),
+        "llm_safety_mode": as_bool(settings.get("llm_safety_mode"), safety_default),
+        "safety_mode_strategy": str(settings.get("safety_mode_strategy") or strategy_default),
         "computer_use_runtime": "none",
         "add_cron_tools": False,
         # 4.27.2 从 provider_settings 读取这两个键，4.23.3 不读取重试次数；

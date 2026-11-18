@@ -1467,6 +1467,60 @@ async def test_main_agent_build_config_survives_non_mapping_model(tmp_path: Path
     assert config.request_max_retries == 1
 
 
+async def test_main_agent_build_config_follows_persona_safety_mode(tmp_path: Path) -> None:
+    """主动回复的 Safe Mode 跟随人格配置。
+
+    宿主在普通回复里从人格配置取 safety_mode（4.29.4 astr_agent_tool_exec.py:609、
+    4.30 main_agent/config.py:128），带显式 req 的主动路径宿主不代读。写死 True 时
+    人格关掉 Safe Mode 的用户会在主动回复里多出一段 Safe Mode 系统提示：system
+    前缀与普通回复不同，缓存无法复用，两条路径行为也不一致。4.30 把配置键
+    ``agent_runner`` 迁成了 ``agent``，新旧路径都要认。
+    """
+    _, _, runner, runtime, _, _ = _make_runner(tmp_path)
+
+    class BuildConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    runtime.new_build_config = lambda **kwargs: BuildConfig(**kwargs)
+
+    # 4.30 新路径
+    runner._context = SimpleNamespace(
+        astrbot_config={},
+        get_config=lambda _umo: {
+            "agent": {
+                "config": {"persona": {"safety_mode": False, "safety_mode_strategy": "tool_call"}}
+            }
+        },
+    )
+    config = runner.main_agent_build_config("s1")
+    assert config.kwargs["llm_safety_mode"] is False
+    assert config.kwargs["safety_mode_strategy"] == "tool_call"
+
+    # 旧宿主路径
+    runner._context = SimpleNamespace(
+        astrbot_config={},
+        get_config=lambda _umo: {"agent_runner": {"config": {"persona": {"safety_mode": False}}}},
+    )
+    assert runner.main_agent_build_config("s1").kwargs["llm_safety_mode"] is False
+
+    # provider_settings 里的显式配置优先于人格
+    runner._context = SimpleNamespace(
+        astrbot_config={},
+        get_config=lambda _umo: {
+            "provider_settings": {"llm_safety_mode": True},
+            "agent": {"config": {"persona": {"safety_mode": False}}},
+        },
+    )
+    assert runner.main_agent_build_config("s1").kwargs["llm_safety_mode"] is True
+
+    # 两处都没有时保持宿主默认
+    runner._context = SimpleNamespace(astrbot_config={}, get_config=lambda _umo: {})
+    config = runner.main_agent_build_config("s1")
+    assert config.kwargs["llm_safety_mode"] is True
+    assert config.kwargs["safety_mode_strategy"] == "system_prompt"
+
+
 async def test_main_agent_build_config_prefers_session_provider_settings(tmp_path: Path) -> None:
     """会话 provider_settings 覆盖全局设置，读取失败时保留宿主默认。"""
     _, _, runner, runtime, _, _ = _make_runner(tmp_path)

@@ -952,6 +952,7 @@ class GenerationRunner:
     def main_agent_build_config(self, umo: str) -> Any:
         provider_settings = {}
         model_settings = {}
+        persona_settings: dict[str, Any] = {}
         try:
             config_obj = getattr(self._context, "astrbot_config", {})
             get_config = getattr(self._context, "get_config", None)
@@ -964,6 +965,11 @@ class GenerationRunner:
             legacy_agent_config = config_obj.get("agent_runner", {}).get("config", {}) or {}
             model_settings = dict(
                 agent_config.get("model") or legacy_agent_config.get("model") or {}
+            )
+            # Safe Mode 与策略同源：普通回复读人格配置，主动回复不代读就只能是
+            # 宿主默认值，两条路径的 system 前缀因此分叉。同样先新路径后旧路径。
+            persona_settings = dict(
+                agent_config.get("persona") or legacy_agent_config.get("persona") or {}
             )
         except Exception as exc:
             # 会话级配置是可选能力：get_config(umo) 在旧宿主不存在或返回对象
@@ -991,6 +997,7 @@ class GenerationRunner:
             **proactive_build_config_kwargs(
                 provider_settings,
                 model_settings=model_settings,
+                persona_settings=persona_settings,
                 request_max_retries=self.settings.proactive_request_max_retries,
             )
         )

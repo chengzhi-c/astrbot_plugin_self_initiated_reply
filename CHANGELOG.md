@@ -2,6 +2,11 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式。
 
+## [Unreleased]
+
+- 主动回复的 Safe Mode 与判断策略跟随普通人格的 `safety_mode` 与
+  `safety_mode_strategy`，两条路径的 system 前缀一致。
+
 ## [1.5.4]
 
 - 适配 AstrBot 4.30 主 Agent 接口，请求钩子对提示词与上下文的修改照常保留。
