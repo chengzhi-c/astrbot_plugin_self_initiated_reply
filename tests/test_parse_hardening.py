@@ -17,10 +17,12 @@ def _utils():
     return load_modules(PACKAGE_NAME, "models", "utils")[1]
 
 
-def test_deep_nesting_recursion_error_fails_closed() -> None:
-    """C 扫描器对深嵌套抛 RecursionError（RuntimeError 子类），不是 JSONDecodeError。
+def test_deep_nesting_never_escapes() -> None:
+    """深嵌套要么被扫描器拒，要么正常解析；两种都不许让异常穿出解析函数。
 
-    漏捕时异常穿出 parse_decision_json，判断在 /status 与 INFO 行里连记录都没有。
+    3.14.7 及更早的 C 扫描器在 50k 深度抛 RecursionError（RuntimeError 子类，
+    不是 JSONDecodeError），3.14.10 起能直接解析。漏捕时异常穿出
+    ``parse_decision_json``，判断在 /status 与 INFO 行里连记录都没有。
     """
     utils = _utils()
 
@@ -30,7 +32,8 @@ def test_deep_nesting_recursion_error_fails_closed() -> None:
         + "]" * 50_000
         + "}"
     )
-    assert utils.parse_decision_json(raw) is None
+    result = utils.parse_decision_json(raw)
+    assert result is None or result["should_reply"] is True
 
 
 def test_non_finite_should_reply_is_rejected() -> None:
