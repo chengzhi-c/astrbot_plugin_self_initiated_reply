@@ -10,7 +10,7 @@
 
 <p align="center">
   让 AstrBot 在白名单会话中主动接话的插件。<br>
-  <img alt="版本" src="https://img.shields.io/badge/版本-1.5.4-4a5580">
+  <img alt="版本" src="https://img.shields.io/badge/版本-1.5.5-4a5580">
   <img alt="AstrBot 插件" src="https://img.shields.io/badge/AstrBot-插件-7b86ab">
 </p>
 
