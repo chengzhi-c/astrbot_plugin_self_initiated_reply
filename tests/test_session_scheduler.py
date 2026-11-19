@@ -396,7 +396,7 @@ def scheduler_mod_now() -> float:
     return _scheduler_module().now_ts()
 
 
-def test_cleanup_events_live_session_protection(tmp_path: Path) -> None:
+async def test_cleanup_events_live_session_protection(tmp_path: Path) -> None:
     _, models, scheduler, _, _ = _make_scheduler(tmp_path)
     scheduler._last_cleanup = 0.0
     umo = "g1:user:a"
@@ -410,7 +410,7 @@ def test_cleanup_events_live_session_protection(tmp_path: Path) -> None:
         scheduler._gate.unmark_running(umo)
 
 
-def test_cleanup_events_reaps_stale_last_decisions(tmp_path: Path) -> None:
+async def test_cleanup_events_reaps_stale_last_decisions(tmp_path: Path) -> None:
     """最近裁决跟随事件回收，避免静默会话留下孤立诊断记录。"""
     _, models, scheduler, _, _ = _make_scheduler(tmp_path)
     scheduler._last_cleanup = 0.0
@@ -934,13 +934,13 @@ async def test_ensure_image_cleanup_restarts_cancelling_loop(tmp_path: Path) -> 
     await asyncio.gather(task, restarted, return_exceptions=True)
 
 
-def test_cleanup_image_sources_drops_expired_entries(tmp_path: Path) -> None:
+async def test_run_image_cleanup_drops_expired_entries(tmp_path: Path) -> None:
     """过期图片事件条目出队；会话条目清空后整键回收。"""
     _, models, scheduler, _, _ = _make_scheduler(tmp_path)
     scheduler.settings.vision_image_age_sec = 300
     now = models.now_ts()
     scheduler._recent_image_events["s1"] = deque([(now - 400.0, [])])
-    removed = scheduler.cleanup_image_sources(now=now)
+    removed = await scheduler.run_image_cleanup()
     assert "s1" not in scheduler._recent_image_events
     assert removed == 0  # 缓存目录不存在时无文件可清
 
@@ -991,6 +991,48 @@ async def test_delayed_check_exits_when_disabled_after_sleep(tmp_path: Path) -> 
     scheduler._check_session = record
     await scheduler.delayed_check("s1", delay_sec=0)
     assert calls == [], "插件已停用仍执行了会话检查：停用后的旧延迟任务会复活发送"
+
+
+async def test_delayed_message_check_exits_when_message_trigger_is_disabled(
+    tmp_path: Path,
+) -> None:
+    _, _, scheduler, _, checks = _make_scheduler(tmp_path)
+    started = asyncio.Event()
+    wait = scheduler._wait_initial_delay_and_validate
+
+    async def wait_and_signal(*args, **kwargs):
+        started.set()
+        return await wait(*args, **kwargs)
+
+    scheduler._wait_initial_delay_and_validate = wait_and_signal
+    task = asyncio.create_task(
+        scheduler.delayed_check("s1", delay_sec=0.05, trigger="message_delay")
+    )
+    await started.wait()
+    scheduler.settings.enabled_message_trigger = False
+    await task
+    assert checks == []
+
+
+async def test_patrol_loop_stops_checking_sessions_when_disabled_mid_round(
+    tmp_path: Path,
+) -> None:
+    _, _, scheduler, _, _ = _make_scheduler(
+        tmp_path,
+        {"enabled_patrol_trigger": True, "check_interval_sec": 0},
+    )
+    scheduler.settings.whitelist = ["group"]
+    scheduler._whitelist_runtime_umos["group"] = {"s1", "s2"}
+    visited: list[str] = []
+
+    async def disable_after_first(umo: str, _now: float) -> None:
+        visited.append(umo)
+        scheduler.settings.enabled_patrol_trigger = False
+
+    scheduler._patrol_one_session = disable_after_first
+    await scheduler._patrol_loop()
+
+    assert len(visited) == 1
 
 
 async def test_cancel_delay_spares_running_check_and_yields_queued_one(tmp_path: Path) -> None:

@@ -67,7 +67,6 @@ from .models import (
     PluginLifecycle,
     SessionState,
     Settings,
-    now_ts,
 )
 from .plugin_state import (
     async_sync_whitelist,
@@ -75,7 +74,6 @@ from .plugin_state import (
     refresh_admin_ids,
     resolve_paths,
     save_storage,
-    save_storage_sync,
     state_for,
     track_background_task,
     track_critical_task,
@@ -88,7 +86,6 @@ from .storage import (
     config_file_matches,
     load_config_data,
     load_sessions,
-    persist_settings_config,
 )
 from .utils import (
     cap_command_reply,
@@ -198,33 +195,10 @@ class SelfInitiatedReplyPlugin(Star):
 
         self._assemble_components()
 
-        # 启动期磁盘 IO 统一在此执行（配置规范化落盘、状态落盘、图片缓存清理）。
-        # 它们都含 fsync / 大目录遍历，跑在宿主事件循环上会阻塞该进程内
-        # 所有会话与 Web 面板。
-        # - 有运行中的循环 → 全部交后台任务（磁盘部分内部走 to_thread）。
-        # - 无循环（同步加载的宿主）→ 原地同步执行，且**不得**在此 spawn。
-        #   该分支因此也不起巡检与图片清理循环（create_task 需要循环）；消息
-        #   触发路径仍正常，巡检要等首个异步入口（/selfreply on 或 POST /config
-        #   改 enabled / enabled_patrol_trigger）经 apply_enabled_topology 拉起。
-        #   AstrBot 在异步启动里加载插件，走的是 else 分支，这里是降级兜底。
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            if self._pending_normalize_config:
-                self._normalize_config_sync()
-            self._save_storage_sync()
-            try:
-                self._scheduler.cleanup_image_sources(now=now_ts())
-            except Exception as exc:
-                logger.warning(
-                    "[%s] startup image cache cleanup failed: %s",
-                    PLUGIN_ID,
-                    redact_exc_text(exc),
-                )
-        else:
-            self._track_background_task(self._startup_disk_writes())
-            self._scheduler.ensure_patrol()
-            self._scheduler.ensure_image_cleanup()
+        # 宿主在事件循环内构造插件；fsync 与缓存遍历交给后台任务中的 to_thread。
+        self._track_background_task(self._startup_disk_writes())
+        self._scheduler.ensure_patrol()
+        self._scheduler.ensure_image_cleanup()
         logger.info(
             "[%s] v%s enabled=%s whitelist=%d message_trigger=%s patrol_trigger=%s",
             PLUGIN_ID,
@@ -245,48 +219,29 @@ class SelfInitiatedReplyPlugin(Star):
         )
         register_web_apis(self)
 
-    def _startup_disk_writes(self) -> Coroutine[Any, Any, None]:
-        """构造期磁盘 IO 的就绪协程：配置规范化落盘 + 状态落盘 + 图片缓存清理。
-
-        只构造、**不** spawn：调用方拿到协程后自行决定交给
-        ``_track_background_task``（有循环）还是关闭（同步加载路径不会走到这里）。
-        构造即就绪，离开本方法前无人 await 它，未消费就是"从未开始的协程"，
-        调用方若丢弃必须 close。
-        """
-
-        async def run() -> None:
-            # 配置规范化必须与 terminate / webapi POST /config / add-remove
-            # 共用 _config_lock：它是「序列化 Settings 整份读-改-写」，锁外跑
-            # 会把锁内刚落地的管理员改动按陈旧快照覆写（磁盘与宿主内存
-            # config 双清），而保存方拿到的是成功回执。锁序恒为
-            # _config_lock → _save_lock，与其余写方一致。
-            async with self._config_lock:
-                if self._pending_normalize_config:
-                    await self._normalize_config_off_loop()
-            try:
-                # 状态落盘只走持 _save_lock 的异步路径，**不**再持 _config_lock：
-                # save_storage_sync 的「比较再写」在锁外会把并发更新的较新
-                # state.json 按陈旧快照覆盖且无日志，故换用 save_storage；但
-                # 落盘可能长时间不返回（网络文件系统），而 terminate 的最终
-                # 落盘在 _config_lock 内等它，持锁会把一次慢写放大成 reload
-                # 挂死。state.json 的正确性边界是 _save_lock，不是配置锁。
-                await self._save_storage()
-            except Exception as exc:
-                logger.warning(
-                    "[%s] startup state save failed: %s",
-                    PLUGIN_ID,
-                    redact_exc_text(exc),
-                )
-            try:
-                await self._scheduler.run_image_cleanup()
-            except Exception as exc:
-                logger.warning(
-                    "[%s] startup image cache cleanup failed: %s",
-                    PLUGIN_ID,
-                    redact_exc_text(exc),
-                )
-
-        return run()
+    async def _startup_disk_writes(self) -> None:
+        """启动时规范化配置、保存状态并清理图片缓存。"""
+        # 与管理员配置写入共用锁，避免规范化快照覆盖已生效的修改。
+        async with self._config_lock:
+            if self._pending_normalize_config:
+                await self._normalize_config_off_loop()
+        try:
+            # 状态写入由 _save_lock 串行；慢写不应占住配置锁、阻塞关停。
+            await self._save_storage()
+        except Exception as exc:
+            logger.warning(
+                "[%s] startup state save failed: %s",
+                PLUGIN_ID,
+                redact_exc_text(exc),
+            )
+        try:
+            await self._scheduler.run_image_cleanup()
+        except Exception as exc:
+            logger.warning(
+                "[%s] startup image cache cleanup failed: %s",
+                PLUGIN_ID,
+                redact_exc_text(exc),
+            )
 
     def _assemble_components(self) -> None:
         """接线协作对象。须在 gate/状态容器就绪之后、ensure_task 之前调用。"""
@@ -435,29 +390,22 @@ class SelfInitiatedReplyPlugin(Star):
     def _refresh_admin_ids(self) -> set[str]:
         return refresh_admin_ids(self)
 
-    def _save_storage_sync(self) -> None:
-        save_storage_sync(self)
-
-    def _normalize_config_sync(self) -> None:
-        """同步的配置规范化落盘（无事件循环的宿主，或后台任务内部调用）。"""
-        if not persist_settings_config(self._config_path, self.config, self.settings):
-            logger.error(
-                "[%s] config normalization write failed, running with the loaded config: %s",
-                PLUGIN_ID,
-                self._config_path,
-            )
-
     async def _normalize_config_off_loop(self) -> None:
         """规范化落盘：只有磁盘写进线程，宿主配置对象留在事件循环上。
 
-        不能整段丢给 ``to_thread``：``persist_settings_config`` 还会对宿主
-        ``AstrBotConfig`` 做 ``clear()`` + ``update()`` 并调它的 ``save_config``。
+        不能整段丢给 ``to_thread``：还会对宿主 ``AstrBotConfig`` 做
+        ``clear()`` + ``update()`` 并调它的 ``save_config``。
         宿主对象在循环线程上被其它协程读，工作线程里清空再逐键回填会让它们看到
         空表或半填状态；``save_config`` 若触碰事件循环也会在线程里直接失败。
         ``storage.apersist_settings_config`` 正是这个拆法，直接复用。
         """
         try:
-            written = await apersist_settings_config(self._config_path, self.config, self.settings)
+            written = await apersist_settings_config(
+                self._config_path,
+                self.config,
+                self.settings,
+                abandoned=lambda: self._terminated,
+            )
         except Exception as exc:
             logger.warning(
                 "[%s] config normalization task error: %s",
@@ -666,16 +614,8 @@ class SelfInitiatedReplyPlugin(Star):
             await event.send(MessageChain().message(text))
         except Exception as exc:
             logger.debug("[%s] inline command send failed: %s", PLUGIN_ID, redact_exc_text(exc))
-            try:
-                event.set_result(event.plain_result(text))
-            except Exception:
-                # 两条路都不通说明事件已被宿主终结，丢回显优于抛异常打断管道。
-                pass
-        try:
-            event.stop_event()
-        except Exception:
-            # 事件可能已被宿主或上游插件终结，重复 stop 无意义。
-            pass
+            event.set_result(event.plain_result(text))
+        event.stop_event()
 
     # 注意：permission_type 必须在 command_group 内层。真实宿主（4.26.8/4.27.0
     # 已验证）的 register_permission_type 会对被装饰对象调用 get_handler_full_name（访问
@@ -754,12 +694,7 @@ class SelfInitiatedReplyPlugin(Star):
         yield event.plain_result(await self._command_text(event, "debug"))
 
     def _set_command_handled(self, event: AstrMessageEvent) -> None:
-        try:
-            event.set_extra(COMMAND_HANDLED_KEY, True)
-        except Exception:
-            # 老宿主可能未实现 set_extra。标记丢失只让同一事件在后续 on_message
-            # 少一层去重保护，兜底是事件自身的 stop_event/is_stopped。
-            pass
+        event.set_extra(COMMAND_HANDLED_KEY, True)
 
     def _cancel_background_tasks(self) -> None:
         current = asyncio.current_task()
@@ -833,11 +768,8 @@ class SelfInitiatedReplyPlugin(Star):
         TERMINATE_TASK_TIMEOUT_SEC，否则「锁等 3s + 写等 3s」等于把承诺放大一倍。
         """
 
-        async def persist() -> None:
-            await self._save_storage()
-
         budget = TERMINATE_TASK_TIMEOUT_SEC if budget_sec is None else budget_sec
-        task = self._track_critical_task(persist())
+        task = self._track_critical_task(self._save_storage())
         done, _ = await asyncio.wait({task}, timeout=max(0.0, budget))
         if not done:
             # 硬窗口耗尽：宿主不等隔离任务就构造新实例，本实例的慢写若落地会

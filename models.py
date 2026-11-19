@@ -26,7 +26,7 @@ from typing import Any, Protocol
 from astrbot.api import logger
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "1.5.5"
+PLUGIN_VERSION = "1.5.6"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -376,6 +376,8 @@ def proactive_build_config_kwargs(
     *,
     model_settings: dict[str, Any] | None = None,
     persona_settings: dict[str, Any] | None = None,
+    tool_schema_mode: str = "full",
+    add_cron_tools: bool = False,
     request_max_retries: int = 1,
 ) -> dict[str, Any]:
     """主动运行传给宿主 ``MainAgentBuildConfig`` 的键集合（唯一来源）。
@@ -403,9 +405,7 @@ def proactive_build_config_kwargs(
         "tool_call_timeout": as_int(
             settings.get("tool_call_timeout") or 60, 60, minimum=1, maximum=86400
         ),
-        # 强制 full：skills_like 会进入 raw/light 双工具集路径，策略清理只覆盖
-        # light 集，边界不可见；主动回复工具集很小，full 无额外成本。
-        "tool_schema_mode": "full",
+        "tool_schema_mode": tool_schema_mode,
         "provider_wake_prefix": "",
         "streaming_response": False,
         "sanitize_context_by_modalities": bool(
@@ -416,7 +416,7 @@ def proactive_build_config_kwargs(
         "llm_safety_mode": as_bool(settings.get("llm_safety_mode"), safety_default),
         "safety_mode_strategy": str(settings.get("safety_mode_strategy") or strategy_default),
         "computer_use_runtime": "none",
-        "add_cron_tools": False,
+        "add_cron_tools": add_cron_tools,
         # 4.27.2 从 provider_settings 读取这两个键，4.23.3 不读取重试次数；
         # 4.29.4 改读构造字段。两处都写以兼容支持它们的宿主版本。
         "provider_settings": {
@@ -1106,6 +1106,7 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
         surfaces=_PANEL,
     ),
     ConfigSpec("proactive_inherit_tools", "bool", False, audited=True, surfaces=_PANEL),
+    ConfigSpec("proactive_preserve_tool_schema", "bool", False, audited=True, surfaces=_PANEL),
     ConfigSpec(
         "vision_judge_enabled",
         "bool",
@@ -1211,7 +1212,7 @@ def _normalize_list_item(spec: ConfigSpec, raw: Any, mode: str) -> tuple[str | N
         if mode == "api":
             raise ValueError(f"{spec.key} 条目含非法字符") from None
         # 孤立代理项能进内存但编不了 UTF-8：留着会让整份配置摘要与落盘一起失败。
-        text = "".join(char for char in text if is_utf8_encodable(char))
+        text = js_trim("".join(char for char in text if is_utf8_encodable(char)))
         sanitized = 1
     if not text:
         # 空条目一律丢弃：白名单与别名列表都无意义。
@@ -1222,7 +1223,7 @@ def _normalize_list_item(spec: ConfigSpec, raw: Any, mode: str) -> tuple[str | N
         return None, 1, 0
     if spec.item_max_len is not None and len(text) > spec.item_max_len:
         # api 模式已在入口按 len(js_trim(raw)) 拒绝，这里只剩 disk 的宽松截断。
-        return text[: spec.item_max_len], 0, 1
+        return text[: spec.item_max_len].rstrip(_JS_TRIM_CHARS), 0, 1
     return text, 0, sanitized
 
 
@@ -1298,7 +1299,7 @@ def _truncate_text(spec: ConfigSpec, text: str) -> str:
         len(text),
         spec.max_len,
     )
-    return text[: spec.max_len]
+    return text[: spec.max_len].rstrip()
 
 
 def is_utf8_encodable(char: str) -> bool:
@@ -1390,20 +1391,10 @@ def coerce_config_value(spec: ConfigSpec, raw: Any, fallback: Any) -> Any:
         # 伪造出一行假日志。与列表条目同一条规则（STRING_LIST_ILLEGAL_RE 排除
         # C0 控制字符）。孤立代理项一并剔除：留着会让落盘与配置摘要一起失败。
         text = str(raw or "").strip().translate(_UNPRINTABLE_CHARS)
-        return _truncate_text(spec, text)
+        return _truncate_text(spec, text).strip()
     # 规格表写错 kind 不得静默降级：那会让 int/bool 键带着非法值落盘并显示成
     # 正常值。与上面缺边界的自检同口径，加载期响。
     raise RuntimeError(f"{spec.key}: 未知配置 kind {spec.kind!r}")
-
-
-def normalize_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
-    """Return API updates in the same canonical form persisted by ``Settings``."""
-    normalized: dict[str, Any] = {}
-    for key, value in updates.items():
-        spec = CONFIG_SPEC_BY_KEY[key]
-        value = coerce_config_value(spec, value, spec.default)
-        normalized[key] = spec.canonical_value(value)
-    return normalized
 
 
 def read_config_value(spec: ConfigSpec, config: Any) -> Any:
@@ -1467,6 +1458,7 @@ class Settings:
     proactive_request_max_retries: int
     proactive_fallback_provider_ids: list[str]
     proactive_inherit_tools: bool
+    proactive_preserve_tool_schema: bool
     vision_judge_enabled: bool
     vision_main_enabled: bool
     vision_provider_id: str

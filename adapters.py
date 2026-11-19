@@ -14,7 +14,7 @@ from astrbot.api import logger
 from astrbot.api.star import Context
 
 from .models import PLUGIN_ID, MessageRecord, history_display_name
-from .utils import content_to_text, conversation_history, maybe_await, redact_exc_text
+from .utils import content_to_text, conversation_history, redact_exc_text
 
 
 class AstrBotBridge:
@@ -99,8 +99,7 @@ class AstrBotBridge:
         if preferred:
             return preferred
         try:
-            # 4.23 的公开方法为同步调用，较新宿主为协程。
-            provider_id = await maybe_await(self.context.get_current_chat_provider_id(umo))
+            provider_id = await self.context.get_current_chat_provider_id(umo)
         except Exception as exc:
             if not self._is_missing_provider_error(exc):
                 raise
@@ -118,10 +117,10 @@ class AstrBotBridge:
         if manager is None:
             return []
         try:
-            cid = await maybe_await(manager.get_curr_conversation_id(umo))
+            cid = await manager.get_curr_conversation_id(umo)
             if not cid:
                 return []
-            conversation = await maybe_await(manager.get_conversation(umo, cid))
+            conversation = await manager.get_conversation(umo, cid)
             history = conversation_history(conversation)
         except Exception as exc:
             # 宿主存储后端异常常含连接串，历史读取失败日志也要脱敏。
@@ -131,8 +130,6 @@ class AstrBotBridge:
                 umo,
                 redact_exc_text(exc),
             )
-            return []
-        if not isinstance(history, list):
             return []
         # -0 等于 0，直接切片会在零条请求时返回全量历史。
         window = history[-limit:] if limit > 0 else []

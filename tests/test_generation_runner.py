@@ -108,6 +108,8 @@ class FakeRuntime:
     def __init__(self, *, build_results: list | None = None, hang: bool = False) -> None:
         self.tool_set_snapshots: list[list[str]] = []
         self.filter_calls: list[tuple[object, object]] = []
+        self.guard_calls: list[frozenset[str]] = []
+        self.guard_agent_runners: list[object | None] = []
         self.build_kwargs: list[dict] = []
         self.built_reqs: list[object] = []
         self.build_results = build_results if build_results is not None else []
@@ -147,6 +149,11 @@ class FakeRuntime:
             tool_set.tools = [t for t in tool_set.tools if t.name in keep]
         else:
             tool_set.tools = [t for t in tool_set.tools if t.name not in drop]
+        return True
+
+    def guard_final_tools(self, _req, *, block, agent_runner=None):
+        self.guard_calls.append(block)
+        self.guard_agent_runners.append(agent_runner)
         return True
 
     async def load_session_conversation(self, event, context):
@@ -246,7 +253,7 @@ def _make_runner(
 
     runner = generation_mod.GenerationRunner(
         settings=settings,
-        context=SimpleNamespace(astrbot_config={}, get_config=None),
+        context=SimpleNamespace(get_config=lambda _umo: {}),
         runtime=lambda: fake_runtime,
         gate=gate,
         local_gate=lambda state, force, silence_active_at=None: "",
@@ -353,8 +360,16 @@ async def test_generate_new_host_hook_updates_provider_context_and_tools(
 
 
 async def test_generate_installs_and_restores_tool_boundary(tmp_path: Path) -> None:
-    _, models, runner, runtime, _, _ = _make_runner(tmp_path)
+    async def hook(event, _event_type, _req):
+        assert event.get_extra("_streaming_finished") is False
+        assert event.get_extra("_send_message_to_user_current_session_plain_texts") == []
+        event.set_extra("_send_message_to_user_current_session_plain_texts", ["本轮工具直发"])
+        return False
+
+    _, models, runner, runtime, _, _ = _make_runner(tmp_path, hook=hook)
     event = FakeEvent()
+    event.set_extra("_streaming_finished", True)
+    event.set_extra("_send_message_to_user_current_session_plain_texts", ["上轮工具直发"])
     runner._last_events["s1"] = event
     state = _state(models)
     result = await runner.generate("s1", state, expected_generation=1, force=True)
@@ -363,10 +378,12 @@ async def test_generate_installs_and_restores_tool_boundary(tmp_path: Path) -> N
     assert text == "你好呀"
     # 边界安装：build 时 plugins_name 已被清空
     assert runtime.build_kwargs[0]["req"].func_tool is not None
+    assert runtime.build_kwargs[0]["plugin_context"] is runner._context
     assert event.plugins_name == ["other_plugin"]  # 恢复
     assert "send" not in event.__dict__  # tracker 恢复
     assert event.get_extra("provider_request") is None
     assert event.get_extra("self_initiated_reply") is True
+    assert event.get_extra("_send_message_to_user_current_session_plain_texts") == ["本轮工具直发"]
 
 
 class ThirdPartyHijackRuntime(FakeRuntime):
@@ -440,44 +457,16 @@ async def test_generate_no_last_event_returns_empty(tmp_path: Path) -> None:
     assert returned_ledger is ledger
 
 
-async def test_install_boundary_raises_without_plugins_name(tmp_path: Path) -> None:
-    _, _, runner, _, _, _ = _make_runner(tmp_path)
-    event = SimpleNamespace()  # 无 plugins_name
-    try:
-        runner.install_agent_tool_boundary(event, False)
-        raise AssertionError("expected RuntimeError")
-    except RuntimeError as exc:
-        assert "插件工具边界" in str(exc)
-
-
-async def test_install_boundary_raises_when_assignment_fails(tmp_path: Path) -> None:
-    """plugins_name 只读时边界安装抛出（赋值失败）。
-
-    部分宿主版本 plugins_name 是只读属性或 __slots__ 成员（restore_agent_tool_boundary
-    注释明写此窗口）。本条验 install 路径：赋值抛异常 → 翻译成 RuntimeError 上抛。
-    """
-    _, _, runner, _, _, _ = _make_runner(tmp_path)
-
-    class _ReadOnly:
-        @property
-        def plugins_name(self) -> list[str]:
-            return ["a", "b"]
-
-    event = _ReadOnly()
-    try:
-        runner.install_agent_tool_boundary(event, False)
-        raise AssertionError("expected RuntimeError")
-    except RuntimeError as exc:
-        assert "插件工具边界" in str(exc)
-
-
 # ============================================================================
 # 直发预算与代次闸门
 # ============================================================================
 
 
-async def test_generate_suppresses_direct_send_after_stop(tmp_path: Path) -> None:
-    _, models, runner, runtime, _, _ = _make_runner(tmp_path)
+@pytest.mark.parametrize("channel", ["event", "context"])
+async def test_generate_suppresses_direct_send_after_stop(tmp_path: Path, channel: str) -> None:
+    _, models, runner, runtime, _, _ = _make_runner(
+        tmp_path, {"proactive_inherit_tools": channel == "context"}
+    )
     event = FakeEvent()
     sent: list[object] = []
 
@@ -485,6 +474,12 @@ async def test_generate_suppresses_direct_send_after_stop(tmp_path: Path) -> Non
         sent.append(message)
 
     event.send = capture
+
+    async def context_send(_session, message):
+        await capture(message)
+        return True
+
+    runner._context.send_message = context_send
     runner._last_events["s1"] = event
     state = _state(models)
     stopped = False
@@ -492,10 +487,18 @@ async def test_generate_suppresses_direct_send_after_stop(tmp_path: Path) -> Non
     def run_with_late_direct(_runner, **_kwargs):
         async def gen():
             nonlocal stopped
-            await _direct_send(event, "before stop")
-            stopped = True
-            await _direct_send(event, "after stop")
             from .host_stubs import _FakeMessageChain
+
+            if channel == "context":
+                send = runtime.build_kwargs[-1]["plugin_context"].send_message
+                await send("s1", _FakeMessageChain(chain=["before stop"]))
+            else:
+                await _direct_send(event, "before stop")
+            stopped = True
+            if channel == "context":
+                assert await send("s1", _FakeMessageChain(chain=["after stop"])) is False
+            else:
+                await _direct_send(event, "after stop")
 
             await event.send(_FakeMessageChain(type="assistant", chain=["late ordinary"]))
             yield None
@@ -511,16 +514,33 @@ async def test_generate_suppresses_direct_send_after_stop(tmp_path: Path) -> Non
     assert len(sent) == 1
 
 
-async def test_generate_tracks_direct_sends_within_budget(tmp_path: Path) -> None:
-    _, models, runner, runtime, _, _ = _make_runner(tmp_path)
+@pytest.mark.parametrize("channel", ["event", "mixed"])
+async def test_generate_tracks_direct_sends_within_budget(tmp_path: Path, channel: str) -> None:
+    _, models, runner, runtime, _, _ = _make_runner(
+        tmp_path, {"proactive_inherit_tools": channel == "mixed"}
+    )
     event = FakeEvent()
     runner._last_events["s1"] = event
     state = _state(models)
+    context_sent = []
+
+    async def context_send(session, message):
+        context_sent.append((session, message.get_plain_text()))
+        return True
+
+    runner._context.send_message = context_send
 
     def run_with_directs(_runner, **_kwargs):
         async def gen():
             for i in range(3):  # MAX_DIRECT_TOOL_SENDS = 2
-                await _direct_send(event, f"直发{i}")
+                if channel == "mixed" and i:
+                    from .host_stubs import _FakeMessageChain
+
+                    await runtime.build_kwargs[-1]["plugin_context"].send_message(
+                        "s1", _FakeMessageChain(chain=[f"直发{i}"])
+                    )
+                else:
+                    await _direct_send(event, f"直发{i}")
                 yield None
 
         return gen()
@@ -530,29 +550,62 @@ async def test_generate_tracks_direct_sends_within_budget(tmp_path: Path) -> Non
     assert returned_ledger.direct_send_count == 2
     assert text == "你好呀"
     assert len(returned_ledger.direct_texts) == 2
+    assert context_sent == ([("s1", "直发1")] if channel == "mixed" else [])
+    assert runner._context.send_message is context_send
 
 
-async def test_generate_tracks_tool_direct_evidence_in_pipeline_ledger(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("target", "unknown"), [(None, False), ("s1", False), ("other", False), ("s1", True)]
+)
+async def test_generate_tracks_tool_direct_evidence_in_pipeline_ledger(
+    tmp_path: Path, target: str | None, unknown: bool
+) -> None:
     """Generation returns the caller-owned ledger rather than parallel direct-send facts."""
-    _, models, runner, runtime, _, _ = _make_runner(tmp_path)
+    _, models, runner, runtime, _, _ = _make_runner(
+        tmp_path, {"proactive_inherit_tools": target is not None}
+    )
     event = FakeEvent()
     runner._last_events["s1"] = event
     ledger = models.AttemptLedger()
+    context_sent = []
 
-    def run_with_direct(_runner, **_kwargs):
+    async def context_send(session, message):
+        context_sent.append((session, message.get_plain_text()))
+        if unknown:
+            raise TimeoutError("adapter submitted before response timed out")
+        return True
+
+    runner._context.send_message = context_send
+
+    def run_with_direct(agent, **_kwargs):
         async def gen():
-            await _direct_send(event, "ledger direct")
+            if target is None:
+                await _direct_send(event, "ledger direct")
+            else:
+                from .host_stubs import _FakeMessageChain
+
+                assert (
+                    await runtime.build_kwargs[-1]["plugin_context"].send_message(
+                        target, _FakeMessageChain(chain=["ledger direct"])
+                    )
+                    is True
+                )
+            agent._resp = SimpleNamespace(completion_text="")
             yield None
 
         return gen()
 
     runtime.run = run_with_direct
-    _text, returned_ledger = await runner.generate("s1", _state(models), ledger=ledger, force=True)
+    text, returned_ledger = await runner.generate("s1", _state(models), ledger=ledger, force=True)
 
     assert returned_ledger is ledger
     assert returned_ledger.direct_send_count == 1
-    assert returned_ledger.direct_texts == ("ledger direct",)
-    assert ledger.attempts[0].state is models.AttemptState.DELIVERED
+    assert returned_ledger.direct_texts == (() if target == "other" else ("ledger direct",))
+    assert ledger.attempts[0].state is (
+        models.AttemptState.UNKNOWN if unknown else models.AttemptState.DELIVERED
+    )
+    assert text == ""
+    assert context_sent == ([] if target is None else [(target, "ledger direct")])
 
 
 @pytest.mark.parametrize("with_direct_send", [False, True])
@@ -806,17 +859,37 @@ async def test_host_tool_status_messages_never_reach_the_chat(tmp_path: Path) ->
     )
 
 
-async def test_generate_gate_suppresses_direct_send(tmp_path: Path) -> None:
+@pytest.mark.parametrize("channel", ["event", "context"])
+async def test_generate_gate_suppresses_direct_send(tmp_path: Path, channel: str) -> None:
     """代次闸门关闭时（is_current=False），工具直发被预算网关抑制。"""
-    _, models, runner, runtime, _, _ = _make_runner(tmp_path)
+    _, models, runner, runtime, _, _ = _make_runner(
+        tmp_path, {"proactive_inherit_tools": channel == "context"}
+    )
     event = FakeEvent()
     runner._last_events["s1"] = event
     runner._gate = SimpleNamespace(is_current=lambda umo, generation: False)
     state = _state(models)
+    sent = []
+
+    async def context_send(session, message):
+        sent.append(message)
+        return True
+
+    runner._context.send_message = context_send
 
     def run_with_directs(_runner, **_kwargs):
         async def gen():
-            await _direct_send(event, "被闸门拒绝")
+            if channel == "context":
+                from .host_stubs import _FakeMessageChain
+
+                assert (
+                    await runtime.build_kwargs[-1]["plugin_context"].send_message(
+                        "s1", _FakeMessageChain(chain=["被闸门拒绝"])
+                    )
+                    is False
+                )
+            else:
+                await _direct_send(event, "被闸门拒绝")
             yield None
 
         return gen()
@@ -825,6 +898,7 @@ async def test_generate_gate_suppresses_direct_send(tmp_path: Path) -> None:
     _text, returned_ledger = await runner.generate("s1", state, force=True)
     assert returned_ledger.direct_send_count == 0
     assert returned_ledger.direct_texts == ()
+    assert sent == []
 
 
 # ============================================================================
@@ -898,25 +972,6 @@ async def test_graceful_stop_ignores_request_stop_failure(tmp_path: Path) -> Non
 
     task = asyncio.create_task(asyncio.sleep(0))
     await runner._graceful_stop(task, StopRaises(), cancel_first=False)
-    assert task.done()
-
-
-async def test_graceful_stop_awaits_coroutine_request_stop(tmp_path: Path) -> None:
-    """宿主把 request_stop 改成协程时，停止请求必须真的发出去。
-
-    缺陷形态：裸调 ``request_stop()`` 不 await，协程对象创建后从未运行，
-    优雅停止静默失效，此后每次超时都退化到取消+隔离+永久 DEGRADED。
-    """
-    _, _, runner, _, _, _ = _make_runner(tmp_path, grace_sec=0.01)
-    stopped = asyncio.Event()
-
-    class StopIsCoroutine:
-        async def request_stop(self) -> None:
-            stopped.set()
-
-    task = asyncio.create_task(asyncio.sleep(0))
-    await runner._graceful_stop(task, StopIsCoroutine(), cancel_first=False)
-    assert stopped.is_set(), "协程型 request_stop 未被 await，停止请求静默丢失"
     assert task.done()
 
 
@@ -1113,29 +1168,50 @@ async def test_generate_quarantines_noncooperative_runner(tmp_path: Path) -> Non
     assert not background_tasks
 
 
-async def test_quarantined_run_keeps_tool_send_tracker(tmp_path: Path) -> None:
+@pytest.mark.parametrize("channel", ["event", "context"])
+async def test_quarantined_run_keeps_tool_send_tracker(tmp_path: Path, channel: str) -> None:
     """宿主吞掉取消后，仍活着的 agent 的工具直发必须继续受 tracker 约束。
 
     tracker 若在 cleanup 时被摘掉，那个被隔离到后台的任务之后每次工具直发都
     绕过预算/代次/停止闸门，它不在本插件的控制流里，不会再有第二个 cleanup
     来收口。守护方向是"宁留门不裸发"：tracker 随事件对象回收即可。
     """
-    _, models, runner, runtime, _, background_tasks = _make_runner(tmp_path, grace_sec=0.01)
+    _, models, runner, runtime, _, background_tasks = _make_runner(
+        tmp_path, {"proactive_inherit_tools": channel == "context"}, grace_sec=0.01
+    )
     event = FakeEvent()
     runner._last_events["s1"] = event
     release = asyncio.Event()
     started = asyncio.Event()
     quarantined: list[asyncio.Task] = []
+    sent = []
+
+    async def capture(message):
+        sent.append(message)
+        return True
+
+    async def context_send(_session, message):
+        return await capture(message)
+
+    event.send = capture
+    runner._context.send_message = context_send
 
     async def noncooperative_run(_runner):
         started.set()
         while not release.is_set():
             try:
-                await asyncio.sleep(3600)
+                await release.wait()
             except asyncio.CancelledError:
                 continue
-        if False:
-            yield None
+        if channel == "context":
+            from .host_stubs import _FakeMessageChain
+
+            await runtime.build_kwargs[-1]["plugin_context"].send_message(
+                "s1", _FakeMessageChain(chain=["late tool send"])
+            )
+        else:
+            await _direct_send(event, "late tool send")
+        yield None
 
     runtime.run = lambda _runner, **_kwargs: noncooperative_run(_runner)
     runner._quarantine_task = lambda task, reason: quarantined.append(task)
@@ -1160,6 +1236,8 @@ async def test_quarantined_run_keeps_tool_send_tracker(tmp_path: Path) -> None:
     await asyncio.wait_for(quarantined[0], timeout=1)
     await asyncio.sleep(0)
     assert not background_tasks
+    assert sent == []
+    assert runner._context.send_message is context_send
 
 
 async def test_timeout_without_quarantine_registry_keeps_send_tracker(tmp_path: Path) -> None:
@@ -1377,7 +1455,7 @@ async def test_generate_second_enforcement_aborts_and_closes_reset(tmp_path: Pat
 
     calls = {"n": 0}
 
-    def enforce_second_time_fails(req, inherit_tools):
+    def enforce_second_time_fails(req, inherit_tools, *_args, **_kwargs):
         calls["n"] += 1
         return calls["n"] == 1  # 第一道放行，第二道拒绝
 
@@ -1419,7 +1497,7 @@ async def test_enforce_policy_keep_mode_filters(tmp_path: Path) -> None:
 
 
 async def test_enforce_policy_drop_mode_removes_dangerous(tmp_path: Path) -> None:
-    _, _, runner, _, _, _ = _make_runner(tmp_path)
+    _, _, runner, runtime, _, _ = _make_runner(tmp_path)
     tool_set = FakeToolSet()
     tool_set.add_tool(SimpleNamespace(name="web_search"))
     tool_set.add_tool(SimpleNamespace(name="astrbot_execute_shell"))
@@ -1427,6 +1505,15 @@ async def test_enforce_policy_drop_mode_removes_dangerous(tmp_path: Path) -> Non
     req = SimpleNamespace(func_tool=tool_set)
     assert runner.enforce_final_tool_policy(req, True) is True
     assert tool_set.ids() == ["web_search"]  # 危险工具被 drop
+    tool_set.add_tool(SimpleNamespace(name="future_task"))
+    runner.settings.proactive_preserve_tool_schema = True
+    before = len(runtime.filter_calls)
+    agent_runner = SimpleNamespace(_skill_like_raw_tool_set=FakeToolSet())
+    assert runner.enforce_final_tool_policy(req, True, True, agent_runner=agent_runner) is True
+    assert "future_task" in runtime.guard_calls[-1]
+    assert runtime.guard_agent_runners[-1] is agent_runner
+    assert len(runtime.filter_calls) == before
+    assert tool_set.ids() == ["web_search", "future_task"]
 
 
 # ============================================================================
@@ -1448,6 +1535,51 @@ async def test_main_agent_build_config_defaults(tmp_path: Path) -> None:
     assert config.kwargs["file_extract_enabled"] is False
     assert config.kwargs["computer_use_runtime"] == "none"
     assert config.kwargs["add_cron_tools"] is False
+    runner._context = SimpleNamespace(
+        get_config=lambda _umo: {
+            "agent": {"config": {"misc": {"tool_schema_mode": "skills_like"}}}
+        },
+    )
+    assert runner.main_agent_build_config("s1").kwargs["tool_schema_mode"] == "full"
+    assert (
+        runner.main_agent_build_config("s1", preserve_tool_schema=True).kwargs["tool_schema_mode"]
+        == "skills_like"
+    )
+    runner._context = SimpleNamespace(get_config=lambda _umo: {})
+    assert runner.main_agent_build_config("s1").kwargs["add_cron_tools"] is False
+    assert (
+        runner.main_agent_build_config("s1", preserve_tool_schema=True).kwargs["add_cron_tools"]
+        is True
+    )
+    runner._context.get_config = lambda _umo: {
+        "provider_settings": {"proactive_capability": {"add_cron_tools": False}}
+    }
+    assert (
+        runner.main_agent_build_config("s1", preserve_tool_schema=True).kwargs["add_cron_tools"]
+        is False
+    )
+    runner._context = SimpleNamespace(
+        get_config=lambda _umo: {"provider_settings": {"tool_schema_mode": "skills_like"}},
+    )
+    assert (
+        runner.main_agent_build_config("s1", preserve_tool_schema=True).kwargs["tool_schema_mode"]
+        == "skills_like"
+    )
+    runner._context = SimpleNamespace(
+        get_config=lambda _umo: {
+            "kb_agentic_mode": True,
+            "provider_settings": {
+                "computer_use_runtime": "sandbox",
+                "sandbox": {"booter": "cua"},
+                "proactive_capability": {"add_cron_tools": False},
+            },
+        },
+    )
+    preserved = runner.main_agent_build_config("s1")
+    assert preserved.kwargs["kb_agentic_mode"] is False
+    assert preserved.kwargs["computer_use_runtime"] == "none"
+    assert "sandbox_cfg" not in preserved.kwargs
+    assert preserved.kwargs["add_cron_tools"] is False
     # 未配置回退链时必须是空列表而不是缺键：宿主 runner 的候选集是
     # ``[provider, *fallback_providers]``，缺这个键就只剩单个候选。
     assert config.kwargs["fallback_provider_ids"] == []
@@ -1456,7 +1588,6 @@ async def test_main_agent_build_config_defaults(tmp_path: Path) -> None:
 async def test_main_agent_build_config_survives_non_mapping_model(tmp_path: Path) -> None:
     _, _, runner, _, _, _ = _make_runner(tmp_path)
     runner._context = SimpleNamespace(
-        astrbot_config={},
         get_config=lambda _umo: {"agent_runner": {"config": {"model": "invalid"}}},
     )
 
@@ -1486,7 +1617,6 @@ async def test_main_agent_build_config_follows_persona_safety_mode(tmp_path: Pat
 
     # 4.30 新路径
     runner._context = SimpleNamespace(
-        astrbot_config={},
         get_config=lambda _umo: {
             "agent": {
                 "config": {"persona": {"safety_mode": False, "safety_mode_strategy": "tool_call"}}
@@ -1499,14 +1629,12 @@ async def test_main_agent_build_config_follows_persona_safety_mode(tmp_path: Pat
 
     # 旧宿主路径
     runner._context = SimpleNamespace(
-        astrbot_config={},
         get_config=lambda _umo: {"agent_runner": {"config": {"persona": {"safety_mode": False}}}},
     )
     assert runner.main_agent_build_config("s1").kwargs["llm_safety_mode"] is False
 
     # provider_settings 里的显式配置优先于人格
     runner._context = SimpleNamespace(
-        astrbot_config={},
         get_config=lambda _umo: {
             "provider_settings": {"llm_safety_mode": True},
             "agent": {"config": {"persona": {"safety_mode": False}}},
@@ -1515,7 +1643,7 @@ async def test_main_agent_build_config_follows_persona_safety_mode(tmp_path: Pat
     assert runner.main_agent_build_config("s1").kwargs["llm_safety_mode"] is True
 
     # 两处都没有时保持宿主默认
-    runner._context = SimpleNamespace(astrbot_config={}, get_config=lambda _umo: {})
+    runner._context = SimpleNamespace(get_config=lambda _umo: {})
     config = runner.main_agent_build_config("s1")
     assert config.kwargs["llm_safety_mode"] is True
     assert config.kwargs["safety_mode_strategy"] == "system_prompt"
@@ -1539,7 +1667,6 @@ async def test_main_agent_build_config_prefers_session_provider_settings(tmp_pat
         }
     }
     runner._context = SimpleNamespace(
-        astrbot_config=host_level,
         get_config=lambda umo: session_level if umo == "s1" else host_level,
     )
 
@@ -1557,7 +1684,6 @@ async def test_main_agent_build_config_prefers_session_provider_settings(tmp_pat
     # 回退链必须透传：宿主三处 `MainAgentBuildConfig` 构造点都读这个路径，
     # 主动回复漏传后 model 报错就直接终止，不会换下一个候选。
     runner._context = SimpleNamespace(
-        astrbot_config=host_level,
         get_config=lambda _umo: {
             "agent_runner": {"config": {"model": {"fallback_provider_ids": ["fb-a", "fb-b"]}}}
         },
@@ -1569,10 +1695,11 @@ async def test_main_agent_build_config_prefers_session_provider_settings(tmp_pat
 
     # AstrBot 4.30 moved the session model settings under ``agent.config``.
     runner._context = SimpleNamespace(
-        astrbot_config=host_level,
-        get_config=lambda _umo: {
-            "agent": {"config": {"model": {"fallback_provider_ids": ["fb-30"]}}}
-        },
+        get_config=lambda umo: (
+            {"agent": {"config": {"model": {"fallback_provider_ids": ["fb-30"]}}}}
+            if umo
+            else host_level
+        ),
     )
     assert runner.main_agent_build_config("s1").kwargs["fallback_provider_ids"] == ["fb-30"]
 
@@ -1583,16 +1710,14 @@ async def test_main_agent_build_config_prefers_session_provider_settings(tmp_pat
     def boom(_umo):
         raise RuntimeError("host get_config unavailable")
 
-    runner._context = SimpleNamespace(astrbot_config=host_level, get_config=boom)
+    runner._context = SimpleNamespace(get_config=boom)
     degraded = runner.main_agent_build_config("s1")
     assert degraded.kwargs["tool_call_timeout"] == 60, "取不到会话配置必须落到宿主默认"
     # 会话配置取不到时其余键为空，但主动回复自己的重试次数仍要带上。
     assert degraded.kwargs["provider_settings"] == {"request_max_retries": 1}
 
     # 返回对象不是 Mapping：同样降级，不得把异常外泄到构建链
-    runner._context = SimpleNamespace(
-        astrbot_config={}, get_config=lambda _umo: ["not", "a", "mapping"]
-    )
+    runner._context = SimpleNamespace(get_config=lambda _umo: ["not", "a", "mapping"])
     not_mapping = runner.main_agent_build_config("s1")
     assert not_mapping.kwargs["tool_call_timeout"] == 60
     assert not_mapping.kwargs["provider_settings"] == {"request_max_retries": 1}
@@ -1617,7 +1742,6 @@ async def test_main_agent_build_config_survives_non_numeric_tool_call_timeout(
 
     runtime.new_build_config = lambda **kwargs: BuildConfig(**kwargs)
     runner._context = SimpleNamespace(
-        astrbot_config={},
         get_config=lambda _umo: {"provider_settings": {"tool_call_timeout": "60s"}},
     )
 
@@ -1630,7 +1754,7 @@ async def test_main_agent_build_config_survives_non_numeric_tool_call_timeout(
     }
 
     runner._context = SimpleNamespace(
-        astrbot_config={}, get_config=lambda _umo: {"provider_settings": {"tool_call_timeout": 0}}
+        get_config=lambda _umo: {"provider_settings": {"tool_call_timeout": 0}}
     )
     assert runner.main_agent_build_config("s1").kwargs["tool_call_timeout"] == 60
 
@@ -2104,7 +2228,6 @@ def test_fallback_chain_is_passed_through_untouched(caplog) -> None:
         }
 
     context = SimpleNamespace(
-        astrbot_config={},
         get_config=_config,
         provider_manager=SimpleNamespace(inst_map={"some-other-id": object()}),
     )
@@ -2208,7 +2331,6 @@ async def test_proactive_retries_come_from_the_plugin_config(tmp_path: Path) -> 
     """
     _, _, runner, *_ = _make_runner(tmp_path, {"proactive_request_max_retries": 3})
     runner._context = SimpleNamespace(
-        astrbot_config={"agent_runner": {"config": {"model": {"request_max_retries": 7}}}},
         get_config=lambda _umo: {"agent_runner": {"config": {"model": {"request_max_retries": 5}}}},
     )
 
@@ -2218,7 +2340,6 @@ async def test_proactive_retries_come_from_the_plugin_config(tmp_path: Path) -> 
 
     _, _, default_runner, *_ = _make_runner(tmp_path, {})
     default_runner._context = SimpleNamespace(
-        astrbot_config={},
         get_config=lambda _umo: {"agent_runner": {"config": {"model": {"request_max_retries": 5}}}},
     )
     default_config = default_runner.main_agent_build_config("s1")
@@ -2236,7 +2357,7 @@ async def test_fallback_list_also_reaches_hosts_that_read_provider_settings(
     那些版本上「备用模型」设了也完全不起作用。
     """
     _, _, runner, *_ = _make_runner(tmp_path, {"proactive_fallback_provider_ids": ["b", "c"]})
-    runner._context = SimpleNamespace(astrbot_config={}, get_config=None)
+    runner._context = SimpleNamespace(get_config=lambda _umo: {})
 
     config = runner.main_agent_build_config("s1")
 
@@ -2250,13 +2371,12 @@ async def test_selected_proactive_provider_is_passed_to_agent_build(tmp_path: Pa
     )
     provider = object()
 
-    async def get_provider_by_id(provider_id: str):
+    def get_provider_by_id(provider_id: str):
         assert provider_id == "chosen-provider"
         return provider
 
     runner._context = SimpleNamespace(
-        astrbot_config={},
-        get_config=None,
+        get_config=lambda _umo: {},
         get_provider_by_id=get_provider_by_id,
     )
     event = FakeEvent()

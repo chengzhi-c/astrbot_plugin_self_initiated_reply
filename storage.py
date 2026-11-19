@@ -101,14 +101,21 @@ _REPLACE_RETRY_ATTEMPTS = 5
 _REPLACE_RETRY_DELAY_SEC = 0.02
 
 
-def replace_with_retry(src: Path, dst: Path) -> None:
+def replace_with_retry(
+    src: Path, dst: Path, *, abandoned: Callable[[], bool] | None = None
+) -> bool:
     """``os.replace`` 的瞬时占用重试包装；重试次数与间隔见上方常量。"""
-    for attempt in range(_REPLACE_RETRY_ATTEMPTS):
+    attempt = 0
+    while True:
+        # 重试睡眠期间旧实例可能已关停，每次替换前都要复核写入权。
+        if abandoned is not None and abandoned():
+            return False
         try:
             os.replace(src, dst)
-            return
+            return True
         except PermissionError:
-            if attempt == _REPLACE_RETRY_ATTEMPTS - 1:
+            attempt += 1
+            if attempt == _REPLACE_RETRY_ATTEMPTS:
                 raise
             time.sleep(_REPLACE_RETRY_DELAY_SEC)
 
@@ -233,10 +240,9 @@ def write_json_atomic(
             json.dump(data, handle, ensure_ascii=False, indent=2)
             handle.flush()
             os.fsync(handle.fileno())
-        if abandoned is not None and abandoned():
+        if not replace_with_retry(tmp_path, path, abandoned=abandoned):
             logger.debug("[%s] abandoned write dropped path=%s", PLUGIN_ID, path)
             return False
-        replace_with_retry(tmp_path, path)
         fsync_dir(path)
         return True
     except (OSError, UnicodeEncodeError, TypeError, ValueError) as exc:
@@ -533,20 +539,14 @@ def build_sessions_payload(
     return payload
 
 
-def persist_settings_config(path: Path, config_obj: Any, settings: Settings) -> bool:
-    """原子落盘当前 Settings 的全部配置（含白名单）并同步宿主配置对象。
-
-    白名单已在 ``Settings.to_config_dict()`` 里按 ``container="set"`` 排序输出，
-    此处不再单独处理。
-    """
-    data = settings.to_config_dict()
-    if not write_json_atomic(path, data):
-        return False
-    return _update_config_obj(config_obj, data) and _persist_config_obj(config_obj, data)
-
-
-async def apersist_settings_config(path: Path, config_obj: Any, settings: Settings) -> bool:
-    """``persist_settings_config`` 的 async 版：只有文件写盘进线程。
+async def apersist_settings_config(
+    path: Path,
+    config_obj: Any,
+    settings: Settings,
+    *,
+    abandoned: Callable[[], bool] | None = None,
+) -> bool:
+    """原子落盘当前 Settings 并同步宿主配置对象；只有文件写盘进线程。
 
     宿主 ``save_config`` 的线程安全性未知，仍在事件循环内同步执行。
 
@@ -556,7 +556,9 @@ async def apersist_settings_config(path: Path, config_obj: Any, settings: Settin
     到这份被驳回的配置，``config_revision`` 由内存算也与磁盘脱节）。
     """
     data = settings.to_config_dict()
-    write_task = asyncio.ensure_future(asyncio.to_thread(write_json_atomic, path, data))
+    write_task = asyncio.ensure_future(
+        asyncio.to_thread(write_json_atomic, path, data, abandoned=abandoned)
+    )
     try:
         success = await asyncio.shield(write_task)
     except asyncio.CancelledError:
@@ -574,6 +576,7 @@ async def apersist_settings_config(path: Path, config_obj: Any, settings: Settin
                     raise
                 continue
         raise
-    if not success:
+    # 旧实例可能在写线程返回后才恢复执行；宿主 save_config 也会重新写盘。
+    if not success or (abandoned is not None and abandoned()):
         return False
     return _update_config_obj(config_obj, data) and _persist_config_obj(config_obj, data)

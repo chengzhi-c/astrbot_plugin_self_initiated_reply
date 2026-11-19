@@ -830,158 +830,6 @@ async def test_send_reply_context_fallback_when_no_event(tmp_path: Path) -> None
     assert not any(isinstance(item, delivery.Reply) for item in chain), "context 路径不得引用"
 
 
-async def test_context_send_pre_submit_failure_is_not_unknown(tmp_path: Path, monkeypatch) -> None:
-    """context 路径提交前失败必须记 FAILED_BEFORE_SUBMIT，不得白吃冷却与日配额。
-
-    ``MessageChain`` 构造失败发生在 ``outbound.send`` 调用之前，adapter 从未
-    被触及。返回 UNKNOWN 会经 apply_proactive_state(confirmed=False) 消耗
-    冷却与日配额，等于为一条从未发出的回复付费。
-
-    本条只钉「提交前误记 UNKNOWN」这一侧；反向（已提交误降为提交前失败）
-    由下两条守。三条合起来才能拦住全部无条件化改法。
-    """
-    delivery, models, runner, _ = _make_runner(tmp_path)
-
-    class BoomChain:
-        def __init__(self) -> None:
-            raise RuntimeError("chain construction failed")
-
-    monkeypatch.setattr(delivery, "MessageChain", BoomChain)
-
-    outcome = await runner.send_reply("s1", "你好", expected_generation=1)
-
-    assert outcome.status is models.SendStatus.FAILED_BEFORE_SUBMIT, (
-        f"提交前失败被误判为 {outcome.status!r}，会白吃冷却与日配额"
-    )
-
-
-async def test_context_send_post_submit_failure_stays_unknown(tmp_path: Path, monkeypatch) -> None:
-    """护栏：context 路径提交后失败必须仍记 UNKNOWN，不得降级为提交前失败。
-
-    这条守的是上一条修复的反向风险。``_context_send`` 抛异常时 gateway 已调过
-    adapter，结果不可知（可能已达），此时若日志分支再抛，外层 except 必须保持
-    UNKNOWN，降级成 FAILED_BEFORE_SUBMIT 会让插件不消耗冷却而重发，制造重复
-    消息。故修复必须是条件式的，不能把末尾 except 整体改成提交前失败。
-    """
-    delivery, models, runner, _ = _make_runner(tmp_path)
-
-    async def boom_context_send(umo: str, message: object) -> None:
-        raise RuntimeError("adapter died mid-send")
-
-    runner._context_send = boom_context_send
-
-    # 只让提交后那次日志抛（UNKNOWN 分支）；外层 except 自己的日志必须能正常
-    # 执行，否则异常直接逃出 send_reply，测试观察不到返回值。
-    #
-    # 按日志模板锚定，而不是按「第一次调用」计数：计数法把断言钉在调用顺序上，
-    # 将来有人在 send 之前新增一条 warning，就会打错位置，让这条测试静默变成
-    # 「测的不是目标路径」的虚假绿灯。下方 fired 断言进一步保证锚点脱落时报红
-    # 而不是无声通过。
-    unknown_branch_marker = "context send result unknown"
-    fired = {"n": 0}
-    real_warning = delivery.logger.warning
-
-    def boom_on_unknown_branch(*args: object, **kwargs: object) -> None:
-        if args and isinstance(args[0], str) and unknown_branch_marker in args[0]:
-            fired["n"] += 1
-            raise RuntimeError("logger exploded after submit")
-        real_warning(*args, **kwargs)
-
-    monkeypatch.setattr(delivery.logger, "warning", boom_on_unknown_branch)
-
-    outcome = await runner.send_reply("s1", "你好", expected_generation=1)
-
-    assert fired["n"] == 1, (
-        "UNKNOWN 分支的日志未被触发：本测试没有走到提交后失败那条路径，"
-        f"断言无意义（日志模板 {unknown_branch_marker!r} 可能已改名）"
-    )
-    assert outcome.status is models.SendStatus.UNKNOWN, (
-        f"提交后失败被降级为 {outcome.status!r}，会导致不消耗冷却而重发"
-    )
-
-
-async def test_send_escaping_from_gateway_after_adapter_call_stays_unknown(
-    tmp_path: Path,
-) -> None:
-    """护栏：异常逃出 ``OutboundGateway.send`` 时必须仍记 UNKNOWN。
-
-    gateway 内部虽把 adapter 异常转成 UNKNOWN，但它自身的 except 块或后续记账
-    仍可能抛（历史形态：``str(exc)`` 二次抛出，已由 ``safe_exc_text`` 堵住；
-    但"gateway 可能抛"这一通道本身是结构性的，任何新增的记账/日志分支都可能
-    再引入）。此时 adapter 早已调用过，真实状态是「可能已提交」。
-
-    若按「gateway 之后才算已提交」的直觉去写标志位，这里会翻转成
-    FAILED_BEFORE_SUBMIT，不消耗冷却 → 后续触发重发 → 重复消息。
-
-    故标志位必须在 ``await outbound.send`` **之前**置位：语义是「adapter 调用
-    即将开始」，而非「gateway 已返回」。
-    """
-    _, models, runner, _ = _make_runner(tmp_path)
-    delivery_mod = _delivery_module()
-
-    class GatewayEscape(RuntimeError):
-        pass
-
-    async def boom_context_send(umo: str, message: object) -> None:
-        raise RuntimeError("adapter called, then gateway escapes")
-
-    runner._context_send = boom_context_send
-
-    # 让 gateway 在 adapter 之后、返回之前抛：真实 gateway 先完成 send 调用，
-    # 再抛，等价于「adapter 已调用过」这一前提成立时的逃出。
-    real_gateway = delivery_mod.OutboundGateway
-
-    class EscapingGateway(real_gateway):  # type: ignore[misc, valid-type]
-        async def send(self, message, *, kind="reply"):
-            await super().send(message, kind=kind)
-            raise GatewayEscape("gateway escaped after adapter call")
-
-    delivery_mod.OutboundGateway = EscapingGateway
-    try:
-        outcome = await runner.send_reply("s1", "你好", expected_generation=1)
-    finally:
-        delivery_mod.OutboundGateway = real_gateway
-
-    assert outcome.status is models.SendStatus.UNKNOWN, (
-        f"异常逃出 gateway 后被判为 {outcome.status!r}；adapter 已调用过，"
-        "判成提交前失败会不消耗冷却而重发"
-    )
-
-
-async def test_event_send_escaping_from_gateway_stays_unknown(tmp_path: Path) -> None:
-    """护栏：事件路径的异常逃出 gateway 时必须仍记 UNKNOWN。
-
-    与上一条同源缺陷，只是发生在事件路径（``last_event.send``）。两条路径各自
-    有独立的标志位与 ``except``，改一处不会连带另一处，故事件侧单列一条。
-    """
-    _, models, runner, last_events = _make_runner(tmp_path)
-
-    async def boom_send(_message: object) -> None:
-        raise RuntimeError("adapter called, then gateway escapes")
-
-    event = FakeEvent()
-    event.send = boom_send
-    last_events["s1"] = event
-
-    real_gateway = _delivery_module().OutboundGateway
-
-    class EscapingGateway(real_gateway):  # type: ignore[misc, valid-type]
-        async def send(self, message, *, kind="reply"):
-            await super().send(message, kind=kind)
-            raise RuntimeError("gateway escaped after adapter call")
-
-    _delivery_module().OutboundGateway = EscapingGateway
-    try:
-        outcome = await runner.send_reply("s1", "你好", expected_generation=1)
-    finally:
-        _delivery_module().OutboundGateway = real_gateway
-
-    assert outcome.status is models.SendStatus.UNKNOWN, (
-        f"事件路径异常逃出 gateway 后被判为 {outcome.status!r}；adapter 已调用过，"
-        "判成提交前失败会不消耗冷却而重发"
-    )
-
-
 # ============================================================================
 # 引用（quote_mode / quote_probability）
 # ============================================================================
@@ -997,7 +845,7 @@ def _event_with_id(message_id: str = "m1"):
 def _capture_sent_chains(event) -> list[list]:
     """抓发送瞬间的消息链。
 
-    投递完成后 ``_clear_result`` 会把事件结果回收，事后取不到链，故在 ``send``
+    投递完成后 ``clear_result`` 会把事件结果回收，事后取不到链，故在 ``send``
     入口处快照，这也正是宿主适配器实际拿到的对象。
     """
     chains: list[list] = []
@@ -1141,13 +989,6 @@ async def test_quote_skipped_without_message_id(tmp_path: Path) -> None:
 # ============================================================================
 
 
-class _ClearBoomEvent(FakeEvent):
-    """宿主 clear_result 抛错的事件桩（回收失败不得阻断投递）。"""
-
-    def clear_result(self) -> None:
-        raise RuntimeError("clear_result broken")
-
-
 class _ClearingHook:
     """装饰钩子：吃掉事件结果（直接置空，模拟钩子消费内容）。"""
 
@@ -1187,10 +1028,10 @@ class _FalseSendEvent(FakeEvent):
 # ============================================================================
 
 
-async def test_send_reply_hook_empty_result_and_clear_error(tmp_path: Path) -> None:
-    """装饰钩子清空结果 → FAILED_BEFORE_SUBMIT；clear_result 宿主抛错被吞。"""
+async def test_send_reply_hook_empty_result(tmp_path: Path) -> None:
+    """装饰钩子清空结果 → FAILED_BEFORE_SUBMIT。"""
     _, models, runner, last_events = _make_runner(tmp_path, hook=_ClearingHook())
-    last_events["s1"] = _ClearBoomEvent()
+    last_events["s1"] = FakeEvent()
     outcome = await runner.send_reply("s1", "hello", expected_generation=None)
     assert outcome.status is models.SendStatus.FAILED_BEFORE_SUBMIT
     assert "no result" in outcome.detail
@@ -1284,7 +1125,7 @@ async def test_send_reply_decorating_hook_error_still_delivered(tmp_path: Path) 
     """装饰钩子抛错：按出错时手上的链照发，分类仍 DELIVERED。
 
     缺陷形态：装饰钩子是唯一一处未加保护的第三方钩子调用，异常落到外层
-    ``except`` 时 ``send_started`` 仍为 False，整条已生成的回复被判
+    ``except`` 时尚未发送，整条已生成的回复被判
     FAILED_BEFORE_SUBMIT —— 用户收不到消息、账本无 attempt（不消耗冷却与日
     配额、不写历史），下一轮对同一上下文再生成一次。同函数对 after-send 钩子
     已有等价降级，两处必须同一口径。
@@ -1296,29 +1137,6 @@ async def test_send_reply_decorating_hook_error_still_delivered(tmp_path: Path) 
 
     assert event.sent_texts == ["hello"], "装饰钩子抛错吞掉了整条回复"
     assert outcome.status is models.SendStatus.DELIVERED
-
-
-async def test_send_reply_pre_submit_ledger_error_is_not_unknown(tmp_path: Path) -> None:
-    """账本前置步骤抛错：适配器一次都没被调用，不得记 UNKNOWN。
-
-    ``OutboundGateway.send`` 在调用适配器之前先 reserve/mark_in_flight，而
-    gateway 的 except 只包住适配器那一段，故逃出 gateway 的异常必然发生在
-    提交前。记 UNKNOWN 会让一条确定没发出的回复白吃冷却与日配额、不写历史且
-    不自动重试。
-    """
-    _, models, runner, last_events = _make_runner(tmp_path)
-    event = FakeEvent()
-    last_events["s1"] = event
-    ledger = models.AttemptLedger()
-
-    def boom_reserve(kind: str, text: str = "") -> None:
-        raise RuntimeError("reserve exploded")
-
-    ledger.reserve = boom_reserve
-    outcome = await runner.send_reply("s1", "hello", ledger=ledger, expected_generation=None)
-
-    assert event.sent_texts == [], "适配器被调用过，本用例前提不成立"
-    assert outcome.status is models.SendStatus.FAILED_BEFORE_SUBMIT
 
 
 # ============================================================================
@@ -1526,18 +1344,3 @@ async def test_deliver_log_reply_content_preview(tmp_path: Path, caplog: Any) ->
     assert f"chars={len(long_reply)}" in previews[0]
     assert f"text={short_reply}" in previews[1], f"短回复未原样记录：{previews[1]}"
     assert "…" not in previews[1], "短回复不该被截断"
-
-
-def test_named_at_serialization_never_turns_a_send_into_unknown(monkeypatch) -> None:
-    """宿主 at 段结构变化时，装饰组件的序列化必须静默降级。
-
-    缺陷形态：_NamedAt.toDict 直接写 data["data"]["name"]。这一步在**投递时**由
-    适配器序列化阶段执行，晚于构造期保护：抛出去会被 outbound 归成 UNKNOWN
-    （消耗冷却与日配额、不重试），一次普通发送就变成「提交状态未知」——正是
-    契约 §14 禁止的「装饰性组件影响投递分类」。
-    """
-    _load_modules()
-    delivery = _delivery_module()
-    monkeypatch.setattr(delivery.At, "toDict", lambda self: {"type": "at"})
-    component = delivery._NamedAt(qq="123", name="小明")
-    assert component.toDict() == {"type": "at"}

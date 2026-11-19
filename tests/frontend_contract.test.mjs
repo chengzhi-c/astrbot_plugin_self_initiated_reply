@@ -67,8 +67,9 @@ const makeConfigIo = ({
   controls = providerControls(),
   providerOptions,
   providerListAvailable,
-}) =>
-  createConfigIo({
+}) => {
+  globalThis.document = { activeElement: null };
+  return createConfigIo({
     getEls: () => elements,
     getState: () => state,
     setState: (updates) => Object.assign(state, updates),
@@ -85,6 +86,7 @@ const makeConfigIo = ({
         ? providerListAvailable
         : () => providerListAvailable ?? false,
   });
+};
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pageDir = join(root, "pages", "主动回复设置");
@@ -127,6 +129,7 @@ const makeSaveFixture = ({
     providerField("proactive_fallback_provider_ids", "proactiveFallback"),
     number("proactive_request_max_retries", "1"),
     checkbox("proactive_inherit_tools", true),
+    checkbox("proactive_preserve_tool_schema", true),
     ...extraFields,
     field("whitelist_sessions", whitelist, { configTransform: "whitelist" }),
   ];

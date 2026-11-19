@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -39,10 +39,10 @@ if TYPE_CHECKING:
 def resolve_paths(
     config_obj: Any,
     *,
-    get_config_path: Any = None,
-    get_plugin_data_path: Any = None,
+    get_config_path: Callable[[], Any],
+    get_plugin_data_path: Callable[[], Any],
 ) -> tuple[Path, Path, Path]:
-    """Resolve config / state.json / data-root paths from host root, with legacy fallback.
+    """Resolve config / state.json / data-root paths from the host root.
 
     第三个返回值是宿主 ``<data>`` 根，识图本地读取 allowlist 与 ``cmd_config.json``
     热读都以它为基准。它由 ``plugin_data_path`` 的构造式**正向**推出
@@ -52,15 +52,10 @@ def resolve_paths(
     configured_path = getattr(config_obj, "config_path", None)
     if configured_path:
         config_path = Path(str(configured_path)).expanduser()
-    elif callable(get_config_path):
+    else:
         config_path = Path(str(get_config_path())).expanduser() / f"{PLUGIN_ID}_config.json"
-    else:
-        config_path = Path.home() / ".astrbot" / "data" / "config" / f"{PLUGIN_ID}_config.json"
 
-    if callable(get_plugin_data_path):
-        plugin_data_path = Path(str(get_plugin_data_path())).expanduser() / PLUGIN_ID
-    else:
-        plugin_data_path = config_path.parent.parent / "plugin_data" / PLUGIN_ID
+    plugin_data_path = Path(str(get_plugin_data_path())).expanduser() / PLUGIN_ID
     return config_path, plugin_data_path / "state.json", plugin_data_path.parent.parent
 
 
@@ -168,41 +163,6 @@ def append_recent_user_message(
     return stamped
 
 
-def _build_payload(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
-    """构造状态快照 payload；两条落盘路径共用同一份构造逻辑。"""
-    return build_sessions_payload(
-        plugin.sessions,
-        plugin.settings.whitelist,
-        plugin.settings.recent_message_limit,
-    )
-
-
-def save_storage_sync(plugin: SelfInitiatedReplyPlugin) -> None:
-    """启动期状态落盘：磁盘已与待写快照一致时跳过（无谓 fsync 与 mtime 扰动）。
-
-    仅 ``__init__`` 调用：刚从同一文件加载出的内容零变化时重写是纯浪费。
-    ``abandoned`` 闸门与 ``save_storage`` 同源。
-    """
-    try:
-        payload = _build_payload(plugin)
-    except Exception as exc:
-        # 不开 exc_info：traceback 末尾是 str(exc) 原文，会把 redact_exc_text 脱掉的凭证
-        # 原样带回同一条日志。口径同 scheduler/delivery/generation 的失败分支。
-        logger.error("[%s] failed to prepare state snapshot: %s", PLUGIN_ID, redact_exc_text(exc))
-        return
-    if sessions_payload_matches(plugin._storage_path, payload):
-        return
-    if not write_json_atomic(
-        plugin._storage_path,
-        payload,
-        abandoned=lambda: plugin._abandon_disk_writes,
-    ):
-        if not plugin._abandon_disk_writes:
-            logger.warning(
-                "[%s] initial state save failed path=%s", PLUGIN_ID, plugin._storage_path
-            )
-
-
 async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
     """落盘会话状态；内容与磁盘一致时跳过（无谓 fsync 与 mtime 扰动）。
 
@@ -227,7 +187,11 @@ async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
             # 放弃是主动决策，不抛异常、不记错误。
             logger.debug("[%s] state save skipped: instance abandoned", PLUGIN_ID)
             return
-        payload = _build_payload(plugin)
+        payload = build_sessions_payload(
+            plugin.sessions,
+            plugin.settings.whitelist,
+            plugin.settings.recent_message_limit,
+        )
         # 跳写判据的读+解析也进线程：state.json 可达数十 MB（白名单规模 ×
         # recent_message_limit × 单条长度），同步跑在事件循环上会阻塞该进程内
         # 所有会话与 Web 面板——写盘一侧遵守同一纪律。
@@ -278,7 +242,12 @@ async def save_storage(plugin: SelfInitiatedReplyPlugin) -> None:
 
 async def async_sync_whitelist(plugin: SelfInitiatedReplyPlugin) -> bool:
     """落盘当前配置：文件写盘进线程，宿主同步留事件循环（见 storage.apersist）。"""
-    if not await apersist_settings_config(plugin._config_path, plugin.config, plugin.settings):
+    if not await apersist_settings_config(
+        plugin._config_path,
+        plugin.config,
+        plugin.settings,
+        abandoned=lambda: plugin._terminated,
+    ):
         raise OSError(f"配置文件写入失败：{plugin._config_path}")
     return True
 
@@ -357,9 +326,6 @@ def track_background_task(
     plugin: SelfInitiatedReplyPlugin, coro: Coroutine[Any, Any, Any]
 ) -> asyncio.Task[Any] | None:
     if not plugin._can_start_tasks():
-        try:
-            coro.close()
-        except Exception:
-            pass
+        coro.close()
         return None
     return _register_task(plugin, coro, critical=False)

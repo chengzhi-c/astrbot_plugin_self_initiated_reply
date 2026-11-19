@@ -60,48 +60,6 @@ RuntimeCallback = Callable[[], Any]
 _LOG_REPLY_PREVIEW_CHARS = 80
 
 
-async def _submit_once(
-    adapter: Callable[[Any], Any],
-    payload: Any,
-    ledger: AttemptLedger,
-    *,
-    log_label: str,
-    umo: str,
-    ledger_id: str,
-) -> tuple[Any, SendOutcome | None]:
-    """经 gateway 投递一次，返回（gateway 结果, 失败 outcome）。
-
-    提交标志在**适配器被调用那一刻**置位，而非 gateway 之前：gateway 在调用适配器
-    前还有 accepts_attempts / reserve / mark_in_flight，其 except 只包住
-    ``self._sender(message)`` 那一段（outbound.py:123-140），故逃出 gateway 的异常
-    必然发生在提交前——那些前置步骤抛错时适配器一次都没被调用，记 UNKNOWN 会白吃
-    一次冷却与日配额且不写历史。adapter 调用之后 gateway 自身再抛仍归 UNKNOWN：
-    此时标志位已置位。send 正常返回后调用方再用 ``submitted`` 精确化。
-    """
-    submitted = False
-
-    def submit(message: Any) -> Any:
-        nonlocal submitted
-        submitted = True
-        return adapter(message)
-
-    try:
-        result = await OutboundGateway(submit, ledger=ledger).send(payload)
-    except Exception as exc:
-        detail = redact_exc_text(exc)
-        logger.warning(
-            "[%s] %s ledger_id=%s session=%s error=%s",
-            PLUGIN_ID,
-            log_label,
-            ledger_id,
-            umo,
-            detail,
-        )
-        status = SendStatus.UNKNOWN if submitted else SendStatus.FAILED_BEFORE_SUBMIT
-        return None, SendOutcome(status, detail)
-    return result, None
-
-
 # 账本已封时迟到的发送（关停/隔离期）与「会话已更新」无关，回执必须指向真实
 # 成因，否则排障方向被指错（SUPPRESSED 文案按成因分流，不同成因不合并）。
 LEDGER_SEALED_REPLY_TEXT = "本次投递已收尾，放弃这条迟到的回复。"
@@ -121,15 +79,9 @@ class _NamedAt(At):
     """
 
     def toDict(self) -> dict[str, Any]:
-        # 本方法在**投递时**由适配器序列化阶段调用，晚于 _attach_chain_prefix 的
-        # 构造保护：这里抛出去会被 outbound 归成 UNKNOWN（状态未知、消耗冷却与
-        # 日配额、不重试），一条普通发送就变成「提交状态未知」——正是
-        # 禁止的「装饰性组件影响投递分类」。宿主换结构时静默降级为裸 at。
         data = super().toDict()
-        name = getattr(self, "name", "")
-        section = data.get("data") if isinstance(data, dict) else None
-        if name and isinstance(section, dict):
-            section["name"] = str(name)
+        if self.name:
+            data["data"]["name"] = self.name
         return data
 
 
@@ -161,14 +113,6 @@ class DeliveryRunner:
         self._is_stopping = is_stopping or (lambda: False)
         # 引用概率的随机源：可注入以便测试确定性（与 decision 的 clock 同款缝）。
         self._random_value = random_value
-
-    @staticmethod
-    def _clear_result(last_event: Any) -> None:
-        """事件结果回收：各出口统一形状（防泄漏，宿主异常不阻断投递）。"""
-        try:
-            last_event.clear_result()
-        except Exception:
-            pass
 
     def _probability_hit(self, percent: int) -> bool:
         """按百分制掷一次随机：引用与 @ 两条概率判定共用同一形状。"""
@@ -465,11 +409,10 @@ class DeliveryRunner:
         """事件路径投递：装饰钩子 → 代次复核 → 事件 send → 发送后钩子。
 
         仅由 ``send_reply`` 在 ``last_event`` 为真时调用，进入时复核点 1/2 已通过。
-        本方法是唯一会 ``set_result`` 的路径，所有出口都必须经 ``_clear_result``
+        本方法是唯一会 ``set_result`` 的路径，所有出口都必须经 ``clear_result``
         回收（防结果泄漏到宿主后续流程）。
         """
         ledger_id = ledger.ledger_id
-        send_started = False
         try:
             last_event.set_result(
                 self._runtime()
@@ -484,7 +427,7 @@ class DeliveryRunner:
             except Exception as exc:
                 # 装饰钩子链上任意第三方插件抛错不该丢弃已生成的回复：按出错时手上
                 # 的链继续发送（可能含该钩子已做的部分修改；口径同下方 after-send
-                # 钩子）。异常落进外层 except 时 send_started 仍为 False，整条回复
+                # 钩子）。异常落进外层 except 时尚未发送，整条回复
                 # 会被判 FAILED_BEFORE_SUBMIT——用户收不到消息，且账本无 attempt
                 # 故不消耗冷却、下轮再生成再付费。
                 # 不回滚到调用前的链：hook 就地改 result.chain，也可能改链外字段
@@ -502,7 +445,7 @@ class DeliveryRunner:
             # 而抑制」误报成「会话已更新」，把排障方向指错（deliver_reply 的
             # SUPPRESSED 文案按成因分流，不同成因不合并）。
             if self._is_stopping():
-                self._clear_result(last_event)
+                last_event.clear_result()
                 logger.info(
                     "[%s] suppress reply after decorating hook lifecycle stop "
                     "ledger_id=%s session=%s",
@@ -516,7 +459,7 @@ class DeliveryRunner:
                     SuppressCode.STOPPING,
                 )
             if not self._gate.is_current(umo, expected_generation):
-                self._clear_result(last_event)
+                last_event.clear_result()
                 logger.info(
                     "[%s] suppress stale reply after decorating hook ledger_id=%s session=%s",
                     PLUGIN_ID,
@@ -539,7 +482,7 @@ class DeliveryRunner:
                     ledger_id,
                     umo,
                 )
-                self._clear_result(last_event)
+                last_event.clear_result()
                 return SendOutcome(
                     SendStatus.FAILED_BEFORE_SUBMIT, "decorating hook produced no result"
                 )
@@ -561,21 +504,10 @@ class DeliveryRunner:
                 ledger_id,
                 umo,
                 len(reply),
-                len(getattr(result, "chain", []) or []),
+                len(result.chain),
             )
 
-            send_result, failed = await _submit_once(
-                last_event.send,
-                result,
-                ledger,
-                log_label="event send reply failed",
-                umo=umo,
-                ledger_id=ledger_id,
-            )
-            if failed is not None:
-                self._clear_result(last_event)
-                return failed
-            send_started = send_result.submitted
+            send_result = await OutboundGateway(last_event.send, ledger=ledger).send(result)
             if send_result.outcome.status is SendStatus.UNKNOWN:
                 # 与 context 路径同口径：发送状态未知是真实群里最常见的失败形态
                 # （平台超时/风控/适配器异常），只留 DEBUG 等于用户查不到。
@@ -589,7 +521,7 @@ class DeliveryRunner:
                     send_result.outcome.detail,
                 )
             if not send_result.submitted:
-                self._clear_result(last_event)
+                last_event.clear_result()
                 return send_result.outcome
             logger.debug(
                 "[%s] event send completed ledger_id=%s session=%s chars=%d;"
@@ -617,10 +549,10 @@ class DeliveryRunner:
                         umo,
                         redact_exc_text(exc),
                     )
-            self._clear_result(last_event)
+            last_event.clear_result()
             return send_result.outcome
         except asyncio.CancelledError:
-            self._clear_result(last_event)
+            last_event.clear_result()
             raise
         except Exception as exc:
             # 脱敏口径同 decision：detail 只进日志（_send_via_context 与 generation
@@ -633,9 +565,7 @@ class DeliveryRunner:
                 umo,
                 safe_detail,
             )
-            self._clear_result(last_event)
-            if send_started:
-                return SendOutcome(SendStatus.UNKNOWN, safe_detail)
+            last_event.clear_result()
             return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, safe_detail)
 
     async def _send_via_context(
@@ -647,60 +577,32 @@ class DeliveryRunner:
     ) -> SendOutcome:
         """context 兜底投递：事件已不在手边时经宿主 ``Context.send_message`` 发送。
 
-        不 ``set_result``、不触发装饰与发送后钩子，故无 ``_clear_result`` 义务；
+        不 ``set_result``、不触发装饰与发送后钩子，故无 ``clear_result`` 义务；
         也不支持引用（需要被引消息的 ID，而它只存在于事件上）。
         """
         ledger_id = ledger.ledger_id
-        # send_started 取自 ``OutboundResult.submitted``，与事件路径同源：是否
-        # 已提交由 gateway 的分类结果决定。提交前误记 UNKNOWN 会白吃冷却与
-        # 日配额；已提交记 FAILED_BEFORE_SUBMIT 会不消耗冷却而重发，制造重复
-        # 消息。CancelledError 属 BaseException，下方 except Exception 抓不到，
-        # 自然上抛；gateway 内部已把 adapter 调用期间的取消归类为 UNKNOWN。
-        send_started = False
-        try:
-            send_result, failed = await _submit_once(
-                lambda message: self._context_send(umo, message),
-                MessageChain().message(reply),
-                ledger,
-                log_label="send reply failed",
-                umo=umo,
-                ledger_id=ledger_id,
-            )
-            if failed is not None:
-                return failed
-            send_started = send_result.submitted
-            if send_result.outcome.status is SendStatus.UNKNOWN:
-                logger.warning(
-                    "[%s] context send result unknown ledger_id=%s session=%s detail=%s",
-                    PLUGIN_ID,
-                    ledger_id,
-                    umo,
-                    send_result.outcome.detail,
-                )
-            elif send_result.outcome.status is SendStatus.FAILED_BEFORE_SUBMIT:
-                # False = no reachable platform target; the message was not
-                # submitted, so it must not consume cooldown/quota.
-                logger.warning(
-                    "[%s] context send rejected (no reachable platform) "
-                    "ledger_id=%s session=%s detail=%s",
-                    PLUGIN_ID,
-                    ledger_id,
-                    umo,
-                    send_result.outcome.detail,
-                )
-            return send_result.outcome
-        except Exception as exc:
-            safe_detail = redact_exc_text(exc)
+        send_result = await OutboundGateway(
+            lambda message: self._context_send(umo, message), ledger=ledger
+        ).send(MessageChain().message(reply))
+        if send_result.outcome.status is SendStatus.UNKNOWN:
             logger.warning(
-                "[%s] send reply failed ledger_id=%s session=%s error=%s",
+                "[%s] context send result unknown ledger_id=%s session=%s detail=%s",
                 PLUGIN_ID,
                 ledger_id,
                 umo,
-                safe_detail,
+                send_result.outcome.detail,
             )
-            if send_started:
-                return SendOutcome(SendStatus.UNKNOWN, safe_detail)
-            return SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, safe_detail)
+        elif send_result.outcome.status is SendStatus.FAILED_BEFORE_SUBMIT:
+            # False 表示没有可用的平台，不消耗冷却与配额。
+            logger.warning(
+                "[%s] context send rejected (no reachable platform) "
+                "ledger_id=%s session=%s detail=%s",
+                PLUGIN_ID,
+                ledger_id,
+                umo,
+                send_result.outcome.detail,
+            )
+        return send_result.outcome
 
     def apply_proactive_state(
         self,

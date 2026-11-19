@@ -30,6 +30,7 @@ export function configPayload(overrides = {}) {
     proactive_request_max_retries: 1,
     proactive_fallback_provider_ids: [],
     proactive_inherit_tools: false,
+    proactive_preserve_tool_schema: false,
     vision_judge_enabled: false,
     vision_main_enabled: false,
     vision_provider_id: "",

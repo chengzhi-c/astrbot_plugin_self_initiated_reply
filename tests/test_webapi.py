@@ -475,6 +475,78 @@ def test_concurrent_ui_theme_posts_preserve_both_fields(tmp_path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+@pytest.mark.parametrize("mode", ["reload", "cancel_before_publish", "cancel_after_publish"])
+def test_late_ui_theme_post_does_not_overwrite_newer_save(tmp_path, monkeypatch, mode) -> None:
+    """旧请求取消或实例关停后，新保存的偏好仍须与内存一致。"""
+    import threading
+
+    from ._support import shorten_shutdown_windows
+    from .host_stubs import make_plugin
+
+    async def scenario(plugin, main):
+        await until(lambda: plugin._storage_path.exists())
+        webapi = webapi_module(main)
+        web = sys.modules["astrbot.api.web"]
+        original_write = webapi.write_json_atomic
+        entered = threading.Event()
+        release = threading.Event()
+        landed = threading.Event()
+
+        def slow_write(path, data, **kwargs):
+            if path == plugin._ui_prefs_path and not entered.is_set():
+                if mode == "cancel_after_publish":
+                    result = original_write(path, data, **kwargs)
+                entered.set()
+                release.wait(5.0)
+                if mode != "cancel_after_publish":
+                    result = original_write(path, data, **kwargs)
+                landed.set()
+                return result
+            return original_write(path, data, **kwargs)
+
+        monkeypatch.setattr(webapi, "write_json_atomic", slow_write)
+        restore = shorten_shutdown_windows(main, seconds=0.03)
+        web.request.payload = {"theme": "dark", "dim": True, "bold": True}
+        task = asyncio.create_task(webapi._api_post_ui_theme(plugin))
+        reloaded = None
+        try:
+            await until(entered.is_set)
+            target = plugin
+            if mode == "reload":
+                await plugin.terminate()
+                reloaded, _ = make_plugin(tmp_path)
+                target = reloaded
+            else:
+                task.cancel()
+                await asyncio.sleep(0)
+            web.request.payload = {"theme": "light"}
+            newer = asyncio.create_task(webapi._api_post_ui_theme(target))
+            # 已退出的旧请求不再持锁，新保存先完成，随后才放行旧写线程。
+            if mode == "reload" or task.done():
+                assert (await newer)["ok"] is True
+            release.set()
+            result = (await asyncio.gather(task, return_exceptions=True))[0]
+            assert (await newer)["ok"] is True
+            await until(landed.is_set)
+            saved = json.loads(plugin._ui_prefs_path.read_text(encoding="utf-8"))
+            kept = mode == "cancel_after_publish"
+            assert saved == {"theme": "light", "dim": kept, "bold": kept}
+            assert (target._ui_theme, target._ui_dim, target._ui_bold) == ("light", kept, kept)
+            if mode == "reload":
+                assert result == {"ok": False, "error": "插件正在关闭"}
+                assert (plugin._ui_theme, plugin._ui_dim, plugin._ui_bold) == ("auto", False, False)
+            else:
+                assert isinstance(result, asyncio.CancelledError)
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            if reloaded is not None:
+                await reloaded.terminate()
+            restore()
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_api_post_ui_theme_paths(tmp_path) -> None:
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]

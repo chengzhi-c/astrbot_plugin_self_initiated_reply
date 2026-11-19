@@ -1334,6 +1334,59 @@ def test_abandoned_final_save_does_not_overwrite_newer_state(tmp_path: Path) -> 
     with_plugin(tmp_path, scenario)
 
 
+@pytest.mark.parametrize("writer", ["_normalize_config_off_loop", "_persist_config"])
+def test_late_config_write_does_not_overwrite_reloaded_instance(
+    tmp_path: Path, monkeypatch: Any, writer: str
+) -> None:
+    """旧实例的慢配置写越过关停窗口后，不得撤销新实例已保存的配置。"""
+    import sys
+    import threading
+
+    from .host_stubs import make_plugin, until
+
+    async def scenario(plugin, main):
+        await until(lambda: plugin._storage_path.exists())
+        storage = sys.modules[f"{main.__package__}.storage"]
+        original_write = storage.write_json_atomic
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_write(path, data, **kwargs):
+            if path == plugin._config_path and not entered.is_set():
+                entered.set()
+                release.wait(5.0)
+            return original_write(path, data, **kwargs)
+
+        async def save():
+            async with plugin._config_lock:
+                await getattr(plugin, writer)()
+
+        monkeypatch.setattr(storage, "write_json_atomic", slow_write)
+        restore = shorten_shutdown_windows(main, seconds=0.03)
+        plugin.settings.cooldown_sec = 11
+        task = plugin._track_background_task(save())
+        reloaded = None
+        try:
+            await until(entered.is_set)
+            await plugin.terminate()
+            reloaded, _ = make_plugin(tmp_path)
+            reloaded.settings.cooldown_sec = 22
+            async with reloaded._config_lock:
+                await reloaded._persist_config()
+            assert read_json_with_retry(plugin._config_path)["cooldown_sec"] == 22
+            release.set()
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=2)
+            assert read_json_with_retry(plugin._config_path)["cooldown_sec"] == 22
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            if reloaded is not None:
+                await reloaded.terminate()
+            restore()
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_whitelist_remove_recycles_gate_state(tmp_path: Path) -> None:
     async def scenario(plugin, main):
         plugin._gate.advance(UMO)
@@ -1980,7 +2033,7 @@ def test_period_during_generation_does_not_silence_skip_when_abandon_off(
         plugin.settings.min_silence_sec = 25
         plugin.settings.cooldown_sec = 0
         state = plugin._state_for(UMO)
-        started = main.now_ts() - 30
+        started = time.time() - 30
         state.last_active_at = started
         plugin._coordinator.record_event(UMO, make_event(message_str="阿c回我一下"), started)
         token = plugin._gate.advance(UMO)
@@ -2189,7 +2242,7 @@ def test_cooldown_skips_decision_model_after_proactive_reply(tmp_path: Path) -> 
         plugin.settings.cooldown_sec = 900
         plugin.settings.message_delay_sec = 0
         state = plugin._state_for(UMO)
-        now = main.now_ts()
+        now = time.time()
         event = make_event(message_str="新消息")
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = now - 30
@@ -2209,7 +2262,7 @@ def test_cooldown_skips_decision_model_after_proactive_reply(tmp_path: Path) -> 
 
 
 def test_startup_persist_failure_is_logged(tmp_path: Path, monkeypatch: Any, caplog: Any) -> None:
-    """``persist_settings_config`` 返回 False 时启动路径必须记 ERROR。
+    """``apersist_settings_config`` 返回 False 时启动路径必须记 ERROR。
 
     失败只由 ``write_json_atomic`` 记一条 warning 的话，用户看到的是"配置正常
     加载、插件正常工作"，而磁盘上一直是旧形状、下次启动还会再迁一遍。行为断言
@@ -2305,12 +2358,12 @@ def test_startup_writes_skipped_when_disk_already_current(tmp_path: Path) -> Non
         )
         assert state_writes == [], "磁盘未变化时仍重写了状态文件（无谓 fsync）"
 
-    main.persist_settings_config = counting_persist
+    main.apersist_settings_config = counting_persist
     plugin_state.write_json_atomic = counting_write_sessions
     try:
         with_plugin(tmp_path, second_load)
     finally:
-        main.persist_settings_config = original_persist
+        main.apersist_settings_config = original_persist
         plugin_state.write_json_atomic = original_write_sessions
 
 
@@ -2334,12 +2387,18 @@ def test_startup_does_not_normalize_unreadable_config(tmp_path: Path, monkeypatc
         return read_text(candidate, *args, **kwargs)
 
     monkeypatch.setattr(type(config_path), "read_text", unreadable)
-    plugin = main.SelfInitiatedReplyPlugin(FakeContext(), {})
-    try:
-        assert config_path.open(encoding="utf-8").read() == original
-    finally:
-        asyncio.run(plugin.terminate())
-        restore_path_functions(main)
+
+    async def scenario() -> None:
+        plugin = main.SelfInitiatedReplyPlugin(FakeContext(), {})
+        try:
+            startup = plugin._background_tasks - {plugin._scheduler.image_cleanup_task}
+            await asyncio.gather(*startup)
+            assert config_path.open(encoding="utf-8").read() == original
+        finally:
+            await plugin.terminate()
+            restore_path_functions(main)
+
+    asyncio.run(scenario())
 
 
 def test_startup_still_writes_when_disk_shape_differs(tmp_path: Path) -> None:
@@ -2457,8 +2516,8 @@ def test_messages_during_running_check_coalesce_to_one_follow_up(tmp_path: Path)
         plugin.settings.message_delay_sec = 0
         plugin.settings.abandon_stale_on_new_message = False
         plugin._last_events[UMO] = make_event(message_str="先来一条")
-        plugin._last_event_at[UMO] = main.now_ts()
-        plugin._state_for(UMO).last_active_at = main.now_ts() - 30
+        plugin._last_event_at[UMO] = time.time()
+        plugin._state_for(UMO).last_active_at = time.time() - 30
         token = plugin._gate.advance(UMO)
 
         task = asyncio.create_task(

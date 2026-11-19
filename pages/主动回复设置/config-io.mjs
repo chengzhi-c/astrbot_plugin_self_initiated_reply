@@ -499,8 +499,7 @@ export function createConfigIo(deps) {
 		}
 		const e = getEls();
 		// 保存按钮 disabled 时浏览器把焦点丢给 body，成功后要能回到触发点。
-		// 没有 DOM 的环境里也会走到这里，故先探 document。
-		const trigger = typeof document === "undefined" ? null : document.activeElement;
+		const trigger = document.activeElement;
 		setState({ savingConfig: true });
 		setSaving(true);
 		e.configForm.inert = true;

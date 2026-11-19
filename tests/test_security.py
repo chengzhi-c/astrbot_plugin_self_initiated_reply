@@ -797,7 +797,7 @@ def test_whitelist_runtime_umos_reclaimed_when_inactive(tmp_path: Path) -> None:
 
     async def scenario(plugin, main):
         models_mod = sys.modules[f"{MAIN_PACKAGE_NAME}.models"]
-        stale_at = main.now_ts() - models_mod.EVENT_CLEANUP_INTERVAL_SEC * 2
+        stale_at = time.time() - models_mod.EVENT_CLEANUP_INTERVAL_SEC * 2
         plugin._whitelist_runtime_umos["group:1"] = {"group:1:user:a", "group:1:user:b"}
         plugin._last_events["group:1:user:a"] = make_event()
         plugin._last_event_at["group:1:user:a"] = stale_at
@@ -807,7 +807,7 @@ def test_whitelist_runtime_umos_reclaimed_when_inactive(tmp_path: Path) -> None:
         assert "group:1" not in plugin._whitelist_runtime_umos
 
         # 对照组：有新鲜事件的会话必须保留
-        fresh_at = main.now_ts()
+        fresh_at = time.time()
         plugin._whitelist_runtime_umos["group:2"] = {"group:2:user:c"}
         plugin._last_events["group:2:user:c"] = make_event()
         plugin._last_event_at["group:2:user:c"] = fresh_at
@@ -898,6 +898,7 @@ def test_is_admin_event_trusts_host_api_success_path() -> None:
 _REQUIRED_AUDITED_KEYS = {
     "enabled",  # 插件总开关
     "proactive_inherit_tools",  # 工具继承：放大宿主能力面
+    "proactive_preserve_tool_schema",  # 危险工具定义仅用于提示缓存
     "whitelist_sessions",  # 生效范围
     "judge_provider_id",  # 裁决上游：群聊上下文的去向
     "vision_provider_id",  # 视觉上游：图片的去向

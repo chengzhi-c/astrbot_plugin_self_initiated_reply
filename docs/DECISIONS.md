@@ -61,8 +61,7 @@ GET `/config` 返回 panel 键、`runtime_enabled`、`decision_prompt_default` �
 
 ## 图片与宿主兼容
 
-公开适配层直接使用宿主 Context 与 Provider API。当前模型 ID 查询在不同宿主版本中
-分别为同步和异步，由 `maybe_await` 统一等待。私有 Agent API 由运行时适配层核对。
+公开适配层直接使用宿主 Context 与 Provider API。私有 Agent API 由运行时适配层核对。
 
 `recorder_bridge` 按消息 ID 查图时，多图记录必须匹配 URL；单图记录可以取唯一组件。
 本地图片读取统一校验允许根目录。

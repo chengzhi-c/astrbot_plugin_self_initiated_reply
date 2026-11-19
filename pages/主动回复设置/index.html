@@ -999,6 +999,17 @@
               <p class="muted">
                 默认不开放任何工具；开启后群聊消息可间接触发插件工具，Shell/Python、浏览器、定时任务等仍禁用。
               </p>
+              <label class="toggle-row">
+                <input
+                  type="checkbox"
+                  id="proactivePreserveToolSchemaInput"
+                  data-config-key="proactive_preserve_tool_schema"
+                />
+                <span>保留危险工具定义，复用提示缓存前缀</span>
+              </label>
+              <p class="muted">
+                沿用普通回复的工具 schema 模式；定时任务等危险工具只保留定义，调用仍被拦截。缓存命中由模型决定。
+              </p>
             </div>
           </details>
 

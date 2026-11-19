@@ -201,26 +201,33 @@ async def test_mention_degrades_when_no_event_is_available(tmp_path: Path) -> No
     assert not _at_items(list(getattr(sent, "chain", []) or [])), "context 路径不得 @"
 
 
-async def test_mention_and_quote_together_put_at_before_reply(tmp_path: Path) -> None:
-    """两个开关同开：链首顺序必须是 [At, Reply, ...正文]（先点名后引用）。"""
+async def test_model_quote_and_always_mention_both_survive_onebot_group_delivery(
+    tmp_path: Path,
+) -> None:
+    """OneBot 引用与显式 @ 独立生效，@ 显示昵称且排在 Reply 前。"""
     _mod, _models, runner, last_events = _make_runner(
         tmp_path,
         config={
             "mention_mode": "always",
-            "quote_mode": "random",
-            "quote_probability": 100,
+            "quote_mode": "model",
         },
-        random_value=lambda: 0.0,
     )
     event = _ChainRecordingEvent(umo="s1", sender_id="u7")
     event.message_id = "msg-9"  # 事件自身字段优先，供 event_message_id 取到
+    event.get_platform_name = lambda: "aiocqhttp"
+    event.get_group_id = lambda: "group-1"
     last_events["s1"] = event
     await runner.send_reply("s1", "hello", expected_generation=None, quote=True)
     chain = event.sent_chains[0]
     kinds = [type(item).__name__ for item in chain]
-    assert _is_at(chain[0]), f"插入顺序错误：{kinds}"
-    assert str(chain[0].qq) == "u7"
-    assert chain[1].id == "msg-9"
+    at_items = _at_items(chain)
+    assert len(at_items) == 1, f"always @ 必须保留：{kinds}"
+    assert at_items[0].toDict() == {
+        "type": "at",
+        "data": {"qq": "u7", "name": "u7"},
+    }
+    assert type(chain[1]).__name__ in {"Reply", "_FakeReply"}, f"插入顺序错误：{kinds}"
+    assert chain[2] == "hello"
 
 
 async def test_mention_component_failure_degrades_to_plain_send(tmp_path: Path) -> None:

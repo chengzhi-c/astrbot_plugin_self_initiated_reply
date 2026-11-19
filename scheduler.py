@@ -45,17 +45,6 @@ class CheckSessionCallback(Protocol):
     ) -> Awaitable[str]: ...
 
 
-def _log_removed_images(removed_images: int) -> int:
-    """两条清理路径共用的收尾：有清理数才记 INFO，原样透传数量。"""
-    if removed_images:
-        logger.info(
-            "[%s] cleaned up %d expired frozen images",
-            PLUGIN_ID,
-            removed_images,
-        )
-    return removed_images
-
-
 class SessionScheduler:
     """每会话延迟检查、后台巡检与周期清理的时序实现。"""
 
@@ -337,6 +326,8 @@ class SessionScheduler:
                 return
             if not await self._wait_for_previous_check_release(umo, trigger, generation):
                 return
+            if trigger == CheckTrigger.MESSAGE_DELAY and not self.settings.enabled_message_trigger:
+                return
             result = await self._run_registered_check(
                 umo, trigger=trigger, force=force, generation=generation
             )
@@ -386,28 +377,6 @@ class SessionScheduler:
             if image.prepared_source
         }
 
-    def _prune_image_index(self, current: float) -> tuple[float, set[str]]:
-        """过期回收 + 受保护源，供要清磁盘的两条路径一次取全。"""
-        image_age = self._expire_image_index(current)
-        return image_age, self._protected_image_sources()
-
-    def cleanup_image_sources(self, *, now: float | None = None) -> int:
-        """同步清理过期图片索引与磁盘缓存。
-
-        仅用于无事件循环的场景（插件构造期的启动清理）。协程内必须改用
-        ``run_image_cleanup``，否则磁盘遍历（rglob + 全量 stat）会阻塞事件循环。
-        """
-        current = now_ts() if now is None else float(now)
-        image_age, protected_sources = self._prune_image_index(current)
-        return _log_removed_images(
-            ImageParser.cleanup_source_cache(
-                self._image_cache_dir,
-                protected_sources=protected_sources,
-                max_age_sec=image_age,
-                now=current,
-            )
-        )
-
     async def run_image_cleanup(self) -> int:
         """Serialize manual and periodic cleanup requests.
 
@@ -417,7 +386,8 @@ class SessionScheduler:
         """
         async with self._image_cleanup_lock:
             current = now_ts()
-            image_age, protected_sources = self._prune_image_index(current)
+            image_age = self._expire_image_index(current)
+            protected_sources = self._protected_image_sources()
             removed_images = await asyncio.to_thread(
                 ImageParser.cleanup_source_cache,
                 self._image_cache_dir,
@@ -425,7 +395,9 @@ class SessionScheduler:
                 max_age_sec=image_age,
                 now=current,
             )
-            return _log_removed_images(removed_images)
+            if removed_images:
+                logger.info("[%s] cleaned up %d expired frozen images", PLUGIN_ID, removed_images)
+            return removed_images
 
     def cleanup_events_if_needed(self) -> None:
         """定期清理没有任务或运行中的陈旧事件。"""
@@ -474,8 +446,6 @@ class SessionScheduler:
         # 只做纯内存的图片索引回收：本方法由 on_message（协程）同步调用，
         # 磁盘遍历会阻塞消息热路径，磁盘侧由 _image_cleanup_loop 独立承担
         # （其周期严于本方法的 1h 节流，回收不会延后）。
-        # 此处不得调用 ensure_image_cleanup：它经 create_task 起循环，而本
-        # 方法在无事件循环的同步上下文也会被调用。
         # 也不建受保护源集合：那要遍历全部会话的全部图片（≤1000×20×5），
         # 而本路径只做内存过期，集合建了没人用。
         self._expire_image_index(now)
@@ -620,6 +590,8 @@ class SessionScheduler:
                 seen_patrol_umos: set[str] = set()
                 for item in list(self.settings.whitelist):
                     for umo in self._runtime_umos_for_whitelist_item(item):
+                        if not self._should_run() or not self.settings.enabled_patrol_trigger:
+                            return
                         if umo in seen_patrol_umos:
                             continue
                         seen_patrol_umos.add(umo)

@@ -55,7 +55,6 @@ from .models import (
     config_revision,
     is_utf8_encodable,
     js_trim,
-    normalize_config_updates,
     normalize_string_list,
     panel_config_specs,
     restore_container_inplace,
@@ -218,11 +217,6 @@ def load_ui_prefs(plugin: SelfInitiatedReplyPlugin) -> tuple[str, bool, bool]:
     return theme, dim, bold
 
 
-def _save_ui_prefs(plugin: SelfInitiatedReplyPlugin, theme: str, dim: bool, bold: bool) -> bool:
-    """原子写入整份 UI 偏好，禁止只写 theme 抹掉 dim/bold。"""
-    return write_json_atomic(plugin._ui_prefs_path, {"theme": theme, "dim": dim, "bold": bold})
-
-
 def _ui_prefs_payload(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     return {
         "ok": True,
@@ -286,11 +280,34 @@ async def _api_post_ui_theme(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]
         dim = submitted.get("dim", plugin._ui_dim)
         bold = submitted.get("bold", plugin._ui_bold)
         if (theme, dim, bold) != (plugin._ui_theme, plugin._ui_dim, plugin._ui_bold):
-            if not await asyncio.to_thread(_save_ui_prefs, plugin, theme, dim, bold):
+            cancelled: asyncio.CancelledError | None = None
+            write_task = asyncio.create_task(
+                asyncio.to_thread(
+                    write_json_atomic,
+                    plugin._ui_prefs_path,
+                    {"theme": theme, "dim": dim, "bold": bold},
+                    abandoned=lambda: plugin._terminated or cancelled is not None,
+                )
+            )
+            # 取消落在发布之后时，仍须同步内存，再放锁并重抛取消。
+            while True:
+                try:
+                    written = await asyncio.shield(write_task)
+                    break
+                except asyncio.CancelledError as exc:
+                    if write_task.cancelled():
+                        raise
+                    cancelled = exc
+            if written and not plugin._terminated:
+                plugin._ui_theme = theme
+                plugin._ui_dim = dim
+                plugin._ui_bold = bold
+            if cancelled is not None:
+                raise cancelled
+            if plugin._terminated:
+                return {"ok": False, "error": "插件正在关闭"}
+            if not written:
                 return {"ok": False, "error": "主题写入失败"}
-            plugin._ui_theme = theme
-            plugin._ui_dim = dim
-            plugin._ui_bold = bold
         return _ui_prefs_payload(plugin)
 
 
@@ -686,11 +703,8 @@ async def _apply_config_updates(
     cleared_events: dict[str, tuple[Any, float, int]] = {}
     try:
         candidate = plugin.settings.to_config_dict()
-        # 三层分工：_strict_value 拒绝类型错误（400），normalize_config_updates
-        # 做列表/集合规范化与容量上限，from_config 做数值夹取（与磁盘加载同一套边界）。
-        normalized_updates = normalize_config_updates(updates)
-        for key, value in normalized_updates.items():
-            candidate[key] = value
+        # 提交类型已校验；值的规范化与磁盘加载共用 Settings.from_config。
+        candidate.update(updates)
         new_settings = Settings.from_config(candidate)
         vision_changed = any(
             getattr(plugin.settings, spec.attr) != getattr(new_settings, spec.attr)
@@ -872,7 +886,11 @@ async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
 
 
 def register_web_apis(plugin: SelfInitiatedReplyPlugin) -> None:
-    """注册统一管理页面所需的 Web API。"""
+    """注册统一管理页面所需的 Web API。
+
+    这些路由挂在宿主的 /api/plug 下，鉴权由宿主 dashboard 中间件承担；
+    metadata.yaml 已把最低宿主版本限制在 4.23.3，插件侧不重复实现鉴权。
+    """
     register = plugin.context.register_web_api
     route = f"/{PLUGIN_ID}"
     register(

@@ -224,6 +224,145 @@ def test_filter_final_tools_modes() -> None:
     )
     assert [t.name for t in tool_set2.tools] == ["third_party_weather"]
 
+    class HandoffTool(Tool):
+        pass
+
+    handoff_adapter = runtime.AstrBotRuntimeAdapter(
+        base_runtime_capabilities(runtime, handoff_tool=HandoffTool)
+    )
+    handoff_set = ToolSet()
+    handoff_set.add_tool(HandoffTool("transfer_to_other_agent"))
+    handoff_req = type("Req", (), {"func_tool": handoff_set})()
+    assert (
+        handoff_adapter.filter_final_tools(handoff_req, drop=frozenset({"astr_kb_search"})) is True
+    )
+    assert handoff_set.tools == []
+
+
+async def test_guard_final_tools_replaces_handoff_with_blocked_function_tool() -> None:
+    runtime = _load_adapter()
+    calls: list[str] = []
+
+    class HandoffTool:
+        name = "transfer_to_other_agent"
+        description = "Delegate a task"
+        parameters = {"type": "object", "properties": {}}
+        active = True
+        handler = None
+
+        async def call(self, _context, **_kwargs):
+            calls.append("handoff")
+            return "executed"
+
+    capabilities = base_runtime_capabilities(runtime, handoff_tool=HandoffTool)
+    adapter = runtime.AstrBotRuntimeAdapter(capabilities)
+
+    class ToolSet:
+        def __init__(self) -> None:
+            self.tools = [HandoffTool()]
+
+    req = SimpleNamespace(func_tool=ToolSet())
+
+    assert adapter.guard_final_tools(req, block=frozenset()) is True
+    guarded = req.func_tool.tools[0]
+    result = await guarded.handler(None)
+
+    assert type(guarded) is capabilities.function_tool
+    assert (guarded.name, guarded.description, guarded.parameters) == (
+        "transfer_to_other_agent",
+        "Delegate a task",
+        {"type": "object", "properties": {}},
+    )
+    assert result == "error: tool 'transfer_to_other_agent' is disabled during proactive replies"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_guard_final_tools_replaces_mcp_subclass_tool() -> None:
+    runtime = _load_adapter()
+    called = False
+
+    class MCPTool:
+        name = "future_task"
+        description = "Schedule a task"
+        parameters = {"type": "object", "properties": {}}
+        handler = None
+        active = True
+
+        async def call(self, _context, **_kwargs):
+            nonlocal called
+            called = True
+            return "executed"
+
+    capabilities = base_runtime_capabilities(runtime)
+    adapter = runtime.AstrBotRuntimeAdapter(capabilities)
+    req = SimpleNamespace(func_tool=SimpleNamespace(tools=[MCPTool()]))
+
+    assert adapter.guard_final_tools(req, block=frozenset({"future_task"})) is True
+    guarded = req.func_tool.tools[0]
+    result = await guarded.handler(None)
+
+    assert type(guarded) is capabilities.function_tool
+    assert (guarded.name, guarded.description, guarded.parameters) == (
+        "future_task",
+        "Schedule a task",
+        {"type": "object", "properties": {}},
+    )
+    assert result == "error: tool 'future_task' is disabled during proactive replies"
+    assert called is False
+
+
+async def test_guard_final_tools_also_replaces_skill_like_raw_tools() -> None:
+    runtime = _load_adapter()
+    called = False
+
+    class MCPTool:
+        name = "future_task"
+        description = "Schedule a task"
+        parameters = {"type": "object", "properties": {}}
+        handler = None
+        active = True
+
+        async def call(self, _context, **_kwargs):
+            nonlocal called
+            called = True
+            return "executed"
+
+    capabilities = base_runtime_capabilities(runtime)
+    adapter = runtime.AstrBotRuntimeAdapter(capabilities)
+    raw_tools = SimpleNamespace(tools=[MCPTool()])
+    request = SimpleNamespace(
+        func_tool=SimpleNamespace(
+            tools=[
+                SimpleNamespace(
+                    name="future_task",
+                    description="Schedule a task",
+                    parameters={"type": "object", "properties": {}},
+                    active=True,
+                )
+            ]
+        )
+    )
+
+    assert (
+        adapter.guard_final_tools(
+            request,
+            block=frozenset({"future_task"}),
+            agent_runner=SimpleNamespace(_skill_like_raw_tool_set=raw_tools),
+        )
+        is True
+    )
+    guarded = raw_tools.tools[0]
+    assert (guarded.name, guarded.description, guarded.parameters) == (
+        "future_task",
+        "Schedule a task",
+        {"type": "object", "properties": {}},
+    )
+    assert await guarded.handler(None) == (
+        "error: tool 'future_task' is disabled during proactive replies"
+    )
+    assert called is False
+
 
 # ============================================================================
 # validate 契约：缺失时报错、软模式告警

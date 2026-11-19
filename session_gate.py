@@ -72,14 +72,8 @@ class SessionGate:
 
     def mark_running(self, umo: str) -> None:
         self._running_sessions.add(umo)
-        # owner 是运行标记的租约持有人，restore 靠它区分「检查已结束」与
-        # 「检查被 prune 过但仍在跑」。拿不到 task（无事件循环的同步调用方）时
-        # 记 None = 未知：推导时保守保留标记——误保留的代价由有界等待
-        # 兜底，误丢弃的代价是该会话与在途检查真正并发。
-        try:
-            self._running_owners[umo] = asyncio.current_task()
-        except RuntimeError:
-            self._running_owners[umo] = None
+        # restore 按 owner 区分已结束的检查与被 prune 过但仍在运行的检查。
+        self._running_owners[umo] = asyncio.current_task()
         # 新运行周期开始：清掉上一周期的 release 状态，等待者重新挂起
         self._session_release.pop(umo, None)
 
@@ -196,7 +190,7 @@ class SessionGate:
             {
                 umo
                 for umo, owner in self._running_owners.items()
-                # owner 为 None 表示标记时拿不到 task（同步调用方）：无从判断，
+                # owner 为 None 表示没有正在驱动此调用的 Task：无从判断，
                 # 按保守方向保留。键不存在才是"检查已结束、owner 已随标记收走"。
                 if owner is None or not owner.done()
             },

@@ -14,6 +14,7 @@ import hashlib
 import importlib
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -347,7 +348,7 @@ def test_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) -> No
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         state = plugin._state_for(UMO)
-        state.last_active_at = main.now_ts() - 300
+        state.last_active_at = time.time() - 300
 
         async def build_effect(kwargs, result):
             kwargs["req"].func_tool.add_tool(SimpleNamespace(name="send_image"))
@@ -407,7 +408,7 @@ def test_after_send_cancellation_records_delivered_attempt(tmp_path: Path) -> No
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         state = plugin._state_for(UMO)
-        state.last_active_at = main.now_ts() - 300
+        state.last_active_at = time.time() - 300
 
         async def build_effect(kwargs, result):
             return FakeBuildResult(
@@ -785,7 +786,7 @@ def test_concurrent_checks_are_mutexed(tmp_path: Path) -> None:
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         state = plugin._state_for(UMO)
-        state.last_active_at = main.now_ts() - 300
+        state.last_active_at = time.time() - 300
 
         class Runner:
             def reset(self, **_):
@@ -1007,7 +1008,7 @@ def test_aba_old_task_does_not_revive_after_re_add(tmp_path: Path) -> None:
         plugin._last_event_at[UMO] = 1.0
         plugin._gate.advance(UMO)  # 真实会话：新消息已推进过代次
         state = plugin._state_for(UMO)
-        state.last_active_at = main.now_ts() - 300
+        state.last_active_at = time.time() - 300
 
         class Runner:
             def reset(self, **_):
@@ -1172,8 +1173,8 @@ def test_check_command_waits_for_previous_run_release(tmp_path: Path) -> None:
         plugin.settings.whitelist = {UMO}
         plugin.settings.min_silence_sec = 0
         plugin._last_events[UMO] = event
-        plugin._last_event_at[UMO] = main.now_ts()
-        plugin._state_for(UMO).last_active_at = main.now_ts() - 300
+        plugin._last_event_at[UMO] = time.time()
+        plugin._state_for(UMO).last_active_at = time.time() - 300
 
         # 模拟"旧检查正在运行且需要一轮事件循环才让出"
         plugin._gate.mark_running(UMO)
@@ -1209,8 +1210,8 @@ def test_check_command_force_cancels_in_flight_check(tmp_path: Path) -> None:
         plugin.settings.whitelist = {UMO}
         plugin.settings.min_silence_sec = 0
         plugin._last_events[UMO] = event
-        plugin._last_event_at[UMO] = main.now_ts()
-        plugin._state_for(UMO).last_active_at = main.now_ts() - 300
+        plugin._last_event_at[UMO] = time.time()
+        plugin._state_for(UMO).last_active_at = time.time() - 300
 
         entered = asyncio.Event()
 
@@ -1481,8 +1482,8 @@ def test_off_during_slow_unwinding_generation_stays_running(tmp_path: Path) -> N
         plugin._decision.decide = fake_decide
         event = make_event()
         plugin._last_events[UMO] = event
-        plugin._last_event_at[UMO] = main.now_ts()
-        plugin._state_for(UMO).last_active_at = main.now_ts() - 300
+        plugin._last_event_at[UMO] = time.time()
+        plugin._state_for(UMO).last_active_at = time.time() - 300
         plugin._scheduler.schedule_delayed_check(
             UMO, delay_sec=0, trigger="message_delay", force=False
         )
@@ -1580,8 +1581,8 @@ def test_write_command_in_grace_window_does_not_degrade(tmp_path: Path) -> None:
         plugin._decision.decide = fake_decide
         event = make_event()
         plugin._last_events[UMO] = event
-        plugin._last_event_at[UMO] = main.now_ts()
-        plugin._state_for(UMO).last_active_at = main.now_ts() - 300
+        plugin._last_event_at[UMO] = time.time()
+        plugin._state_for(UMO).last_active_at = time.time() - 300
         plugin._scheduler.schedule_delayed_check(
             UMO, delay_sec=0, trigger="message_delay", force=False
         )
@@ -1698,7 +1699,7 @@ def test_direct_tool_text_survives_a_failed_generation_exit(tmp_path: Path) -> N
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         state = plugin._state_for(UMO)
-        state.last_active_at = main.now_ts() - 300
+        state.last_active_at = time.time() - 300
 
         class _Decision:
             def local_gate(self, _state, *, force):
@@ -1755,7 +1756,7 @@ def test_eviction_during_generation_still_delivers_and_writes_history(tmp_path: 
         plugin._last_events[UMO] = event
         plugin._last_event_at[UMO] = 1.0
         state = plugin._state_for(UMO)
-        state.last_active_at = main.now_ts() - 300
+        state.last_active_at = time.time() - 300
 
         sent_via_context: list[tuple[str, object]] = []
 

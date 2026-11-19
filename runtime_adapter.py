@@ -53,9 +53,11 @@ class AgentRuntimeCapabilities:
     event_type: Any | None = None
     call_event_hook: Callable[..., Any] | None = None
     provider_request_cls: type[Any] | None = None
-    # 路径函数：旧版 AstrBot 允许缺失（None = 走回退路径）
+    # 宿主配置与插件数据目录。
     config_path_fn: Callable[[], Any] | None = None
     plugin_data_path_fn: Callable[[], Any] | None = None
+    function_tool: type[Any] | None = None
+    handoff_tool: type[Any] | None = None
 
 
 # 事件钩子实际使用的 EventType 成员：漂移（改名/移除）即契约红
@@ -99,6 +101,8 @@ class _HostEntry(NamedTuple):
 # 单符号缺失 → 对应能力为 None（旧版宿主降级路径）。
 _HOST_CONTRACT: tuple[_HostEntry, ...] = (
     _HostEntry("astrbot.core.agent.tool", ("ToolSet",), core=True),
+    _HostEntry("astrbot.core.agent.tool", ("FunctionTool",), core=False),
+    _HostEntry("astrbot.core.agent.handoff", ("HandoffTool",), core=False),
     _HostEntry(
         "astrbot.core.astr_agent_run_util",
         ("run_agent",),
@@ -242,6 +246,8 @@ class AstrBotRuntimeAdapter:
                 provider_request_cls=probed.get("ProviderRequest"),
                 config_path_fn=probed.get("get_astrbot_config_path"),
                 plugin_data_path_fn=probed.get("get_astrbot_plugin_data_path"),
+                function_tool=probed.get("FunctionTool"),
+                handoff_tool=probed.get("HandoffTool"),
             )
         )
 
@@ -346,7 +352,7 @@ class AstrBotRuntimeAdapter:
             ("get_astrbot_config_path", caps.config_path_fn),
             ("get_astrbot_plugin_data_path", caps.plugin_data_path_fn),
         ):
-            if fn is not None and not callable(fn):
+            if not callable(fn):
                 problems.append(f"当前 AstrBot 的 {name} 不可调用")
         return problems
 
@@ -429,6 +435,7 @@ class AstrBotRuntimeAdapter:
             tool_set = req.func_tool
             if tool_set is None:
                 return True
+            handoff_tool = self.capabilities.handoff_tool
             for tool in list(tool_set.tools):
                 name = tool.name
                 if not name:
@@ -436,9 +443,10 @@ class AstrBotRuntimeAdapter:
                 if keep is not None:
                     if name not in keep:
                         tool_set.remove_tool(name)
-                elif name in drop:
+                elif name in drop or (handoff_tool is not None and isinstance(tool, handoff_tool)):
                     tool_set.remove_tool(name)
-            remaining = [tool.name for tool in tool_set.tools]
+            remaining_tools = list(tool_set.tools)
+            remaining = [tool.name for tool in remaining_tools]
         except Exception as exc:
             logger.warning(
                 "[%s] tool boundary fail-closed: tool set read or removal failed (%s); "
@@ -452,7 +460,13 @@ class AstrBotRuntimeAdapter:
             policy = "non-allowlisted"
         else:
             violations = sorted(
-                {name or "<unnamed>" for name in remaining if not name or name in drop}
+                {
+                    tool.name or "<unnamed>"
+                    for tool in remaining_tools
+                    if not tool.name
+                    or tool.name in drop
+                    or (handoff_tool is not None and isinstance(tool, handoff_tool))
+                }
             )
             policy = "denied"
         if violations:
@@ -461,6 +475,59 @@ class AstrBotRuntimeAdapter:
                 PLUGIN_ID,
                 policy,
                 ", ".join(violations),
+            )
+            return False
+        return True
+
+    def guard_final_tools(
+        self,
+        req: Any,
+        *,
+        block: frozenset[str],
+        agent_runner: Any = None,
+    ) -> bool:
+        """Keep selected schemas while replacing their tools with plain handlers."""
+        try:
+            tool_sets = []
+            if req.func_tool is not None:
+                tool_sets.append(req.func_tool)
+            raw_tool_set = getattr(agent_runner, "_skill_like_raw_tool_set", None)
+            if raw_tool_set is not None and raw_tool_set is not req.func_tool:
+                tool_sets.append(raw_tool_set)
+            if not tool_sets:
+                return True
+            function_tool = _require(self.capabilities.function_tool, "主 Agent FunctionTool")
+            handoff_tool = self.capabilities.handoff_tool
+
+            for tool_set in tool_sets:
+                for index, tool in enumerate(tool_set.tools):
+                    name = tool.name
+                    if not name:
+                        raise ValueError("tool without a name cannot be verified")
+                    is_handoff = handoff_tool is not None and isinstance(tool, handoff_tool)
+                    if name not in block and not is_handoff:
+                        continue
+
+                    refusal = f"error: tool '{name}' is disabled during proactive replies"
+
+                    async def blocked_handler(
+                        _event: Any, _refusal: str = refusal, **_kwargs: Any
+                    ) -> str:
+                        return _refusal
+
+                    guarded = function_tool(
+                        name=name,
+                        description=tool.description,
+                        parameters=tool.parameters,
+                        handler=blocked_handler,
+                        active=bool(getattr(tool, "active", True)),
+                    )
+                    tool_set.tools[index] = guarded
+        except Exception as exc:
+            logger.warning(
+                "[%s] tool schema guard failed (%s); aborting proactive run",
+                PLUGIN_ID,
+                redact_exc_text(exc),
             )
             return False
         return True

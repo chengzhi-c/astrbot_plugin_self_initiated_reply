@@ -178,6 +178,8 @@ def install_astrbot_stubs() -> None:
 
     if not hasattr(agent_tool, "ToolSet"):
         agent_tool.ToolSet = FakeToolSet
+    if not hasattr(agent_tool, "FunctionTool"):
+        agent_tool.FunctionTool = FakeFunctionTool
     if not hasattr(run_util, "run_agent"):
         run_util.run_agent = _fake_run_agent
     if not hasattr(main_agent, "MainAgentBuildConfig"):
@@ -230,6 +232,7 @@ def base_runtime_capabilities(runtime: Any, **overrides: Any) -> Any:
     base = dict(
         import_error=None,
         tool_set=object,
+        function_tool=FakeFunctionTool,
         # 必须接受 **kwargs：runtime_adapter 的加载期探针用主动运行的键集合
         # 实例化它（models.proactive_build_config_kwargs），桩比真实宿主更严
         # 会让 validate() 假红。
@@ -253,6 +256,8 @@ def base_runtime_capabilities(runtime: Any, **overrides: Any) -> Any:
             },
         ),
         call_event_hook=lambda *_a, **_k: True,
+        config_path_fn=lambda: "data/config",
+        plugin_data_path_fn=lambda: "data/plugin_data",
         provider_request_cls=type(
             "Req",
             (),
@@ -477,6 +482,23 @@ class FakeToolSet:
         self.tools = [tool for tool in self.tools if getattr(tool, "name", "") != name]
 
 
+class FakeFunctionTool:
+    def __init__(
+        self,
+        *,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: Any,
+        active: bool = True,
+    ) -> None:
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+        self.handler = handler
+        self.active = active
+
+
 class _FakeBuildConfig:
     def __init__(self, **kwargs: Any) -> None:
         self.values = kwargs
@@ -565,8 +587,14 @@ def make_counting_enforce(
     hook 在两次 enforce 之间注入正是被测语义，不可省。
     """
 
-    def counting_enforce(req: Any, inherit_tools: Any) -> bool:
-        ok = original_enforce(req, inherit_tools)
+    def counting_enforce(
+        req: Any,
+        inherit_tools: Any,
+        preserve_tool_schema: bool = False,
+        *,
+        agent_runner: Any = None,
+    ) -> bool:
+        ok = original_enforce(req, inherit_tools, preserve_tool_schema, agent_runner=agent_runner)
         snapshots.append(request_tool_names(req))
         if len(snapshots) == 1:
             for name in first_enforce_tools:
@@ -731,7 +759,7 @@ class FakeContext:
 
     def __init__(self) -> None:
         self.register_web_api_calls: list[tuple[str, Any, list[str], str]] = []
-        self.astrbot_config: dict[str, Any] = {}
+        self.get_config = lambda _umo=None: {}
 
     def register_web_api(self, route: str, handler: Any, methods: list[str], desc: str) -> None:
         self.register_web_api_calls.append((route, handler, methods, desc))

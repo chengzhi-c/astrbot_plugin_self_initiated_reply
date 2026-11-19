@@ -954,15 +954,6 @@ def test_resolve_paths_data_root_tracks_host_answer(tmp_path: Path) -> None:
     assert nested_root == nested
 
 
-def test_resolve_paths_legacy_branch_data_root(tmp_path: Path) -> None:
-    """无宿主 plugin_data 函数时，data 根取 config 目录的上一级（<data>/config 布局）。"""
-    ps = _load_plugin_state()
-    data = tmp_path / "data"
-    _, storage_path, data_root = ps.resolve_paths({}, get_config_path=lambda: str(data / "config"))
-    assert data_root == data
-    assert storage_path.parent == data / "plugin_data" / ps.PLUGIN_ID
-
-
 def test_config_file_matches_disk_semantics(tmp_path: Path) -> None:
     """启动跳写盘的判据：磁盘已解析内容 == Settings 序列化结果才返回 True。
 
@@ -1104,6 +1095,35 @@ def test_write_json_atomic_gives_up_after_bounded_retries(
     assert not list(tmp_path.glob("*.tmp")), "重试耗尽后临时文件必须清理"
     warnings = messages_at_least(caplog, logging.WARNING)
     assert any("failed to write" in msg for msg in warnings), warnings
+
+
+def test_write_json_atomic_drops_abandoned_retry(tmp_path: Path, monkeypatch) -> None:
+    """旧实例在替换重试期间关闭后，不得覆盖新实例已写入的状态。"""
+    storage = _storage_module()
+    path = tmp_path / "state.json"
+    real_replace = storage.os.replace
+    abandoned = False
+    first_replace = True
+
+    def briefly_locked(src, dst):
+        nonlocal first_replace
+        if first_replace:
+            first_replace = False
+            raise PermissionError(5, "拒绝访问")
+        return real_replace(src, dst)
+
+    def reload_during_retry(_delay):
+        nonlocal abandoned
+        abandoned = True
+        assert storage.write_json_atomic(path, {"owner": "new"})
+
+    monkeypatch.setattr(storage.os, "replace", briefly_locked)
+    monkeypatch.setattr(storage.time, "sleep", reload_during_retry)
+    written = storage.write_json_atomic(path, {"owner": "old"}, abandoned=lambda: abandoned)
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"owner": "new"}
+    assert written is False
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_load_config_data_unexpected_error(caplog: object) -> None:
@@ -1285,7 +1305,7 @@ def test_load_sessions_record_exception_skips_session(tmp_path: Path, caplog: ob
 # ============================================================================
 
 
-def test_migrate_and_sync_fail_on_config_update(tmp_path: Path) -> None:
+async def test_migrate_and_sync_fail_on_config_update(tmp_path: Path) -> None:
     """宿主配置对象写回失败：持久化返回 False（磁盘 JSON 已写成功）。"""
     models, _, storage = _load_modules()
     settings = models.Settings.from_config({})
@@ -1295,7 +1315,7 @@ def test_migrate_and_sync_fail_on_config_update(tmp_path: Path) -> None:
         def update(self, data) -> None:
             raise RuntimeError("config object broken")
 
-    assert storage.persist_settings_config(path, BrokenConfig(), settings) is False
+    assert await storage.apersist_settings_config(path, BrokenConfig(), settings) is False
 
 
 def test_state_load_failure_log_redacts_exc_text(

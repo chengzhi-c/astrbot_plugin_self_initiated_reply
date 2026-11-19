@@ -14,6 +14,7 @@ import asyncio
 import re
 import time
 from collections.abc import Awaitable, Callable
+from copy import copy
 from typing import Any
 
 from astrbot.api import logger
@@ -44,7 +45,6 @@ from .utils import (
     clean_reply,
     consume_task_result,
     conversation_history,
-    maybe_await,
     redact_exc_text,
     response_text,
     usable_conversation,
@@ -159,7 +159,9 @@ class _GenerateRun:
         "umo",
         "state",
         "last_event",
+        "plugin_context",
         "inherit_tools",
+        "preserve_tool_schema",
         "prompt",
         "expected_generation",
         "force",
@@ -184,6 +186,7 @@ class _GenerateRun:
         state: SessionState,
         last_event: Any,
         inherit_tools: bool,
+        preserve_tool_schema: bool,
         prompt: str,
         expected_generation: int | None,
         force: bool,
@@ -193,7 +196,9 @@ class _GenerateRun:
         self.umo = umo
         self.state = state
         self.last_event = last_event
+        self.plugin_context: Any = None
         self.inherit_tools = inherit_tools
+        self.preserve_tool_schema = preserve_tool_schema
         self.prompt = prompt
         self.expected_generation = expected_generation
         # 阶段耗时：超时日志靠它区分「卡在宿主装配」还是「卡在模型/工具循环」。
@@ -224,13 +229,13 @@ class _GenerateRun:
         return self.partial_reply()
 
 
-def _chain_providers(run: Any) -> list[Any]:
+def _chain_providers(run: _GenerateRun) -> list[Any]:
     """本次运行实际会用的候选链：主模型 + 备用模型。
 
     取 build 结果上的真实对象，而不是宿主实例里的全部 provider——后者会把
     这条链没用到的模型算进来，把「该调多少」指错方向。
     """
-    result = getattr(run, "build_result", None)
+    result = run.build_result
     if result is None:
         return []
     chain = [getattr(result, "provider", None)]
@@ -317,19 +322,7 @@ class GenerationRunner:
         request_stop = getattr(agent_runner, "request_stop", None)
         if callable(request_stop):
             try:
-                # 结果可能可等待（宿主改成协程时）：不 await 会留下一个从未运行的
-                # 协程对象，优雅停止请求静默失效，此后每次超时都退化到取消+隔离。
-                await maybe_await(request_stop())
-            except asyncio.CancelledError:
-                # 这一次等待自己被打断：调用方的取消意图优先，但必须先注入取消并
-                # 走完同一套收敛判定——否则 run_task 既没被取消、也没进入宽限/隔离
-                # 判定，成为继续运行且绕过预算与代次闸门的孤儿。
-                run_task.cancel()
-                if await wait_until(grace_deadline()):
-                    consume_task_result(run_task)
-                else:
-                    quarantine(run_task, "agent runner ignored cancellation")
-                raise
+                request_stop()
             except Exception:
                 # 优雅停止是尽力而为：失败不能阻断下方的宽限等待与兜底 cancel()。
                 pass
@@ -405,6 +398,7 @@ class GenerationRunner:
         # 一次运行一个工具语义：入口快照，避免运行中改配置导致 install 与
         # enforce 读到不同开关值（False→True 方向会留下未清理的工具集）。
         inherit_tools = self.settings.proactive_inherit_tools
+        preserve_tool_schema = inherit_tools and self.settings.proactive_preserve_tool_schema
         try:
             context_text = await self.build_context_text(umo, state)
             prompt = build_proactive_prompt(
@@ -429,6 +423,7 @@ class GenerationRunner:
             state=state,
             last_event=last_event,
             inherit_tools=inherit_tools,
+            preserve_tool_schema=preserve_tool_schema,
             prompt=prompt,
             expected_generation=expected_generation,
             force=force,
@@ -518,6 +513,21 @@ class GenerationRunner:
             allow_direct=allow_outbound,
             ledger=run.ledger,
         )
+        run.plugin_context = self._context
+        if run.inherit_tools:
+            # 宿主内置工具直接调 Context；只给本轮副本加闸门，服务对象仍共享。
+            run.plugin_context = copy(self._context)
+
+            async def tracked_context_send(session: Any, message_chain: MessageChain) -> bool:
+                result = await outbound.send(
+                    message_chain,
+                    kind="tool_direct",
+                    sender=lambda message: self._context.send_message(session, message),
+                    record_text=str(session) == run.umo,
+                )
+                return result.submitted
+
+            run.plugin_context.send_message = tracked_context_send
 
         async def tracked_send(message: MessageChain) -> Any:
             message_type = getattr(message, "type", "")
@@ -579,14 +589,19 @@ class GenerationRunner:
         await self._load_conversation_into(req, last_event, run.umo)
         last_event.set_extra("provider_request", req)
         last_event.set_extra("self_initiated_reply", True)
+        # 缓存事件会沿用上次宿主发送的簿记；本轮工具调用前重新初始化。
+        last_event.set_extra("_streaming_finished", False)
+        last_event.set_extra("_send_message_to_user_current_session_plain_texts", [])
 
         build_result = await self._runtime().build(
             event=last_event,
-            plugin_context=self._context,
-            config=self.main_agent_build_config(run.umo),
+            plugin_context=run.plugin_context,
+            config=self.main_agent_build_config(
+                run.umo, preserve_tool_schema=run.preserve_tool_schema
+            ),
             req=req,
             apply_reset=False,
-            **(await self._provider_kwargs()),
+            **self._provider_kwargs(),
         )
         if build_result is None:
             return run.abort()
@@ -605,8 +620,13 @@ class GenerationRunner:
             provider_label(getattr(build_result, "provider", None)),
         )
 
-        # 4.30 already ran hooks and reset; full schema mode shares req with the runner.
-        if not self.enforce_final_tool_policy(req, inherit_tools):
+        # 4.30 builds the runner before returning it; skills_like keeps a separate raw tool set.
+        if not self.enforce_final_tool_policy(
+            req,
+            inherit_tools,
+            run.preserve_tool_schema,
+            agent_runner=build_result.agent_runner,
+        ):
             return run.abort(run.reset_coro)
         if run.reset_coro is not None:
             if await self._call_hook(
@@ -616,7 +636,12 @@ class GenerationRunner:
             ):
                 return run.abort(run.reset_coro)
             # Older hosts defer reset; clean hook-injected tools before that reset.
-            if not self.enforce_final_tool_policy(req, inherit_tools):
+            if not self.enforce_final_tool_policy(
+                req,
+                inherit_tools,
+                run.preserve_tool_schema,
+                agent_runner=build_result.agent_runner,
+            ):
                 return run.abort(run.reset_coro)
             await run.reset_coro
         return None
@@ -624,8 +649,6 @@ class GenerationRunner:
     async def _run_agent_with_grace(self, run: _GenerateRun) -> None:
         """shield + 超时/取消优雅停止。"""
         build_result = run.build_result
-        if build_result is None:
-            raise RuntimeError("run_agent entered the run phase without a build_result")
         run_task = asyncio.ensure_future(self._drain(build_result.agent_runner))
         self._background_tasks.add(run_task)
         # 取结果先于丢弃：以异常收尾时不读结果会让 asyncio 投一条无归属的
@@ -693,8 +716,6 @@ class GenerationRunner:
 
     def _finalize_text(self, run: _GenerateRun) -> tuple[str, AttemptLedger]:
         build_result = run.build_result
-        if build_result is None:
-            raise RuntimeError("run_agent entered finalize without a build_result")
         response = build_result.agent_runner.get_final_llm_resp()
         reply_text = response_text(response)
         if getattr(response, "role", None) == "err":
@@ -708,20 +729,11 @@ class GenerationRunner:
         return reply_text, run.ledger
 
     def _cleanup_generation_state(self, run: _GenerateRun) -> None:
-        """四段独立静默清理：reset → 摘 send → 工具边界 → provider_request。
-
-        摘 send 一档受 ``run.quarantined`` 保护：被隔离的运行仍在后台跑，它
-        之后的工具直发必须继续经 tracker 受预算/代次/停止闸门约束；宁可把
-        tracker 留在那个事件实例上（随事件对象一起被回收），也不给隔离任务
-        留裸发窗口。finally 是唯一回滚点，任一段失败都不得中断其余段。
-        """
+        """回收 reset 与事件状态；隔离的运行保留发送闸门。"""
         last_event = run.last_event
-        try:
-            if run.reset_coro is not None:
-                # close() 对「已 await 完成」「已 close」「未启动」三态安全。
-                run.reset_coro.close()
-        except Exception:
-            pass
+        if run.reset_coro is not None:
+            # close() 对已完成、已关闭和未启动的原生协程均安全。
+            run.reset_coro.close()
         if run.tracker_installed and run.tracked_send is not None:
             if run.quarantined:
                 logger.warning(
@@ -742,10 +754,7 @@ class GenerationRunner:
                     pass
         if run.tool_boundary_state is not None:
             self.restore_agent_tool_boundary(last_event, run.tool_boundary_state)
-        try:
-            last_event.set_extra("provider_request", None)
-        except Exception:
-            pass
+        last_event.set_extra("provider_request", None)
 
     async def _load_conversation_into(self, req: Any, last_event: Any, umo: str) -> None:
         """把会话历史读进 ``req``，三种失败各自降级为「无上下文回复」而非中断。
@@ -828,7 +837,14 @@ class GenerationRunner:
         ):
             pass
 
-    def enforce_final_tool_policy(self, req: Any, inherit_tools: bool) -> bool:
+    def enforce_final_tool_policy(
+        self,
+        req: Any,
+        inherit_tools: bool,
+        preserve_tool_schema: bool = False,
+        *,
+        agent_runner: Any = None,
+    ) -> bool:
         """Enforce the proactive tool allowlist; abort the run when unverifiable.
 
         The default allowlist is empty, so every tool the host injected during
@@ -839,6 +855,12 @@ class GenerationRunner:
         injects them after build.
         """
         if inherit_tools:
+            if preserve_tool_schema:
+                return self._runtime().guard_final_tools(
+                    req,
+                    block=HOST_DANGEROUS_TOOL_IDS,
+                    agent_runner=agent_runner,
+                )
             # 继承模式：放行宿主/插件工具链，但宿主级危险能力（cron、浏览器/
             # 电脑使用、文件提取、知识库 agentic）仍永远拒绝，build config 的
             # 硬关闭之外，这里是拦截 hook 在 build 后注入危险工具的最终防线。
@@ -868,28 +890,16 @@ class GenerationRunner:
         """
         if inherit_tools:
             return {}
-        try:
-            original_plugins_name = event.plugins_name
-        except AttributeError as exc:
-            raise RuntimeError("当前 AstrBot 事件不支持插件工具边界") from exc
-        try:
-            event.plugins_name = []
-        except Exception as exc:
-            raise RuntimeError("当前 AstrBot 事件不支持插件工具边界") from exc
+        original_plugins_name = event.plugins_name
+        event.plugins_name = []
         return {"plugins_name": original_plugins_name}
 
     @staticmethod
     def restore_agent_tool_boundary(event: Any, state: dict[str, Any]) -> None:
         if "plugins_name" in state:
-            try:
-                event.plugins_name = state["plugins_name"]
-            except Exception:
-                # plugins_name 在部分宿主版本是只读属性或 __slots__ 成员；本函数
-                # 由 generate() 的 finally 调用，抛出会中断后续清理段。未复原仅
-                # 影响该事件后续的插件归属标记。
-                pass
+            event.plugins_name = state["plugins_name"]
 
-    async def _provider_kwargs(self) -> dict[str, Any]:
+    def _provider_kwargs(self) -> dict[str, Any]:
         """把主动回复要用的模型作为 ``provider=`` 交给宿主。
 
         宿主 ``build_main_agent`` 的 ``provider`` 参数优先于它自己的会话选择
@@ -899,15 +909,11 @@ class GenerationRunner:
 
         ID 找不到时不传：传了宿主会直接把这一轮判成 provider 不存在。
         """
-        provider_id = str(self.settings.proactive_provider_id or "").strip()
+        provider_id = self.settings.proactive_provider_id
         if not provider_id:
             return {}
         try:
-            get_provider = getattr(self._context, "get_provider_by_id", None)
-            if callable(get_provider):
-                resolved = await maybe_await(get_provider(provider_id))
-            else:
-                resolved = None
+            resolved = self._context.get_provider_by_id(provider_id)
         except Exception:
             resolved = None
         if resolved is None:
@@ -949,15 +955,14 @@ class GenerationRunner:
             needed,
         )
 
-    def main_agent_build_config(self, umo: str) -> Any:
+    def main_agent_build_config(self, umo: str, *, preserve_tool_schema: bool = False) -> Any:
         provider_settings = {}
         model_settings = {}
         persona_settings: dict[str, Any] = {}
+        tool_schema_mode = "full"
+        add_cron_tools = False
         try:
-            config_obj = getattr(self._context, "astrbot_config", {})
-            get_config = getattr(self._context, "get_config", None)
-            if umo and callable(get_config):
-                config_obj = get_config(umo)
+            config_obj = self._context.get_config(umo)
             provider_settings = dict(config_obj.get("provider_settings", {}) or {})
             # 回退顺序与每个模型的重试次数必须一起继承会话设置。4.30
             # 将模型配置从 agent_runner 移到 agent；新路径优先，旧路径兼容。
@@ -971,10 +976,17 @@ class GenerationRunner:
             persona_settings = dict(
                 agent_config.get("persona") or legacy_agent_config.get("persona") or {}
             )
+            misc_settings = agent_config.get("misc") or legacy_agent_config.get("misc") or {}
+            tool_schema_mode = (
+                misc_settings.get("tool_schema_mode")
+                or provider_settings.get("tool_schema_mode")
+                or "full"
+            )
+            if preserve_tool_schema:
+                cron_settings = provider_settings.get("proactive_capability") or {}
+                add_cron_tools = cron_settings.get("add_cron_tools", True)
         except Exception as exc:
-            # 会话级配置是可选能力：get_config(umo) 在旧宿主不存在或返回对象
-            # 不是 Mapping 时降级为宿主默认行为。必须是 DEBUG 而非静默——降级后
-            # 该会话配的模型不生效，回复改用宿主默认 provider，无痕迹就无从排查。
+            # 配置读取或结构解析失败时沿用宿主默认设置，并记录降级原因。
             logger.debug(
                 "[%s] session build config fallback session=%s error=%s",
                 PLUGIN_ID,
@@ -998,6 +1010,8 @@ class GenerationRunner:
                 provider_settings,
                 model_settings=model_settings,
                 persona_settings=persona_settings,
+                tool_schema_mode=tool_schema_mode if preserve_tool_schema else "full",
+                add_cron_tools=add_cron_tools if preserve_tool_schema else False,
                 request_max_retries=self.settings.proactive_request_max_retries,
             )
         )

@@ -309,6 +309,12 @@
     "hint": "默认关闭：主动回复不开放任何工具。开启后与正常 @Bot 回复使用同一套工具（如发图、记忆、搜索等），但 Shell/Python、浏览器与电脑操作、定时任务、文件提取、知识库代理等宿主危险能力仍被移除；群聊普通消息可能间接触发这些能力，仅在你信任群聊环境时开启。",
     "default": false
   },
+  "proactive_preserve_tool_schema": {
+    "type": "bool",
+    "description": "主动回复保留危险工具定义",
+    "hint": "仅在继承工具时生效。沿用普通回复的工具 schema 模式，保留当前请求已有的危险工具定义并拒绝执行；普通回复启用定时任务工具时也保留其定义，但仍拒绝调用。缓存收益取决于模型实际命中相同提示词和工具前缀。",
+    "default": false
+  },
   "vision_judge_enabled": {
     "type": "bool",
     "description": "判断模型启用图片识别",

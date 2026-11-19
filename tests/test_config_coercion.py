@@ -175,6 +175,26 @@ def test_unencodable_text_is_stripped_before_it_can_break_the_config() -> None:
     models.config_revision(settings)
 
 
+@pytest.mark.parametrize(
+    "key, raw, expected",
+    [
+        ("judge_provider_id", "\x00 model \x00", "model"),
+        ("judge_provider_id", "x" * 199 + " suffix", "x" * 199),
+        ("decision_prompt_template", "x" * 7999 + " suffix", "x" * 7999),
+        ("bot_aliases", ["\ud800 name \ud800", "x" * 199 + " suffix"], ["name", "x" * 199]),
+    ],
+    ids=["provider-controls", "provider-limit", "prompt-limit", "list-cleanup"],
+)
+def test_normalized_config_stays_stable_after_reload(key, raw, expected) -> None:
+    models = _models()
+    saved = models.Settings.from_config({key: raw}).to_config_dict()
+
+    assert saved[key] == expected
+    reloaded = models.Settings.from_config(saved).to_config_dict()
+    assert reloaded == saved
+    assert models.config_revision(reloaded) == models.config_revision(saved)
+
+
 def test_proactive_model_keys_accept_what_the_settings_page_sends() -> None:
     """设置页提交的两个新键要能被规范化与读回。
 
@@ -183,16 +203,12 @@ def test_proactive_model_keys_accept_what_the_settings_page_sends() -> None:
     """
     models = _models()
 
-    normalized = models.normalize_config_updates(
+    settings = models.Settings.from_config(
         {
             "proactive_provider_id": "  fast-model  ",
             "proactive_fallback_provider_ids": ["backup-a", " backup-b ", "backup-a", ""],
         }
     )
-    assert normalized["proactive_provider_id"] == "fast-model"
-    assert normalized["proactive_fallback_provider_ids"] == ["backup-a", "backup-b"]
-
-    settings = models.Settings.from_config(normalized)
     assert settings.proactive_provider_id == "fast-model"
     assert settings.proactive_fallback_provider_ids == ["backup-a", "backup-b"]
     assert models.Settings.from_config({}).proactive_provider_id == ""

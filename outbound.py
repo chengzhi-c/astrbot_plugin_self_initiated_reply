@@ -38,7 +38,7 @@ class OutboundGateway:
 
     def __init__(
         self,
-        sender: Callable[[Any], Any] | None,
+        sender: Callable[[Any], Any],
         *,
         max_direct_sends: int = 0,
         allow_direct: Callable[[], bool] | None = None,
@@ -58,9 +58,17 @@ class OutboundGateway:
         except Exception:
             return ""
 
-    async def send(self, message: Any, *, kind: str = "reply") -> OutboundResult:
+    async def send(
+        self,
+        message: Any,
+        *,
+        kind: str = "reply",
+        sender: Callable[[Any], Any] | None = None,
+        record_text: bool = True,
+    ) -> OutboundResult:
         """Classify one outbound call and retain its evidence in the ledger."""
         is_direct = kind == "tool_direct"
+        send_message = self._sender if sender is None else sender
         if not self._ledger.accepts_attempts:
             # 账本已封时收到迟到的工具直发是可预期时序（被隔离的运行保留了
             # tracker），降级为闸门拒绝；抛异常会让该次直发的记账整条丢失。
@@ -72,12 +80,8 @@ class OutboundGateway:
             return OutboundResult(outcome)
         attempt = self._ledger.reserve(
             "tool_direct" if is_direct else "final_reply",
-            self._message_text(message) if is_direct else "",
+            self._message_text(message) if is_direct and record_text else "",
         )
-        if not callable(self._sender):
-            outcome = SendOutcome(SendStatus.FAILED_BEFORE_SUBMIT, "outbound sender unavailable")
-            self._ledger.finish_before_submit(attempt, outcome.status)
-            return OutboundResult(outcome)
         if is_direct:
             if self._direct_send_count >= self._max_direct_sends:
                 outcome = SendOutcome(
@@ -95,15 +99,7 @@ class OutboundGateway:
                 )
                 self._ledger.finish_before_submit(attempt, outcome.status)
                 return OutboundResult(outcome)
-            try:
-                gate_ok = self._allow_direct is None or bool(self._allow_direct())
-            except Exception:
-                # 闸门回调抛异常不该把 RESERVED 状态的 attempt 留在账本里
-                # （只有 seal 才会把它转 ABANDONED，中途无痕迹）：按闸门拒绝
-                # 收敛，与「闸门说不行」同一条记账路径。本模块不持 logger
-                # （无宿主依赖），异常文本不进 detail——调用方从
-                # SUPPRESSED/GATE_REJECTED 能看到这次直发没有发生。
-                gate_ok = False
+            gate_ok = self._allow_direct is None or bool(self._allow_direct())
             if not gate_ok:
                 outcome = SendOutcome(
                     SendStatus.SUPPRESSED,
@@ -117,7 +113,7 @@ class OutboundGateway:
         self._ledger.mark_in_flight(attempt)
         raw_result: Any = None
         try:
-            raw_result = self._sender(message)
+            raw_result = send_message(message)
             if inspect.isawaitable(raw_result):
                 raw_result = await raw_result
         except asyncio.CancelledError:

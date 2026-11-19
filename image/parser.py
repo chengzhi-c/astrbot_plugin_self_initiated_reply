@@ -282,26 +282,10 @@ def _shared_ssl_context() -> ssl.SSLContext:
 
 
 def _is_safe_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """Return whether an address is both globally routable and not a special-use range.
-
-    ``is_global`` alone is not the whole SSRF story: ``ipaddress`` leaves
-    multicast (224.0.0.0/4, ff00::/8) and the well-known NAT64 prefix
-    (64:ff9b::/96) marked global, and a NAT64-mapped loopback is exactly the
-    "public-looking" address that reaches an internal service. The remaining
-    flags are belt-and-braces so a future CPython change to ``is_global``
-    cannot silently widen the gate.
-    """
+    """Exclude multicast, reserved and NAT64 ranges that ``is_global`` can allow."""
     if address in _NAT64_NETWORK:
         return False
-    return bool(
-        address.is_global
-        and not address.is_multicast
-        and not address.is_reserved
-        and not address.is_link_local
-        and not address.is_loopback
-        and not address.is_private
-        and not address.is_unspecified
-    )
+    return address.is_global and not address.is_multicast and not address.is_reserved
 
 
 def _global_addresses(host: str) -> list[str]:

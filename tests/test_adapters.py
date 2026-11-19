@@ -187,13 +187,6 @@ async def test_resolve_provider_id_propagates_current_provider_errors(bridge) ->
         await bridge(ctx).resolve_provider_id("umo1", "")
 
 
-async def test_resolve_provider_id_via_synchronous_host(bridge) -> None:
-    from types import SimpleNamespace
-
-    ctx = SimpleNamespace(get_current_chat_provider_id=lambda umo: "p-sync")
-    assert await bridge(ctx).resolve_provider_id("umo1", "") == "p-sync"
-
-
 async def test_read_history_no_manager(bridge) -> None:
     from types import SimpleNamespace
 
