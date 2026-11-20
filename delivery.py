@@ -53,7 +53,7 @@ from .utils import (
 # - RuntimeCallback：宿主私有符号适配层获取器；用 getter 使测试替换
 #   ``_AGENT_RUNTIME`` 后仍指向最新实现。
 SaveStorageCallback = Callable[[], Awaitable[None]]
-CallHookCallback = Callable[[Any, Any], Awaitable[None]]
+CallHookCallback = Callable[[Any, Any], Awaitable[bool]]
 ContextSendCallback = Callable[[str, Any], Awaitable[Any]]
 RuntimeCallback = Callable[[], Any]
 # DEBUG 日志里回复正文的预览长度上限（只在 log_reply_content 开启时输出）。
@@ -68,14 +68,8 @@ LEDGER_SEALED_REPLY_TEXT = "本次投递已收尾，放弃这条迟到的回复�
 class _NamedAt(At):
     """把 ``name`` 带进 OneBot ``at`` 段的 ``At``。
 
-    宿主 ``At.toDict()`` 只序列化 ``qq``（4.10.6~4.29.1 均如此），昵称被丢掉。
-    而 OneBot 的 ``at.name`` 是显示名：读它的实现（LLOneBot 用它拼 ``@name``，
-    为空就只发出一个裸 ``@``）与 Line/Misskey/WeCom/WeixinOC/Telegram 都靠这个
-    字段出显示文本。NapCat 不读它（按群成员记录自己解析），Lark 与 QQ 官方号
-    只用 ``qq``——这三家上本类无副作用。
-
-    在宿主输出上增量而不是重建整段，宿主给 ``at`` 加字段时不会静默丢掉。
-    构造失败由 ``_attach_chain_prefix`` 静默降级。
+    宿主 ``At.toDict()`` 只序列化 ``qq``，昵称被丢掉。LLOneBot 优先使用
+    ``name``，缺失时再查询群名片或昵称；携带已知昵称可避免依赖这次查询。
     """
 
     def toDict(self) -> dict[str, Any]:
@@ -136,36 +130,14 @@ class DeliveryRunner:
             return bool(model_decision)
         return self._probability_hit(self.settings.quote_probability)
 
-    @staticmethod
-    def _quote_target_id(last_event: Any) -> str:
-        """引用目标 = 本次生成所依据的那条消息（与生成上下文的末条同源，由
-        pipeline 在调用生成前冻结后经 ``target_event`` 传入）；取不到 ID 时返回空串，
-        降级为不引用。"""
-        if last_event is None:
-            return ""
-        return event_message_id(last_event)
-
-    def _resolve_component_id(
-        self,
-        umo: str,
-        *,
-        wanted: bool,
-        target_id: str,
-        skip_log: str,
-    ) -> str:
-        """装饰性组件 ID 的单一解析形状：不需要或取不到时返回空串并留痕。"""
-        if wanted and not target_id:
-            logger.debug(skip_log, PLUGIN_ID, umo)
-        return target_id if wanted else ""
-
     def _resolve_quote_id(self, umo: str, model_decision: bool | None, last_event: Any) -> str:
         """本次发送要引用的消息 ID；不需要引用或取不到 ID 时返回空串。"""
-        return self._resolve_component_id(
-            umo,
-            wanted=self._should_quote(model_decision),
-            target_id=self._quote_target_id(last_event),
-            skip_log="[%s] quote skipped: no message id for session=%s",
-        )
+        if not self._should_quote(model_decision):
+            return ""
+        quote_id = event_message_id(last_event)
+        if not quote_id:
+            logger.debug("[%s] quote skipped: no message id for session=%s", PLUGIN_ID, umo)
+        return quote_id
 
     @staticmethod
     def _attach_chain_prefix(chain_owner: Any, factory: Any, *, kind: str) -> bool:
@@ -217,12 +189,12 @@ class DeliveryRunner:
 
     def _resolve_mention_id(self, umo: str, last_event: Any) -> str:
         """本次发送要 @ 的发送者 ID；不需要 @ 或取不到 ID 时返回空串。"""
-        return self._resolve_component_id(
-            umo,
-            wanted=self._should_mention(),
-            target_id=self._mention_target_id(last_event),
-            skip_log="[%s] mention skipped: no sender id for session=%s",
-        )
+        if not self._should_mention():
+            return ""
+        mention_id = self._mention_target_id(last_event)
+        if not mention_id:
+            logger.debug("[%s] mention skipped: no sender id for session=%s", PLUGIN_ID, umo)
+        return mention_id
 
     async def deliver_reply(
         self,
@@ -235,7 +207,6 @@ class DeliveryRunner:
         expected_generation: int | None,
         force: bool,
         trigger: str,
-        silence_active_at: float | None = None,
         quote: bool | None = None,
         target_event: Any | None = None,
     ) -> str:
@@ -263,7 +234,7 @@ class DeliveryRunner:
             return STOPPING_REPLY_TEXT
         gate = "" if self._gate.is_current(umo, expected_generation) else STALE_TASK_MESSAGE
         if not gate:
-            gate = self._local_gate(state, force=force, silence_active_at=silence_active_at)
+            gate = self._local_gate(state, force=force)
         if gate:
             logger.debug(
                 "[%s] skip before send ledger_id=%s session=%s trigger=%s reason=%s",
@@ -285,6 +256,7 @@ class DeliveryRunner:
                 expected_generation=expected_generation,
                 quote=quote,
                 target_event=target_event,
+                check_gate=lambda: self._local_gate(state, force=force),
             )
             if not sent.delivered:
                 if sent.status is SendStatus.UNKNOWN:
@@ -300,7 +272,9 @@ class DeliveryRunner:
                     if sent.code is SuppressCode.STOPPING:
                         return STOPPING_REPLY_TEXT
                     if sent.code is SuppressCode.GATE_REJECTED:
-                        return LEDGER_SEALED_REPLY_TEXT
+                        return self._local_gate(state, force=force) or LEDGER_SEALED_REPLY_TEXT
+                    if sent.code is SuppressCode.HOOK_STOPPED:
+                        return "装饰钩子已中止回复。"
                     return STALE_REPLY_MESSAGE
                 if not self._gate.is_current(umo, expected_generation):
                     return STALE_REPLY_MESSAGE
@@ -337,6 +311,7 @@ class DeliveryRunner:
         expected_generation: int | None = None,
         quote: bool | None = None,
         target_event: Any | None = None,
+        check_gate: Callable[[], str] | None = None,
     ) -> SendOutcome:
         """Send one proactive reply without retrying an unknown submission.
 
@@ -391,6 +366,7 @@ class DeliveryRunner:
                 quote_id=quote_id,
                 mention_id=mention_id,
                 mention_name=mention_name,
+                check_gate=check_gate,
             )
         return await self._send_via_context(umo, reply, ledger=ledger)
 
@@ -405,6 +381,7 @@ class DeliveryRunner:
         quote_id: str = "",
         mention_id: str = "",
         mention_name: str = "",
+        check_gate: Callable[[], str] | None = None,
     ) -> SendOutcome:
         """事件路径投递：装饰钩子 → 代次复核 → 事件 send → 发送后钩子。
 
@@ -421,9 +398,15 @@ class DeliveryRunner:
                 .set_result_content_type(self._runtime().result_llm_type)
             )
             try:
-                await self._call_hook(
+                if await self._call_hook(
                     last_event, self._runtime().event_type.OnDecoratingResultEvent
-                )
+                ):
+                    last_event.clear_result()
+                    return SendOutcome(
+                        SendStatus.SUPPRESSED,
+                        "decorating hook stopped event",
+                        SuppressCode.HOOK_STOPPED,
+                    )
             except Exception as exc:
                 # 装饰钩子链上任意第三方插件抛错不该丢弃已生成的回复：按出错时手上
                 # 的链继续发送（可能含该钩子已做的部分修改；口径同下方 after-send
@@ -471,6 +454,9 @@ class DeliveryRunner:
                     "generation changed after decorating",
                     SuppressCode.GENERATION_CHANGED,
                 )
+            if check_gate is not None and (reason := check_gate()):
+                last_event.clear_result()
+                return SendOutcome(SendStatus.SUPPRESSED, reason, SuppressCode.GATE_REJECTED)
             result = last_event.get_result()
             if result is None or not result.chain:
                 # 装饰钩子（分段、过滤、裁剪一类）把链清空或整条丢掉。回复就此消失，
@@ -486,18 +472,26 @@ class DeliveryRunner:
                 return SendOutcome(
                     SendStatus.FAILED_BEFORE_SUBMIT, "decorating hook produced no result"
                 )
-            if quote_id:
-                # 引用组件在装饰钩子之后插入：钩子改的是链内容，引用是外层标注。
-                self._attach_chain_prefix(result, lambda: Reply(id=quote_id), kind="quote")
             if mention_id:
-                # @ 组件同样插在装饰钩子之后，且必须插在 quote 之后：
-                # ``insert(0)`` 让后插者位于更前，先 Reply 后 At 才能得到
-                # [At, Reply, ...正文]。两步同步，不新增 await 点。
-                self._attach_chain_prefix(
+                if self._attach_chain_prefix(
                     result,
                     lambda: _NamedAt(qq=mention_id, name=mention_name),
                     kind="mention",
-                )
+                ):
+                    # 装饰钩子可能已加过无昵称的同对象 @，统一使用带显示名的组件。
+                    result.chain[1:] = [
+                        item
+                        for item in result.chain[1:]
+                        if not (isinstance(item, At) and str(item.qq) == mention_id)
+                    ]
+            if quote_id:
+                # 与宿主一致将 Reply 置于 At 前，保持引用锚点在正文之前。
+                if self._attach_chain_prefix(result, lambda: Reply(id=quote_id), kind="quote"):
+                    result.chain[1:] = [
+                        item
+                        for item in result.chain[1:]
+                        if not (isinstance(item, Reply) and str(item.id) == quote_id)
+                    ]
             logger.debug(
                 "[%s] event send begin ledger_id=%s session=%s chars=%d chain_items=%d",
                 PLUGIN_ID,

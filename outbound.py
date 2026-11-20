@@ -64,7 +64,6 @@ class OutboundGateway:
         *,
         kind: str = "reply",
         sender: Callable[[Any], Any] | None = None,
-        record_text: bool = True,
     ) -> OutboundResult:
         """Classify one outbound call and retain its evidence in the ledger."""
         is_direct = kind == "tool_direct"
@@ -80,7 +79,7 @@ class OutboundGateway:
             return OutboundResult(outcome)
         attempt = self._ledger.reserve(
             "tool_direct" if is_direct else "final_reply",
-            self._message_text(message) if is_direct and record_text else "",
+            self._message_text(message) if is_direct else "",
         )
         if is_direct:
             if self._direct_send_count >= self._max_direct_sends:

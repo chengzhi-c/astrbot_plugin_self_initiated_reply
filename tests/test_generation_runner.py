@@ -256,7 +256,7 @@ def _make_runner(
         context=SimpleNamespace(get_config=lambda _umo: {}),
         runtime=lambda: fake_runtime,
         gate=gate,
-        local_gate=lambda state, force, silence_active_at=None: "",
+        local_gate=lambda state, force: "",
         call_hook=hook,
         grace_stop_sec=lambda: grace_sec,
         background_tasks=background_tasks,
@@ -277,6 +277,24 @@ def _state(models, *, recent=None):
         for role, text, at in recent:
             state.recent.append(models.MessageRecord(role=role, name="u", text=text, at=at))
     return state
+
+
+async def test_stop_during_request_hook_does_not_start_agent(tmp_path: Path) -> None:
+    stopped = False
+
+    async def hook(*_):
+        nonlocal stopped
+        stopped = True
+        return False
+
+    _, models, runner, runtime, _, _ = _make_runner(tmp_path, hook=hook)
+    runner._last_events["s1"] = FakeEvent()
+    runner._is_stopping = lambda: stopped
+
+    reply, _ = await runner.generate("s1", _state(models), force=True)
+
+    assert not runtime.run_started.is_set()
+    assert reply == ""
 
 
 # ============================================================================
@@ -555,7 +573,14 @@ async def test_generate_tracks_direct_sends_within_budget(tmp_path: Path, channe
 
 
 @pytest.mark.parametrize(
-    ("target", "unknown"), [(None, False), ("s1", False), ("other", False), ("s1", True)]
+    ("target", "unknown"),
+    [
+        (None, False),
+        ("qq:GroupMessage:20002", False),
+        ("qq:GroupMessage:10001_20002", False),
+        ("other", False),
+        ("qq:GroupMessage:20002", True),
+    ],
 )
 async def test_generate_tracks_tool_direct_evidence_in_pipeline_ledger(
     tmp_path: Path, target: str | None, unknown: bool
@@ -564,8 +589,10 @@ async def test_generate_tracks_tool_direct_evidence_in_pipeline_ledger(
     _, models, runner, runtime, _, _ = _make_runner(
         tmp_path, {"proactive_inherit_tools": target is not None}
     )
+    umo = "qq:GroupMessage:20002"
     event = FakeEvent()
-    runner._last_events["s1"] = event
+    event.unified_msg_origin = "qq:GroupMessage:10001_20002"
+    runner._last_events[umo] = event
     ledger = models.AttemptLedger()
     context_sent = []
 
@@ -584,21 +611,22 @@ async def test_generate_tracks_tool_direct_evidence_in_pipeline_ledger(
             else:
                 from .host_stubs import _FakeMessageChain
 
-                assert (
-                    await runtime.build_kwargs[-1]["plugin_context"].send_message(
-                        target, _FakeMessageChain(chain=["ledger direct"])
-                    )
-                    is True
-                )
+                assert await runtime.build_kwargs[-1]["plugin_context"].send_message(
+                    target, _FakeMessageChain(chain=["ledger direct"])
+                ) is (target != "other")
             agent._resp = SimpleNamespace(completion_text="")
             yield None
 
         return gen()
 
     runtime.run = run_with_direct
-    text, returned_ledger = await runner.generate("s1", _state(models), ledger=ledger, force=True)
+    text, returned_ledger = await runner.generate(umo, _state(models), ledger=ledger, force=True)
 
     assert returned_ledger is ledger
+    if target == "other":
+        assert context_sent == []
+        assert ledger.attempts == ()
+        return
     assert returned_ledger.direct_send_count == 1
     assert returned_ledger.direct_texts == (() if target == "other" else ("ledger direct",))
     assert ledger.attempts[0].state is (

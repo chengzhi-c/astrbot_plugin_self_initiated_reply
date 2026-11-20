@@ -344,25 +344,22 @@ def test_deque_overflow_keeps_byte_counters_in_sync() -> None:
 
 
 def test_overflow_keeps_the_index_sorted_and_counters_in_sync() -> None:
-    """队列满时乱序到达：索引仍按时间有序，字节账与实际内容一致。
-
-    缺陷形态：``_append_image_event`` 直接 ``append``。冻结是并发后台任务，
-    一条时间戳更小的旧消息可能最后完成，插入到队尾会破坏
-    ``drop_older_than`` 的 popleft 截断与 ``_evict_oldest_image_event`` 的
-    「队首即最旧」前提；deque 的自动淘汰又按插入序摘，丢掉的是稍新条目。
-    """
+    """队列满时按消息时间保留最新图片，不让迟到的旧图挤掉新图。"""
     module, coordinator, ctx = _make_coordinator()
     limit = module.MAX_CACHED_IMAGE_EVENTS
     for i in range(limit):
         coordinator.capture_images("s1", float(i + 1), [_PreparedImage(bytes([i % 256]))])
 
     # 时间戳比全队都小的旧消息最后完成冻结
-    coordinator.capture_images("s1", 0.5, [_PreparedImage(b"late")])
+    accepted = coordinator.capture_images("s1", 0.5, [_PreparedImage(b"late")])
 
     stamps = [timestamp for timestamp, _images in ctx.images["s1"]]
-    assert len(stamps) == limit, f"队列长度失控：{len(stamps)}"
-    assert stamps == sorted(stamps), f"索引未按时间有序：{stamps}"
-    assert stamps[0] == 0.5, "新到达的条目未落到队首"
+    assert accepted == []
+    assert stamps == list(range(1, limit + 1))
+    assert coordinator._total_bytes == _bytes_for(module, ctx.images)
+
+    coordinator.capture_images("s1", 1.5, [_PreparedImage(b"middle")])
+    assert [stamp for stamp, _ in ctx.images["s1"]] == [1.5, *range(2, limit + 1)]
     assert coordinator._total_bytes == _bytes_for(module, ctx.images)
 
 

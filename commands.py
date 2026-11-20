@@ -22,7 +22,6 @@ from .models import (
 )
 from .plugin_state import append_recent_user_message, apply_enabled_topology, read_session_state
 from .utils import (
-    clean_chat_text,
     collapse_whitespace,
     event_sender_id,
     event_text,
@@ -318,7 +317,7 @@ async def dispatch_command_action(
         # 已有更新的事件时保留它，手动检查照常跑（判定用的是 recent 文本）。
         if not plugin._last_events.get(umo):
             plugin._coordinator.record_event(umo, event, now_ts())
-        text = clean_chat_text(arg or strip_command_prefix(event_text(event)))
+        text = collapse_whitespace(arg or strip_command_prefix(event_text(event)))
         if text:
             append_recent_user_message(
                 plugin,
@@ -327,12 +326,17 @@ async def dispatch_command_action(
                 clean_text=text,
             )
         try:
-            result = await plugin._pipeline.check_session(
-                umo,
-                trigger=CheckTrigger.MANUAL,
-                force=True,
-                expected_generation=generation,
+            check = plugin._track_background_task(
+                plugin._scheduler._run_registered_check(
+                    umo,
+                    trigger=CheckTrigger.MANUAL,
+                    force=True,
+                    generation=generation,
+                )
             )
+            if check is None:
+                return _lifecycle_reject_text(plugin, "手动检查")
+            result = await check
         finally:
             if plugin._last_events.get(umo) is event:
                 active_at = plugin._last_event_at.get(umo)

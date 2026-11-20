@@ -375,14 +375,13 @@ class SelfInitiatedReplyPlugin(Star):
         state: SessionState,
         *,
         force: bool,
-        silence_active_at: float | None = None,
     ) -> str:
         """generation/delivery 共用的局部闸门回调（``LocalGateCallback`` 形状）。
 
         经实例属性惰性查找 ``self._decision``：测试替换 _decision 后仍指向最新实现，
         与装配层其余回调的测试缝一致。
         """
-        return self._decision.local_gate(state, force=force, silence_active_at=silence_active_at)
+        return self._decision.local_gate(state, force=force)
 
     def _state_for(self, umo: str) -> SessionState:
         return state_for(self, umo)

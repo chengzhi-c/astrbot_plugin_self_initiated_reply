@@ -2025,15 +2025,19 @@ def test_on_message_period_keeps_inflight_generation_by_default(tmp_path: Path) 
     with_plugin(tmp_path, scenario)
 
 
-def test_period_during_generation_does_not_silence_skip_when_abandon_off(
+@pytest.mark.parametrize("arrival", ["generation", "decorating"])
+@pytest.mark.parametrize("new_message", ["换个话题", ""])
+def test_new_message_before_send_restarts_silence(
     tmp_path: Path,
+    arrival: str,
+    new_message: str,
 ) -> None:
     async def scenario(plugin, main):
         models = importlib.import_module(main.__package__ + ".models")
-        plugin.settings.min_silence_sec = 25
+        plugin.settings.min_silence_sec = 75
         plugin.settings.cooldown_sec = 0
         state = plugin._state_for(UMO)
-        started = time.time() - 30
+        started = time.time() - 80
         state.last_active_at = started
         plugin._coordinator.record_event(UMO, make_event(message_str="阿c回我一下"), started)
         token = plugin._gate.advance(UMO)
@@ -2042,19 +2046,48 @@ def test_period_during_generation_does_not_silence_skip_when_abandon_off(
             return {"should_reply": True, "reason": "点名", "elapsed_sec": 0.0}
 
         async def fake_generate(_umo, _state, **kwargs):
-            await plugin.on_message(make_event(message_str="。"))
+            if arrival == "generation":
+                await plugin.on_message(make_event(message_str=new_message))
             ledger = kwargs.get("ledger") or models.AttemptLedger()
             return "一直在呢", ledger
 
+        async def hook(event, event_type):
+            if arrival == "decorating":
+                await plugin.on_message(make_event(message_str=new_message))
+
+        plugin._delivery._call_hook = hook
         plugin._decision.decide = fake_decide
         plugin._generation.generate = fake_generate
         result = await plugin._pipeline.check_session_locked(
             UMO, trigger="message_delay", force=False, expected_generation=token
         )
-        assert result == "已主动回复。"
-        assert "静默时间不足" not in result
+        assert "静默时间不足" in result
+        assert state.daily_count == 0
 
-    with_plugin(tmp_path, scenario, min_silence_sec=25, cooldown_sec=0)
+    with_plugin(tmp_path, scenario, min_silence_sec=75, cooldown_sec=0)
+
+
+def test_new_message_during_decision_requires_fresh_judgment(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        state = plugin._state_for(UMO)
+        state.last_active_at = time.time() - 80
+        plugin._last_events[UMO] = make_event(message_str="旧问题")
+        plugin._gate.advance(UMO)
+
+        async def decide(*args, **kwargs):
+            await plugin.on_message(make_event(message_str="已经解决了"))
+            return {"should_reply": True, "reason": "回答旧问题", "elapsed_sec": 0.0}
+
+        async def generate(*args, **kwargs):
+            pytest.fail("旧判断不应触发新消息的生成")
+
+        plugin._decision.decide = decide
+        plugin._generation.generate = generate
+        result = await plugin._pipeline.check_session(UMO, trigger="message_delay", force=False)
+        assert result == "会话已经更新，放弃旧任务。"
+        assert plugin._last_decisions[UMO]["should_reply"] is False
+
+    with_plugin(tmp_path, scenario, abandon_stale_on_new_message=False)
 
 
 def _arrange_reply_flow(plugin, main, models):

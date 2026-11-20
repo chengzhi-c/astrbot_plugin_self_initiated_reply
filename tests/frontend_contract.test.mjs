@@ -1327,6 +1327,10 @@ test("validateWhitelistLines reports line numbers and reasons for malformed whit
   assert.ok(errors[0].reason.includes("非法字符"));
   assert.equal(errors[1].line, 4);
   assert.ok(errors[1].reason.includes("字符上限"));
+  const prefix = "qq:GroupMessage:";
+  const unicodeId = prefix + "😀".repeat(200 - prefix.length);
+  assert.deepEqual(validateWhitelistLines(unicodeId), []);
+  assert.ok(validateWhitelistLines(unicodeId + "😀")[0].reason.includes("字符上限"));
 });
 
 test("prompt preview keeps unknown variables verbatim", () => {

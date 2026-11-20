@@ -362,6 +362,18 @@ def test_remaining_silence_sec_computation(tmp_path: Path) -> None:
     assert scheduler.remaining_silence_sec(models.SessionState()) == 0.0
 
 
+async def test_patrol_respects_message_delay(tmp_path: Path) -> None:
+    _, models, scheduler, states, checks = _make_scheduler(
+        tmp_path, {"min_silence_sec": 45, "message_delay_sec": 75}
+    )
+    scheduler._last_events["s1"] = object()
+    states["s1"] = models.SessionState(last_active_at=1000.0)
+    await scheduler._patrol_one_session("s1", 1060.0)
+    assert checks == []
+    await scheduler._patrol_one_session("s1", 1075.0)
+    assert len(checks) == 1
+
+
 # ============================================================================
 # 事件与运行时 UMO 回收
 # ============================================================================
@@ -656,7 +668,7 @@ async def test_patrol_loop_full_cycle_branches(tmp_path: Path) -> None:
     """白名单迭代全分支：有事件活动会话被检查，其余三种跳过。"""
     _, models, scheduler, state_map, checks = _make_scheduler(
         tmp_path,
-        {"enabled_patrol_trigger": True, "patrol_inactive_after_sec": 60},
+        {"enabled_patrol_trigger": True, "patrol_inactive_after_sec": 120},
     )
     scheduler.settings.check_interval_sec = 0  # 绕开 30s 配置下限，直接驱动循环
     flags = _run_flags(scheduler)
@@ -675,7 +687,7 @@ async def test_patrol_loop_full_cycle_branches(tmp_path: Path) -> None:
     for umo in (active, inactive, running):
         scheduler._last_events[umo] = event
         scheduler._last_event_at[umo] = now
-    scheduler._state_for(active).last_active_at = now  # 活动窗口内 → 进入检查
+    scheduler._state_for(active).last_active_at = now - scheduler.message_trigger_delay() - 1
     # inactive：有事件但 last_active_at=0 → patrol_inactive_after 跳过
     scheduler._gate.mark_running(running)  # 运行中 → is_running 跳过
     # no_event：白名单内但无缓存事件 → 直接 continue
@@ -710,7 +722,7 @@ async def test_patrol_skips_private_when_disabled(tmp_path: Path) -> None:
     for umo in (group, private):
         scheduler._last_events[umo] = event
         scheduler._last_event_at[umo] = now
-        scheduler._state_for(umo).last_active_at = now
+        scheduler._state_for(umo).last_active_at = now - scheduler.message_trigger_delay() - 1
 
     task = asyncio.create_task(scheduler._patrol_loop())
     try:
@@ -1130,7 +1142,9 @@ def _patrol_blocking_check(scheduler, models, tmp_path: Path):
     scheduler.settings.whitelist = {umo}
     scheduler._last_events[umo] = object()
     scheduler._last_event_at[umo] = models.now_ts()
-    scheduler._state_for(umo).last_active_at = models.now_ts()
+    scheduler._state_for(umo).last_active_at = (
+        models.now_ts() - scheduler.message_trigger_delay() - 1
+    )
 
     started = asyncio.Event()
     ended = asyncio.Event()

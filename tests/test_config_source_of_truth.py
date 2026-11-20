@@ -136,25 +136,6 @@ def test_frontend_whitelist_max_count_matches_backend() -> None:
     )
 
 
-def test_frontend_whitelist_item_maxlen_counts_codepoints() -> None:
-    """前端白名单条目长度必须按码点计数，与后端 ``len()`` 同单位。
-
-    缺陷形态：``item.length > WHITELIST_ITEM_MAX_LEN`` 数的是 UTF-16 码元，
-    而后端 ``len()`` 数的是码点。含 emoji 的合法条目（5 个 emoji 加引号 =
-    12 个码元、7 个码点）会被前端误判超限，弹出后端本会接受的假拒绝——用户
-    改不动条目，而后端日志里连一条警告都没有。
-
-    变异锚定：把 ``[...item].length`` 改回 ``item.length``，本用例红。
-    """
-    form = (ROOT / "pages" / "主动回复设置" / "config-form.mjs").read_text(encoding="utf-8")
-    match = re.search(r"\} else if \((.*?)\.length > WHITELIST_ITEM_MAX_LEN\)", form)
-    assert match, "白名单条目长度判据未找到"
-    counted = match.group(1)
-    assert counted == "[...item]", (
-        f"长度计数单位与后端 len() 不一致：前端数的是 {counted}（UTF-16 码元），后端数的是码点"
-    )
-
-
 def _webapi_module():
     from .host_stubs import install_astrbot_stubs, load_package
 

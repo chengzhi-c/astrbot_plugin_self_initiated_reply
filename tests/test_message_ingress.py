@@ -97,7 +97,7 @@ def test_ignored_message_invalidates_stale_reply(tmp_path) -> None:
 def test_empty_message_is_rejected(tmp_path) -> None:
     """清完后既无文本也无图的消息必须被拒，不得记成图片消息。
 
-    缺陷形态：``clean_chat_text`` 把纯 emoji/空白清成空串且无图片时
+    缺陷形态：纯提及消息剥离提及后为空且无图片时
     ``empty=True``。删掉那道早退，函数落到 ``return clean_text or "[图片]"``，
     一条没有内容的消息被当成图片消息记进历史并触发延迟检查——机器人可能对空气
     主动回复，历史里还会出现假的 ``[图片]``。
@@ -105,7 +105,7 @@ def test_empty_message_is_rejected(tmp_path) -> None:
 
     async def scenario(plugin, main):
         # 纯提及消息：原文非空（不会被 should_ignore_event 的"空文本"一支捞走），
-        # 但 clean_chat_text 把 @xxx 全剥掉后 clean_text 为空——只有 empty 那一支
+        # 但 strip_leading_mentions 剥离 @xxx 后为空——只有 empty 那一支
         # 能拦住它。
         await _feed(plugin, make_event(message_str="@someone"))
         assert UMO not in plugin._last_events, "空内容消息被记进了事件缓存"
@@ -187,5 +187,17 @@ def test_accepted_message_records_and_schedules(tmp_path) -> None:
         assert UMO in plugin._last_events, "正常消息没被记录"
         assert UMO in plugin._delay_tasks, "正常消息没排延迟检查"
         assert plugin._state_for(UMO).recent, "正常消息没进会话历史"
+
+    with_plugin(tmp_path, scenario)
+
+
+def test_mentions_of_other_people_reach_judge_context(tmp_path) -> None:
+    async def scenario(plugin, main):
+        text = "@小明(456) 你周末来吗？"
+        await _feed(plugin, make_event(message_str=text))
+        prompt = await plugin._decision.build_decision_prompt(
+            UMO, plugin._state_for(UMO), "message_delay"
+        )
+        assert text in prompt
 
     with_plugin(tmp_path, scenario)

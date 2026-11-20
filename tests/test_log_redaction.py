@@ -29,7 +29,9 @@ def _load_parser():
     return load_package(PACKAGE_NAME, "image.parser")
 
 
-def _make_failing_maker() -> tuple[object, object, object]:
+def _make_failing_maker(
+    error_text: str = f"Client error '401' for url '{SIGNED_URL}'",
+) -> tuple[object, object, object]:
     """构造一个判断模型必抛「异常文本含签名 URL」的 DecisionMaker。
 
     provider SDK 的异常串常把请求 URL 整段带出来（openai 的 APIStatusError
@@ -41,7 +43,7 @@ def _make_failing_maker() -> tuple[object, object, object]:
     decision = load_package(f"{PACKAGE_NAME}_decision", "decision")
 
     async def boom(_provider_id: str, _prompt: str):
-        raise RuntimeError(f"Client error '401' for url '{SIGNED_URL}'")
+        raise RuntimeError(error_text)
 
     async def resolve(_umo: str) -> str:
         return "judge-provider"
@@ -62,13 +64,22 @@ def _make_failing_maker() -> tuple[object, object, object]:
     return models, maker, decision
 
 
-def test_decision_exception_reason_drops_url_credentials() -> None:
+@pytest.mark.parametrize(
+    "error_text",
+    [
+        f"Client error '401' for url '{SIGNED_URL}'",
+        "HTTP 401 Authorization: Bearer SECRET_TOKEN",
+        'HTTP 401 {"api_key": "SECRET_TOKEN", "password": "SECRET_SIGNATURE", '
+        '"client_secret": "SECRET_TOKEN", "secret_key": "SECRET_RKEY_VALUE"}',
+    ],
+)
+def test_decision_exception_reason_drops_credentials(error_text: str) -> None:
     """reason 会经 GET /status 的 last_decisions 出网，不得带出 query 凭证。
 
     这是比日志更宽的面：日志落在服务器本地，reason 却回给任何能访问控制台的
     调用方。异常文本里的签名 URL 必须先脱敏再进 reason。
     """
-    models, maker, _ = _make_failing_maker()
+    models, maker, _ = _make_failing_maker(error_text)
     result = asyncio.run(
         maker.ask_decision_model("s1", models.SessionState(), trigger="message_delay"),
     )

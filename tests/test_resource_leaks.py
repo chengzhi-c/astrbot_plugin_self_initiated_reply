@@ -117,6 +117,28 @@ def test_terminate_is_idempotent(tmp_path: Path) -> None:
     with_plugin(tmp_path, scenario)
 
 
+def test_terminate_cancels_manual_check_during_preparation(tmp_path: Path) -> None:
+    async def scenario(plugin, main):
+        started = asyncio.Event()
+
+        async def pending_context(*_):
+            started.set()
+            await asyncio.Future()
+
+        plugin._generation.build_context_text = pending_context
+        check = asyncio.create_task(plugin._command_text(make_event(), "check"))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+            await plugin.terminate()
+            assert check.done(), "停止后手动检查仍挂在上下文准备阶段"
+            assert not plugin._running_check_tasks
+        finally:
+            check.cancel()
+            await asyncio.gather(check, return_exceptions=True)
+
+    with_plugin(tmp_path, scenario)
+
+
 def test_spared_critical_task_abandons_later_state_writes(tmp_path: Path) -> None:
     """按任务身份放弃迟到落盘，保留最终保存；让 payload 不同以排除跳写干扰。"""
 

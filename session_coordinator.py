@@ -141,9 +141,9 @@ class SessionCoordinator:
         # deque 在满员时既不接受 insert 也不替你选该丢谁：先按**时间戳**
         # 摘掉最旧那条（有序后即队首），再插入新条目。用 append 让 deque 自动
         # 淘汰则按插入序摘，乱序到达下丢的是稍新条目、留下更旧的。
-        if image_events.maxlen and len(image_events) == image_events.maxlen:
+        if len(image_events) == MAX_CACHED_IMAGE_EVENTS:
             image_events.popleft()
-            inserted = max(0, inserted - 1)
+            inserted -= 1
         image_events.insert(inserted, (timestamp, images))
         # 记账取入队前后的差值：手写增减在"插在中间 + 同时溢出"时容易漏减。
         # n ≤ MAX_CACHED_IMAGE_EVENTS，重算成本可忽略。
@@ -163,6 +163,9 @@ class SessionCoordinator:
         镜像（驱逐后的增减手工同步正是预算漂移的来源）。本批图片在批量
         ``_append_image_event`` 前不入表，故同批之间是互斥判定。
         """
+        events = self._images.get(umo)
+        if events and len(events) == MAX_CACHED_IMAGE_EVENTS and timestamp < events[0][0]:
+            return []
         if not cached_images:
             self._append_image_event(umo, timestamp, [])
             return []

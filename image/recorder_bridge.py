@@ -32,7 +32,7 @@ class MessageRecorderBridge:
             if not callable(get_star):
                 return False
             meta = get_star(RECORDER_PLUGIN_NAME)
-            instance = getattr(meta, "star_instance", None) or getattr(meta, "instance", None)
+            instance = getattr(meta, "star_cls", None)
             get_api = getattr(instance, "get_api", None)
             if not callable(get_api):
                 return False

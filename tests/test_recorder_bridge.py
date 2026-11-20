@@ -58,7 +58,7 @@ def _api_with(record=None, resolver=None, *, record_result=None):
 
 def _context_with(api):
     class Meta:
-        star_instance = type("Star", (), {"get_api": lambda self: api})()
+        star_cls = type("Star", (), {"get_api": lambda self: api})()
 
     class FakeContext:
         def get_registered_star(self, name):
@@ -81,8 +81,8 @@ def _record_with(*images: dict[str, Any]) -> Any:
 
 
 def _star_context(star: Any) -> Any:
-    """注册一个 star 的上下文：``get_registered_star`` 返回 meta.star_instance = star。"""
-    return SimpleNamespace(get_registered_star=lambda _name: SimpleNamespace(star_instance=star))
+    """注册一个 star 的上下文：``get_registered_star`` 返回 meta.star_cls = star。"""
+    return SimpleNamespace(get_registered_star=lambda _name: SimpleNamespace(star_cls=star))
 
 
 def _raising_context() -> Any:
@@ -148,7 +148,7 @@ async def test_ensure_api_resolves_async_get_api(bridge_mod, tmp_path) -> None:
 
     class Context:
         def get_registered_star(self, _name):
-            return SimpleNamespace(star_instance=AsyncStar())
+            return SimpleNamespace(star_cls=AsyncStar())
 
     bridge = bridge_mod.MessageRecorderBridge(Context())
 

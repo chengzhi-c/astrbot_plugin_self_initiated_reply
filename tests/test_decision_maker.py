@@ -627,15 +627,6 @@ async def test_local_gate_silence_without_activity_record(tmp_path: Path) -> Non
     assert maker.local_gate(state, force=False) == "会话暂无活动记录，无法判断静默。"
 
 
-async def test_local_gate_silence_uses_check_start_activity(tmp_path: Path) -> None:
-    """在途检查的静默按检查开始时的活动时间算，不被后来的句号刷新。"""
-    _, models, maker, clock_value, _ = _make_decision(tmp_path, {"min_silence_sec": 25})
-    clock_value[0] = 1000.0
-    state = _state(models, active_at=999.0)
-    assert maker.local_gate(state, force=False) == "静默时间不足：1s / 25s。"
-    assert maker.local_gate(state, force=False, silence_active_at=970.0) == ""
-
-
 async def test_local_gate_silence_never_reports_negative_elapsed(tmp_path: Path) -> None:
     """时钟偏差上界仍可令差值为负，静默已过时长单独夹取到零。"""
     _, models, maker, clock_value, _ = _make_decision(tmp_path, {"min_silence_sec": 60})
@@ -649,11 +640,14 @@ async def test_local_gate_silence_never_reports_negative_elapsed(tmp_path: Path)
     assert "-" not in reason
 
 
-async def test_local_gate_cooldown(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "now, expected", [(1050.0, "冷却中：还剩 4m0s。"), (1289.5, "冷却中：还剩 1s。"), (1290.0, "")]
+)
+async def test_local_gate_cooldown(tmp_path: Path, now: float, expected: str) -> None:
     _, models, maker, clock_value, _ = _make_decision(tmp_path, {"cooldown_sec": 300})
-    clock_value[0] = 1050.0
+    clock_value[0] = now
     state = _state(models, active_at=800.0, proactive_at=990.0)
-    assert maker.local_gate(state, force=False) == "冷却中：还剩 4m0s。"
+    assert maker.local_gate(state, force=False) == expected
 
 
 async def test_local_gate_cooldown_over_an_hour_keeps_seconds(tmp_path: Path) -> None:

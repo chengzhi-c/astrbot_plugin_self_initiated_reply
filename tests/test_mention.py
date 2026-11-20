@@ -204,30 +204,62 @@ async def test_mention_degrades_when_no_event_is_available(tmp_path: Path) -> No
 async def test_model_quote_and_always_mention_both_survive_onebot_group_delivery(
     tmp_path: Path,
 ) -> None:
-    """OneBot 引用与显式 @ 独立生效，@ 显示昵称且排在 Reply 前。"""
-    _mod, _models, runner, last_events = _make_runner(
+    """引用置于首位，让 LLOneBot 的引用锚点位于正文 @ 之前。"""
+    delivery, models, runner, last_events = _make_runner(
         tmp_path,
         config={
             "mention_mode": "always",
             "quote_mode": "model",
         },
     )
-    event = _ChainRecordingEvent(umo="s1", sender_id="u7")
-    event.message_id = "msg-9"  # 事件自身字段优先，供 event_message_id 取到
+    event = _ChainRecordingEvent(umo="s1", sender_id="123456")
+    event.get_sender_name = lambda: "小明"
+    event.message_id = "msg-9"
     event.get_platform_name = lambda: "aiocqhttp"
     event.get_group_id = lambda: "group-1"
     last_events["s1"] = event
-    await runner.send_reply("s1", "hello", expected_generation=None, quote=True)
+
+    outcome = await runner.send_reply("s1", "hello", expected_generation=None, quote=True)
+
+    assert outcome.status is models.SendStatus.DELIVERED
     chain = event.sent_chains[0]
-    kinds = [type(item).__name__ for item in chain]
-    at_items = _at_items(chain)
-    assert len(at_items) == 1, f"always @ 必须保留：{kinds}"
-    assert at_items[0].toDict() == {
-        "type": "at",
-        "data": {"qq": "u7", "name": "u7"},
-    }
-    assert type(chain[1]).__name__ in {"Reply", "_FakeReply"}, f"插入顺序错误：{kinds}"
+    assert len(chain) == 3
+    assert isinstance(chain[0], delivery.Reply)
+    assert chain[0].id == "msg-9"
+    assert chain[1].toDict() == {"type": "at", "data": {"qq": "123456", "name": "小明"}}
     assert chain[2] == "hello"
+
+
+async def test_hook_mention_and_quote_are_not_duplicated(tmp_path: Path) -> None:
+    delivery, models, runner, last_events = _make_runner(
+        tmp_path, config={"mention_mode": "always", "quote_mode": "model"}
+    )
+    event = _ChainRecordingEvent(umo="s1", sender_id="123456")
+    event.get_sender_name = lambda: "小明"
+    event.message_id = "msg-9"
+    last_events["s1"] = event
+    other = delivery.At(qq="654321", name="小红")
+
+    async def decorate(event, event_type):
+        if event_type.name == "OnDecoratingResultEvent":
+            # outputlite/outputpro 的引用步骤会先加入 Reply 和无昵称 At。
+            event.get_result().chain[:0] = [
+                delivery.Reply(id="msg-9"),
+                delivery.At(qq=123456),
+                other,
+            ]
+
+    runner._call_hook = decorate
+    outcome = await runner.send_reply("s1", "hello", quote=True)
+
+    assert outcome.status is models.SendStatus.DELIVERED
+    chain = event.sent_chains[0]
+    assert len(chain) == 4
+    assert isinstance(chain[0], delivery.Reply)
+    assert chain[0].id == "msg-9"
+    assert chain[1].toDict() == {"type": "at", "data": {"qq": "123456", "name": "小明"}}
+    assert chain[2] is other
+    assert chain[-1] == "hello"
 
 
 async def test_mention_component_failure_degrades_to_plain_send(tmp_path: Path) -> None:

@@ -154,7 +154,6 @@ class DecisionMaker:
         state: SessionState,
         *,
         force: bool,
-        silence_active_at: float | None = None,
     ) -> str:
         if force:
             return ""
@@ -164,25 +163,19 @@ class DecisionMaker:
             state.daily_count >= self.settings.max_daily_replies_per_session
         ):
             return "今日主动回复次数已达上限。"
-        active_for_silence = (
-            state.last_active_at if silence_active_at is None else silence_active_at
-        )
-        if not active_for_silence:
+        if not state.last_active_at:
             # 从未活跃与"静默中"是两回事：无活动记录连判定基线都没有，
             # 沿用"静默不足"文案会误导运营以为配置没生效。
             return "会话暂无活动记录，无法判断静默。"
-        silence_left = state.remaining_silence_sec(
-            self.settings.min_silence_sec, self._clock(), active_at=active_for_silence
-        )
+        silence_left = state.remaining_silence_sec(self.settings.min_silence_sec, self._clock())
         if silence_left > 0:
             # max(0, ...)：载入时时间戳被钳到 now + MAX_CLOCK_SKEW_SEC，
             # 差值可能为负，不能向运营者显示负的剩余静默。
             elapsed = max(0, int(self.settings.min_silence_sec - silence_left))
             return f"静默时间不足：{elapsed}s / {self.settings.min_silence_sec}s。"
         cooldown_left = self.settings.cooldown_sec - (self._clock() - state.last_proactive_at)
-        if cooldown_left >= 1:
-            # 不足整秒直接放行：亚秒剩余在文案上等于「还剩 0s」，语义矛盾。
-            return f"冷却中：还剩 {duration(cooldown_left)}。"
+        if cooldown_left > 0:
+            return f"冷却中：还剩 {duration(max(1, cooldown_left))}。"
         if state.last_proactive_observed_at >= state.last_active_at:
             return "这条消息之后已经主动回复过。"
         return ""
@@ -439,7 +432,7 @@ class DecisionMaker:
         }
         # 不在此重复判空：``coerce_config_value`` 的 text 分支已把空串回落到
         # ``reset_value``（唯一实现点在读侧），这里再兜一次就是第二份口径。
-        raw = str(self.settings.decision_prompt_template or "").strip()
+        raw = self.settings.decision_prompt_template
         rendered = re.sub(
             r"\{([a-zA-Z0-9_]+)\}",
             lambda match: str(values.get(match.group(1), match.group(0))),

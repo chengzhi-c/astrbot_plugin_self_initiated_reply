@@ -72,15 +72,9 @@ CONFIG_SCHEMA_KEYS = frozenset(spec.key for spec in CONFIG_SPECS)
 UI_THEME_VALUES = frozenset({"auto", "light", "dark"})
 
 
-def _provider_config(provider: Any) -> dict[str, Any]:
-    """宿主 Provider 的配置字典（``get_all_providers`` 与 ``inst_map`` 都返回 Provider 对象）。"""
-    config = getattr(provider, "provider_config", None)
-    return config if isinstance(config, dict) else {}
-
-
-def _provider_option(provider: Any, fallback_id: str = "") -> dict[str, str] | None:
-    config = _provider_config(provider)
-    provider_id = str(config.get("id") or fallback_id or "").strip()
+def _provider_option(provider: Any) -> dict[str, str] | None:
+    config = provider.provider_config
+    provider_id = str(config.get("id") or "").strip()
     if not provider_id:
         return None
     label = str(config.get("model") or "").strip() or provider_id
@@ -89,46 +83,16 @@ def _provider_option(provider: Any, fallback_id: str = "") -> dict[str, str] | N
     return {"id": provider_id, "label": f"{label} ({provider_id})"}
 
 
-def _provider_items(source: Any) -> list[Any]:
-    """Provider 集合归一：``inst_map`` 是 dict，键作 fallback id；``get_all_providers`` 是 list。"""
-    if isinstance(source, dict):
-        return list(source.items())
-    return list(source or [])
-
-
 def _collect_provider_options(plugin: SelfInitiatedReplyPlugin) -> list[dict[str, str]]:
-    providers: list[Any] = []
-    get_all = getattr(plugin.context, "get_all_providers", None)
-    if callable(get_all):
-        try:
-            providers = _provider_items(get_all())
-        except Exception as exc:
-            logger.debug("[%s] get_all_providers failed: %s", PLUGIN_ID, redact_exc_text(exc))
-
-    if not providers:
-        providers = _providers_from_manager(plugin)
-
     options: list[dict[str, str]] = []
     seen: set[str] = set()
-    for provider in providers:
-        fallback_id = ""
-        if isinstance(provider, tuple) and len(provider) == 2:
-            fallback_id = str(provider[0] or "")
-            provider = provider[1]
-        option = _provider_option(provider, fallback_id)
+    for provider in plugin.context.get_all_providers():
+        option = _provider_option(provider)
         if not option or option["id"] in seen:
             continue
         seen.add(option["id"])
         options.append(option)
     return sorted(options, key=lambda item: item["label"].lower())
-
-
-def _providers_from_manager(plugin: SelfInitiatedReplyPlugin) -> list[Any]:
-    provider_manager = getattr(plugin.context, "provider_manager", None)
-    inst_map = getattr(provider_manager, "inst_map", None)
-    if isinstance(inst_map, dict):
-        return _provider_items(inst_map)
-    return []
 
 
 async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:

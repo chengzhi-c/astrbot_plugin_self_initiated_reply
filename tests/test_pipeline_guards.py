@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from types import SimpleNamespace
 
 import pytest
 
@@ -79,9 +78,7 @@ async def test_duplicate_final_text_after_tool_direct_send_is_suppressed(tmp_pat
     seen: dict[str, object] = {}
 
     class DupGeneration:
-        async def generate(
-            self, _umo, _state, *, expected_generation, ledger, force, silence_active_at, **_kwargs
-        ):
+        async def generate(self, _umo, _state, *, expected_generation, ledger, force, **_kwargs):
             # 管线自己建账本并经 kwargs 传进来：工具直发必须记到**这一本**上，
             # 外挂一本 ledger 不会被抑制逻辑看到。
             attempt = ledger.reserve("tool_direct", "同一句话")
@@ -188,30 +185,13 @@ async def test_lock_wait_does_not_bypass_the_in_lock_guard(tmp_path) -> None:
     assert calls["n"] == 2, f"门卫调用次数异常：{calls['n']}"
 
 
-def test_quote_target_id_is_empty_without_an_event(tmp_path) -> None:
-    """缺少目标事件时省略引用，避免制造不存在的消息 ID。"""
-    _install()
-    umo = "qq:GroupMessage:12345"
-    delivery_mod = load_package(f"{PACKAGE_NAME}_quote_target", "delivery")
-    runner = object.__new__(delivery_mod.DeliveryRunner)
-
-    assert runner._quote_target_id(None) == "", "没有事件可用却仍返回了引用 ID"
-
-    # 对照组：有事件时取的是该事件的消息 ID
-    event = FakeEvent(umo=umo)
-    event.message_obj = SimpleNamespace(message_id="m-42")
-    assert runner._quote_target_id(event) == "m-42"
-
-
 async def test_empty_generation_short_circuits_before_delivery(tmp_path, caplog) -> None:
     """空生成且无工具直发时跳过投递，避免记录成成功发送。"""
     _install()
     umo = "qq:GroupMessage:12345"
 
     class EmptyGeneration:
-        async def generate(
-            self, _umo, _state, *, expected_generation, ledger, force, silence_active_at, **_kwargs
-        ):
+        async def generate(self, _umo, _state, *, expected_generation, ledger, force, **_kwargs):
             return "", ledger
 
     class ExplodingDelivery:

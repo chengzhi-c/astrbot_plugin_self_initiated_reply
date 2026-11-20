@@ -114,8 +114,7 @@ class SessionScheduler:
     def message_trigger_delay(self) -> int:
         # 触发源只剩消息静默一种：延迟不得低于静默门槛（短于静默期的检查
         # 只会反复撞「静默不足」闸门空转）。
-        min_silence = max(0, int(self.settings.min_silence_sec))
-        return max(int(self.settings.message_delay_sec), min_silence)
+        return max(self.settings.message_delay_sec, self.settings.min_silence_sec)
 
     def remaining_silence_sec(self, state: SessionState) -> float:
         return state.remaining_silence_sec(self.settings.min_silence_sec, now_ts())
@@ -616,6 +615,8 @@ class SessionScheduler:
             if not self._last_events.get(umo):
                 return
             state = self._state_for(umo)
+            if state.remaining_silence_sec(self.message_trigger_delay(), now) > 0:
+                return
             if self.settings.patrol_inactive_after_sec and (
                 not state.last_active_at
                 or now - state.last_active_at > self.settings.patrol_inactive_after_sec

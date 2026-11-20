@@ -10,7 +10,7 @@
 
 <p align="center">
   让 AstrBot 在白名单会话中主动接话的插件。<br>
-  <img alt="版本" src="https://img.shields.io/badge/版本-1.5.6-4a5580">
+  <img alt="版本" src="https://img.shields.io/badge/版本-1.5.7-4a5580">
   <img alt="AstrBot 插件" src="https://img.shields.io/badge/AstrBot-插件-7b86ab">
 </p>
 
@@ -103,7 +103,7 @@
 | 最小静默秒数 `min_silence_sec` | `45-120` 秒（默认 `45`） | 0 表示不要求静默。实际等待取本项与「消息后延迟」的较大值 |
 | 消息后延迟 `message_delay_sec` | `30-120` 秒（默认 `60`） | 与最小静默取较大值，作为收到消息后的最短等待时间 |
 | 冷却秒数 `cooldown_sec` | `300-900` 秒（默认 `900`） | 0 表示不限制 |
-| 新消息到达放弃旧回复 `abandon_stale_on_new_message` | 视场景开启（默认关） | 只作用于尚未发出的回复 |
+| 新消息到达放弃旧回复 `abandon_stale_on_new_message` | 视场景开启（默认关） | 开启后作废未发出的旧回复；关闭时继续生成，发送前仍检查最新消息的静默时间 |
 | 被点名后本批消息暂停接话 `skip_after_direct_call` | 开启 | 下一条新消息到达即恢复 |
 | 主动回复引用消息 `quote_mode` | 不引用（默认）/ 由判断模型决定 / 按概率 | 引用这一轮回复依据的最后一条消息。取不到消息 ID 或不支持的平台降级为普通发送 |
 | 引用概率 `quote_probability` | `30-70` %（默认 `50`） | `random` 模式每次都按此概率。`model` 模式下判断模型未表态时兜底（0 从不、100 每次） |
@@ -175,6 +175,7 @@
 - `data/config/<插件名>_config.json`：插件配置，含白名单、忽略发送者 ID、自定义提示词和模型标识等。
 - `plugin_data/<插件名>/image_cache/`：开启识图后群友图片的原文件，按 `vision_image_age_sec` 清理；识别时图片会发给识图模型。
 - 日志：默认日志包含会话标识和模型判断理由；开启 `log_reply_content` 后，发送成功的 DEBUG 日志还会带回复正文前 80 字符。文件读写错误日志也可能包含本机路径。
+- 工具继承：主动运行通过 Context 发送消息时仅允许当前会话。第三方工具自身的网络和外部服务操作仍由对应插件管理。
 - 删除顺序：先停用插件或重启宿主，再删 `plugin_data/<插件名>/` 与 `data/config/<插件名>_config.json`。
 - `state.json.corrupt-*`、`state.json.unreadable-*`、`state.json.unmigrated-*` 与 `<插件名>_config.json.corrupt-*` 备份也可能含这些数据。
 - 运行中落盘会重建状态、偏好文件与目录。

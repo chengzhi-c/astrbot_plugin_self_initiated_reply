@@ -219,31 +219,17 @@ def test_collect_provider_options_from_context(tmp_path) -> None:
     with_plugin(tmp_path, scenario)
 
 
-def test_collect_provider_options_dedup_and_manager_fallback(tmp_path) -> None:
-    """同 id 保留首条；inst_map 的键作 fallback id；get_all_providers 失败走兜底。"""
+def test_collect_provider_options_excludes_non_chat_providers(tmp_path) -> None:
+    """没有聊天模型时，不能把语音模型从 inst_map 填进聊天模型列表。"""
 
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]
-        plugin.context.get_all_providers = lambda: [
-            ("k1", SimpleNamespace(provider_config={"id": "x", "model": "first"})),
-            ("k2", SimpleNamespace(provider_config={"id": "x", "model": "second"})),
-        ]
-        options = webapi._collect_provider_options(plugin)
-        assert options == [{"id": "x", "label": "first (x)"}]
-
-        del plugin.context.get_all_providers
+        plugin.context.get_all_providers = lambda: []
         plugin.context.provider_manager = SimpleNamespace(
-            inst_map={"m1": SimpleNamespace(provider_config={"model": "M"})}
+            inst_map={"tts": SimpleNamespace(provider_config={"id": "tts", "model": "Voice"})}
         )
         options = webapi._collect_provider_options(plugin)
-        assert options == [{"id": "m1", "label": "M (m1)"}]
-
-        def boom():
-            raise RuntimeError("boom")
-
-        plugin.context.get_all_providers = boom
-        options = webapi._collect_provider_options(plugin)
-        assert options[0]["id"] == "m1"
+        assert options == []
 
     with_plugin(tmp_path, scenario)
 
@@ -251,6 +237,7 @@ def test_collect_provider_options_dedup_and_manager_fallback(tmp_path) -> None:
 def test_api_providers_happy_and_error(tmp_path) -> None:
     async def scenario(plugin, main):
         webapi = sys.modules[f"{PACKAGE}.webapi"]
+        plugin.context.get_all_providers = lambda: []
         result = await webapi._api_providers(plugin)
         assert result["ok"] is True
         assert result["providers"] == []
@@ -258,24 +245,10 @@ def test_api_providers_happy_and_error(tmp_path) -> None:
         def boom():
             raise RuntimeError("boom")
 
-        # 收集器内部异常被消化为 fallback 空列表
         plugin.context.get_all_providers = boom
         result = await webapi._api_providers(plugin)
-        assert result["ok"] is True
+        assert result["ok"] is False
         assert result["providers"] == []
-        # 收集器抛非预期异常 → API 层兜底 ok:False
-        original = webapi._collect_provider_options
-
-        def hard_boom(plugin):
-            raise RuntimeError("collector failed")
-
-        webapi._collect_provider_options = hard_boom
-        try:
-            result = await webapi._api_providers(plugin)
-            assert result["ok"] is False
-            assert result["providers"] == []
-        finally:
-            webapi._collect_provider_options = original
 
     with_plugin(tmp_path, scenario)
 

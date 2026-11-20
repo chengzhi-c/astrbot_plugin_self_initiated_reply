@@ -3,7 +3,7 @@
 全部函数无状态（仅依赖入参），供 main/scheduler/decision 与测试共用。
 职责四簇：
 - 事件字段提取：event_text/event_umo/event_sender_* 等，统一宿主事件访问口径；
-- 文本清洗与判定：clean_chat_text/is_at_* 等；
+- 文本清洗与判定：strip_leading_mentions/is_at_* 等；
 - 白名单与历史记录：session_whitelisted/whitelist_storage_key/build_history_text 等；
 - 凭证脱敏：redact_url/redact_exc_text，供日志与对外 reason 共用同一口径。
 """
@@ -40,8 +40,6 @@ from .models import (
 _AT_MENTION_PATTERN = re.compile(r"^(?:\[At:[^\]]+\]\s*)+", re.IGNORECASE)
 _CQ_AT_PATTERN = re.compile(r"^(?:\[CQ:at,[^\]]+\]\s*)+")
 _TEXT_AT_PATTERN = re.compile(r"^(?:@\S+\s*)+")
-_INLINE_AT_PATTERN = re.compile(r"\[CQ:at,[^\]]+\]")
-_INLINE_MENTION_PATTERN = re.compile(r"\[At:[^\]]+\]")
 _TOOL_CALL_LEAK_PATTERN = re.compile(r"^\s*\[(?:historical )?tool call\]", re.IGNORECASE)
 # 工具标记及其同行残留（不跨行，避免吃掉后续正常内容）
 _TOOL_CALL_INLINE_PATTERN = re.compile(r"\[(?:historical\s+)?tool\s+call\][^\n]*", re.IGNORECASE)
@@ -128,12 +126,13 @@ _EXCEPTION_RELATIVE_URL_PATTERN = re.compile(
 )
 # 不带 scheme、也不以 ``/`` 开头的裸 host/path 不单独建模式：按参数名抹值
 # 已覆盖它的凭证，连带保留 host/path 更利于排查。
-# 凭证兜底：不认 URL 形状，只认 ``?key=`` / ``&key=`` 这类参数名，把值换成标记。
-# 上面两条模式按 URL 边界切分，切不到的形态（无路径的 ``host?key=…``、单标签
-# 主机、无 scheme 的 IPv6）靠它收口。
-_QUERY_CREDENTIAL_PATTERN = re.compile(
-    r"(?i)([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret"
-    r"|password|passwd|signature|sig|auth[_-]?key|key)=)[^\s&'\"<>]+"
+# SDK 异常也会携带请求头、JSON 或参数字典，凭证字段不能只按 URL 查询串识别。
+_CREDENTIAL_PATTERN = re.compile(
+    r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret"
+    r"|client[_-]?secret|secret[_-]?key"
+    r"|password|passwd|signature|sig|auth[_-]?key|key|rkey|authorization)"
+    r"\b['\"]?\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|(?:Bearer|Basic)\s+[^\s,'\"<>]+|[^\s&,'\"<>;}]+)"
 )
 # 无 scheme 的 ``user:pass@host``：切不出 URL 形状时密码整段幸存。邮箱没有冒号。
 _USERINFO_PATTERN = re.compile(r"(?<![\w/])[^\s'\"<>@/:]+:[^\s'\"<>@/]+@")
@@ -269,11 +268,11 @@ def redact_url(value: str) -> str:
 
 
 def redact_exc_text(exc: BaseException) -> str:
-    """把异常文本里 URL 形态片段的 userinfo 与 query/fragment 抹掉。
+    """移除异常文本中的 URL 凭证、认证头和凭证字段值。
 
     provider SDK 的异常串常把请求 URL 整段带出来（含 api_key/Signature 等
     query 凭证）。这些文本既进日志，也进 ``reason`` 经 GET /status 出网，
-    故统一在此收口。非 URL 片段原样保留，便于排查。
+    故统一在此收口。其余错误信息保留，便于排查。
 
     两种 URL 形态都要收：绝对 URL（scheme://）与相对路径（urllib3
     ``MaxRetryError`` 的 ``url: /path?key=...``）。漏掉后者时凭证照样经
@@ -287,7 +286,7 @@ def redact_exc_text(exc: BaseException) -> str:
     text = _EXCEPTION_URL_PATTERN.sub(lambda m: redact_url(m.group(0)), text)
     text = _EXCEPTION_RELATIVE_URL_PATTERN.sub(lambda m: _redact_relative_url(m.group(0)), text)
     text = _USERINFO_PATTERN.sub("<redacted>@", text)
-    return _QUERY_CREDENTIAL_PATTERN.sub(r"\1<redacted>", text)
+    return _CREDENTIAL_PATTERN.sub(r"\1<redacted>", text)
 
 
 async def maybe_await(value: Any) -> Any:
@@ -306,11 +305,7 @@ def consume_task_result(task_or_future: asyncio.Future[Any]) -> None:
     """
     if task_or_future.cancelled():
         return
-    try:
-        task_or_future.exception()
-    except Exception:
-        # 取结果本身不应成为新的失败源
-        pass
+    task_or_future.exception()
 
 
 async def build_history_text(
@@ -326,10 +321,10 @@ async def build_history_text(
     决策（decision.py）与生成（generation.py）共用同一形状，
     阈值与 limit 由调用方按各自配置决定。
     """
-    records = local_records
+    records = dedupe_message_records(local_records)
     if count_text_records(records) < min_text_records:
         try:
-            records = (await read_history(umo, limit=limit)) + records
+            host_records = list(await read_history(umo, limit=limit))
         except Exception as exc:
             logger.debug(
                 "[%s] host history unavailable session=%s error=%s",
@@ -337,9 +332,20 @@ async def build_history_text(
                 umo,
                 redact_exc_text(exc),
             )
-    # Apply the history limit before merging overlapping host/local copies.
-    windowed = records[-limit:] if limit > 0 else []
-    return format_message_records(dedupe_message_records(windowed), limit=limit)
+        else:
+            host_keys = [(item.role, collapse_whitespace(item.text)) for item in host_records]
+            cursor = 0
+            for index, item in enumerate(records):
+                try:
+                    pos = host_keys.index((item.role, collapse_whitespace(item.text)), cursor)
+                except ValueError:
+                    # 首个未匹配项之后保留本地顺序，避免把新的重复短句并回旧消息。
+                    host_records.extend(records[index:])
+                    break
+                host_records[pos] = item
+                cursor = pos + 1
+            records = host_records
+    return format_message_records(records, limit=limit)
 
 
 _MISSING = object()
@@ -715,43 +721,18 @@ def strip_leading_mentions(text: str) -> str:
     return _TEXT_AT_PATTERN.sub("", raw).strip()
 
 
-def clean_chat_text(text: str) -> str:
-    raw = strip_leading_mentions(text)
-    raw = _INLINE_AT_PATTERN.sub("", raw)
-    raw = _INLINE_MENTION_PATTERN.sub("", raw)
-    return collapse_whitespace(raw)
-
-
 def dedupe_message_records(records: list[MessageRecord]) -> list[MessageRecord]:
-    """合并重复消息，保留位置不变、取信息更完整的那条。
-
-    宿主历史不带时间戳（``at=0``），同一批消息在本插件缓存里带着真实时间与昵称。
-    两条来源要按「角色 + 正文」认成同一条，否则提示词里会出现两遍相同轮次；
-    两条来源都有时间时按「角色 + 昵称 + 正文 + 时间」区分，不同成员说同一句话
-    不会被并成一条。
-    """
+    """本地缓存只合并同角色、昵称、正文和时间的消息，保留首次出现的位置。"""
     deduped: list[MessageRecord] = []
-    exact: dict[tuple[str, str, str, float], int] = {}
-    loose: dict[tuple[str, str], int] = {}
+    seen: set[tuple[str, str, str, float]] = set()
     for item in records:
         text = collapse_whitespace(item.text)
         if not text:
             continue
-        role = str(item.role or "")
-        at = float(item.at)
-        key = (role, history_display_name(role, item.name), text, at)
-        pos = exact.get(key)
-        if pos is None:
-            candidate = loose.get((role, text))
-            if candidate is not None:
-                known = float(deduped[candidate].at)
-                if not known or not at:
-                    pos = candidate
-        if pos is not None:
-            if at >= float(deduped[pos].at):
-                deduped[pos] = item
+        key = (item.role, history_display_name(item.role, item.name), text, item.at)
+        if key in seen:
             continue
-        exact[key] = loose[(role, text)] = len(deduped)
+        seen.add(key)
         deduped.append(item)
     return deduped
 

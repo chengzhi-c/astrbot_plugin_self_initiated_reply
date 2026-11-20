@@ -703,6 +703,7 @@ def test_dedupe_only_merges_the_same_message() -> None:
             rec("小红", "哈哈", 200.0),
             rec("小明", "哈哈", 300.0),
             rec("小明", "哈哈", 300.0),
+            rec("小红", "哈哈", 0.0),
         ]
     )
 
@@ -710,58 +711,12 @@ def test_dedupe_only_merges_the_same_message() -> None:
         ("小明", 100.0),
         ("小红", 200.0),
         ("小明", 300.0),
+        ("小红", 0.0),
     ]
-
-
-def test_dedupe_merges_host_history_with_local_cache() -> None:
-    """宿主历史不带时间戳，同一批消息要与本地缓存认成一条。
-
-    两条来源分开去重时，提示词里同一轮对话会出现两遍（宿主没带时间与昵称，
-    本地带），判断模型据此把一轮对话读成两轮。
-    """
-    models, utils, _ = _load_modules()
-
-    def rec(role, name, text, at):
-        return models.MessageRecord(role=role, name=name, text=text, at=at)
-
-    host = [
-        rec("user", "用户", "今晚吃啥", 0.0),
-        rec("assistant", "Bot", "火锅", 0.0),
-        rec("user", "用户", "好啊", 0.0),
-    ]
-    local = [
-        rec("user", "小明", "今晚吃啥", 100.0),
-        rec("assistant", "Bot", "火锅", 101.0),
-        rec("user", "小明", "好啊", 102.0),
-    ]
-
-    merged = utils.dedupe_message_records(host + local)
-
-    assert len(merged) == 3
-    assert [item.name for item in merged] == ["小明", "Bot", "小明"]
-    assert [item.at for item in merged] == [100.0, 101.0, 102.0]
-
-
-def test_dedupe_keeps_two_members_saying_the_same_text_at_different_times() -> None:
-    """两条来源都带时间时按「角色 + 昵称 + 正文 + 时间」区分。"""
-    models, utils, _ = _load_modules()
-
-    def rec(name, text, at):
-        return models.MessageRecord(role="user", name=name, text=text, at=at)
-
-    merged = utils.dedupe_message_records([rec("小明", "哈哈", 10.0), rec("小红", "哈哈", 20.0)])
-
-    assert [(item.name, item.at) for item in merged] == [("小明", 10.0), ("小红", 20.0)]
 
 
 def test_history_window_keeps_the_newest_record_even_when_it_repeats() -> None:
-    """宿主补历史后，最新一条（与更早某条重复）不得被尾部截断丢掉。
-
-    缺陷形态：build_history_text 在**去重之后**才做尾部截断。dedupe 把重复文本合并
-    到最早出现的位置，聊天里常见的重复短句（"1"、"哈哈"、"？"）会把最新一条抬到
-    列表前部，随后被 records[-limit:] 切掉——判断与生成共用这条路径，最新消息就
-    从提示词里消失（契约 §14.3 的保尾要求）。
-    """
+    """最新重复短句保留在窗口末尾。"""
     import asyncio
 
     models, utils, _ = _load_modules()
@@ -788,6 +743,54 @@ def test_history_window_keeps_the_newest_record_even_when_it_repeats() -> None:
     assert lines[-1] == "u: 1", f"最新一条被尾部截断丢了：{text}"
     assert "u: h" in lines, f"次新一条也丢了：{text}"
     assert len(lines) == 8, f"窗口条数不是 limit：{len(lines)}"
+
+
+def test_history_overlap_does_not_consume_context_window() -> None:
+    import asyncio
+
+    models, utils, _ = _load_modules()
+    host = [models.MessageRecord("user", "用户", f"消息{i}", 0.0) for i in range(8)]
+    local = [models.MessageRecord("user", "小明", f"消息{i}", i + 1.0) for i in range(5, 8)]
+
+    async def read_history(umo, *, limit):
+        return host
+
+    text = asyncio.run(
+        utils.build_history_text(
+            umo="g:user:a",
+            local_records=local,
+            read_history=read_history,
+            limit=8,
+            min_text_records=8,
+        )
+    )
+    assert [line.split(": ", 1)[1] for line in text.splitlines()] == [f"消息{i}" for i in range(8)]
+    assert text.splitlines()[-1] == "小明: 消息7"
+
+
+def test_history_overlap_preserves_host_answers_between_local_questions() -> None:
+    import asyncio
+
+    models, utils, _ = _load_modules()
+    host = [
+        models.MessageRecord(role, "用户", text, 0.0)
+        for role, text in (("user", "Q1"), ("assistant", "A1"), ("user", "Q2"), ("assistant", "A2"))
+    ]
+    local = [models.MessageRecord("user", "小明", text, at) for text, at in (("Q1", 1), ("Q2", 2))]
+
+    async def read_history(umo, *, limit):
+        return host
+
+    text = asyncio.run(
+        utils.build_history_text(
+            umo="g:user:a",
+            local_records=local,
+            read_history=read_history,
+            limit=8,
+            min_text_records=8,
+        )
+    )
+    assert text.splitlines() == ["小明: Q1", "Bot: A1", "小明: Q2", "Bot: A2"]
 
 
 def test_dedupe_normalizes_whitespace_and_drops_blank() -> None:

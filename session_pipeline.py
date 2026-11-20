@@ -224,6 +224,16 @@ class SessionPipeline:
             if isinstance(decision, str):
                 return decision
 
+            if not force and state.last_active_at != observed_active_at:
+                record_decision(
+                    self._last_decisions,
+                    umo,
+                    trigger,
+                    should_reply=False,
+                    reason=STALE_TASK_MESSAGE,
+                )
+                return STALE_TASK_MESSAGE
+
             # 引用/@ 的目标与生成取数是同一时刻：紧贴在 generate 前冻结。判断阶段
             # 可能长达数十秒（识图 + 判断模型），在那里冻结会让引用指向生成从不曾
             # 依据的消息；而 build_context_text 读 state.recent 发生在第一个 await
@@ -235,7 +245,6 @@ class SessionPipeline:
                 expected_generation=expected_generation,
                 ledger=ledger,
                 force=force,
-                silence_active_at=observed_active_at,
             )
             effective_reply = reply_text.strip()
             direct_send_count = ledger.direct_send_count
@@ -271,7 +280,6 @@ class SessionPipeline:
                 expected_generation=expected_generation,
                 force=force,
                 trigger=trigger,
-                silence_active_at=observed_active_at,
                 # 判断模型给出的引用决定（None = 未表态，由投递侧按模式兜底）
                 quote=decision.get("quote"),
                 target_event=target_event,

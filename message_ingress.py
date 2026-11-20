@@ -12,7 +12,7 @@ from .image import ImageExtractor
 from .models import COMMAND_HANDLED_KEY, PLUGIN_ID, CheckTrigger, now_ts
 from .plugin_state import append_recent_user_message
 from .utils import (
-    clean_chat_text,
+    collapse_whitespace,
     event_extra,
     event_text,
     event_umo,
@@ -23,6 +23,7 @@ from .utils import (
     session_is_private,
     session_whitelisted,
     should_ignore_event,
+    strip_leading_mentions,
 )
 
 if TYPE_CHECKING:
@@ -53,7 +54,7 @@ def _accepted_content(
     umo: str,
 ) -> tuple[str, bool] | None:
     """Return normalized content, invalidating ignored or empty events."""
-    clean_text = clean_chat_text(text)
+    clean_text = collapse_whitespace(text)
     has_images = plugin.settings.vision_enabled and ImageExtractor.has_images(
         event,
         skip_stickers=plugin.settings.vision_skip_stickers,
@@ -64,27 +65,24 @@ def _accepted_content(
         vision_has_images=has_images,
         ignored_sender_ids=plugin.settings.ignored_sender_ids,
     )
-    empty = not clean_text and not has_images
+    empty = not strip_leading_mentions(clean_text) and not has_images
     if ignored or empty:
-        # 语义单点：任何被入口接住的消息（含被忽略与空内容）都推进代次，作废
-        # 未发出的旧回复。**只推进代次**：同函数的正常消息路径
-        # 也仅 advance，而 ``invalidate`` 会级联 ``clear_session``，把保护窗口内
-        # 的图片索引与最近事件一并抹掉（只有白名单移除/命令失效/终止才该清）。
-        # 那会让一条表情包或一次 @Bot 就把刚发的图从识图上下文
-        # 里删掉，并让巡检因「没有可用的最近消息事件」静默跳过该会话。
-        # 在途延迟检查不在这里取消：它会在下一道代次闸门自行退出。
+        # 只作废旧任务，保留最近事件和图片供后续上下文使用。
         if plugin.settings.abandon_stale_on_new_message:
             plugin._gate.advance(umo)
-    if ignored:
-        if not is_self_message(event) and is_explicit_direct_call(event, text):
+        if not is_self_message(event):
             state = plugin._state_for(umo)
-            state.last_active_at = now_ts()
-            if plugin.settings.skip_after_direct_call:
-                # 这条 @Bot/唤醒消息由 AstrBot 正常回复，记为「这条消息之后
-                # Bot 已经回应过」：避免"刚被点名答过、静默时间一到又主动接一句"。
-                state.last_proactive_observed_at = state.last_active_at
-        return None
-    if empty:
+            active_at = now_ts()
+            # 无正文的活动也刷新静默，但不重新打开已回复过的观察窗口。
+            skip_batch = (
+                plugin.settings.skip_after_direct_call
+                if is_explicit_direct_call(event, text)
+                else state.last_proactive_observed_at >= state.last_active_at
+            )
+            if skip_batch:
+                state.last_proactive_observed_at = active_at
+            state.last_active_at = active_at
+            plugin._scheduler.notify_activity(umo)
         return None
     return clean_text or "[图片]", has_images
 

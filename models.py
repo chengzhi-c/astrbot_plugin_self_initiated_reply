@@ -26,7 +26,7 @@ from typing import Any, Protocol
 from astrbot.api import logger
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "1.5.6"
+PLUGIN_VERSION = "1.5.7"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -563,7 +563,6 @@ class LocalGateCallback(Protocol):
         state: SessionState,
         *,
         force: bool,
-        silence_active_at: float | None = None,
     ) -> str: ...
 
 
@@ -592,14 +591,14 @@ class SuppressCode(StrEnum):
     """SUPPRESSED 的机器可判成因。
 
     ``detail`` 是给人看的自由文本，不能拿它做分支：改文案不该改变控制流。
-    调用方要区分的成因放这里，``detail`` 只进日志。四个成员各有真实构造点，
-    新增分支按语义取用现成成员。
+    调用方要区分的成因放这里，``detail`` 只进日志。
     """
 
     STOPPING = "stopping"
     GENERATION_CHANGED = "generation_changed"
     BUDGET = "budget"
     GATE_REJECTED = "gate_rejected"
+    HOOK_STOPPED = "hook_stopped"
 
 
 class PluginLifecycle(StrEnum):
@@ -854,14 +853,11 @@ class SessionState:
         self,
         min_silence_sec: float,
         now: float,
-        *,
-        active_at: float | None = None,
     ) -> float:
-        """距指定活动时间的剩余静默（默认上次活跃；从未活跃按 0 计）。"""
-        stamp = self.last_active_at if active_at is None else active_at
-        if not stamp:
+        """距最后一次活动的剩余静默；从未活跃按 0 计。"""
+        if not self.last_active_at:
             return 0.0
-        return max(0.0, min_silence_sec - (now - stamp))
+        return max(0.0, min_silence_sec - (now - self.last_active_at))
 
     def age_sec(self, now: float) -> float:
         """距上次活跃的经过秒数（从未活跃按 0 计）。"""
@@ -1475,10 +1471,7 @@ class Settings:
         判断阶段触发频率高，允许单独指定更便宜的识图模型；留空跟随判断模型
         本身（``judge_provider_id``），后者留空则由 adapter 回落当前会话模型。
         """
-        return (
-            str(self.vision_judge_provider_id or "").strip()
-            or str(self.judge_provider_id or "").strip()
-        )
+        return self.vision_judge_provider_id or self.judge_provider_id
 
     @property
     def vision_enabled(self) -> bool:
@@ -1496,8 +1489,8 @@ class Settings:
         比照 ``ConfigSpec.reset_value`` 而非模板常量的字形，与读侧落盘、
         面板填充取同一表达式。
         """
-        prompt = str(self.decision_prompt_template or "").strip()
-        return bool(prompt and prompt != CONFIG_SPEC_BY_KEY["decision_prompt_template"].reset_value)
+        default_prompt = CONFIG_SPEC_BY_KEY["decision_prompt_template"].reset_value
+        return self.decision_prompt_template != default_prompt
 
     def apply(self, other: Settings) -> None:
         """原地写入另一实例的全部字段，保持对象身份不变。
@@ -1536,20 +1529,10 @@ class Settings:
 
 
 def config_revision(config: Mapping[str, Any] | Settings) -> str:
-    """Return a stable digest of canonical persistent configuration fields."""
+    """Hash normalized persistent config; Settings serializes sets before this boundary."""
     payload = config.to_config_dict() if isinstance(config, Settings) else dict(config)
-
-    def canonical(value: Any) -> Any:
-        if isinstance(value, Mapping):
-            return {str(key): canonical(item) for key, item in value.items()}
-        if isinstance(value, (set, frozenset)):
-            return sorted((canonical(item) for item in value), key=lambda item: repr(item))
-        if isinstance(value, (list, tuple)):
-            return [canonical(item) for item in value]
-        return value
-
     encoded = json.dumps(
-        canonical(payload),
+        payload,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

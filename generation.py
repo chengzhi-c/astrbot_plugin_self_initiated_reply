@@ -45,6 +45,7 @@ from .utils import (
     clean_reply,
     consume_task_result,
     conversation_history,
+    raw_umo,
     redact_exc_text,
     response_text,
     usable_conversation,
@@ -64,7 +65,7 @@ _DEFAULT_LENGTH_HINT = _LENGTH_HINTS["balanced"]
 
 _TOOL_HINT_INHERIT = (
     "本次主动运行继承宿主完整工具链；宿主级危险能力（cron、浏览器/电脑使用、文件提取）仍不可用，"
-    "其余工具按宿主能力使用，发送仍受本次运行的预算约束。"
+    "其余工具按宿主能力使用，消息限于当前会话并受本次运行的预算约束。"
 )
 _TOOL_HINT_RESTRICTED = (
     "本次主动运行不提供任何工具；不得执行命令或 Python、"
@@ -165,7 +166,6 @@ class _GenerateRun:
         "prompt",
         "expected_generation",
         "force",
-        "silence_active_at",
         "ledger",
         "tool_boundary_state",
         "reset_coro",
@@ -191,7 +191,6 @@ class _GenerateRun:
         expected_generation: int | None,
         force: bool,
         ledger: AttemptLedger,
-        silence_active_at: float | None = None,
     ) -> None:
         self.umo = umo
         self.state = state
@@ -205,7 +204,6 @@ class _GenerateRun:
         self.started_at = time.monotonic()
         self.build_done_at: float | None = None
         self.force = force
-        self.silence_active_at = silence_active_at
         self.ledger = ledger
         self.tool_boundary_state: dict[str, Any] | None = None
         # finally 是唯一回收点；build 前必须占位，避免 UnboundLocalError。
@@ -381,7 +379,6 @@ class GenerationRunner:
         expected_generation: int | None = None,
         ledger: AttemptLedger | None = None,
         force: bool = False,
-        silence_active_at: float | None = None,
     ) -> tuple[str, AttemptLedger]:
         """Run AstrBot's main Agent and account for tool-side direct sends."""
         ledger = ledger or AttemptLedger()
@@ -428,7 +425,6 @@ class GenerationRunner:
             expected_generation=expected_generation,
             force=force,
             ledger=ledger,
-            silence_active_at=silence_active_at,
         )
         try:
             early = self._prepare_outbound_tracker(run)
@@ -438,6 +434,8 @@ class GenerationRunner:
             run.build_done_at = time.monotonic()
             if built is not None:
                 return built
+            if self._is_stopping():
+                return run.abort()
             await self._run_agent_with_grace(run)
             return self._finalize_text(run)
         except TimeoutError:
@@ -500,9 +498,7 @@ class GenerationRunner:
                     and run.ledger.accepts_attempts
                     and self._gate.is_current(run.umo, run.expected_generation)
                     and not self._is_stopping()
-                    and not self._local_gate(
-                        run.state, force=run.force, silence_active_at=run.silence_active_at
-                    )
+                    and not self._local_gate(run.state, force=run.force)
                 )
             except Exception:
                 return False
@@ -517,13 +513,15 @@ class GenerationRunner:
         if run.inherit_tools:
             # 宿主内置工具直接调 Context；只给本轮副本加闸门，服务对象仍共享。
             run.plugin_context = copy(self._context)
+            current_sessions = {run.umo, raw_umo(last_event)} - {""}
 
             async def tracked_context_send(session: Any, message_chain: MessageChain) -> bool:
+                if str(session) not in current_sessions:
+                    return False
                 result = await outbound.send(
                     message_chain,
                     kind="tool_direct",
                     sender=lambda message: self._context.send_message(session, message),
-                    record_text=str(session) == run.umo,
                 )
                 return result.submitted
 

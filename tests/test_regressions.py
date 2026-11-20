@@ -73,11 +73,11 @@ def test_leading_mention_strip_only_removes_at_form() -> None:
     被静默删除，进判断模型的消息文本与群里实际发言不符。
     """
     _, utils, _, _, _ = _load_r3_modules()
-    assert utils.clean_chat_text("[At:123] 你好") == "你好"
-    assert utils.clean_chat_text("[At:123][At:456] 你好") == "你好"
-    assert utils.clean_chat_text("[chat] 你好") == "[chat] 你好"
-    assert utils.clean_chat_text("[data] x") == "[data] x"
-    assert utils.clean_chat_text("[cat] meow") == "[cat] meow"
+    assert utils.strip_leading_mentions("[At:123] 你好") == "你好"
+    assert utils.strip_leading_mentions("[At:123][At:456] 你好") == "你好"
+    assert utils.strip_leading_mentions("[chat] 你好") == "[chat] 你好"
+    assert utils.strip_leading_mentions("[data] x") == "[data] x"
+    assert utils.strip_leading_mentions("[cat] meow") == "[cat] meow"
 
 
 # ============================================================================

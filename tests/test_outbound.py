@@ -39,9 +39,7 @@ def test_tool_direct_send_budget_is_consumed_before_adapter_call() -> None:
 
     gateway = outbound.OutboundGateway(sender, max_direct_sends=2, ledger=ledger)
     first = asyncio.run(gateway.send(Message(), kind="tool_direct"))
-    second = asyncio.run(
-        gateway.send(Message(), kind="tool_direct", sender=context_sender, record_text=False)
-    )
+    second = asyncio.run(gateway.send(Message(), kind="tool_direct", sender=context_sender))
     third = asyncio.run(gateway.send(Message(), kind="tool_direct"))
 
     assert first.outcome.status.value == "delivered"
@@ -49,7 +47,7 @@ def test_tool_direct_send_budget_is_consumed_before_adapter_call() -> None:
     assert third.outcome.status.value == "suppressed"
     assert ledger.direct_send_count == 2
     assert sent == ["event", "context"]
-    assert ledger.direct_texts == ("工具消息",)
+    assert ledger.direct_texts == ("工具消息", "工具消息")
 
 
 def test_tool_direct_false_refunds_budget_and_keeps_count_in_sync() -> None:

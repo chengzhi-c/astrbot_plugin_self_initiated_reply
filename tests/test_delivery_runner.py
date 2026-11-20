@@ -112,7 +112,7 @@ def _make_runner(
     delivered = delivery_mod.DeliveryRunner(
         settings=settings,
         gate=gate,
-        local_gate=lambda state, force, silence_active_at=None: local_gate,
+        local_gate=lambda state, force: local_gate,
         last_events=last_events,
         call_hook=hook if hook is not None else FakeHook(),
         context_send=context_send if context_send is not None else FakeContextSend(),
@@ -1035,6 +1035,32 @@ async def test_send_reply_hook_empty_result(tmp_path: Path) -> None:
     outcome = await runner.send_reply("s1", "hello", expected_generation=None)
     assert outcome.status is models.SendStatus.FAILED_BEFORE_SUBMIT
     assert "no result" in outcome.detail
+
+
+async def test_decorating_hook_stop_suppresses_delivery(tmp_path: Path) -> None:
+    _, models, runner, last_events = _make_runner(tmp_path)
+    event = FakeEvent()
+    last_events["s1"] = event
+    ledger = models.AttemptLedger()
+
+    async def stop_hook(event, event_type):
+        event.stop_event()
+        return True
+
+    runner._call_hook = stop_hook
+    result = await runner.deliver_reply(
+        "s1",
+        _state(models),
+        "hello",
+        0,
+        ledger=ledger,
+        expected_generation=None,
+        force=True,
+        trigger="manual",
+    )
+    assert ledger.attempts == ()
+    assert event.get_result() is None
+    assert result == "装饰钩子已中止回复。"
 
 
 async def test_send_reply_suppressed_after_decorating(tmp_path: Path) -> None:
