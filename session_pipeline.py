@@ -22,6 +22,8 @@ from .models import (
     Settings,
     now_ts,
 )
+from .plugin_state import append_recent_user_message
+from .runtime_adapter import snapshot_reply_event
 from .session_gate import SessionGate
 from .utils import (
     collapse_whitespace,
@@ -145,6 +147,8 @@ class SessionPipeline:
         trigger: str,
         force: bool,
         expected_generation: int | None = None,
+        target_event: AstrMessageEvent | None = None,
+        target_text: str = "",
     ) -> str:
         pre_guard = self.session_check_guard(
             umo, force=force, expected_generation=expected_generation
@@ -166,6 +170,8 @@ class SessionPipeline:
                     trigger=trigger,
                     force=force,
                     expected_generation=expected_generation,
+                    target_event=target_event,
+                    target_text=target_text,
                 )
 
     async def check_session_locked(
@@ -175,6 +181,8 @@ class SessionPipeline:
         trigger: str,
         force: bool,
         expected_generation: int | None = None,
+        target_event: AstrMessageEvent | None = None,
+        target_text: str = "",
     ) -> str:
         """单会话检查主链；调用方已持有该会话检查锁。"""
         guard = self.session_check_guard(umo, force=force, expected_generation=expected_generation)
@@ -186,6 +194,9 @@ class SessionPipeline:
             # 消息 advance 到 1 也不会让它失效，过期结论照发。
             expected_generation = self._gate.current(umo)
         state = self._state_for(umo)
+        if target_event is not None and target_text:
+            # 等待会话锁时可能又收到消息，正文必须在选定本轮目标后写入。
+            append_recent_user_message(state, target_event, clean_text=target_text)
         observed_active_at = state.last_active_at
 
         state.refresh_day()
@@ -234,17 +245,16 @@ class SessionPipeline:
                 )
                 return STALE_TASK_MESSAGE
 
-            # 引用/@ 的目标与生成取数是同一时刻：紧贴在 generate 前冻结。判断阶段
-            # 可能长达数十秒（识图 + 判断模型），在那里冻结会让引用指向生成从不曾
-            # 依据的消息；而 build_context_text 读 state.recent 发生在第一个 await
-            # 的参数求值里，两者之间没有让出事件循环的机会。
-            target_event = self._last_events.get(umo)
+            # 宿主可能仍在处理原事件；生成与投递共用独立快照，避免抢结果槽或换目标。
+            source_event = target_event if target_event is not None else self._last_events.get(umo)
+            target_event = snapshot_reply_event(source_event) if source_event is not None else None
             reply_text, _ = await self._generation.generate(
                 umo,
                 state,
                 expected_generation=expected_generation,
                 ledger=ledger,
                 force=force,
+                target_event=target_event,
             )
             effective_reply = reply_text.strip()
             direct_send_count = ledger.direct_send_count
@@ -312,15 +322,7 @@ class SessionPipeline:
                     # 否则会话永久卡在 running，后续检查全被「已有判断任务在运行」拒绝。
                     self._gate.unmark_running(umo)
                 else:
-                    # 二次取消：只补等一次的那次等待自身又被取消（关停窗口），
-                    # CancelledError 直奔这里，而 record task 还在跑。运行标记必须
-                    # 覆盖整个记账窗口——现在释放，同 umo 的第二个检查会与在途记账
-                    # 并发，实测出现两条 record task 与第二个检查同时存活。这里也
-                    # 不能再等：把关停拖在记账落盘上违反终止有界。因此挂到
-                    # finalizer 的完成回调：本任务立刻收敛，而记账任务是 critical
-                    # task，关停中照常跑完并触发回调，会话不会停在 running。
-                    # 租约必须先转交给 finalizer：本任务随即 done()，配置回滚的
-                    # restore 会把"owner 已结束"当成检查已收尾而摘掉运行标记。
+                    # 二次取消后由 finalizer 持有租约直到记账完成，避免后续检查并发记账。
                     self._gate.transfer_running_owner(umo, finalizer)
                     finalizer.add_done_callback(
                         lambda done: self._gate.unmark_running(umo, owner=done)
@@ -359,14 +361,12 @@ class SessionPipeline:
             ]
             final_state = final_states[-1] if final_states else None
             delivered_direct = [
-                attempt.text
+                attempt
                 for attempt in ledger.attempts
-                if attempt.kind == "tool_direct"
-                and attempt.state is AttemptState.DELIVERED
-                and attempt.text.strip()
+                if attempt.kind == "tool_direct" and attempt.state is AttemptState.DELIVERED
             ]
             confirmed = final_state is AttemptState.DELIVERED or bool(delivered_direct)
-            recorded_parts = list(delivered_direct)
+            recorded_parts = [attempt.text for attempt in delivered_direct if attempt.text.strip()]
             reply = reply.strip()
             if final_state is AttemptState.DELIVERED and reply and reply not in recorded_parts:
                 recorded_parts.append(reply)

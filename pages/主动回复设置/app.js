@@ -269,13 +269,7 @@ async function loadProviders() {
 			? result.providers.filter((item) => item && item.id)
 			: [];
 		providerListAvailable = true;
-		// 与 catch 分支同一套防护：render() 先 innerHTML="" 再写回旧值，新列表
-		// 不含当前值时写回即归零（实测 beforeRender="provider-a" →
-		// afterRender=""）。此时若配置响应被协调器扣住（编辑/保存在途）或
-		// GET /config 失败，表单里已选的 Provider 会被静默清空，下一次保存
-		// 就把 judge/vision 的 Provider ID 写成空串。故先取值再 render，
-		// render 之后交给 sync() 恢复（列表可用时回到列表态，不在列表时
-		// 落手动态——两种都是值的真实呈现）。
+		// 重建选项会清空列表外的当前值，先保存，再由 sync 恢复。
 		const preserved = providerControlList.map((control) => control.value());
 		renderAll();
 		providerControlList.forEach((control, index) => control.sync(preserved[index]));
@@ -284,11 +278,7 @@ async function loadProviders() {
 	} catch (error) {
 		providerOptions = [];
 		providerListAvailable = false;
-		// 顺序是硬约束：control.render() 会先 innerHTML="" 再写回旧值，列表为空时
-		// 写回即归零（实测 beforeRender="provider-a" → afterRender=""）。故当前值
-		// 必须在 renderAll() **之前**取；render 之后同步交给 sync()，此时
-		// isListAvailable() 为 false，它必然落到手动分支，把值写进输入框（该输入框
-		// 此后既是显示来源也是 buildConfigSaveBody 的取值来源）。反过来写等于没改。
+		// 清空列表前保存当前值，由 sync 将原值恢复到手动输入框。
 		const preserved = providerControlList.map((control) => control.value());
 		renderAll();
 		// 列表不可用时全部切手动输入：循环保证不会漏掉后加的控件。
@@ -302,8 +292,7 @@ async function loadProviders() {
 	}
 }
 
-// 首屏加载是否仍在途：boot 看门狗据此让位，避免串行两个请求（各 15s 上限，
-// 最坏 30s）超过 12s 定时器时误报「加载超时」。doRefresh 不参与此标志。
+// 首屏请求仍在途时让 boot 看门狗等待请求自身的超时处理。
 let loadInFlight = false;
 
 async function loadAll({ force = false } = {}) {
@@ -311,10 +300,12 @@ async function loadAll({ force = false } = {}) {
 	// z-index:90）盖住 .topbar（25）与窄屏下的更多操作菜单（50），在途时点不到它。
 	loadInFlight = true;
 	try {
-		await loadProviders();
-		// 透传 loadConfig 的结果：false 表示这次响应被协调器拦下（表单已脏或
-		// 有编辑在此请求期间发生），配置并没有被替换。
-		return await configIo.loadConfig({ force });
+		// 同时发起读取，让编辑检查覆盖刷新开始后的整个等待窗口。
+		const [applied] = await Promise.all([
+			configIo.loadConfig({ force }),
+			loadProviders(),
+		]);
+		return applied;
 	} finally {
 		loadInFlight = false;
 	}
@@ -501,14 +492,11 @@ window.__selfreplyAppStarted = true;
 if (window.__selfreplyBootFailTimer)
 	window.clearTimeout(window.__selfreplyBootFailTimer);
 
-// 看门狗只兜底：加载成功/失败均由 loadAll 收尾反馈；仅当加载已收尾且未成功、
-// 或首屏串行请求总预算（2 × FETCH_TIMEOUT_MS）已被 12s 定时器追平时才报失败。
-// 定时器句柄存在可变量里：再查分支会重写句柄，收尾路径才能取消最新的那个。
+// 加载成功或失败均由 loadAll 收尾；延后检查时保留句柄以便取消。
 let bootTimeout = window.setTimeout(function checkBoot() {
 	if (state.configLoaded) return;
 	if (loadInFlight) {
-		// 仍在途：每个请求自身有 15s 硬上限、首屏至多两个串行请求，必然收敛；
-		// 再查一次即可覆盖第二个请求的窗口，不会无限顺延。
+		// 两个请求并行，均受单次 API 超时约束。
 		bootTimeout = window.setTimeout(checkBoot, FETCH_TIMEOUT_MS);
 		return;
 	}

@@ -35,8 +35,7 @@ def url_scheme(value: str) -> str:
 # 图片地址允许的端口白名单（SSRF 防护）。传输层与 URL 校验两处必须同一口径。
 ALLOWED_IMAGE_PORTS = frozenset({80, 443})
 
-# 单次批量识图的并发上限。图片下载与 provider 调用都是 IO 密集但对端有速率限制，
-# 2 是实测够用的保守值；所有批方法共用此默认。
+# 批量识图共用并发上限，限制同时占用的下载与模型请求。
 VISION_MAX_CONCURRENT = 2
 
 # 后台冻结批次的总预算上限（vision_runtime._freeze_images 的 wait_for 取值
@@ -79,6 +78,7 @@ class ImageInfo:
     is_sticker: bool = False
     trusted_local_path: bool = False
     prepared_source: str = ""
+    platform_name: str = ""
 
     @property
     def has_any_source(self) -> bool:

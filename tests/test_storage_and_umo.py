@@ -209,7 +209,7 @@ def test_is_full_umo_matches_the_segment_anchor() -> None:
 
 
 def test_is_full_umo_divergence_for_colon_bearing_session_ids_is_benign() -> None:
-    """段数判据与会话 ID 含冒号的 UMO 分歧：已实测良性，不得"顺手统一"。
+    """不同用途的 UMO 判据分别支持完整键与含冒号的会话 ID。
 
     ``is_full_umo`` 数冒号（恰好 2 个），``session_group_id`` 按 split(":", 2) 取段：
     ``qq:GroupMessage:x:y`` 上前者 False、后者 ``"x:y"``。分歧本身无害，入口把
@@ -326,7 +326,7 @@ def test_as_timestamp_clamps_both_directions() -> None:
     """``as_timestamp`` 的纯函数语义：负值归 0，远未来钳到 now+skew，NaN/inf 归 0。
 
     注入 ``now`` 而非取真实时钟，上界是动态的，用真实时钟断言会因毫秒级漂移偶发
-    flaky（实测漂移 4.2ms 就足以让「等于上界」的断言翻面）。
+    flaky。
     """
     models, _, _ = _load_modules()
     now = 1_000_000.0
@@ -1059,9 +1059,7 @@ def test_write_json_atomic_unexpected_error(tmp_path: Path) -> None:
 def test_write_json_atomic_retries_transient_permission_error(tmp_path: Path, monkeypatch) -> None:
     """``os.replace`` 被瞬时占用时必须重试，不能一次失败就放弃整次保存。
 
-    成因实测：Windows 上实时扫描/索引器会短暂持有刚写出的目标文件，``os.replace``
-    随之抛 ``PermissionError: [WinError 5] 拒绝访问``（连跑 test_main_runtime.py
-    20 次复现 1 次，表现为 ``/off`` 落盘失败）。重试前这里直接返回 False。
+    Windows 扫描器短暂占用目标文件时，``os.replace`` 会抛 PermissionError。
     """
     storage = _storage_module()
     path = tmp_path / "config.json"

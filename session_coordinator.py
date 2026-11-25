@@ -105,26 +105,18 @@ class SessionCoordinator:
             self._session_bytes.pop(umo, None)
         self._total_bytes -= nbytes
 
-    def _evict_oldest_image_event(self, *, umo: str | None = None) -> str | None:
-        """弹出全局（或指定会话）最旧的图片事件，返回其会话键。
-
-        **驱逐 0 字节条目是合法进展**：冻结到磁盘的图与刻意入队的空占位事件都
-        记 0 字节，调用方必须以返回值为 None 判停，否则队首一个 0 字节条目会
-        掩盖其后仍可回收的 data URL。
-        """
+    def _evict_oldest_image_event(self, *, umo: str | None = None) -> None:
+        """弹出最旧图片事件；调用方已确认有足够的旧图可回收。"""
         candidates = []
         events = self._images.items() if umo is None else [(umo, self._images.get(umo))]
         for key, image_events in events:
             if image_events:
                 candidates.append((image_events[0][0], key, image_events))
-        if not candidates:
-            return None
         _, key, image_events = min(candidates, key=lambda item: item[0])
         _timestamp, evicted_images = image_events.popleft()
         if not image_events:
             self._images.pop(key, None)
         self._debit(key, _event_bytes(evicted_images))
-        return key
 
     def _append_image_event(self, umo: str, timestamp: float, images: list[Any]) -> None:
         # 空图片列表也入队占位：事件的时间戳参与「该会话最近有无图片」的
@@ -172,19 +164,21 @@ class SessionCoordinator:
 
         accepted: list[Any] = []
         batch_bytes = 0
+        # 新于本批的图片必须保留；先确认两级预算均可满足，再淘汰旧图。
+        newer_bytes = {
+            key: sum(_event_bytes(images) for stamp, images in items if stamp > timestamp)
+            for key, items in self._images.items()
+        }
+        newer_total = sum(newer_bytes.values())
         for image in cached_images:
             image_bytes = _prepared_memory_size(image)
-            if image_bytes > self._max_session_image_memory_bytes:
+            if (
+                newer_bytes.get(umo, 0) + batch_bytes + image_bytes
+                > self._max_session_image_memory_bytes
+                or newer_total + batch_bytes + image_bytes > self._max_image_memory_bytes
+            ):
                 logger.warning(
-                    "[%s] rejected oversized in-memory image session=%s bytes=%d",
-                    PLUGIN_ID,
-                    umo,
-                    image_bytes,
-                )
-                continue
-            if image_bytes > self._max_image_memory_bytes:
-                logger.warning(
-                    "[%s] rejected image over global memory budget session=%s bytes=%d",
+                    "[%s] image memory budget exhausted session=%s bytes=%d",
                     PLUGIN_ID,
                     umo,
                     image_bytes,
@@ -195,25 +189,10 @@ class SessionCoordinator:
                 self._session_bytes.get(umo, 0) + batch_bytes + image_bytes
                 > self._max_session_image_memory_bytes
             ):
-                if self._evict_oldest_image_event(umo=umo) is None:
-                    break
+                self._evict_oldest_image_event(umo=umo)
 
             while self._total_bytes + batch_bytes + image_bytes > self._max_image_memory_bytes:
-                if self._evict_oldest_image_event() is None:
-                    break
-
-            if (
-                self._session_bytes.get(umo, 0) + batch_bytes + image_bytes
-                > self._max_session_image_memory_bytes
-                or self._total_bytes + batch_bytes + image_bytes > self._max_image_memory_bytes
-            ):
-                logger.warning(
-                    "[%s] image memory budget exhausted session=%s bytes=%d",
-                    PLUGIN_ID,
-                    umo,
-                    image_bytes,
-                )
-                continue
+                self._evict_oldest_image_event()
 
             accepted.append(image)
             batch_bytes += image_bytes
@@ -283,12 +262,16 @@ class SessionCoordinator:
     def restore_images(self, snapshot: dict[str, Any]) -> None:
         """补回白名单变更摘掉的图片索引，不换 dict 对象（契约 §11）。
 
-        只补当前仍缺席的键：保存期间新收到的图片留在表里，整体替换会把它们抹掉。
+        只补当前仍缺席的键，沿用入队预算，保留保存期间收到的新图。
         """
-        for key, values in snapshot.items():
-            if key not in self._images:
-                self._images[key] = deque(values, maxlen=MAX_CACHED_IMAGE_EVENTS)
-        self._recount()
+        missing = (
+            (timestamp, key, images)
+            for key, values in snapshot.items()
+            if key not in self._images
+            for timestamp, images in values
+        )
+        for timestamp, key, images in sorted(missing, key=lambda item: item[0]):
+            self.capture_images(key, timestamp, images)
 
     # ------------------------------------------------------------------
     # 读侧
@@ -301,8 +284,9 @@ class SessionCoordinator:
         vision_age_sec: float,
         vision_skip_stickers: bool,
         vision_max_images: int,
+        before: float | None = None,
     ) -> list[Any]:
-        """返回一个会话去重后的近期图片引用（过期条目顺手清理）。"""
+        """返回近期图片；before 含该时刻，后来的图片不占本轮数量上限。"""
         if umo not in self._images:
             logger.debug("[%s] images_for: no cached images for umo=%s", PLUGIN_ID, umo)
             return []
@@ -314,7 +298,12 @@ class SessionCoordinator:
 
         candidates: list[Any] = []
         seen: set[str] = set()
-        for image in (img for _event_at, images in reversed(events) for img in reversed(images)):
+        for image in (
+            img
+            for event_at, images in reversed(events)
+            if before is None or event_at <= before
+            for img in reversed(images)
+        ):
             if vision_skip_stickers and getattr(image, "is_sticker", False):
                 continue
             key = image.cache_key()

@@ -7,7 +7,7 @@
 
 自有临时目录（``_bootstrap`` 的 chdir 目标）同样由入口拥有：异常路径上
 **先恢复 cwd 再 rmtree**（Windows 上顺序反了会 PermissionError）。检查失败
-（抛错或非零退出码）与 _bootstrap 自身抛错的路径在此实测；成功路径的清理
+（抛错或非零退出码）与 _bootstrap 自身抛错的路径均需覆盖；成功路径的清理
 由 ``test_main_preserves_preexisting_*`` 两条用例顺带覆盖，不单独设例。
 """
 

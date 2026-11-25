@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -45,7 +48,7 @@ def _wire_pipeline(package, *, umo, decision, generation=None, delivery=None):
             settings=models.Settings.from_config({"whitelist_sessions": [umo]}),
             gate=gate_mod.SessionGate(),
             decision=decision,
-            last_events={umo: object()},
+            last_events={umo: FakeEvent(umo=umo)},
             last_decisions={},
             track_critical_task=_closing_tracker,
         ),
@@ -225,7 +228,9 @@ async def test_reply_targets_the_message_the_generation_read(tmp_path) -> None:
     """目标在生成输入读取时冻结，避免引用生成未依据过的新消息。"""
     _install()
     umo = "qq:GroupMessage:12345"
-    before_check, after_decision, during_generation = object(), object(), object()
+    before_check, after_decision, during_generation = (
+        FakeEvent(umo=umo, sender_id=sender) for sender in ("before", "target", "newcomer")
+    )
     seen: dict[str, object] = {}
 
     class SwappingDecision:
@@ -238,7 +243,7 @@ async def test_reply_targets_the_message_the_generation_read(tmp_path) -> None:
 
     class AdvancingGeneration:
         async def generate(self, _umo, _state, **kwargs):
-            seen["frozen"] = pipeline._last_events[umo]
+            seen["frozen"] = kwargs["target_event"]
             pipeline._last_events[umo] = during_generation  # 生成期间到达的新消息
             return "hi", kwargs["ledger"]
 
@@ -262,8 +267,9 @@ async def test_reply_targets_the_message_the_generation_read(tmp_path) -> None:
     )
 
     assert result == "已发送", result
-    assert seen["frozen"] is after_decision, "前提不成立：判断阶段没有换过事件"
-    assert seen["delivery_target"] is after_decision, "引用目标不是生成读到的那条消息：冻结时机错位"
+    assert seen["frozen"].get_sender_id() == "target"
+    assert seen["frozen"] is not after_decision
+    assert seen["delivery_target"] is seen["frozen"]
 
 
 async def test_absent_generation_baseline_still_guards_against_advance(tmp_path) -> None:
@@ -329,23 +335,23 @@ _DIRTY_REASON = "理由\n伪造\x1b[2J行\x07bell\x7fDEL\x9b31mC1\x85NEL"
 
 
 def _real_decide_decision(package: str, *, should_reply: bool):
-    """保留真实 decide 的清洗路径，只替换模型返回。"""
+    """替换外部模型和历史读取，保留真实解析、裁决与清洗链路。"""
     decision_mod = load_package(package, "decision")
-    maker = object.__new__(decision_mod.DecisionMaker)
-
-    async def ask_model(_umo, _state, *, trigger):
-        return {"should_reply": should_reply, "reason": _DIRTY_REASON, "elapsed_sec": 0.1}
-
-    maker.ask_decision_model = ask_model
-
-    class _Decision:
-        def local_gate(self, _state, *, force):
-            return ""
-
-        async def decide(self, umo, state, *, trigger, force):
-            return await maker.decide(umo, state, trigger=trigger, force=force)
-
-    return _Decision()
+    models = load_package(package, "models")
+    return decision_mod.DecisionMaker(
+        settings=models.Settings.from_config({"decision_model_enabled": True}),
+        clock=lambda: 1000.0,
+        minutes_now=lambda: 60,
+        resolve_provider=AsyncMock(return_value="judge"),
+        llm_generate=AsyncMock(
+            return_value=SimpleNamespace(
+                completion_text=json.dumps({"should_reply": should_reply, "reason": _DIRTY_REASON}),
+                result_chain=None,
+            )
+        ),
+        read_history=AsyncMock(return_value=[]),
+        build_image_context=AsyncMock(return_value=""),
+    )
 
 
 @pytest.mark.parametrize("should_reply", [True, False])
@@ -462,7 +468,9 @@ async def test_lock_swap_while_waiting_keeps_single_check_per_session(tmp_path) 
     release_first = asyncio.Event()
     depth = {"running": 0, "peak": 0}
 
-    async def fake_locked(umo_, *, trigger, force, expected_generation=None):
+    async def fake_locked(
+        umo_, *, trigger, force, expected_generation=None, target_event=None, target_text=""
+    ):
         depth["running"] += 1
         depth["peak"] = max(depth["peak"], depth["running"])
         try:

@@ -50,7 +50,15 @@ GET `/config` 返回 panel 键、`runtime_enabled`、`decision_prompt_default` �
 
 `enabled_private_sessions` 复用现有白名单和检查门卫，控制私聊自动触发；手动检查使用
 `force=True`。`abandon_stale_on_new_message` 控制新消息是否推进代次；白名单移除、手动
-检查和停止始终使旧任务失效。关闭该开关时，在途发送使用检查开始时的活动时间判定静默。
+检查和停止始终使旧任务失效。关闭该开关时，在途发送按最新活动时间重新判定静默。
+
+生成开始时复制事件、消息身份、会话与 extras，生成和投递共用这一份快照。平台客户端
+继续共享，宿主原事件的结果槽保持独立。提示词明确标出本地快照中的目标发言，完整宿主
+历史通过 `req.contexts` 传入，人格与记忆钩子照常生效。生成侧省去重复的历史文本补读，
+避免按重复短句匹配消息身份。手动检查的测试正文在会话锁内写入，并显式绑定指令事件。
+
+宿主装配、请求钩子、reset 与模型运行共用生成时限和同一个受控任务。隔离任务退出后
+再清理其事件与 reset，避免关闭仍在等待的协程。识图仍使用单独的图片预算。
 
 生成返回文本和 `AttemptLedger`，直发结果、发送次数与记账状态由账本统一持有。
 抑制原因使用 `SuppressCode` 分类：代次变化、插件停止、账本封闭分别呈现对应原因，
@@ -63,7 +71,8 @@ GET `/config` 返回 panel 键、`runtime_enabled`、`decision_prompt_default` �
 
 公开适配层直接使用宿主 Context 与 Provider API。私有 Agent API 由运行时适配层核对。
 
-`recorder_bridge` 按消息 ID 查图时，多图记录必须匹配 URL；单图记录可以取唯一组件。
+图片上下文按本轮活动时间筛选，再去重和限数。`recorder_bridge` 按平台与消息 ID 查图时，
+多图记录必须匹配 URL；单图记录可以取唯一组件。
 本地图片读取统一校验允许根目录。
 
 远程图片通过 `httpx`、`httpcore` 固定地址传输：每次请求解析并校验 IP，连接使用该 IP，
@@ -71,7 +80,7 @@ GET `/config` 返回 panel 键、`runtime_enabled`、`decision_prompt_default` �
 共享单图下载预算。请求使用 `Accept-Encoding: identity`，拒绝压缩响应，避免解压发生在
 体积计数之前。
 
-普通事件回收与图片保护窗口分离。data URL 索引按原始载荷计入全局及会话预算，图片描述
+普通事件回收与图片保护窗口分离。data URL 索引按 base64 载荷计入全局及会话预算，图片描述
 LRU 按条目数和字节数限制，磁盘冻结缓存按年龄及容量回收。安全上限集中在 `models.py`，
 模块内的时序参数保留在使用处。
 

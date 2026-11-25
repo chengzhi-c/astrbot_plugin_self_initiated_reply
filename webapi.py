@@ -97,21 +97,16 @@ def _collect_provider_options(plugin: SelfInitiatedReplyPlugin) -> list[dict[str
 
 async def _api_get_config(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     """返回当前配置。``enabled`` 是持久配置，``runtime_enabled`` 是运行态，不能合并。"""
-    try:
-        payload: dict[str, Any] = {
-            "ok": True,
-            "runtime_enabled": plugin.runtime_enabled,
-            "config_revision": config_revision(plugin.settings),
-            # 面板「恢复默认」填充值与读侧落盘同源于规格表。
-            "decision_prompt_default": CONFIG_SPEC_BY_KEY["decision_prompt_template"].reset_value,
-        }
-        for spec in panel_config_specs():
-            payload[spec.key] = spec.canonical_value(getattr(plugin.settings, spec.attr))
-        return payload
-    except Exception as exc:
-        # 详情只进服务端日志：异常文本可能带绝对路径、内部键名或上游报错原文。
-        logger.warning("[%s] api get config failed: %s", PLUGIN_ID, redact_exc_text(exc))
-        return {"ok": False, "error": "配置读取失败"}
+    payload: dict[str, Any] = {
+        "ok": True,
+        "runtime_enabled": plugin.runtime_enabled,
+        "config_revision": config_revision(plugin.settings),
+        # 面板「恢复默认」填充值与读侧落盘同源于规格表。
+        "decision_prompt_default": CONFIG_SPEC_BY_KEY["decision_prompt_template"].reset_value,
+    }
+    for spec in panel_config_specs():
+        payload[spec.key] = spec.canonical_value(getattr(plugin.settings, spec.attr))
+    return payload
 
 
 async def _api_providers(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
@@ -283,11 +278,6 @@ def _strict_int(value: Any, field: str) -> int:
     return value
 
 
-def _string_list(data: dict[str, Any], key: str) -> list[str]:
-    """规范化字符串列表；机器规则由对应 ``ConfigSpec`` 唯一拥有。"""
-    return normalize_string_list(CONFIG_SPEC_BY_KEY[key], data[key], mode="api")
-
-
 def _strict_float(value: Any, field: str) -> float:
     # JSON 数字无 int/float 之分，故两者都接受（bool 显式排除）；字符串拒绝，
     # fail loud 优于静默纠偏。
@@ -306,9 +296,7 @@ def _strict_float(value: Any, field: str) -> float:
     return parsed
 
 
-# 宿主 PluginRequestProxy.json() 读不出 body 时返回 default 而不抛（实测
-# astrbot 4.27）：把 default 设成唯一哨兵，才能把「坏请求体」与「真·空对象」
-# 区分开——后者是合法的无字段保存，前者必须报错。
+# PluginRequestProxy.json() 读取失败时返回 default，用哨兵区分坏请求与合法空对象。
 _BODY_UNREADABLE = object()
 
 # 配置提交是 JSON 对象，1 MiB 对整份配置（含最长的白名单列表）有大量余量。
@@ -318,10 +306,8 @@ _MAX_UI_THEME_BODY_BYTES = 4 * 1024
 
 
 def _content_length() -> int | None:
-    headers = getattr(request, "headers", None)
-    getter = getattr(headers, "get", None)
-    raw = getter("content-length") if callable(getter) else None
-    if not isinstance(raw, str) or not raw.isascii() or not raw.isdecimal():
+    raw = request.headers.get("content-length")
+    if raw is None or not raw.isascii() or not raw.isdecimal():
         return None
     try:
         return int(raw)
@@ -369,6 +355,10 @@ async def _api_post_config(plugin: SelfInitiatedReplyPlugin) -> Any:
     # 仍在锁内、且是在任何变更之前。
     try:
         data = await _request_json()
+    except Exception as exc:
+        logger.warning("[%s] api post config body unreadable: %s", PLUGIN_ID, redact_exc_text(exc))
+        return {"ok": False, "error": "请求体不是合法 JSON"}
+    try:
         if not isinstance(data, dict):
             raise ValueError("请求体必须是 JSON 对象")
         base_revision = data.get("base_revision")
@@ -383,14 +373,6 @@ async def _api_post_config(plugin: SelfInitiatedReplyPlugin) -> Any:
         # 依赖它定位出错字段。
         logger.warning("[%s] api post config rejected: %s", PLUGIN_ID, redact_exc_text(exc))
         return {"ok": False, "error": str(exc)}
-    except RuntimeError as exc:
-        # 宿主不具备 JSON 请求读取能力是宿主问题，不是客户端的坏请求体：
-        # 回「请求体不是合法 JSON」会把排障方向指错。
-        logger.warning("[%s] api post config unsupported host: %s", PLUGIN_ID, redact_exc_text(exc))
-        return {"ok": False, "error": "配置保存失败，请查看 AstrBot 日志"}
-    except Exception as exc:
-        logger.warning("[%s] api post config rejected: %s", PLUGIN_ID, redact_exc_text(exc))
-        return {"ok": False, "error": "请求体不是合法 JSON"}
 
     async with plugin._config_lock:
         if plugin._stopping:
@@ -411,18 +393,13 @@ async def _api_post_config(plugin: SelfInitiatedReplyPlugin) -> Any:
                 updates,
                 submitted=config_data,
             )
-        except ValueError as exc:
-            # 校验失败的文案要回显：由本模块构造，只含字段名与规则，前端表单
-            # 依赖它定位出错字段。
-            logger.warning("[%s] api post config rejected: %s", PLUGIN_ID, redact_exc_text(exc))
-            return {"ok": False, "error": str(exc)}
         except Exception as exc:
             # 内部异常一律通用文案：OSError 的 str() 带绝对路径，详情只进服务端日志。
             logger.warning("[%s] api post config failed: %s", PLUGIN_ID, redact_exc_text(exc))
             return {"ok": False, "error": "配置保存失败，请查看 AstrBot 日志"}
 
 
-def _parse_config_updates(data: Any) -> dict[str, Any]:
+def _parse_config_updates(data: dict[str, Any]) -> dict[str, Any]:
     """从请求体提取合法配置变更并做严格类型校验；非法字段抛 ValueError。
 
     表驱动防漏：新增键若不进规格表，这里会被静默丢弃。与
@@ -430,9 +407,6 @@ def _parse_config_updates(data: Any) -> dict[str, Any]:
     用户需要知道值不合法），from_config 静默夹取（磁盘已存在的配置抛异常
     会让插件加载失败）。
     """
-    if not isinstance(data, dict):
-        raise ValueError("请求体必须是 JSON 对象")
-
     unknown = sorted(set(data) - CONFIG_SCHEMA_KEYS)
     if unknown:
         # 键名是客户端可控输入，且这段文本既进响应也进日志：不清掉控制字符就能
@@ -469,7 +443,7 @@ def _strict_value(spec: ConfigSpec, data: dict[str, Any]) -> Any:
     if spec.kind == "float":
         return _strict_float(raw, spec.key)
     if spec.kind == "list":
-        return _string_list(data, spec.key)
+        return normalize_string_list(spec, raw, mode="api")
     if spec.kind == "enum":
         value = str(raw or "").strip()
         if value not in spec.options:
@@ -799,8 +773,8 @@ def _log_audited_changes(
         if key not in updates:
             continue
         attr = CONFIG_SPEC_BY_KEY[key].attr
-        old_value = getattr(snapshot["settings"], attr, None)
-        new_value = getattr(new_settings, attr, None)
+        old_value = getattr(snapshot["settings"], attr)
+        new_value = getattr(new_settings, attr)
         old_norm = sorted(old_value) if isinstance(old_value, (set, list)) else old_value
         new_norm = sorted(new_value) if isinstance(new_value, (set, list)) else new_value
         if old_norm != new_norm:
@@ -820,33 +794,28 @@ async def _api_status(plugin: SelfInitiatedReplyPlugin) -> dict[str, Any]:
     多个会话的 UMO、代次与派生自群聊原文的 ``reason``，只是为一个面板零消费
     的端点扩大用户内容暴露面。
     """
-    try:
-        return {
-            "ok": True,
-            "runtime_enabled": plugin.runtime_enabled,
-            "lifecycle": plugin.lifecycle_state,
-            "whitelist_count": len(plugin.settings.whitelist),
-            "decision_model_enabled": plugin.settings.decision_model_enabled,
-            "gate": {
-                "sessions": len(plugin._gate.generation_view),
-                "running": len(plugin._gate.running_sessions_view),
-            },
-            "tasks": {
-                "delay": len(plugin._delay_tasks),
-                "running_check": len(plugin._running_check_tasks),
-                "background": len(plugin._background_tasks),
-            },
-            "caches": {
-                "events": len(plugin._last_events),
-                "image_events": len(plugin._recent_image_events),
-                "sessions": len(plugin.sessions),
-            },
-            "decisions": len(plugin._last_decisions),
-        }
-    except Exception as exc:
-        # 同 _api_get_config：详情只进服务端日志，不回显给调用方。
-        logger.warning("[%s] api status failed: %s", PLUGIN_ID, redact_exc_text(exc))
-        return {"ok": False, "error": "状态读取失败"}
+    return {
+        "ok": True,
+        "runtime_enabled": plugin.runtime_enabled,
+        "lifecycle": plugin.lifecycle_state,
+        "whitelist_count": len(plugin.settings.whitelist),
+        "decision_model_enabled": plugin.settings.decision_model_enabled,
+        "gate": {
+            "sessions": len(plugin._gate.generation_view),
+            "running": len(plugin._gate.running_sessions_view),
+        },
+        "tasks": {
+            "delay": len(plugin._delay_tasks),
+            "running_check": len(plugin._running_check_tasks),
+            "background": len(plugin._background_tasks),
+        },
+        "caches": {
+            "events": len(plugin._last_events),
+            "image_events": len(plugin._recent_image_events),
+            "sessions": len(plugin.sessions),
+        },
+        "decisions": len(plugin._last_decisions),
+    }
 
 
 def register_web_apis(plugin: SelfInitiatedReplyPlugin) -> None:

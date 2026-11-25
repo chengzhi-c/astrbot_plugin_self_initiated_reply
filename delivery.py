@@ -213,9 +213,8 @@ class DeliveryRunner:
         """发送前门卫与发送状态机；返回结果消息。记账由 pipeline 的 ledger 收口。
 
         ``target_event`` 是生成实际读到的那条消息，由 pipeline 在调用生成前冻结。
-        装饰与发送通道都用它：引用/@ 只有锚在同一条消息上才不会指错对象，而它的
-        结果槽早已结算——拿此刻最新到达的消息当通道，等于往宿主仍在处理的另一条
-        消息上写 ``_result``（并发写槽会互相覆盖）。事件被回收时引用仍在手边，
+        装饰与发送通道共用独立事件快照，引用/@ 与生成保持同源，结果槽不与宿主共享。
+        事件被回收时快照仍在手边，
         照旧从该事件发；真正没有事件可用的时机才回落 context。
         """
         ledger_id = ledger.ledger_id
@@ -617,8 +616,10 @@ class DeliveryRunner:
         # 可能已送达，推进才能让后续巡检不为同一事件再生成一条回复。
         current = self._gate.is_current(umo, expected_generation)
         if current:
-            state.last_proactive_observed_at = (
-                state.last_active_at if observed_active_at is None else observed_active_at
+            # 发送期间的 @Bot 已消费较新活动时，迟到记账不能重新打开那批消息。
+            state.last_proactive_observed_at = max(
+                state.last_proactive_observed_at,
+                state.last_active_at if observed_active_at is None else observed_active_at,
             )
         if not confirmed:
             logger.info(

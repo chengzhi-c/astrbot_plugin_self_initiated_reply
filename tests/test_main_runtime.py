@@ -25,6 +25,8 @@ import pytest
 
 from ._support import UMO, make_event, shorten_shutdown_windows
 from .host_stubs import (
+    DirectSendingRunner,
+    FakeBuildResult,
     FakeContext,
     FakeToolSet,
     PipelineTestAdapter,
@@ -33,9 +35,11 @@ from .host_stubs import (
     load_package,
     request_tool_names,
     restore_path_functions,
+    until,
     webapi_module,
     with_plugin,
 )
+from .test_mention import _ChainRecordingEvent
 
 
 def read_json_with_retry(path: Path) -> Any:
@@ -1588,6 +1592,176 @@ def test_manual_check_preserves_event_arriving_during_release_wait(tmp_path: Pat
     with_plugin(tmp_path, scenario)
 
 
+@pytest.mark.parametrize("wait_phase", ["release", "lock"])
+@pytest.mark.parametrize("content", ["Admin question", ""])
+def test_manual_check_keeps_prompt_and_delivery_target_together(
+    tmp_path: Path, wait_phase: str, content: str
+) -> None:
+    """取消旧检查或等待会话锁时插入新消息，正文与 @/引用仍须使用同一目标。"""
+
+    async def scenario(plugin, main):
+        from astrbot.api.message_components import At, Reply
+
+        started, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        requests = []
+        original_runtime = main._AGENT_RUNTIME
+
+        async def build_effect(kwargs, _result):
+            requests.append(kwargs["req"])
+            runner = DirectSendingRunner(completion_text="answer")
+            return FakeBuildResult(
+                agent_runner=runner,
+                provider_request=kwargs["req"],
+                reset_coro=runner.reset(),
+            )
+
+        def run_effect(_runner, **_kwargs):
+            async def events():
+                if wait_phase == "release" and len(requests) == 1:
+                    started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        cancelled.set()
+                        await release.wait()
+                yield None
+
+            return events()
+
+        main._AGENT_RUNTIME = PipelineTestAdapter(
+            original_runtime, build_effect=build_effect, run_effect=run_effect
+        )
+        try:
+            await plugin.on_message(make_event(message_str="old question", sender_id="old"))
+            lock = plugin._gate.lock_for(UMO)
+            previous = None
+            if wait_phase == "release":
+                previous = asyncio.create_task(
+                    plugin._scheduler._run_registered_check(
+                        UMO, trigger="patrol", force=False, generation=plugin._gate.current(UMO)
+                    )
+                )
+                await asyncio.wait_for(started.wait(), timeout=1)
+            else:
+                await lock.acquire()
+
+            admin = _ChainRecordingEvent(
+                umo=UMO,
+                message_str=f"/selfreply check {content}",
+                sender_id="admin",
+                is_admin=True,
+            )
+            admin.message_obj.message_id = "admin-message"
+            manual = asyncio.create_task(plugin.on_message(admin))
+            if wait_phase == "release":
+                await asyncio.wait_for(cancelled.wait(), timeout=1)
+            else:
+                await until(lambda: UMO in plugin._running_check_tasks)
+
+            bob = _ChainRecordingEvent(umo=UMO, message_str="Bob question", sender_id="bob")
+            bob.message_obj.message_id = "bob-message"
+            await plugin.on_message(bob)
+            if wait_phase == "release":
+                release.set()
+                await asyncio.gather(previous, return_exceptions=True)
+            else:
+                lock.release()
+            await asyncio.wait_for(manual, timeout=2)
+
+            assert "".join(str(item) for item in admin.sent_chains[-1]) == (
+                "主动回复检查结果：已主动回复。"
+            )
+            target, target_text = (admin, content) if content else (bob, "Bob question")
+            assert (
+                f"本轮回复目标（{target.get_sender_name()}）: {target_text}" in requests[-1].prompt
+            )
+            replies = [
+                chain
+                for chain in target.sent_chains
+                if any(isinstance(item, Reply) for item in chain)
+            ]
+            assert len(replies) == 1
+            chain = replies[0]
+            assert [str(item.qq) for item in chain if isinstance(item, At)] == [
+                target.get_sender_id()
+            ]
+            assert [str(item.id) for item in chain if isinstance(item, Reply)] == [
+                target.message_obj.message_id
+            ]
+            assert not any(
+                isinstance(item, Reply)
+                for chain in (bob if content else admin).sent_chains
+                for item in chain
+            )
+            assert plugin._last_events.get(UMO) is bob
+        finally:
+            main._AGENT_RUNTIME = original_runtime
+
+    with_plugin(
+        tmp_path,
+        scenario,
+        enabled_message_trigger=False,
+        abandon_stale_on_new_message=False,
+        mention_mode="always",
+        quote_mode="random",
+        quote_probability=100,
+    )
+
+
+@pytest.mark.parametrize("entry", ["direct", "inline", "decorated"])
+def test_manual_check_without_content_uses_previous_message_target(
+    tmp_path: Path, entry: str
+) -> None:
+    async def scenario(plugin, main):
+        from astrbot.api.message_components import At, Reply
+
+        previous = _ChainRecordingEvent(umo=UMO, message_str="Bob question", sender_id="bob")
+        previous.message_obj.message_id = "bob-message"
+        await plugin.on_message(previous)
+        command = make_event(message_str="/selfreply check", sender_id="admin", is_admin=True)
+        command.message_obj.message_id = "admin-message"
+        requests = []
+        original_runtime = main._AGENT_RUNTIME
+
+        async def build_effect(kwargs, _result):
+            requests.append(kwargs["req"])
+            runner = DirectSendingRunner(completion_text="answer")
+            return FakeBuildResult(
+                agent_runner=runner,
+                provider_request=kwargs["req"],
+                reset_coro=runner.reset(),
+            )
+
+        main._AGENT_RUNTIME = PipelineTestAdapter(original_runtime, build_effect=build_effect)
+        try:
+            if entry == "inline":
+                await plugin.on_message(command)
+                assert command.sent_texts == ["主动回复检查结果：已主动回复。"]
+            elif entry == "decorated":
+                results = [result.text async for result in plugin.selfreply_check(command)]
+                assert results == ["主动回复检查结果：已主动回复。"]
+            else:
+                result = await plugin._command_text(command, "check")
+                assert result == "主动回复检查结果：已主动回复。"
+        finally:
+            main._AGENT_RUNTIME = original_runtime
+
+        assert "本轮回复目标（bob）: Bob question" in requests[-1].prompt
+        assert len(previous.sent_chains) == 1
+        chain = previous.sent_chains[0]
+        assert [str(item.qq) for item in chain if isinstance(item, At)] == ["bob"]
+        assert [str(item.id) for item in chain if isinstance(item, Reply)] == ["bob-message"]
+
+    with_plugin(
+        tmp_path,
+        scenario,
+        enabled_message_trigger=False,
+        mention_mode="always",
+        quote_mode="random",
+        quote_probability=100,
+    )
+
+
 def test_status_daily_count_only_counts_today(tmp_path: Path) -> None:
     """``/selfreply status`` 的「今日已回复」只数今天，昨天的用量不得冒充。
 
@@ -1718,12 +1892,12 @@ def test_manual_check_records_command_body(tmp_path: Path) -> None:
     """装饰器路径 /selfreply check 必须从事件原文提取测试内容。"""
 
     async def scenario(plugin, main):
-        original_check = plugin._pipeline.check_session
+        original_generate = plugin._generation.generate
 
-        async def fake_check(*args, **kwargs):
-            return "完成"
+        async def fake_generate(*args, ledger, **kwargs):
+            return "", ledger
 
-        plugin._pipeline.check_session = fake_check
+        plugin._generation.generate = fake_generate
         plugin.settings.whitelist.add(UMO)
         try:
             event = make_event(
@@ -1735,7 +1909,7 @@ def test_manual_check_records_command_body(tmp_path: Path) -> None:
             assert state.recent, "check 未写入历史"
             assert state.recent[-1].text == "测一下"
         finally:
-            plugin._pipeline.check_session = original_check
+            plugin._generation.generate = original_generate
 
     with_plugin(tmp_path, scenario)
 
@@ -1749,12 +1923,12 @@ def test_decorated_command_check_reads_body_from_event_text(tmp_path: Path) -> N
     """
 
     async def scenario(plugin, main):
-        original_check = plugin._pipeline.check_session
+        original_generate = plugin._generation.generate
 
-        async def fake_check(*args, **kwargs):
-            return "完成"
+        async def fake_generate(*args, ledger, **kwargs):
+            return "", ledger
 
-        plugin._pipeline.check_session = fake_check
+        plugin._generation.generate = fake_generate
         plugin.settings.whitelist.add(UMO)
         try:
             event = make_event(
@@ -1769,7 +1943,7 @@ def test_decorated_command_check_reads_body_from_event_text(tmp_path: Path) -> N
                 f"装饰器路径未从事件原文取到测试内容: {state.recent[-1].text!r}"
             )
         finally:
-            plugin._pipeline.check_session = original_check
+            plugin._generation.generate = original_generate
 
     with_plugin(tmp_path, scenario)
 
@@ -1828,7 +2002,7 @@ def test_version_consistency_across_metadata() -> None:
     README 徽章、CHANGELOG 最新发布行。README 单语单徽章。
 
     pyproject.toml 也纳入守卫：hatchling 从该处取版本，漏守会让 wheel 文件名
-    与 dist-info 版本停在旧值，面板显示值与 pip 记录不一致（实测实锤）。
+    与 dist-info 版本停在旧值，面板显示值与 pip 记录不一致。
     """
     root = Path(__file__).resolve().parents[1]
     models = (root / "models.py").read_text(encoding="utf-8")
@@ -2171,7 +2345,9 @@ def test_command_check_still_runs_private_when_disabled(tmp_path: Path) -> None:
         plugin.settings.enabled_private_sessions = False
         seen: dict[str, object] = {}
 
-        async def fake_check(umo, *, trigger, force, expected_generation):
+        async def fake_check(
+            umo, *, trigger, force, expected_generation, target_event=None, target_text=""
+        ):
             seen["umo"] = umo
             seen["force"] = force
             return "完成"

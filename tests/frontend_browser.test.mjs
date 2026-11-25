@@ -400,19 +400,31 @@ test("late refresh config does not overwrite a dirty form", async ({ page }) => 
   expect(errors).toEqual([]);
 });
 
-test("forced refresh also preserves edits made after the request starts", async ({ page }) => {
-  await installBridge(page, { refreshConfigPending: true });
-  const errors = await openPage(page);
-  await page.locator("#messageDelayInput").fill("75");
-  await page.locator("#refreshBtn").click();
-  await page.locator("#refreshBtn").click();
-  await expect.poll(() => page.evaluate(() => typeof window.__resolveRefreshConfig)).toBe("function");
-  await page.locator("#messageDelayInput").fill("80");
-  await page.evaluate(() => window.__resolveRefreshConfig());
-  await page.waitForTimeout(80);
-  await expect(page.locator("#messageDelayInput")).toHaveValue("80");
-  expect(errors).toEqual([]);
-});
+for (const heldEndpoint of ["providers", "config"]) {
+  test(`refresh preserves edits while ${heldEndpoint} is pending`, async ({ page }) => {
+    await installBridge(page);
+    const errors = await openPage(page);
+    await page.evaluate((held) => {
+      const apiGet = window.AstrBotPluginPage.apiGet;
+      window.AstrBotPluginPage.apiGet = async (endpoint) => {
+        const result = await apiGet(endpoint);
+        if (endpoint !== held) return result;
+        return new Promise((resolve) => {
+          window.__resolveRefresh = () => resolve(result);
+        });
+      };
+    }, heldEndpoint);
+    await page.locator("#messageDelayInput").fill("75");
+    await page.locator("#refreshBtn").click();
+    await page.locator("#refreshBtn").click();
+    await expect.poll(() => page.evaluate(() => typeof window.__resolveRefresh)).toBe("function");
+    await page.locator("#messageDelayInput").fill("80");
+    await page.evaluate(() => window.__resolveRefresh());
+    await expect(page.locator("#refreshBtn")).not.toHaveClass(/is-loading/);
+    await expect(page.locator("#messageDelayInput")).toHaveValue("80");
+    expect(errors).toEqual([]);
+  });
+}
 
 test("a late refresh does not overwrite an edit that was saved meanwhile", async ({ page }) => {
   // 保存完成后仍须拒绝迟到的旧快照，避免配置值和 revision 一起回退。
@@ -1013,7 +1025,6 @@ test("dim and bold switches expose their pressed state", async ({ page }) => {
 });
 
 test("the whitelist text action keeps a usable touch target", async ({ page }) => {
-  // #formatWhitelistBtn 实测 73×23px，低于 24px 的最小触控尺寸。
   await page.setViewportSize({ width: 1440, height: 1000 });
   await installBridge(page);
   const errors = await openPage(page);
@@ -1809,7 +1820,7 @@ test("image cache cleanup reports the count and surfaces failures", async ({ pag
   expect(errors).toEqual([]);
 });
 
-// 对比度实测：把令牌塞进临时元素取计算值，再按 WCAG 相对亮度算比值。light-dark()
+// 把令牌塞进临时元素取计算值，再按 WCAG 相对亮度算比值。light-dark()
 // 由 color-scheme 决定，所以每个令牌都要在明暗两种主题下各取一次。tokens 的值写
 // null 表示直接取文字色；写另一个令牌名表示该文字色压在它的半透明底上（--warn），
 // 先按 alpha 压到不透明底再算。
@@ -1869,13 +1880,8 @@ const measureContrast = (page, tokens, surfaces) =>
   );
 
 test("hint tokens clear WCAG AA on both themes and every surface", async ({ page }) => {
-  // style.css 的 --faint / --warn 注释各自手算了对比度，但注释里的数字会随令牌
-  // 漂移：改浅一档就跌破 AA，而全套用例照绿，小字号提示文字最先不可读。
-  // 这里取实际计算值复算，不信任注释。--warn 是武装态刷新按钮的文字色，底是
-  // 半透明 --warn-soft，因此按 alpha 压到每种不透明底上再算。
+  // --warn 的背景半透明，需按 alpha 叠加实际底色再计算对比度。
   await openPage(page);
-  // --muted 是 13px 正文（.muted），按正文级 AA 4.5:1 一并实测：
-  // 它不在 --faint 的 11-12px 手算口径内，遗漏会让调暗一档静默跌破。
   const measured = await measureContrast(
     page,
     { "--faint": null, "--muted": null, "--warn": "--warn-soft" },
@@ -1919,9 +1925,7 @@ test("spirit token clears WCAG AA on both themes and card surfaces", async ({ pa
 });
 
 test("ornament token clears WCAG AA on the surfaces it actually sits on", async ({ page }) => {
-  // --ornament 只出现在 sidenav 分组标题与图标，容器底色是 --bg / --surface，故不
-  // 断言 --surface-2：该令牌不落在那个底上（暗色侧实测 4.49，差 0.01 就红），硬加
-  // 会逼着为过数字改坏设计。
+  // --ornament 只用于侧栏标题和图标，需检查它实际使用的两种底色。
   await openPage(page);
   const measured = await measureContrast(page, { "--ornament": null }, ["--bg", "--surface"]);
 

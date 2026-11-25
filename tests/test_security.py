@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from ._support import command_surface_loader, make_event
 from .host_stubs import (
     MAIN_PACKAGE_NAME,
@@ -960,7 +962,10 @@ def test_provider_change_emits_audit_log(tmp_path: Path, caplog: object) -> None
 # ============================================================================
 
 
-def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplog: object) -> None:
+@pytest.mark.parametrize("error_type", [OSError, ValueError])
+def test_internal_exception_detail_is_not_echoed_to_client(
+    tmp_path: Path, caplog: object, error_type: type[Exception]
+) -> None:
     """内部异常的 str() 不得进入 HTTP 响应；详情只落服务端日志。
 
     攻击面：``_save_storage`` 的 ``OSError`` 文本带绝对路径，回显即泄露磁盘布局；
@@ -969,7 +974,7 @@ def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplo
 
     断言必须取 ``result["error"]`` 原字符串，**不能**用 ``str(result)``：dict 的
     repr 会把 Windows 路径里的 ``\\`` 转义成 ``\\\\``，探针字符串于是永远匹配不上，
-    测试会在真的泄露时依然变绿（首次写这条守卫时实测踩到，反向验证才发现）。
+    测试会在真的泄露时依然变绿。
     """
     secret = "C:\\internal\\secret-layout\\state.json"
 
@@ -978,7 +983,7 @@ def test_internal_exception_detail_is_not_echoed_to_client(tmp_path: Path, caplo
 
         # 1) 配置保存内部失败：响应必须是通用文案
         async def boom() -> None:
-            raise OSError(f"[Errno 13] Permission denied: {secret}")
+            raise error_type(f"[Errno 13] Permission denied: {secret}")
 
         plugin._save_storage = boom
         with caplog.at_level(logging.WARNING):

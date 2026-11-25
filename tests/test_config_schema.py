@@ -169,7 +169,7 @@ def test_list_trim_matches_the_page_trim() -> None:
 
     缺陷形态：裸 str.strip() 连 U+0085（NEL）一起剥，而 JS trim 不剥；
     页面校验放行的 ``\\x85abc\\x85`` 被后端静默改写成 ``abc``，保存再加载后
-    内容与用户输入不一致（差分模糊测试实测的唯一分歧源）。
+    内容与用户输入不一致。
     """
     models = _models()
     spec = models.CONFIG_SPEC_BY_KEY["whitelist_sessions"]

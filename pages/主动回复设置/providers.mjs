@@ -14,11 +14,7 @@ export function createProviderControl(refs, deps) {
   const { getOptions, isListAvailable, showToast, onDirty } = deps;
   function setManual(enabled, focusInput = false) {
     manual = Boolean(enabled);
-    // 容器类由本函数统一负责，三个 Provider 控件（judge / vision / visionJudge）
-    // 共用这一处实现。缺少这个类时基类 `.provider-control` 的两列定义仍生效，
-    // 按钮会被拉成整行宽（实测 373px，正常 78px）。这是「类没挂上」而不是 CSS
-    // 优先级问题：`.provider-field.manual .provider-control` 含 3 个类（0,3,0），
-    // 本就压过基类 `.provider-control`（0,1,0）。
+    // manual 类同时切换列表与手动输入的列布局。
     refs.field.classList.toggle("manual", manual);
     refs.button.textContent = manual ? "使用列表" : "手动输入";
     refs.button.setAttribute("aria-expanded", String(manual));

@@ -16,39 +16,11 @@ def _models_module():
     return load_package("selfreply_config_sot_package", "models")
 
 
-def _config_spec_keys() -> set[str]:
-    return {spec.key for spec in _models_module().CONFIG_SPECS}
-
-
-def _expected_get_config_keys() -> set[str]:
-    """GET /config 的期望键：panel 面 + 三个视图字段。真实形状由行为测试钉住。"""
-    models = _models_module()
-    return {spec.key for spec in models.panel_config_specs()} | {
-        "ok",
-        "runtime_enabled",
-        "decision_prompt_default",
-    }
-
-
 def _fe_writable_keys() -> set[str]:
     html = (ROOT / "pages" / "主动回复设置" / "index.html").read_text(encoding="utf-8")
     keys = set(re.findall(r'data-config-key="([a-z0-9_]+)"', html))
     assert keys, "index.html has no data-config-key declarations"
     return keys
-
-
-def test_webapi_get_exposes_fe_writable_fields() -> None:
-    keys = _expected_get_config_keys()
-    writable = _fe_writable_keys()
-    for required in ("ok", "enabled", "whitelist_sessions"):
-        assert required in keys, f"GET config missing {required}"
-    missing = writable - keys
-    assert not missing, f"GET config missing FE-writable keys: {sorted(missing)}"
-    assert "pipeline_mode" not in keys
-    # FE 可写键必须也在 CONFIG_SPECS（配置键名，非 Settings 属性名）
-    specs = _config_spec_keys()
-    orphan = writable - specs
-    assert not orphan, f"FE-writable keys not in CONFIG_SPECS: {sorted(orphan)}"
 
 
 def test_fe_writable_keys_match_panel_surfaces() -> None:

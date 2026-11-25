@@ -218,7 +218,6 @@ def _make_runner(
     enforce: object | None = None,
     hook: object | None = None,
     grace_sec: float = 0.05,
-    history: list | None = None,
     image_context: str = "",
 ):
     from . import host_stubs
@@ -229,7 +228,7 @@ def _make_runner(
     settings = models.Settings.from_config(config or {})
     fake_runtime = runtime if runtime is not None else FakeRuntime()
     gate = SimpleNamespace(is_current=lambda umo, generation: True)
-    calls = {"hook": 0, "history": 0, "image": 0, "image_args": None}
+    calls = {"hook": 0, "image": 0, "image_args": None}
 
     if hook is None:
 
@@ -237,11 +236,7 @@ def _make_runner(
             calls["hook"] += 1
             return False
 
-    async def read_history(umo, limit):
-        calls["history"] += 1
-        return list(history or [])
-
-    async def build_image_context(umo, enabled, provider_id):
+    async def build_image_context(umo, enabled, provider_id, before=None):
         calls["image"] += 1
         calls["image_args"] = (enabled, provider_id)
         return image_context
@@ -261,7 +256,6 @@ def _make_runner(
         grace_stop_sec=lambda: grace_sec,
         background_tasks=background_tasks,
         discard_background=discard,
-        read_history=read_history,
         build_image_context=build_image_context,
         last_events={},
     )
@@ -532,15 +526,23 @@ async def test_generate_suppresses_direct_send_after_stop(tmp_path: Path, channe
     assert len(sent) == 1
 
 
-@pytest.mark.parametrize("channel", ["event", "mixed"])
+@pytest.mark.parametrize("channel", ["event", "plain_event", "mixed"])
 async def test_generate_tracks_direct_sends_within_budget(tmp_path: Path, channel: str) -> None:
+    from .host_stubs import _FakeMessageChain
+
     _, models, runner, runtime, _, _ = _make_runner(
         tmp_path, {"proactive_inherit_tools": channel == "mixed"}
     )
     event = FakeEvent()
     runner._last_events["s1"] = event
     state = _state(models)
+    event_sent = []
     context_sent = []
+
+    async def event_send(message):
+        event_sent.append(message.get_plain_text())
+
+    event.send = event_send
 
     async def context_send(session, message):
         context_sent.append((session, message.get_plain_text()))
@@ -550,13 +552,13 @@ async def test_generate_tracks_direct_sends_within_budget(tmp_path: Path, channe
 
     def run_with_directs(_runner, **_kwargs):
         async def gen():
-            for i in range(3):  # MAX_DIRECT_TOOL_SENDS = 2
+            for i in range(models.MAX_DIRECT_TOOL_SENDS + 1):
                 if channel == "mixed" and i:
-                    from .host_stubs import _FakeMessageChain
-
                     await runtime.build_kwargs[-1]["plugin_context"].send_message(
                         "s1", _FakeMessageChain(chain=[f"直发{i}"])
                     )
+                elif channel in {"plain_event", "mixed"}:
+                    await event.send(_FakeMessageChain(chain=[f"直发{i}"]))
                 else:
                     await _direct_send(event, f"直发{i}")
                 yield None
@@ -568,6 +570,7 @@ async def test_generate_tracks_direct_sends_within_budget(tmp_path: Path, channe
     assert returned_ledger.direct_send_count == 2
     assert text == "你好呀"
     assert len(returned_ledger.direct_texts) == 2
+    assert event_sent == (["直发0"] if channel == "mixed" else ["直发0", "直发1"])
     assert context_sent == ([("s1", "直发1")] if channel == "mixed" else [])
     assert runner._context.send_message is context_send
 
@@ -663,20 +666,30 @@ async def test_generate_does_not_return_model_errors_as_reply(
     )
 
 
-async def test_generate_passes_non_tool_messages_through_untouched(tmp_path: Path) -> None:
-    """普通消息保留宿主返回值，并与工具直发预算分开计数。"""
+@pytest.mark.parametrize("message_kind", ["plain", "image", "agent_stats", "tts_stats", "break"])
+async def test_generate_tracks_content_sends_and_preserves_host_return(
+    tmp_path: Path, message_kind: str
+) -> None:
     from .host_stubs import _FakeMessageChain
 
     _, models, runner, runtime, _, _ = _make_runner(tmp_path)
     event = FakeEvent()
     received: list[Any] = []
-    sentinel = object()  # 宿主返回值的身份标记，用于验证原样回传
+    sentinel = object()
+    message = _FakeMessageChain(
+        type=None if message_kind in {"plain", "image"} else message_kind,
+        chain=[] if message_kind == "break" else ["消息内容"],
+    )
+    if message_kind == "image":
+        # 图片链非空，但宿主的 get_plain_text 不包含图片组件。
+        message.chain = [SimpleNamespace(type="image")]
+        message.get_plain_text = lambda: ""
 
     async def recording_send(message: Any) -> Any:
         received.append(message)
         return sentinel
 
-    event.send = recording_send  # generate() 入口会把它取作 original_send
+    event.send = recording_send
     runner._last_events["s1"] = event
     state = _state(models)
 
@@ -684,8 +697,7 @@ async def test_generate_passes_non_tool_messages_through_untouched(tmp_path: Pat
 
     def run_with_plain_message(_runner, **_kwargs):
         async def gen():
-            # 普通消息：type 不是 tool_direct_result，应走透传分支
-            returned.append(await event.send(_FakeMessageChain(chain=["普通消息"])))
+            returned.append(await event.send(message))
             yield None
 
         return gen()
@@ -693,11 +705,10 @@ async def test_generate_passes_non_tool_messages_through_untouched(tmp_path: Pat
     runtime.run = run_with_plain_message
     _text, returned_ledger = await runner.generate("s1", state, force=True)
 
-    assert len(received) == 1, f"普通消息未到达宿主 original_send：{received}"
-    assert received[0].get_plain_text() == "普通消息"
-    assert returned == [sentinel], "宿主返回值未原样回传（少写 return 或改了返回值）"
-    assert returned_ledger.direct_send_count == 0, "透传的普通消息不应计入工具直发预算"
-    assert returned_ledger.direct_texts == ()
+    assert received == [message]
+    assert returned == [sentinel]
+    assert returned_ledger.direct_send_count == int(message_kind in {"plain", "image"})
+    assert returned_ledger.direct_texts == (("消息内容",) if message_kind == "plain" else ())
 
 
 async def test_non_tool_send_is_suppressed_when_generation_is_stale(tmp_path: Path) -> None:
@@ -932,6 +943,106 @@ async def test_generate_gate_suppresses_direct_send(tmp_path: Path, channel: str
 # ============================================================================
 # 超时/取消/失败三类出口不丢失直发
 # ============================================================================
+
+
+@pytest.mark.parametrize("stage", ["build", "request_hook"])
+async def test_generation_timeout_covers_host_preparation(tmp_path: Path, stage: str) -> None:
+    _, models, runner, runtime, _, background_tasks = _make_runner(tmp_path, grace_sec=0.01)
+    runner.settings.generation_timeout_sec = 0.02
+    event = FakeEvent()
+    runner._last_events["s1"] = event
+
+    async def stalled(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    if stage == "build":
+        runtime.build = stalled
+    else:
+        runner._call_hook = stalled
+    task = asyncio.create_task(runner.generate("s1", _state(models), force=True))
+    try:
+        done, _ = await asyncio.wait({task}, timeout=0.3)
+        assert done, f"{stage} outlived the generation budget"
+        text, _ledger = task.result()
+        assert text == ""
+        assert not runtime.run_started.is_set()
+        assert event.plugins_name == ["other_plugin"]
+        assert not background_tasks
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_build_and_agent_share_one_generation_budget(tmp_path: Path) -> None:
+    _, models, runner, runtime, _, _ = _make_runner(tmp_path, grace_sec=0.01)
+    runner.settings.generation_timeout_sec = 0.4
+    runner._last_events["s1"] = FakeEvent()
+    original_build = runtime.build
+
+    async def build(**kwargs):
+        await asyncio.sleep(0.3)
+        return await original_build(**kwargs)
+
+    runtime.build = build
+    runtime.hang = True
+    task = asyncio.create_task(runner.generate("s1", _state(models), force=True))
+    try:
+        done, _ = await asyncio.wait({task}, timeout=0.6)
+        assert done, "agent received a fresh timeout after build consumed the budget"
+        assert task.result()[0] == ""
+        assert runtime.run_started.is_set()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("stop", ["timeout", "cancel"])
+async def test_stubborn_build_is_bounded_and_cannot_send_late(tmp_path: Path, stop: str) -> None:
+    _, models, runner, runtime, _, background_tasks = _make_runner(tmp_path, grace_sec=0.01)
+    runner.settings.generation_timeout_sec = 0.02 if stop == "timeout" else 10
+    event = FakeEvent()
+    runner._last_events["s1"] = event
+    started, release = asyncio.Event(), asyncio.Event()
+    sent = []
+    quarantined = []
+    runner._quarantine_task = lambda task, reason: quarantined.append(task)
+
+    async def send(message):
+        sent.append(message)
+
+    event.send = send
+    original_build = runtime.build
+
+    async def stubborn_build(**kwargs):
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+        await _direct_send(event, "late build output")
+        return await original_build(**kwargs)
+
+    runtime.build = stubborn_build
+    task = asyncio.create_task(runner.generate("s1", _state(models), force=True))
+    try:
+        await started.wait()
+        if stop == "cancel":
+            task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=0.3)
+        assert done, "noncooperative build kept the session locked after stopping"
+        assert quarantined
+        assert not runtime.run_started.is_set()
+        if stop == "timeout":
+            assert task.result()[0] == ""
+        else:
+            assert task.cancelled()
+    finally:
+        release.set()
+        await asyncio.gather(task, *list(background_tasks), return_exceptions=True)
+    assert sent == []
+    assert event.plugins_name == ["other_plugin"]
+    assert not background_tasks
 
 
 async def test_generate_timeout_requests_graceful_stop_keeps_directs(
@@ -1451,13 +1562,7 @@ async def test_generate_closes_reset_coro_when_hook_raises(tmp_path: Path) -> No
 
 
 async def test_generate_closes_reset_coro_when_hook_raises_timeout(tmp_path: Path) -> None:
-    """hook 抛 TimeoutError 时同样回收：兜底段与「走哪个 except」无关。
-
-    插件自己装的生成超时（``wait_for``
-    在 reset 之后）**不可能**泄漏 reset 协程，因为那时它已被 await 掉。
-    `except asyncio.TimeoutError` 成为泄漏出口只有一条间接路径，hook 内部让
-    `wait_for` 的 TimeoutError 逃逸。两个 except 各有自己的 return，所以要分别钉住。
-    """
+    """hook 自身超时也要关闭尚未 await 的 reset 协程。"""
     import inspect
 
     async def timeout_hook(event_obj, event_type, req):
@@ -1826,7 +1931,7 @@ async def test_vision_context_failure_degrades_without_dropping_reply(
     generation_mod, models, runner, _, _, _ = _make_runner(tmp_path)
     runner._last_events["s1"] = FakeEvent()
 
-    async def boom(umo, enabled, provider_id):
+    async def boom(umo, enabled, provider_id, before=None):
         raise RuntimeError("vision provider timeout")
 
     runner._build_image_context = boom
@@ -1848,15 +1953,11 @@ async def test_vision_context_failure_degrades_without_dropping_reply(
 async def test_build_context_text_caps_history_at_budget(tmp_path: Path) -> None:
     """消息条数上限不能限制单条长度，生成上下文还需总字符预算并保留最新内容。"""
     long_msg = "刷屏内容" * 4000  # 16000 字符，单条即超预算
-    _, models, _, _, _, _ = _make_runner(tmp_path)
-    _, models, runner, _, _, _ = _make_runner(
-        tmp_path,
-        history=[
-            models.MessageRecord(role="user", name="u", text=f"最早消息{long_msg}", at=1.0),
-            models.MessageRecord(role="user", name="u", text="最新消息", at=2.0),
-        ],
+    _, models, runner, _, _, _ = _make_runner(tmp_path)
+    state = _state(
+        models,
+        recent=[("user", f"最早消息{long_msg}", 1.0), ("user", "最新消息", 2.0)],
     )
-    state = _state(models, recent=[])
     text = await runner.build_context_text("s1", state)
     # 断言用字面量而非常量：基线上常量不存在，字面量才能把「无预算」本身
     # 暴露为失败，而不是退化成 AttributeError。
@@ -2137,12 +2238,10 @@ class _LegacyConversationRuntime(FakeRuntime):
 async def test_read_model_conversation_is_converted_for_the_host(
     tmp_path: Path,
 ) -> None:
-    """4.30 读结果必须转成 ``cid`` 形态再回填，人格、历史回写与记账才不丢。
+    """4.30 读结果必须转成宿主可解引用的会话对象。
 
     宿主在显式请求路径上不再自己转换：build 的 event writer 读
-    ``req.conversation.cid`` 与 ``.revision``，persona 读 ``.persona_id``，
-    历史回写也看 ``req.conversation`` 是否为空。直接把读结果塞进去会在宿主
-    内部抛 AttributeError（整轮生成失败），完全不塞则静默丢掉这三项。
+    ``req.conversation.cid`` 与 ``.revision``，persona 读 ``.persona_id``。
     """
     _, models, runner, runtime, _, _ = _make_runner(tmp_path, runtime=_ConvertingReadModelRuntime())
     event = FakeEvent()
@@ -2162,7 +2261,7 @@ async def test_read_model_conversation_is_converted_for_the_host(
 async def test_unconvertible_conversation_is_left_unfilled_with_debug(
     tmp_path: Path, caplog: object
 ) -> None:
-    """转不出合格对象时不回填，并留 debug 线索（否则人格与历史回写静默消失）。"""
+    """转不出合格对象时不回填，并留 debug 线索。"""
     _, models, runner, runtime, _, _ = _make_runner(
         tmp_path, runtime=_ReadModelConversationRuntime()
     )
@@ -2276,7 +2375,6 @@ def test_fallback_chain_is_passed_through_untouched(caplog) -> None:
         grace_stop_sec=lambda: 3.0,
         background_tasks=None,
         discard_background=None,
-        read_history=None,
         build_image_context=None,
         last_events={},
     )

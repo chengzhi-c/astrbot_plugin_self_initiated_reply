@@ -46,12 +46,16 @@ class MessageRecorderBridge:
             )
             return False
 
-    async def get_local_image_path(self, message_id: str, image_url: str = "") -> Path | None:
+    async def get_local_image_path(
+        self, message_id: str, image_url: str = "", *, platform_name: str = ""
+    ) -> Path | None:
         """Find a recorded local image matching a platform message."""
         if not message_id or not await self._ensure_api():
             return None
         try:
-            record = await maybe_await(self._api.get_by_platform_message_id(message_id))
+            record = await maybe_await(
+                self._api.get_by_platform_message_id(message_id, platform=platform_name or None)
+            )
             if not record:
                 return None
             chain = record.get_message_chain_list()

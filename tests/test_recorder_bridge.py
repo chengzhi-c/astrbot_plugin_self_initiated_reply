@@ -10,7 +10,9 @@ from __future__ import annotations
 import base64
 import importlib
 import inspect
+import sqlite3
 import types
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -43,7 +45,7 @@ def _api_with(record=None, resolver=None, *, record_result=None):
     """构造 recorder API 桩。"""
 
     class FakeRecorderApi:
-        async def get_by_platform_message_id(self, message_id):
+        async def get_by_platform_message_id(self, message_id, platform=None):
             if record_result is not None:
                 return record_result
             return record
@@ -219,6 +221,64 @@ async def test_get_local_image_path_url_match(bridge_mod, tmp_path) -> None:
     )
     result = await bridge.get_local_image_path("m1", "u1")
     assert result == target
+
+
+async def test_recorded_image_lookup_keeps_platform_with_duplicate_message_id(
+    bridge_mod, tmp_path
+) -> None:
+    image = importlib.import_module(f"{PACKAGE_NAME}.image")
+    support = importlib.import_module(f"{PACKAGE_NAME}.image._support")
+    media = tmp_path / "plugin_data" / bridge_mod.RECORDER_PLUGIN_NAME / "media"
+    media.mkdir(parents=True)
+    target_payload = PNG_BYTES + b"telegram"
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.execute(
+            "CREATE TABLE messages (platform, message_id, timestamp, url, local_path, "
+            "UNIQUE(platform, message_id))"
+        )
+        for timestamp, platform in enumerate(("telegram", "discord")):
+            (media / f"{platform}.png").write_bytes(PNG_BYTES + platform.encode())
+            connection.execute(
+                "INSERT INTO messages VALUES (?, ?, ?, ?, ?)",
+                (
+                    platform,
+                    "42",
+                    timestamp,
+                    f"https://{platform}.test/image.png",
+                    f"{platform}.png",
+                ),
+            )
+
+        class RecorderApi:
+            async def get_by_platform_message_id(self, message_id, platform=None):
+                # 记录器按平台和消息 ID 唯一；未指定平台时取跨平台最新记录。
+                row = connection.execute(
+                    "SELECT url, local_path FROM messages WHERE message_id = ? "
+                    "AND (? IS NULL OR platform = ?) ORDER BY timestamp DESC LIMIT 1",
+                    (message_id, platform, platform),
+                ).fetchone()
+                return _record_with({"type": "image", "url": row[0], "local_path": row[1]})
+
+            def get_media_absolute_path(self, value):
+                return media / value
+
+        event = SimpleNamespace(
+            message_id="42",
+            get_platform_name=lambda: "telegram",
+            get_messages=lambda: [
+                SimpleNamespace(type="image", url="https://telegram.test/image.png")
+            ],
+        )
+        extracted = image.ImageExtractor.extract_images(event)
+        parser = image.ImageParser(
+            object(),
+            recorder_bridge=bridge_mod.MessageRecorderBridge(_context_with(RecorderApi())),
+            data_root=tmp_path,
+        )
+
+        result = await parser._resolve_image_url(extracted[0])
+
+    assert result == support.to_data_url("image/png", target_payload)
 
 
 async def test_get_local_image_path_first_image_fallback(bridge_mod, tmp_path) -> None:

@@ -13,6 +13,8 @@ import importlib
 from collections import deque
 from types import SimpleNamespace
 
+import pytest
+
 from ._support import core_loader
 
 PACKAGE_NAME = "selfreply_coordinator_test_package"
@@ -361,6 +363,54 @@ def test_overflow_keeps_the_index_sorted_and_counters_in_sync() -> None:
     coordinator.capture_images("s1", 1.5, [_PreparedImage(b"middle")])
     assert [stamp for stamp, _ in ctx.images["s1"]] == [1.5, *range(2, limit + 1)]
     assert coordinator._total_bytes == _bytes_for(module, ctx.images)
+
+
+@pytest.mark.parametrize("existing_session", ["s1", "s2"])
+def test_memory_limit_keeps_newer_images_when_old_download_finishes(existing_session) -> None:
+    module = _coordinator_module()
+    coordinator, images = _budget_coordinator(module, global_bytes=4, session_bytes=4)
+    newer = _PreparedImage(b"new")
+    coordinator.capture_images(existing_session, 100.0, [newer])
+
+    assert coordinator.capture_images("s1", 10.0, [_PreparedImage(b"old")]) == []
+    assert list(images[existing_session]) == [(100.0, [newer])]
+    assert coordinator._total_bytes == 4
+
+
+@pytest.mark.parametrize("blocked_by", ["session", "global"])
+def test_rejected_image_keeps_existing_images_across_both_budgets(blocked_by) -> None:
+    module = _coordinator_module()
+    coordinator, images = _budget_coordinator(
+        module, global_bytes=12 if blocked_by == "global" else 8, session_bytes=8
+    )
+    if blocked_by == "session":
+        coordinator.capture_images("s2", 1.0, [_PreparedImage(b"old")])
+        coordinator.capture_images("s1", 3.0, [_PreparedImage(b"new")])
+    else:
+        coordinator.capture_images("s1", 1.0, [_PreparedImage(b"old")])
+        coordinator.capture_images("s2", 3.0, [_PreparedImage(b"newer")])
+    before = {key: list(events) for key, events in images.items()}
+
+    assert coordinator.capture_images("s1", 2.0, [_PreparedImage(b"late!!")]) == []
+    assert {key: list(events) for key, events in images.items()} == before
+    assert coordinator._total_bytes == _bytes_for(module, images)
+
+
+@pytest.mark.parametrize("global_bytes, restored", [(4, False), (8, True)])
+def test_restore_images_respects_budget_after_new_images_arrive(global_bytes, restored) -> None:
+    module = _coordinator_module()
+    coordinator, images = _budget_coordinator(module, global_bytes=global_bytes, session_bytes=4)
+    coordinator.capture_images("removed", 1.0, [_PreparedImage(b"old")])
+    snapshot = coordinator.snapshot_images()
+    coordinator.clear_session("removed")
+    newer = _PreparedImage(b"new")
+    coordinator.capture_images("remaining", 2.0, [newer])
+
+    coordinator.restore_images(snapshot)
+
+    assert coordinator._total_bytes == global_bytes
+    assert ("removed" in images) is restored
+    assert list(images["remaining"]) == [(2.0, [newer])]
 
 
 def test_reset_all_zeroes_image_byte_counters() -> None:

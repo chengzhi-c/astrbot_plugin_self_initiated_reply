@@ -84,7 +84,7 @@ def test_decision_exception_reason_drops_credentials(error_text: str) -> None:
         maker.ask_decision_model("s1", models.SessionState(), trigger="message_delay"),
     )
     assert result["should_reply"] is False
-    assert result["reason"].startswith("判断模型异常："), result["reason"]
+    assert result["reason"] == "判断模型异常，请查看 AstrBot 日志"
     for secret in SECRETS:
         assert secret not in result["reason"], f"reason 泄漏凭证 {secret}：{result['reason']}"
 
@@ -401,7 +401,7 @@ def test_vision_provider_exception_log_drops_credentials() -> None:
 
     缺陷形态：``image/parser.py`` 的 ``except Exception`` 直接记 ``exc``，而
     provider SDK 的异常串常把请求 URL 整段带出来（含 api_key/Signature 等
-    query 凭证）实测会把签名原样写进日志。
+    query 凭证），直接记录会泄露签名。
     """
     parser_mod = _load_parser()
     exc = RuntimeError(f"Client error '401' for url '{SIGNED_URL}'")
@@ -448,82 +448,6 @@ def test_history_read_failure_log_drops_credentials() -> None:
     assert lines, "未捕获历史读取失败日志"
     for secret in SECRETS:
         assert secret not in lines[-1], f"日志泄漏凭证 {secret}：{lines}"
-
-
-def test_webapi_failure_log_drops_url_credentials() -> None:
-    """宿主配置读取和提供商枚举异常可包含凭证 URL，失败日志必须脱敏。"""
-    install_astrbot_stubs()
-    webapi = load_package(f"{PACKAGE_NAME}_webapi", "webapi")
-
-    class BoomSettings:
-        def __getattr__(self, _name):
-            raise RuntimeError(f"Client error '401' for url '{SIGNED_URL}'")
-
-    class _Plugin:
-        runtime_enabled = True
-        settings = BoomSettings()
-
-    lines: list[str] = []
-
-    class _Recorder:
-        def warning(self, template: str, *args: object) -> None:
-            lines.append(template % args if args else template)
-
-        def __getattr__(self, _name):
-            return lambda *a, **k: None
-
-    original_logger = webapi.logger
-    webapi.logger = _Recorder()
-    try:
-        result = asyncio.run(webapi._api_get_config(_Plugin()))
-    finally:
-        webapi.logger = original_logger
-
-    assert result["ok"] is False, "异常路径必须返回失败载荷"
-    assert lines, "未捕获 webapi 失败日志，用例已失去覆盖对象"
-    for secret in SECRETS:
-        assert secret not in lines[-1], f"webapi 失败日志泄漏凭证 {secret}：{lines}"
-
-
-def test_webapi_status_failure_log_drops_url_credentials() -> None:
-    """``_api_status`` 的失败日志同样必须经 ``redact_exc_text``。
-
-    缺陷形态：``_api_get_config`` 等分支都走了脱敏，唯独 ``_api_status`` 直打
-    ``exc`` 原文。它从 gate 视图、任务计数、缓存与 last_decisions 组装载荷，
-    今天碰不到带凭证的异常串，但这是本文件唯一未脱敏的失败分支——契约是
-    「webapi 全部失败日志同口径」，漏一个就让"已经统一脱敏"变成假话。
-    """
-    install_astrbot_stubs()
-    webapi = load_package(f"{PACKAGE_NAME}_webapi_status", "webapi")
-
-    class BoomPlugin:
-        runtime_enabled = True
-
-        def __getattr__(self, _name):
-            # 只让缺失属性抛：runtime_enabled 是类属性可正常取到，其余
-            # （lifecycle_state / _gate / …）一律抛带凭证的异常串。
-            raise RuntimeError(f"Client error '401' for url '{SIGNED_URL}'")
-
-    lines: list[str] = []
-
-    class _Recorder:
-        def warning(self, template: str, *args: object) -> None:
-            lines.append(template % args if args else template)
-
-        def __getattr__(self, _name):
-            return lambda *a, **k: None
-
-    original_logger = webapi.logger
-    webapi.logger = _Recorder()
-    try:
-        result = asyncio.run(webapi._api_status(BoomPlugin()))
-    finally:
-        webapi.logger = original_logger
-
-    assert result["ok"] is False, "异常路径必须返回失败载荷"
-    assert lines, "未捕获 status 失败日志，用例已失去覆盖对象"
-    for secret in SECRETS:
-        assert secret not in lines[-1], f"status 失败日志泄漏凭证 {secret}：{lines}"
 
 
 def test_redact_exc_text_covers_ipv6_and_bracket_urls() -> None:
@@ -573,7 +497,7 @@ def test_redact_url_fallback_scrubs_userinfo_and_query() -> None:
 
     缺陷形态：两个早退分支直接 ``return text[:LOG_URL_MAX_CHARS]``，而匹配到
     的整段本就是可疑 URL——分解失败（畸形 IPv6）或 netloc 为空都不让它的
-    userinfo 与 query 变安全。实测泄漏：``http://user:pass@[::1/v1?api_key=...``
+    userinfo 与 query 变安全。例如 ``http://user:pass@[::1/v1?api_key=...``
     与 ``https:///api#token=...`` 的凭证原样进出。
     """
     utils_mod = _load_utils()

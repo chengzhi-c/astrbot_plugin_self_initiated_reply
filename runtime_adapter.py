@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib
 import inspect
 from collections.abc import AsyncIterator, Callable
+from copy import copy
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
@@ -23,6 +24,20 @@ from astrbot.api import logger
 
 from .models import PLUGIN_ID, proactive_build_config_kwargs
 from .utils import redact_exc_text
+
+
+def snapshot_reply_event(event: Any) -> Any:
+    """隔离主动回复的消息身份与运行槽，保留平台客户端等发送资源。"""
+    snapshot = copy(event)
+    snapshot.message_obj = copy(event.message_obj)
+    snapshot.message_obj.sender = copy(event.message_obj.sender)
+    snapshot.message_obj.message = list(event.message_obj.message)
+    snapshot.session = copy(event.session)
+    snapshot.plugins_name = copy(event.plugins_name)
+    snapshot._extras = event.get_extra().copy()
+    snapshot._temporary_local_files = []
+    snapshot.clear_result()
+    return snapshot
 
 
 def _require[T](value: T | None, name: str) -> T:
@@ -575,13 +590,12 @@ class AstrBotRuntimeAdapter:
         return await self.get_session_conv(event, context)
 
     def legacy_conversation(self, conversation: Any, context: Any) -> Any:
-        """把 4.30 的会话读结果转成宿主 build/persona/历史回写要用的对象。
+        """把 4.30 的会话读结果转成宿主构建 Agent 所需的对象。
 
         4.30 的 ``_get_session_conv`` 返回 ``ConversationRead``：会话 id 在
         ``conversation_id``，没有 ``cid``/``history``。显式请求（插件自带
         ``req``）的路径上宿主不再自己做这层转换，而 build 的 event writer 读
-        ``req.conversation.cid``、persona 读 ``.persona_id``、历史回写也按
-        ``req.conversation`` 是否为空决定——不转换就整段丢掉人格与历史回写。
+        ``req.conversation.cid``，persona 读 ``.persona_id``。
         转换器由宿主提供（``to_legacy_conversation``），老宿主返回的对象本身
         已带 ``cid``，原样放行。
         """

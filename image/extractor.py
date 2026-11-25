@@ -305,6 +305,7 @@ class ImageExtractor:
                         message_id=message_id,
                         is_sticker=is_sticker,
                         trusted_local_path=trusted_local_path,
+                        platform_name=platform_name,
                     )
                 )
         except Exception as exc:

@@ -284,7 +284,7 @@ def test_bare_selfreply_word_is_ordinary_chat_not_a_command(tmp_path) -> None:
 def test_direct_call_defers_same_batch_proactive_reply(tmp_path) -> None:
     """被 @Bot/唤醒后，同一批消息不再触发主动回复（``skip_after_direct_call``）。
 
-    背景（实测口径）：@Bot 的消息由 AstrBot 正常回复、不经过本插件；若只更新
+    @Bot 的消息由 AstrBot 正常回复、不经过本插件；若只更新
     活跃时间而不记「已回应」，静默时间一到就会再主动接一句，表现为「刚被点名
     答过又自己插话」，且判断模型看不到那轮 @Bot 对话，无从自制。
     """

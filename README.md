@@ -10,7 +10,7 @@
 
 <p align="center">
   让 AstrBot 在白名单会话中主动接话的插件。<br>
-  <img alt="版本" src="https://img.shields.io/badge/版本-1.5.7-4a5580">
+  <img alt="版本" src="https://img.shields.io/badge/版本-1.5.8-4a5580">
   <img alt="AstrBot 插件" src="https://img.shields.io/badge/AstrBot-插件-7b86ab">
 </p>
 
@@ -46,7 +46,11 @@
    ```json
    {"should_reply": true, "reason": "群友提到了感兴趣的话题"}
    ```
-3. **回复**：判断通过后，由 AstrBot 主 Agent 生成回复内容并发往会话。
+3. **回复**：判断通过后，固定本轮目标消息，由 AstrBot 主 Agent 生成回复；正文、引用与 @ 共用该目标。
+
+生成提示词保留本轮本地消息并标注目标发言，完整会话历史、人格与记忆仍走宿主原生管线。
+
+主动回复记录保存在插件本地，供后续主动接话使用；普通对话能否读取这些回复，取决于宿主的历史实现及已启用的历史插件。
 
 ---
 
@@ -95,10 +99,10 @@
 | --- | --- | --- |
 | 启用判断模型 `decision_model_enabled` | 开启 | 关闭后只保留巡检与手动检查 |
 | 判断模型 Provider `judge_provider_id` | 留空或轻量模型 | 留空时跟随会话模型 |
-| 生成时限 `generation_timeout_sec` | `300` 秒（默认 `300`，上限 `600`） | 单次主动生成的等待上限。按候选链各模型的请求超时与尝试次数估算，宿主的重试间隔会再延长等待 |
+| 生成时限 `generation_timeout_sec` | `300` 秒（默认 `300`，上限 `600`） | 宿主装配、请求钩子与模型生成共用的等待上限。按候选链各模型的请求超时与尝试次数估算，宿主的重试间隔会再延长等待 |
 | 判断温度 `decision_temperature` | `0.1-0.4`（默认 `0.2`） | 越低越稳定 |
 | 判断提示词 `decision_prompt_template` | 默认模板 | 支持 `{latest_message}`、`{recent_messages}`、`{session}`、`{bot_aliases}` 等变量 |
-| 判断模型超时 `decision_timeout_sec` | `10-60` 秒（默认 `20`） | 判断模型单次调用的等待上限，超时按不接话处理，这一轮不产生回复 |
+| 判断模型超时 `decision_timeout_sec` | `10-60` 秒（默认 `20`） | 模型解析、历史读取和判断模型调用各自的等待上限。历史超时使用本地记录，解析或判断超时则跳过本轮 |
 | 最少上下文消息数 `decision_history_min_messages` | `5-10` 条（默认 `5`） | 本地文本记录少于此数时读宿主会话历史补齐。判断提示词至少取最近 8 条，0 表示只用本插件缓存 |
 | 最小静默秒数 `min_silence_sec` | `45-120` 秒（默认 `45`） | 0 表示不要求静默。实际等待取本项与「消息后延迟」的较大值 |
 | 消息后延迟 `message_delay_sec` | `30-120` 秒（默认 `60`） | 与最小静默取较大值，作为收到消息后的最短等待时间 |
@@ -188,7 +192,7 @@ An AstrBot plugin that enables your bot to naturally join conversations in white
 
 - **Silence Detection**: Waits for active chat to pause before evaluating.
 - **Two-Stage Architecture**: A lightweight judge model evaluates whether to respond, and the main AstrBot agent generates the reply.
-- **Restricted Sandbox**: No tools are available during proactive replies by default; enabling plugin-tool inheritance exposes host and plugin tools while shell/Python, browser, cron, file and KB capabilities stay disabled.
+- **Restricted Tools**: No tools are available during proactive replies by default; enabling plugin-tool inheritance exposes host and plugin tools while shell/Python, browser, cron, file and KB capabilities stay disabled.
 - **Optional Vision**: Reads recent images when enabled, with caption caching and an opt-in sticker skip.
 - **Web Settings Page**: Built-in Light and Dark themes for managing whitelist, cooldowns, and judge prompts.
 

@@ -765,8 +765,7 @@ def test_legacy_conversation_converts_read_model() -> None:
     """读结果缺 ``cid`` 时必须经宿主的 to_legacy_conversation 补齐。
 
     宿主在显式请求路径上不再自己转换：build 的 event writer 读
-    ``req.conversation.cid``/``.revision``，persona 读 ``.persona_id``，
-    历史回写也看 ``req.conversation`` 是否为空。
+    ``req.conversation.cid``/``.revision``，persona 读 ``.persona_id``。
     """
     runtime = _load_adapter()
     adapter = _adapter(runtime)

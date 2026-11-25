@@ -163,7 +163,14 @@ class VisionService:
                 redact_exc_text(exc),
             )
 
-    async def build_context(self, umo: str, *, enabled: bool, provider_id: str = "") -> str:
+    async def build_context(
+        self,
+        umo: str,
+        *,
+        enabled: bool,
+        provider_id: str = "",
+        before: float | None = None,
+    ) -> str:
         if not enabled:
             return ""
         parser = self.get_image_parser(provider_id)
@@ -174,6 +181,7 @@ class VisionService:
             vision_age_sec=float(self._settings.vision_image_age_sec),
             vision_skip_stickers=self._settings.vision_skip_stickers,
             vision_max_images=self._settings.vision_max_images,
+            before=before,
         )
         if not images:
             return ""

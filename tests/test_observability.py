@@ -36,7 +36,9 @@ def _make_scheduler(tmp_path: Path, scheduler, models):
     def spawn(coro):
         return asyncio.create_task(coro)
 
-    def check_session(umo, *, trigger, force, expected_generation):
+    def check_session(
+        umo, *, trigger, force, expected_generation, target_event=None, target_text=""
+    ):
         return "ok"
 
     instance = scheduler.SessionScheduler(

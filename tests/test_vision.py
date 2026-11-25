@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from ._support import CORE_MODULES, PNG_BYTES, PNG_DATA_URL, make_parser
@@ -1449,7 +1450,7 @@ def test_cleanup_does_not_delete_outside_files_reached_through_a_junction(tmp_pa
     空目录形态（上一条）只钉住目录侧；扫描函数的文件归属校验同样关键：
     ``rglob`` 穿过联接后会把缓存外的文件收进回收表，若扫描侧不做
     ``resolve().relative_to(resolved_root)``，``_remove_expired_cache_files``
-    会按 mtime 直接 ``unlink`` 它们（实测：缓存外的过期文件真被删除）。
+    会按 mtime 删除缓存目录外的文件。
     """
     _, image, _ = _load_modules()
 
@@ -1917,15 +1918,12 @@ def _png_file(tmp_path: Path, name: str = "photo.png") -> Path:
 
 
 def _make_response(status_code: int = 200, headers: dict | None = None, chunks=()):
-    async def aiter_bytes():
-        for chunk in chunks:
-            yield chunk
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for chunk in chunks:
+                yield chunk
 
-    return SimpleNamespace(
-        status_code=status_code,
-        headers=headers or {},
-        aiter_bytes=aiter_bytes,
-    )
+    return httpx.Response(status_code, headers=headers, stream=Stream())
 
 
 # ============================================================================
@@ -2059,42 +2057,27 @@ def test_fixed_address_backend_connects_to_checked_ip(monkeypatch) -> None:
     assert calls == [("93.184.216.34", 443)]
 
 
-def test_fetch_uses_direct_fixed_transport_and_disables_env_proxy(monkeypatch) -> None:
+@pytest.mark.parametrize("timeout", [20.0, 42.0])
+def test_fetch_uses_direct_fixed_transport_and_disables_env_proxy(monkeypatch, timeout) -> None:
     _, image, _ = _load_modules()
     parser_mod = _parser_module()
     monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: "93.184.216.34")
     captured: dict[str, object] = {}
     response = _make_response(chunks=[PNG_BYTES])
 
-    class FakeStream:
-        async def __aenter__(self):
-            return response
+    original_client = httpx.AsyncClient
 
-        async def __aexit__(self, *_exc):
-            return False
+    def client(**kwargs):
+        captured.update(kwargs)
+        return original_client(**{**kwargs, "transport": httpx.MockTransport(lambda _: response)})
 
-    class FakeClient:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_exc):
-            return False
-
-        def stream(self, _method, _url):
-            return FakeStream()
-
-    monkeypatch.setattr(parser_mod.httpx, "AsyncClient", FakeClient)
-    parser = image.ImageParser(object())
+    monkeypatch.setattr(parser_mod.httpx, "AsyncClient", client)
+    parser = image.ImageParser(object(), timeout_sec=timeout)
 
     assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) == PNG_DATA_URL
     assert captured["trust_env"] is False
     assert isinstance(captured["transport"], parser_mod._FixedAddressTransport)
-    # 契约 §8：关闭环境代理、跟随重定向但**最多 3 次**（每次重定向都要重新解析并
-    # 校验地址，否则一次 302 可以把已经校验过的公网地址换成内网地址）。
-    assert captured["follow_redirects"] is True
+    assert captured["follow_redirects"] is False
     assert captured["max_redirects"] == 3
     assert captured["timeout"] == parser._timeout_sec
 
@@ -2139,41 +2122,73 @@ def test_fixed_transport_preserves_host_and_default_tls_port(monkeypatch) -> Non
     assert core_request.url.target == b"/path?q=1"
 
 
-def test_fixed_transport_re_resolves_each_redirect_hop(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "redirects, encoding", [(1, "identity"), (1, "gzip"), (3, "identity"), (4, "identity")]
+)
+def test_download_redirects_close_unread_bodies_and_recheck_address(
+    monkeypatch, redirects, encoding
+) -> None:
+    import gzip
+
     _, image, _ = _load_modules()
     parser_mod = _parser_module()
-    addresses = iter(["1.1.1.1", "8.8.8.8"])
+    monkeypatch.setattr(parser_mod, "MAX_IMAGE_BYTES", 1024)
+    resolved = []
     backends: list[object] = []
+    streams = []
+    reads = []
+
+    def resolve(host):
+        resolved.append(host)
+        return "93.184.216.34" if len(resolved) == 1 else "1.1.1.1"
 
     class CoreStream:
+        def __init__(self, status, body):
+            self.status = status
+            self.body = body
+            self.closed = False
+            streams.append(self)
+
+        async def __aiter__(self):
+            reads.append(self.status)
+            yield self.body
+
         async def aclose(self):
-            return None
+            self.closed = True
 
     class FakePool:
         def __init__(self, **kwargs):
             backends.append(kwargs["network_backend"])
 
         async def handle_async_request(self, _request):
-            return SimpleNamespace(status=200, headers=[], stream=CoreStream(), extensions={})
+            status = 302 if len(backends) <= redirects else 200
+            body = b"x" * (parser_mod.MAX_IMAGE_BYTES + 1) if status == 302 else PNG_BYTES
+            headers = [(b"location", b"https://next.example/image.png")] if status == 302 else []
+            if status == 302 and encoding == "gzip":
+                body = gzip.compress(body)
+                headers.append((b"content-encoding", b"gzip"))
+            return SimpleNamespace(
+                status=status, headers=headers, stream=CoreStream(status, body), extensions={}
+            )
 
         async def aclose(self):
             return None
 
     monkeypatch.setattr(parser_mod.httpcore, "AsyncConnectionPool", FakePool)
-    transport = parser_mod._FixedAddressTransport(
-        address="93.184.216.34",
-        resolver=lambda _host: next(addresses),
+    monkeypatch.setattr(parser_mod, "_resolve_global_address", resolve)
+    result = asyncio.run(
+        image.ImageParser(object())._fetch_image_data_url("https://cdn.example/x.png")
     )
-    request = parser_mod.httpx.Request("GET", "https://cdn.example/x.png")
 
-    first = asyncio.run(transport.handle_async_request(request))
-    asyncio.run(first.aclose())
-    second = asyncio.run(transport.handle_async_request(request))
-    asyncio.run(second.aclose())
-
+    requests = min(redirects + 1, 4)
+    assert result == (PNG_DATA_URL if redirects <= 3 else None)
+    assert reads == ([200] if redirects <= 3 else [])
+    assert len(streams) == requests
+    assert all(stream.closed for stream in streams)
+    assert resolved == ["cdn.example"] + ["next.example"] * (requests - 1)
     assert [backend._address for backend in backends] == [
         "93.184.216.34",
-        "1.1.1.1",
+        *["1.1.1.1"] * (requests - 1),
     ]
 
 
@@ -2956,7 +2971,7 @@ def test_resolve_uses_recorder_local_path(tmp_path: Path) -> None:
     source = _png_file(tmp_path / "plugin_data" / "astrbot_plugin_message_recorder")
 
     class Recorder:
-        async def get_local_image_path(self, _message_id, _image_url):
+        async def get_local_image_path(self, _message_id, _image_url, *, platform_name=""):
             return source
 
     parser = image.ImageParser(object(), recorder_bridge=Recorder(), data_root=tmp_path)
@@ -2978,7 +2993,7 @@ def test_resolve_rejects_recorder_path_outside_data_root(tmp_path: Path) -> None
     outside = _png_file(tmp_path / "secrets", "private.png")
 
     class TraversalRecorder:
-        async def get_local_image_path(self, _message_id, _image_url):
+        async def get_local_image_path(self, _message_id, _image_url, *, platform_name=""):
             return outside
 
         async def resolve_relative_path(self, _value):
@@ -3027,7 +3042,7 @@ def test_resolve_recorder_miss_falls_through(tmp_path: Path, monkeypatch) -> Non
     _, image, _ = _load_modules()
 
     class Recorder:
-        async def get_local_image_path(self, _message_id, _image_url):
+        async def get_local_image_path(self, _message_id, _image_url, *, platform_name=""):
             return None
 
     parser = image.ImageParser(object(), recorder_bridge=Recorder())
@@ -3125,7 +3140,7 @@ def test_recorder_resolved_path_outside_roots_is_rejected(tmp_path: Path) -> Non
         async def resolve_relative_path(self, value):
             return outside
 
-        async def get_local_image_path(self, _message_id, _image_url):
+        async def get_local_image_path(self, _message_id, _image_url, *, platform_name=""):
             return outside
 
     parser = image.ImageParser(object(), recorder_bridge=NaiveRecorder(), data_root=data_root)
@@ -3317,44 +3332,9 @@ def _make_fetch_env(monkeypatch, response):
     parser_mod = _parser_module()
     monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: "93.184.216.34")
 
-    class FakeAsyncHTTPTransport:
-        def __init__(self, **_kwargs):
-            pass
-
-        async def handle_async_request(self, _request):
-            raise AssertionError("fake client 不应走到真实传输")
-
-        async def aclose(self):
-            pass
-
     monkeypatch.setattr(
-        parser_mod.httpx, "AsyncHTTPTransport", lambda **kw: FakeAsyncHTTPTransport()
+        parser_mod, "_FixedAddressTransport", lambda **_: httpx.MockTransport(lambda _: response)
     )
-
-    class FakeStream:
-        def __init__(self, resp):
-            self._resp = resp
-
-        async def __aenter__(self):
-            return self._resp
-
-        async def __aexit__(self, *_exc):
-            return False
-
-    class FakeClient:
-        def __init__(self, **_kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_exc):
-            return False
-
-        def stream(self, method, url):
-            return FakeStream(response)
-
-    monkeypatch.setattr(parser_mod.httpx, "AsyncClient", FakeClient)
     return image
 
 
@@ -3408,24 +3388,15 @@ def test_fetch_success_returns_data_url(monkeypatch) -> None:
 
 
 def test_fetch_client_exception_returns_none(monkeypatch) -> None:
-    _, image, _ = _load_modules()
+    image = _make_fetch_env(monkeypatch, _make_response())
     parser_mod = _parser_module()
-    monkeypatch.setattr(parser_mod, "_resolve_global_address", lambda _host: "93.184.216.34")
 
-    class ExplodingClient:
-        def __init__(self, **_kwargs):
-            pass
+    def reset(_request):
+        raise RuntimeError("connection reset")
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_exc):
-            return False
-
-        def stream(self, _method, _url):
-            raise RuntimeError("connection reset")
-
-    monkeypatch.setattr(parser_mod.httpx, "AsyncClient", ExplodingClient)
+    monkeypatch.setattr(
+        parser_mod, "_FixedAddressTransport", lambda **_: httpx.MockTransport(reset)
+    )
     parser = image.ImageParser(object())
     assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) is None
 
@@ -3458,39 +3429,6 @@ def test_global_addresses_literal_unaffected(monkeypatch) -> None:
     assert parser_mod._global_addresses("93.184.216.34") == ["93.184.216.34"]
 
 
-def test_download_client_timeout_follows_budget(monkeypatch) -> None:
-    """httpx client 超时与整体预算同源（vision_timeout_sec），不再硬编码 15s。"""
-    captured: dict[str, object] = {}
-    response = _make_response(chunks=[PNG_BYTES])
-    image = _make_fetch_env(monkeypatch, response)
-    parser_mod = _parser_module()
-
-    class RecordingClient:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_exc):
-            return False
-
-        def stream(self, _method, _url):
-            class _Ctx:
-                async def __aenter__(_inner):
-                    return response
-
-                async def __aexit__(_inner, *_exc):
-                    return False
-
-            return _Ctx()
-
-    monkeypatch.setattr(parser_mod.httpx, "AsyncClient", RecordingClient)
-    parser = image.ImageParser(object(), timeout_sec=42.0)
-    assert asyncio.run(parser._fetch_image_data_url("https://cdn.example/x.png")) == PNG_DATA_URL
-    assert captured["timeout"] == 42.0
-
-
 def test_fetch_unsafe_url_returns_none(monkeypatch) -> None:
     _, image, _ = _load_modules()
     parser_mod = _parser_module()
@@ -3502,11 +3440,12 @@ def test_fetch_unsafe_url_returns_none(monkeypatch) -> None:
 def _stalling_response():
     """响应体永不结束：首块之后一直等待（慢速滴流的极端形态）。"""
 
-    async def aiter_bytes():
-        yield PNG_BYTES[:8]
-        await asyncio.sleep(3600)
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield PNG_BYTES[:8]
+            await asyncio.sleep(3600)
 
-    return SimpleNamespace(status_code=200, headers={}, aiter_bytes=aiter_bytes)
+    return httpx.Response(200, stream=Stream())
 
 
 def test_fetch_stalled_stream_times_out(monkeypatch) -> None:
@@ -3761,8 +3700,7 @@ def test_raw_cq_parsing_stays_linear_on_pathological_input() -> None:
     """缺右括号的 CQ 串不得让解析退化成 O(n²)。
 
     缺陷形态：原正则的两段字符类（类型段与正文段）在同一段输入上竞争，缺右括号时
-    每个 [CQ: 起点都要逐字符回退。16 KB 的畸形 raw 串实测要 3.6 秒，而 has_images
-    与 extract_images 在消息热路径上各跑一遍，全插件共享同一事件循环。
+    每个 [CQ: 起点都要逐字符回退；消息热路径上应避免这种平方级开销。
     """
     import time
 
@@ -3786,8 +3724,7 @@ def test_raw_cq_parsing_stays_linear_on_pathological_input() -> None:
 def test_shared_ssl_context_is_built_once() -> None:
     """图片下载的 TLS 上下文必须复用，不得按请求重建。
 
-    缺陷形态：每次下载都 ssl.create_default_context()——实测 24ms 的同步开销，且每份
-    上下文各自持有证书链与会话缓存。图片查询在判断/生成两条热路径上串行触发。
+    每次创建上下文都要同步读取证书链，重复下载应复用同一份上下文。
     """
     _load_modules()
     parser = load_package(PACKAGE_NAME, "image.parser")

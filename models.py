@@ -26,7 +26,7 @@ from typing import Any, Protocol
 from astrbot.api import logger
 
 PLUGIN_ID = "astrbot_plugin_self_initiated_reply"
-PLUGIN_VERSION = "1.5.7"
+PLUGIN_VERSION = "1.5.8"
 COMMAND_HANDLED_KEY = f"{PLUGIN_ID}:command_handled"
 STATE_VERSION = 4
 
@@ -43,7 +43,7 @@ STRING_LIST_ILLEGAL_RE = re.compile(r"[\x00-\x1f\"'\\]")
 # 列表条目 trim 用的字符集 = 设置页 String.prototype.trim() 的那一套（JS
 # WhiteSpace + LineTerminator）。Python 的裸 str.strip() 还会剥 U+0085（NEL）
 # 等 JS 不剥的字符：页面校验放行的条目会被后端静默改写，保存再加载后内容
-# 与用户输入不一致（差分模糊测试实测的唯一分歧源）。
+# 与用户输入不一致。
 _JS_TRIM_CHARS = (
     "\t\n\v\f\r \xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007"
     "\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
@@ -102,9 +102,7 @@ STOPPING_REPLY_TEXT = "插件正在停止，放弃回复。"
 # 泄漏告警阈值：任务表每会话至多 1-2 个常驻条目，代次表 ≤ 白名单上限（1000）。
 LEAK_WARN_TASK_THRESHOLD = 100
 LEAK_WARN_SESSION_THRESHOLD = 1500
-# 生成上下文文本记录预算下限：本地文本记录不足此数时才回宿主补历史。
-# 判断路径另有 DECISION_HISTORY_FLOOR，那是提示词契约（"优先参考最近至少 8 条"），
-# 两者刻意不同源，不得顺手统一。
+# 判断上下文默认补历史阈值；读取条数另由 DECISION_HISTORY_FLOOR 决定。
 MIN_RECENT_TEXT_RECORDS = 5
 DECISION_HISTORY_FLOOR = 8
 
@@ -127,8 +125,8 @@ PATROL_STOP_TIMEOUT_SEC = GRACEFUL_STOP_GRACE_SEC * 3
 SHUTDOWN_TASK_DRAIN_TIMEOUT_SEC = PATROL_STOP_TIMEOUT_SEC
 # 内联指令入口做管理员校验的动作集合（help 任何成员可取）。
 ADMIN_COMMAND_ACTIONS = {"status", "list", "add", "remove", "check", "on", "off", "debug"}
-# 写操作在权限校验通过后取消在途回复；只读动作不打断进行中的检查。
-SESSION_CANCEL_COMMAND_ACTIONS = frozenset({"add", "remove", "check", "on", "off"})
+# check 在分派中保存目标后自行取消，其余写操作在权限校验通过后取消。
+SESSION_CANCEL_COMMAND_ACTIONS = frozenset({"add", "remove", "on", "off"})
 # 0.7.x 主动 Agent 工具允许列表：默认空集，未列入的工具在 build/hook 后一律移除，
 # 无法验证时终止本次主动运行（fail closed）。
 PROACTIVE_ALLOWED_TOOL_IDS: frozenset[str] = frozenset()
@@ -138,7 +136,7 @@ PROACTIVE_ALLOWED_TOOL_IDS: frozenset[str] = frozenset()
 # 条目必须是宿主 FunctionTool 的精确 name，运行期不做名字匹配；漏删即等于放行。
 HOST_DANGEROUS_TOOL_IDS: frozenset[str] = frozenset(
     {
-        # 4.23.3 实测为单工具 multiCommand，FunctionTool.name 为 future_task
+        # 4.23.3 的 multiCommand 使用 future_task 作为工具名。
         "future_task",
         "astrbot_execute_shell",
         "astrbot_execute_ipython",
@@ -148,7 +146,7 @@ HOST_DANGEROUS_TOOL_IDS: frozenset[str] = frozenset(
         "astrbot_execute_browser",
         "astrbot_execute_browser_batch",
         "astrbot_run_browser_skill",
-        # fs.py 4.23.3 实测的 FunctionTool name
+        # 4.23.3 的文件工具名。
         "astrbot_upload_file",
         "astrbot_download_file",
         "astrbot_file_read_tool",
@@ -271,9 +269,7 @@ PRINTABLE_CHAR_MIN = 32
 # config_revision 与 write_json_atomic 都会抛，设置页从此读不出配置。
 _SURROGATE_MIN = 0xD800
 _SURROGATE_MAX = 0xDFFF
-# 下面两张表是上面两个判据的逐字符等价形式：join 逐字符过滤是 O(n) 的 Python
-# 循环，2MB 提交实测要在事件循环上停 0.5s（webapi 的解析段直接跑在协程里）；
-# str.translate 在 C 层删同一批字符，2MB 降到 ~2ms。
+# 用 str.translate 批量过滤，减少配置解析占用事件循环的时间。
 _SURROGATE_CHARS = {code: None for code in range(_SURROGATE_MIN, _SURROGATE_MAX + 1)}
 _UNPRINTABLE_CHARS = _SURROGATE_CHARS | {code: None for code in range(PRINTABLE_CHAR_MIN)}
 
@@ -550,9 +546,11 @@ class ReadHistoryCallback(Protocol):
 
 
 class ImageContextCallback(Protocol):
-    """Vision 描述上下文回调（enabled/provider_id 关键字调用）。"""
+    """Vision 描述上下文回调；before 限定本轮可见的图片活动时间。"""
 
-    def __call__(self, umo: str, *, enabled: bool, provider_id: str) -> Awaitable[str]: ...
+    def __call__(
+        self, umo: str, *, enabled: bool, provider_id: str, before: float | None = None
+    ) -> Awaitable[str]: ...
 
 
 class LocalGateCallback(Protocol):
@@ -960,9 +958,6 @@ CONFIG_SPECS: tuple[ConfigSpec, ...] = (
     ConfigSpec(
         "decision_history_min_messages",
         "int",
-        # 默认值与生成路径的 MIN_RECENT_TEXT_RECORDS 同源（只是取值复用）；
-        # 消费方只有 decision 的判断提示词，生成上下文另由 recent_message_limit
-        # 与 MIN_RECENT_TEXT_RECORDS 决定，两者刻意不同源。
         MIN_RECENT_TEXT_RECORDS,
         # 下限 0 是合法语义：min_text_records=0 表示「本地有多少用多少、
         # 不回宿主补历史」。提示词读取条数另由 DECISION_HISTORY_FLOOR 兜底，

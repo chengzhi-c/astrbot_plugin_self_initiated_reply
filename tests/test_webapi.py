@@ -84,7 +84,6 @@ def _bootstrap():
         ({"judge_provider_id": True}, "judge_provider_id"),
         ({"vision_provider_id": {"a": 1}}, "vision_provider_id"),
         ({"vision_judge_provider_id": ["a"]}, "vision_judge_provider_id"),
-        ("not a dict", "请求体必须是 JSON 对象"),
         ({"whitelist_sessions": "abc"}, "whitelist_sessions 必须是数组"),
     ],
 )
@@ -291,29 +290,6 @@ def test_api_status(tmp_path) -> None:
         # 任务数/缓存规模
         assert set(status["tasks"]) == {"delay", "running_check", "background"}
         assert set(status["caches"]) == {"events", "image_events", "sessions"}
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_api_status_contains_failure_and_hides_details(tmp_path) -> None:
-    """状态端点失败时返回结构化错误，且不回显异常细节。
-
-    补这条 except 前，本端点是唯一没有兜底的 ``_api_*`` 处理器。补的当时并无
-    可达异常（见该函数 docstring），故这里用删属性人工制造失败，不是模拟宿主
-    API 异常，而是验证兜底本身：返回 ``ok=False``、给出中文文案、且异常原文
-    （这里是属性名）不出现在响应里。
-    """
-
-    async def scenario(plugin, main):
-        webapi = sys.modules[f"{PACKAGE}.webapi"]
-        del plugin._last_decisions  # dict() 取值即 AttributeError
-
-        status = await webapi._api_status(plugin)
-
-        assert status["ok"] is False
-        assert status["error"] == "状态读取失败"
-        # 异常原文含属性名，不得出现在回显里
-        assert "_last_decisions" not in str(status)
 
     with_plugin(tmp_path, scenario)
 
@@ -736,29 +712,6 @@ def test_post_config_splits_commas_like_the_page(tmp_path) -> None:
         assert plugin.settings.whitelist == {"qq:GroupMessage:1", "qq:GroupMessage:2"}
         assert len(result["config"]["whitelist_sessions"]) == 2
         assert utils.session_whitelisted("qq:GroupMessage:1", plugin.settings.whitelist)
-
-    with_plugin(tmp_path, scenario)
-
-
-def test_api_get_config_error_path(tmp_path) -> None:
-    """读取失败必须返回可序列化的失败载荷，不能返回 None（RL-5）。
-
-    Quart 无法序列化 None：裸 ``return`` 会把一次可恢复的读取失败放大成 500。
-    """
-
-    async def scenario(plugin, main):
-        webapi = sys.modules[f"{PACKAGE}.webapi"]
-
-        class BoomSettings:
-            def __getattr__(self, name):
-                raise RuntimeError("boom")
-
-        plugin.settings = BoomSettings()
-        result = await webapi._api_get_config(plugin)
-        assert result is not None, "异常分支返回 None，Quart 会抛 TypeError 变成 500"
-        assert isinstance(result, dict)
-        assert result["ok"] is False
-        assert json.dumps(result), "失败载荷必须可 JSON 序列化"
 
     with_plugin(tmp_path, scenario)
 

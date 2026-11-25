@@ -7,7 +7,7 @@
 - 每会话单调代次，`advance` 只增不减；白名单移除后重加不会产生 ABA，旧任务
   持有的旧代次必然被任何检查点拒绝。
 - 发送成功（DELIVERED）后，若代次未变，观察窗口（`last_proactive_observed_at`）
-  必须推进到该事件时间；代次已变则不推进且有日志。
+  必须至少推进到该事件时间，保留期间已消费的更新窗口；代次已变则不推进且有日志。
 - 代次已变的旧任务：不得**发起**发送，不得推进观察窗口。但**已提交**的发送
   必须照常走 `record_proactive_attempt`：消耗冷却与日配额，且 DELIVERED 时
   同样写入 `last_proactive_text` 与 assistant 历史条目。因为提交是已发生的
@@ -74,6 +74,11 @@
 
 ### 4.1 发送通道与装饰链边界
 
+- 生成与投递共用同一份事件快照，消息 ID、发送者与正文在生成前固定。主动回复的
+  extras 和结果槽独立于宿主入站事件；引用和 @ 始终指向本轮目标，提示词明确该目标。
+  生成提示词使用本地消息快照，完整宿主历史通过 `req.contexts` 传入。主动回复投递后
+  写入插件 `SessionState`；宿主对话记录由宿主 Agent 实现和历史插件管理。
+- 带正文的手动检查在会话锁内写入测试文本，并绑定指令事件；无正文时使用最近消息事件。
 - **两条发送通道**：事件在手上时走 `_send_via_event`（经宿主装饰链与发送后钩子），
   否则走 `context.send_message` 兜底——兜底**不经过装饰链**，装饰类插件对它不生效，
   也不 @ 人（没有可用的 sender_id）。「事件在手上」= `_last_events` 里还留着该会话的
@@ -92,6 +97,8 @@
 - 生成超时不硬取消 run_agent：先 `request_stop` 优雅收敛，宽限
   `GRACEFUL_STOP_GRACE_SEC` 后仍不退才兜底取消；调用方取消时同样收敛，
   不留孤儿任务（其工具直发会绕过预算与代次闸门）。
+- 生成时限覆盖宿主装配、请求钩子、reset 与模型运行；隔离任务退出后再回收其运行状态。
+- 判断阶段的模型解析和历史读取分别使用 `decision_timeout_sec`，识图保留独立预算。
 - 终止路径对最终状态保存只等待一个 `TERMINATE_TASK_TIMEOUT_SEC` 硬窗口。写入超时则保留 critical task 在 quarantine、标记 `DEGRADED` 并让 terminate 返回，未完成的写入按失败处理。立即失败只记录 WARNING，不阻塞宿主停止。
 - **超时窗口内被豁免的 pending critical task 按任务身份放弃后续写入**（`main._spared_critical_tasks` + `save_storage` 的身份判据）。宿主不等待隔离任务就构造新实例，那个慢写若落地会用陈旧快照覆盖新实例刚写出的 `state.json`。
 - 这条判据取任务身份，全局 `_abandon_disk_writes` 只留给最终落盘自己超时的路径：全局标志会连同同一把锁内随后执行的最终落盘一起挡掉，静默丢掉「最后一次记录之后的内存变更」。
@@ -110,13 +117,11 @@
   取消打断回滚自身。`/on` `/off` 与 webapi 的配置应用走同一形状。
 - 移出白名单：代次 prune、会话锁/运行标记回收、内存会话状态清除、磁盘条目
   过滤（重启不复活）。
-- 越权拒绝先行：非管理员写指令不得取消在途回复；只读指令永不打断进行中的
-  检查；写指令（add/remove/check/on/off）通过权限校验后才取消。本条说的是
-  **内联入口**（`on_message` 里的 `_handle_inline_command`）的纪律；宿主指令组
-  出口（装饰器注册的那些子命令）不做这次统一取消，只由各动作自身的效果生效——
-  remove 经白名单替换、check 自带 invalidate、off 经 `apply_enabled_topology`，
-  而 add 与 on 不取消在途检查（add 只在会话已有精确条目时才可能有在途检查，
-  on 的在途回复照常发完）。两个出口都是注册在案的，去重靠 `COMMAND_HANDLED_KEY`。
+- 越权拒绝先行：非管理员写指令不得取消在途回复；只读指令保持在途检查。
+  `check` 在两个入口中都先保存最近事件，再由动作自身执行 invalidate。
+  内联入口的 add/remove/on/off 在权限校验后统一取消；宿主指令组中的 remove
+  经白名单替换取消，off 经 `apply_enabled_topology` 取消，add/on 保留在途检查。
+  两个入口的去重由 `COMMAND_HANDLED_KEY` 完成。
 
 ## 6.1 `/on` `/off` 的持久语义
 
@@ -182,11 +187,11 @@
   保护窗口内的图片索引。白名单移除、命令失效和终止才调用 `clear_session`/`reset_all`
   清理图片索引。
 - 图片索引有保护窗口：只清理过期源，窗口内源（`prepared_source`）绝不清除。
-- 内存 data URL 按原始载荷字节计数，同时受全局和单会话预算约束；超限图片跳过并
+- 内存 data URL 按实际驻留的 base64 载荷字节计数，同时受全局和单会话预算约束；超限图片跳过并
   WARNING，不静默无限增长。Vision 描述 LRU 另受条目数和字节预算约束。
 - 远程图片每跳重新解析并绑定已验证的公网 IP；原 hostname 继续用于 HTTP Host/TLS
-  SNI，HTTP 客户端关闭环境代理，最多跟随 3 次重定向；请求声明
-  `Accept-Encoding: identity`，响应 `Content-Encoding` 非 identity 时拒绝并记
+  SNI，HTTP 客户端关闭环境代理，最多跟随 3 次重定向，中间响应体直接关闭；请求声明
+  `Accept-Encoding: identity`，最终响应 `Content-Encoding` 非 identity 时拒绝并记
   WARNING：解压会绕过体积计数上限。
 - 同时执行的阻塞图片 DNS 查询有界；超额请求直接降级，不能占满 AstrBot 共用的
   默认线程池。
@@ -209,7 +214,7 @@
 - 远程图片被**地址策略**主动拒绝（私有网段、端口非法或非白名单、逐跳重解析后
   落回内网）记 WARNING，与网络故障的 INFO 分开：前者说明有对端在敲被拦的门，运维
   需要看得见，混在噪音里就失去意义。
-- `last_decisions` 的 reason 可含至多 200 字用户原文（运营可见）：`state.json`
+- `last_decisions` 的 reason 经凭证脱敏，仍可能含至多 200 字用户原文（运营可见）：`state.json`
   本就持久化 recent 全文，此处沿用既有暴露面，取值见 `utils.DECISION_REASON_MAX_CHARS`；
   经 `/selfreply status` 呈现时折单行并截断至 60 字
   （`commands._RECENT_DECISION_REASON_MAX`，见 §13）。`GET /status` 只返回聚合计数，

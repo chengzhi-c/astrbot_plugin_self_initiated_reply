@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from astrbot.api import logger
+from astrbot.api.event import AstrMessageEvent
 
 from .image.parser import ImageParser
 from .models import (
@@ -41,7 +42,14 @@ class CheckSessionCallback(Protocol):
     """会话检查回调（trigger/force/expected_generation 关键字调用）。"""
 
     def __call__(
-        self, umo: str, *, trigger: str, force: bool, expected_generation: int | None
+        self,
+        umo: str,
+        *,
+        trigger: str,
+        force: bool,
+        expected_generation: int | None,
+        target_event: AstrMessageEvent | None = None,
+        target_text: str = "",
     ) -> Awaitable[str]: ...
 
 
@@ -280,7 +288,14 @@ class SessionScheduler:
         return released
 
     async def _run_registered_check(
-        self, umo: str, *, trigger: str, force: bool, generation: int | None
+        self,
+        umo: str,
+        *,
+        trigger: str,
+        force: bool,
+        generation: int | None,
+        target_event: AstrMessageEvent | None = None,
+        target_text: str = "",
     ) -> str:
         running_task = asyncio.current_task()
         if running_task is not None:
@@ -291,6 +306,8 @@ class SessionScheduler:
                 trigger=trigger,
                 force=force,
                 expected_generation=generation,
+                target_event=target_event,
+                target_text=target_text,
             )
         finally:
             if running_task is not None and self._running_check_tasks.get(umo) is running_task:

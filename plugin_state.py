@@ -141,16 +141,14 @@ def read_session_state(plugin: SelfInitiatedReplyPlugin, umo: str) -> SessionSta
 
 
 def append_recent_user_message(
-    plugin: SelfInitiatedReplyPlugin,
+    state: SessionState,
     event: Any,
     *,
-    umo: str,
     clean_text: str,
     active_at: float | None = None,
 ) -> float:
     """Write last_active + recent user record. Does not advance generation."""
     stamped = now_ts() if active_at is None else active_at
-    state = plugin._state_for(umo)
     state.last_active_at = stamped
     state.recent.append(
         MessageRecord(

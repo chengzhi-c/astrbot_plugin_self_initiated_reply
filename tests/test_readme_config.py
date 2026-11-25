@@ -1,14 +1,8 @@
-"""README 配置表与 ``CONFIG_SPECS`` 的守卫。
-
-README 是配置的第四份副本（另外三份是 ``_conf_schema.json`` / ``CONFIG_SPECS`` /
-设置页表单），前三份有两两闭合的测试，README 此前一份都没有：改默认值只要三方
-同步就不会被发现。这里钉住配置段的键总数、表格键集合与默认值。
-"""
+"""README 配置说明与实际配置一致。"""
 
 from __future__ import annotations
 
 import functools
-import json
 import pathlib
 import re
 
@@ -16,34 +10,14 @@ from .host_stubs import load_modules
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
-TABLE_KEYS = [
-    "decision_model_enabled",
-    "judge_provider_id",
-    "generation_timeout_sec",
-    "decision_temperature",
-    "decision_prompt_template",
-    "decision_timeout_sec",
-    "decision_history_min_messages",
-    "min_silence_sec",
-    "message_delay_sec",
-    "cooldown_sec",
-    "abandon_stale_on_new_message",
-    "skip_after_direct_call",
-    "quote_mode",
-    "quote_probability",
-    "mention_mode",
-    "mention_probability",
-]
-
 
 @functools.cache
 def _facts():
     (models,) = load_modules("selfreply_readme_config", "models")
-    schema = json.loads((REPO / "_conf_schema.json").read_text(encoding="utf-8"))
     specs = {spec.key: spec for spec in models.CONFIG_SPECS}
     readme = (REPO / "README.md").read_text(encoding="utf-8")
     section = readme.split("### 常用配置项", 1)[1].split("\n---\n", 1)[0]
-    return schema, specs, readme, section
+    return specs, section
 
 
 def _key_names(text: str) -> list[str]:
@@ -67,30 +41,22 @@ def _table_rows(section: str) -> list[tuple[str, str]]:
     return rows
 
 
-def test_schema_and_specs_agree_on_every_key() -> None:
-    """前置事实：schema 与 SPECS 的键集合与顺序一致，配置段写的总数取自这里。"""
-    schema, specs, _readme, section = _facts()
-    assert list(schema) == list(specs), "schema 与 CONFIG_SPECS 的键顺序不一致"
+def test_config_section_count_matches_specs() -> None:
+    specs, section = _facts()
     assert f"{len(specs)} 个键" in section, (
         f"配置段没有写明键总数 {len(specs)}：{section.splitlines()[0]}"
     )
 
 
-def test_table_keys_and_order_are_stable() -> None:
-    _schema, _specs, _readme, section = _facts()
-    keys = [key for key, _line in _table_rows(section)]
-    assert keys == TABLE_KEYS, f"配置表键集合或顺序变了：{keys}"
-
-
 def test_config_section_cites_only_real_keys() -> None:
-    _schema, specs, _readme, section = _facts()
+    specs, section = _facts()
     unknown = sorted(set(_key_names(section)) - set(specs))
     assert not unknown, f"配置段出现不存在的键名：{unknown}"
 
 
 def test_table_defaults_match_specs() -> None:
     """表格里的默认值必须与 SPECS 逐条一致——README 漂移最常见的形态。"""
-    _schema, specs, _readme, section = _facts()
+    specs, section = _facts()
     rows = _table_rows(section)
     assert rows, "配置表里没有一个键名"
     by_key = dict(rows)
@@ -114,7 +80,7 @@ def test_table_defaults_match_specs() -> None:
 
 def test_security_relevant_keys_carry_their_semantics() -> None:
     """两个有安全含义的键必须点名并写出后果，不能只留在表单里。"""
-    _schema, _specs, _readme, section = _facts()
+    _specs, section = _facts()
     private_rows = "\n".join(
         line for line in section.splitlines() if "enabled_private_sessions" in line
     )

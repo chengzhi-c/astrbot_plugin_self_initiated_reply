@@ -271,14 +271,7 @@ class SelfInitiatedReplyPlugin(Star):
             spawn=self._track_background_task,
             should_run=lambda: self._can_start_tasks() and self.runtime_enabled,
             state_for=lambda umo: self._state_for(umo),
-            check_session=lambda umo, trigger, force, expected_generation: (
-                self._pipeline.check_session(
-                    umo,
-                    trigger=trigger,
-                    force=force,
-                    expected_generation=expected_generation,
-                )
-            ),
+            check_session=lambda umo, **kwargs: self._pipeline.check_session(umo, **kwargs),
             clear_event=self._coordinator.clear_event,
             drop_older_images=self._coordinator.drop_older_than,
             last_events=self._last_events,
@@ -320,7 +313,6 @@ class SelfInitiatedReplyPlugin(Star):
             grace_stop_sec=lambda: GRACEFUL_STOP_GRACE_SEC,
             background_tasks=self._background_tasks,
             discard_background=self._background_tasks.discard,
-            read_history=lambda umo, limit: self.bridge.read_astrbot_history(umo, limit=limit),
             build_image_context=self._vision.build_context,
             last_events=self._last_events,
             is_stopping=lambda: self._stopping,

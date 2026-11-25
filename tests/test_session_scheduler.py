@@ -63,7 +63,9 @@ def _make_scheduler(tmp_path: Path, config: dict | None = None):
         notify_silence=lambda umo: None,
     )
 
-    async def check_session(umo, *, trigger, force, expected_generation):
+    async def check_session(
+        umo, *, trigger, force, expected_generation, target_event=None, target_text=""
+    ):
         checks.append((umo, trigger, force, expected_generation))
         return "ok"
 
@@ -248,7 +250,9 @@ async def test_delayed_check_registers_and_cleans_running_table(tmp_path: Path) 
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def blocking_check(umo_, *, trigger, force, expected_generation):
+    async def blocking_check(
+        umo_, *, trigger, force, expected_generation, target_event=None, target_text=""
+    ):
         started.set()
         await release.wait()
         return "ok"
@@ -754,7 +758,7 @@ async def test_patrol_loop_session_error_continues(tmp_path: Path, caplog: objec
 
     attempts = {"n": 0}
 
-    async def boom(umo, *, trigger, force, expected_generation):
+    async def boom(umo, *, trigger, force, expected_generation, target_event=None, target_text=""):
         attempts["n"] += 1
         raise RuntimeError("session check broken")
 
@@ -795,7 +799,7 @@ async def test_delayed_check_error_log_is_redacted_without_traceback(
         "?api_key=sk-LIVE-SECRET-123&Signature=SECRET_SIGNATURE"
     )
 
-    async def boom(umo_, *, trigger, force, expected_generation):
+    async def boom(umo_, *, trigger, force, expected_generation, target_event=None, target_text=""):
         raise RuntimeError(f"Client error '401' for url '{signed_url}'")
 
     scheduler._check_session = boom
@@ -997,7 +1001,9 @@ async def test_delayed_check_exits_when_disabled_after_sleep(tmp_path: Path) -> 
 
     calls: list[str] = []
 
-    async def record(umo, *, trigger, force, expected_generation):
+    async def record(
+        umo, *, trigger, force, expected_generation, target_event=None, target_text=""
+    ):
         calls.append(umo)
 
     scheduler._check_session = record
@@ -1150,7 +1156,9 @@ def _patrol_blocking_check(scheduler, models, tmp_path: Path):
     ended = asyncio.Event()
     release = asyncio.Event()
 
-    async def blocking_check(umo_, *, trigger, force, expected_generation):
+    async def blocking_check(
+        umo_, *, trigger, force, expected_generation, target_event=None, target_text=""
+    ):
         started.set()
         try:
             await release.wait()

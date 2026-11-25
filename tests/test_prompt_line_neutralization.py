@@ -23,11 +23,9 @@ def _records(models, *pairs):
     ]
 
 
-async def _empty_history(umo: str, *, limit: int = 0):
-    return []
-
-
-async def _no_image_context(umo: str, *, enabled: bool, provider_id: str) -> str:
+async def _no_image_context(
+    umo: str, *, enabled: bool, provider_id: str, before: float | None = None
+) -> str:
     return ""
 
 
@@ -102,7 +100,6 @@ async def test_generation_prompt_keeps_one_line_per_recent_message() -> None:
         grace_stop_sec=lambda: 0.2,
         background_tasks=set(),
         discard_background=lambda task: None,
-        read_history=_empty_history,
         build_image_context=_no_image_context,
         last_events={},
     )

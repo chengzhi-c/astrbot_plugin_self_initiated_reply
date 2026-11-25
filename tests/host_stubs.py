@@ -703,7 +703,13 @@ class FakeEvent:
         self._platform = platform
         self._is_admin = is_admin
         self._result: Any = None
-        self._extra: dict[str, Any] = {}
+        self._extras: dict[str, Any] = {}
+        self.message_obj = types.SimpleNamespace(
+            message_id="",
+            sender=types.SimpleNamespace(user_id=sender_id, nickname=sender_id),
+            message=[],
+        )
+        self.session = types.SimpleNamespace(session_id=self.session_id)
         self._stopped = False
         self.sent_texts: list[str] = []
 
@@ -740,10 +746,10 @@ class FakeEvent:
         return _FakeMessageEventResult().message(text)
 
     def set_extra(self, key: str, value: Any) -> None:
-        self._extra[key] = value
+        self._extras[key] = value
 
-    def get_extra(self, key: str, default: Any = None) -> Any:
-        return self._extra.get(key, default)
+    def get_extra(self, key: str | None = None, default: Any = None) -> Any:
+        return self._extras if key is None else self._extras.get(key, default)
 
     async def send(self, message: Any) -> Any:
         getter = getattr(message, "get_plain_text", None)

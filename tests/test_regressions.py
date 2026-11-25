@@ -310,7 +310,7 @@ def test_inherit_mode_denylists_host_dangerous_tools(tmp_path: Path) -> None:
             plugin,
             main,
             event=event,
-            # 普通插件工具 + 宿主级危险工具（cron，4.23.3 实测名 future_task）
+            # 普通插件工具与宿主 cron 工具（4.23.3 使用 future_task）。
             build_tools=("send_image", "future_task"),
             # 模拟 hook 在第一次 enforce 后注入危险工具（kb agentic）与普通工具
             first_enforce_tools=("astr_kb_search", "third_party_weather"),
@@ -352,11 +352,12 @@ def test_unknown_send_records_state_even_with_direct_sends(tmp_path: Path) -> No
 
         async def build_effect(kwargs, result):
             kwargs["req"].func_tool.add_tool(SimpleNamespace(name="send_image"))
+            agent = DirectSendingRunner(kwargs["event"])
             return FakeBuildResult(
-                agent_runner=DirectSendingRunner(event),
+                agent_runner=agent,
                 provider_request=kwargs["req"],
                 provider=None,
-                reset_coro=DirectSendingRunner(event).reset(),
+                reset_coro=agent.reset(),
             )
 
         def run_effect(_runner, **_kwargs):
@@ -487,6 +488,53 @@ def test_after_send_cancellation_records_delivered_attempt(tmp_path: Path) -> No
             main._AGENT_RUNTIME = original_runtime
 
     with_plugin(tmp_path, scenario)
+
+
+def test_direct_call_during_after_send_keeps_observation_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """@Bot 已消费的新观察窗口不能被上一条回复的迟到记账倒退。"""
+
+    async def scenario(plugin, main):
+        from .host_stubs import DirectSendingRunner, FakeBuildResult
+
+        await plugin.on_message(make_event(message_str="Alice 的问题", sender_id="alice"))
+        state = plugin._state_for(UMO)
+
+        async def build_effect(kwargs, _result):
+            runner = DirectSendingRunner(completion_text="回复 Alice")
+            return FakeBuildResult(
+                agent_runner=runner,
+                provider_request=kwargs["req"],
+                reset_coro=runner.reset(),
+            )
+
+        async def hook(_event, event_type, *_args):
+            if event_type.name == "OnAfterMessageSentEvent":
+                await asyncio.sleep(0.002)
+                direct = make_event(message_str="@Bot Bob 的问题", sender_id="bob")
+                direct.is_at_or_wake_command = True
+                await plugin.on_message(direct)
+                assert state.last_proactive_observed_at == state.last_active_at
+            return False
+
+        monkeypatch.setattr(
+            main,
+            "_AGENT_RUNTIME",
+            PipelineTestAdapter(main._AGENT_RUNTIME, build_effect=build_effect),
+        )
+        monkeypatch.setattr(main, "call_event_hook", hook)
+        assert (
+            await plugin._pipeline.check_session(UMO, trigger="patrol", force=False)
+            == "已主动回复。"
+        )
+        assert state.last_proactive_observed_at == state.last_active_at
+        assert await plugin._pipeline.check_session(UMO, trigger="patrol", force=False) == (
+            "这条消息之后已经主动回复过。"
+        )
+        assert state.daily_count == 1
+
+    with_plugin(tmp_path, scenario, enabled_message_trigger=False, skip_after_direct_call=True)
 
 
 # ============================================================================

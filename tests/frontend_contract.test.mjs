@@ -219,6 +219,37 @@ test("bridge discovery and calls share the request deadline", async () => {
   }
 });
 
+for (const channel of ["bridge", "fetch"]) {
+  test(`timed-out discovery does not start a late ${channel} POST`, async () => {
+    let resolveBridge;
+    const discovery = new Promise((resolve) => { resolveBridge = resolve; });
+    const posts = [];
+    const request = requestPluginApi({
+      getBridge: () => discovery,
+      pluginId: "plugin-id",
+      endpoint: "ui/theme",
+      method: "POST",
+      body: { theme: "light" },
+      fetchImpl: async (_url, options) => {
+        posts.push(JSON.parse(options.body));
+        return { ok: true, json: async () => ({ ok: true }) };
+      },
+      pageUrl: "http://localhost/",
+      timeoutMs: 20,
+    });
+
+    await assert.rejects(request, /请求超时/);
+    resolveBridge(channel === "bridge" ? {
+      apiPost: async (_endpoint, body) => {
+        posts.push(body);
+        return { ok: true };
+      },
+    } : null);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(posts, [], "the expired action must not start a submission");
+  });
+}
+
 test("fetch response parsing is covered by the same deadline", async () => {
   const request = requestPluginApi({
     getBridge: async () => null,
@@ -411,9 +442,8 @@ test("every data-config-control in the page is registered in PROVIDER_CONTROLS",
   // 故 HTML 的声明必须与该数组的 name 集一致：漏登记则该控件不 render、不 sync
   // （静默空白）。当前一致故运行时不可达；这条守的是"新增控件忘了登记"的漂移，
   // 而不是给生产路径加死检查。
-  const [html, configIo, appJs] = await Promise.all([
+  const [html, appJs] = await Promise.all([
     readFile(join(pageDir, "index.html"), "utf8"),
-    readFile(join(pageDir, "config-io.mjs"), "utf8"),
     readFile(join(pageDir, "app.js"), "utf8"),
   ]);
   const declared = new Set(
@@ -430,8 +460,6 @@ test("every data-config-control in the page is registered in PROVIDER_CONTROLS",
     [],
     `data-config-control 未在 PROVIDER_CONTROLS 登记：${appNames}`,
   );
-  assert.match(configIo, /function providerConfigKeys\(form\)/);
-  assert.doesNotMatch(configIo, /PROVIDER_CONFIG_KEYS/);
 });
 
 test("theme localStorage key stays single-sourced with the HTML bootstrap", async () => {
@@ -469,11 +497,7 @@ test("sidenav links name a mobile tab the page actually has", async () => {
 });
 
 test("settings page scripts only look up ids that index.html declares", async () => {
-  // 页面脚本按字面量取元素（app.js 的 $()、chrome.mjs 的 getElementById）。
-  // 拼错 id（或页面删掉对应元素）时，多数调用点有 if (el) 守卫：不抛异常，用户
-  // 只是静默少一块功能。实测把 whitelistSummary 拼成 whitelistSummaryTYPO 后，
-  // 本文件其余契约、浏览器用例与全量 pytest 全部保持绿色（计数不写数字，
-  // 写了必然随开发过时）。
+  // 缺失元素可能被调用处的判空跳过，需检查脚本引用与 HTML 声明是否一致。
   // 文件清单由目录派生，新增脚本自动纳入。
   // 只做单向 JS ⊆ HTML：反向的"孤儿 id"是无害死标记，而且会在
   // <svg><use href="#…"> 与 aria-* 锚点上误报，豁免名单本身会腐烂。
@@ -512,11 +536,6 @@ test("frontend plugin id matches the backend package identity", async () => {
 test("forced-colors restores real outlines for box-shadow-only focus rings", async () => {
   // Windows 高对比度（forced-colors: active）下浏览器把 box-shadow 强制为 none，
   // 只用 box-shadow 表达焦点的规则会整条消失——键盘用户完全看不到焦点位置。
-  // Chromium 实测（emulateMedia({forcedColors:"active"}) + 键盘 Tab 聚焦，
-  // 对比聚焦前后的计算样式）：.sidenav-link / .btn-link / .mtab 三处只剩
-  // 不可见的 outline-color、outline-offset 差异，outline-style 始终 none；
-  // 而按钮（真 outline）与输入框（border-color 变化）仍有可辨差异，
-  // 兜底名单只收前者，后者保持原样。
   const css = (await readFile(join(pageDir, "style.css"), "utf8")).replace(
     /\/\*[\s\S]*?\*\//g,
     "",
@@ -1483,55 +1502,11 @@ test("a STALE_WRITE response adopts the server revision and requires a refresh",
   assert.equal(state.configRevision, newerRevision);
   assert.equal(state.requiresConfigRefresh, true);
   assert.ok(toasts.some((message) => message.includes("配置已被其他请求修改")));
+  assert.ok(toasts.some((message) => message.includes("刷新")));
+  assert.equal(elements.configSaveState.textContent, "保存状态未知");
 
   await io.saveConfig({ preventDefault() {} });
   assert.equal(posts, 1, "STALE_WRITE 后不得在刷新前再次提交");
-});
-
-test("a STALE_WRITE response tells the operator to refresh", async () => {
-  // 四个保存入口在 requiresConfigRefresh 期间全部禁用。只显示「保存失败」
-  // 时运营者看到的是点不动的按钮，不知道原因是配置已变、也不知道该刷新。
-  const classList = { add() {}, remove() {}, toggle() {} };
-  const fields = [
-    { dataset: { configKey: "enabled" }, type: "checkbox", checked: true },
-  ];
-  const form = {
-    classList,
-    inert: false,
-    querySelector: () => null,
-    querySelectorAll: () => fields,
-  };
-  const elements = {
-    configForm: form,
-    configSaveState: { textContent: "", classList },
-  };
-  const state = {
-    configLoaded: true,
-    savingConfig: false,
-    configRevision: TEST_REVISION,
-    isDirty: false,
-    requiresConfigRefresh: false,
-  };
-  const toasts = [];
-  const io = makeConfigIo({
-    elements,
-    state,
-    apiPost: async () => ({
-      ok: false,
-      error: "配置已被其他请求修改",
-      error_code: "STALE_WRITE",
-      config_revision: `sha256:${"b".repeat(64)}`,
-    }),
-    showToast: (message) => toasts.push(message),
-  });
-
-  await io.saveConfig({ preventDefault() {} });
-
-  assert.ok(
-    toasts.some((message) => message.includes("刷新")),
-    `STALE_WRITE 未提示刷新：${toasts}`,
-  );
-  assert.equal(elements.configSaveState.textContent, "保存状态未知");
 });
 
 test("persistTheme reports a rejected write, not just a transport failure", async () => {

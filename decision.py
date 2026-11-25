@@ -32,7 +32,6 @@ from .models import (
 from .utils import (
     build_history_text,
     cap_context_text,
-    collapse_whitespace,
     consume_task_result,
     latest_user_text,
     parse_decision_json,
@@ -235,13 +234,6 @@ class DecisionMaker:
             decision = {"should_reply": True, "reason": "手动强制检查", "elapsed_sec": 0.0}
         else:
             decision = await self.ask_decision_model(umo, state, trigger=trigger)
-        # reason 由判断模型产出，可被群聊内容带偏：不折单行/去控制字符会撑开
-        # /selfreply status 面板，ANSI 转义还能伪造日志行。字符串与 dict 两条
-        # 出口共用这一份口径（INFO 与 /status 读的都是它）：先折单行再逐字符筛，
-        # 反过来会把换行直接删掉、两个词黏在一起。isprintable 同时挡 C0/DEL/C1。
-        decision["reason"] = "".join(
-            char for char in collapse_whitespace(decision.get("reason") or "") if char.isprintable()
-        )
         if not decision.get("should_reply"):
             return f"判断不回复：{decision['reason'] or '未说明'}"
         # quote 是可选字段：只有真被模型裁决过的路径才带值，强制路径缺省
@@ -281,7 +273,8 @@ class DecisionMaker:
             }
         provider_id = ""
         try:
-            provider_id = await self._resolve_provider(umo)
+            async with asyncio.timeout(self.settings.decision_timeout_sec):
+                provider_id = await self._resolve_provider(umo)
         except Exception as exc:
             # provider 解析链路的业务故障单独分类，避免被当作"未找到"误导运维。
             logger.error(
@@ -312,7 +305,7 @@ class DecisionMaker:
             logger.warning("[%s] decision prompt build failed: %s", PLUGIN_ID, detail)
             return {
                 "should_reply": False,
-                "reason": f"判断提示词构建失败：{detail}",
+                "reason": "判断提示词构建失败，请查看 AstrBot 日志",
                 "elapsed_sec": self._clock() - started,
             }
         response: Any = None
@@ -351,13 +344,12 @@ class DecisionMaker:
                 await self._converge_provider_task(task, "decision cancelled")
             raise
         except Exception as exc:
-            # 异常文本常带请求 URL（含凭证），reason 会经 GET /status 出网，
-            # 与日志共用同一脱敏口径。
+            # SDK 异常可能含请求正文，状态只返回分类，脱敏详情留在服务端。
             detail = redact_exc_text(exc)
             logger.warning("[%s] decision model failed: %s", PLUGIN_ID, detail)
             return {
                 "should_reply": False,
-                "reason": f"判断模型异常：{detail}",
+                "reason": "判断模型异常，请查看 AstrBot 日志",
                 "elapsed_sec": self._clock() - started,
             }
 
@@ -387,6 +379,7 @@ class DecisionMaker:
         # 快照必须早于任何 await：build_recent_messages 会等宿主历史与识图（最长
         # 2×vision_timeout_sec）。在它们之后读 state.recent 时，期间到达的新消息会
         # 让「最后一条消息」与「最近消息列表」指向不同时刻，提示词自相矛盾。
+        active_at = state.last_active_at
         latest = latest_user_text(list(state.recent))
         # 年龄钳到非负：as_timestamp 允许 persisted 时间戳超前 now +
         # MAX_CLOCK_SKEW_SEC，手工编辑过的 state.json 会算出负年龄，提示词里出现
@@ -405,6 +398,7 @@ class DecisionMaker:
             umo,
             enabled=self.settings.vision_judge_enabled,
             provider_id=self.settings.vision_judge_provider_resolved,
+            before=active_at,
         )
         if image_context:
             recent = f"{recent}\n\n{image_context}" if recent else image_context
@@ -421,9 +415,7 @@ class DecisionMaker:
             # recent_messages 是多行聊天记录：保留换行才能区分发言人与轮次；
             # 超预算时保尾（不能用 sanitize 自带的保头截断，那会先丢最新几条，
             # 与模板「优先参考最近至少 8 条」的要求相反）。
-            # 顺序必须是「先截断、后净化」：sanitize 的逐字符过滤是 O(历史总字节)
-            # 且同步跑在事件循环上，反序会让一条超大消息把整条决策链卡住
-            # （实测 20MB 历史 ≈ 2.1s）。截断先把它压到 2000 字预算内。
+            # 先截断再净化，避免超长历史的逐字符过滤阻塞事件循环。
             "recent_messages": sanitize_prompt_variable(
                 cap_context_text(recent, MAX_DECISION_CONTEXT_CHARS, marker=CONTEXT_CAP_MARKER),
                 max_length=None,
@@ -457,4 +449,5 @@ class DecisionMaker:
             read_history=self._read_history,
             limit=limit,
             min_text_records=self.settings.decision_history_min_messages,
+            timeout_sec=self.settings.decision_timeout_sec,
         )

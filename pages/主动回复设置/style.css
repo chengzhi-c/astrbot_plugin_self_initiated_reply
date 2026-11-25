@@ -1,5 +1,5 @@
 /* =================================================================
-   style.css：业镜 · 主动回复设置页样式（零构建，node --check 直跑）
+   业镜 · 主动回复设置页样式
    =================================================================
    分节（与文件内的 "==== 标题 ====" 标记逐字同序）：
      令牌（主题变量与深色两份）
@@ -37,10 +37,7 @@
 	--text: light-dark(#1b1e2e, #f7efe6);
 	--text-soft: light-dark(#373c52, #e2d3c2);
 	--muted: light-dark(#5c637e, #b8a48e);
-	/* 提示文字令牌（11-12px 小字号）必须过 WCAG AA 4.5:1，且 --surface 与 --surface-2
-	   两种底都要过：浅色侧 #7c839f 在白底仅 3.75，同色相加深到 #666d88（白底 5.11 /
-	   --surface-2 底 4.77）；深色侧取 #9c886f（--surface 5.39 / --surface-2 4.97）。
-	   四组数值都是实测值，改值前先复算。 */
+	/* 小字号提示文字在 --surface 与 --surface-2 上均需满足 WCAG AA 4.5:1。 */
 	--faint: light-dark(#666d88, #9c886f);
 	--accent: light-dark(#485484, #e0a040);
 	--accent-text: light-dark(#3b4672, #e8ae52);
@@ -270,10 +267,7 @@ code {
 		border-color 0.2s var(--ease),
 		background 0.2s var(--ease);
 }
-/* 只用 border/background 表达粘附态。padding 不能在粘附时收缩：topbar 是首位
-   sticky 元素，占位高度一变，浏览器滚动锚定就会补偿 scrollY，而 scrollY 又决定
-   is-stuck 是否保留（chrome.mjs 的 y > 8）。实测 padding 20px→12px 使高度变化约
-   16px，远超该阈值，于是页面在接近最上方时自激抖动。 */
+/* 粘附态保持占位高度，避免滚动锚定与粘附阈值相互触发而抖动。 */
 .topbar.is-stuck {
 	border-bottom-color: var(--border);
 	background: color-mix(in srgb, var(--bg) 92%, transparent);

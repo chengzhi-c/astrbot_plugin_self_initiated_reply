@@ -325,13 +325,15 @@ async def test_pipeline_unknown_delivery_consumes_quota_without_history_entry() 
 
 
 @pytest.mark.parametrize(
-    ("final_state", "expected_reply"),
+    ("direct_text", "final_state", "expected_reply"),
     [
-        ("delivered", "工具直发；最终回复"),
-        ("unknown", "工具直发"),
+        ("工具直发", "delivered", "工具直发；最终回复"),
+        ("工具直发", "unknown", "工具直发"),
+        ("", "unknown", ""),
     ],
 )
-async def test_pipeline_records_confirmed_direct_text_with_final_result(
+async def test_pipeline_records_confirmed_direct_send_with_final_result(
+    direct_text: str,
     final_state: str,
     expected_reply: str,
 ) -> None:
@@ -342,7 +344,7 @@ async def test_pipeline_records_confirmed_direct_text_with_final_result(
     )
     state = models.SessionState()
     ledger = models.AttemptLedger()
-    direct = ledger.reserve("tool_direct", "工具直发")
+    direct = ledger.reserve("tool_direct", direct_text)
     ledger.mark_in_flight(direct)
     ledger.resolve(direct, models.SendStatus.DELIVERED)
     final = ledger.reserve("final_reply")
@@ -363,7 +365,9 @@ async def test_pipeline_records_confirmed_direct_text_with_final_result(
 
     assert delivery.apply_kwargs[0]["reply"] == expected_reply
     assert delivery.apply_kwargs[0]["confirmed"] is True
-    assert state.last_proactive_text == expected_reply
+    expected_history = expected_reply or "[工具主动发送 x1]"
+    assert state.last_proactive_text == expected_history
+    assert [message.text for message in state.recent] == [expected_history]
 
 
 class _BlockingDelivery:

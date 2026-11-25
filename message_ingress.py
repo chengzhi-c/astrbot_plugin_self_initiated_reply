@@ -99,9 +99,8 @@ def _record_message(
     else:
         generation = plugin._gate.current(umo)
     active_at = append_recent_user_message(
-        plugin,
+        plugin._state_for(umo),
         event,
-        umo=umo,
         clean_text=clean_text,
     )
     plugin._coordinator.record_event(umo, event, active_at)

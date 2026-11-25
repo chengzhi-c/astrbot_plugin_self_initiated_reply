@@ -91,11 +91,13 @@ export async function requestPluginApi({
   pageUrl,
   timeoutMs = FETCH_TIMEOUT_MS,
 }) {
-  let controller;
+  const controller = new AbortController();
   try {
     return await withDeadline(
       async () => {
         const bridge = await getBridge();
+        // 握手可能晚于请求截止时间返回；超时后不能再启动提交。
+        controller.signal.throwIfAborted();
         if (bridge) {
           return method === "POST"
             ? await bridge.apiPost(endpoint, body)
@@ -107,7 +109,6 @@ export async function requestPluginApi({
             url.searchParams.set(key, value);
           }
         });
-        controller = new AbortController();
         const response = await fetchImpl(url, {
           method: method === "POST" ? "POST" : undefined,
           credentials: "include",
@@ -131,7 +132,7 @@ export async function requestPluginApi({
         return result;
       },
       timeoutMs,
-      () => controller?.abort()
+      () => controller.abort()
     );
   } catch (error) {
     throw normalizeApiError(error);

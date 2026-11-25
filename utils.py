@@ -54,9 +54,7 @@ _JSON_DECODER = json.JSONDecoder()
 # 若干示例对象属于正常输出，按对象数封顶会把「合法 JSON 在后段」误判成没有 JSON。
 # 故主预算按累计扫描字符计，次数只留作防死循环的宽松兜底。
 _JSON_SCAN_MAX_ATTEMPTS = 2048
-# 累计扫描字符预算 = min(len(text) * 倍数, 绝对上限)：正常噪声只占全文一小部分，倍数
-# 给「几乎全文都是候选」的长输出留余量；绝对上限让再长的文本也不放大单轮成本（实测
-# 2048 次尝试 ~5 ms；未闭合的长字符串一次就扫到文末，单次即越预算）。
+# 累计扫描预算同时限制放大倍数和绝对字符数，控制长输出的解析成本。
 _JSON_SCAN_BUDGET_FACTOR = 8
 _JSON_SCAN_BUDGET_MAX_CHARS = 200_000
 _REPLY_FENCE_PATTERN = re.compile(r"^```(?:text)?\s*|\s*```$", re.IGNORECASE)
@@ -85,10 +83,7 @@ MODEL_JSON_TRUE_WORDS = frozenset({"true", "yes", "1", "是"})
 MODEL_JSON_FALSE_WORDS = frozenset({"false", "no", "0", "否"})
 _REDACTED_QUERY_MARK = "?<redacted>"
 _REDACTED_PATH_MARK = "/<redacted>"
-# 凭证运行的最小形态：``&key=`` / ``;key=`` 起头的一段。query 之外的位置
-# （netloc、path）出现它同样是凭证：urlparse 不会把它归进 query，只按 query
-# 处理会让 ``https://h/v1/chat&api_key=sk-...`` 整段幸存，这是实测占泄漏
-# 输入最多的一类。
+# 凭证也可能出现在 netloc 或 path 的 &key= / ;key= 片段中，需一并脱敏。
 _AUTHORITY_KEY_RUN = re.compile(r"[&;][^\s/]*=")
 # 日志兜底文本里的 C0 控制字符（含 CR/LF）与 DEL 一律剔除：换行能把一段
 # 可疑 URL 拆成独立日志行，其余 C0 在 URL 里没有合法含义。兜底分支与
@@ -101,13 +96,12 @@ _LOG_CONTROL_REMOVAL = dict.fromkeys((*range(0x20), 0x7F, *range(0x80, 0xA0), 0x
 # 抹掉），不能当本地路径原样放行。scheme 至少两个字符：单字母 ``C:`` 是
 # Windows 盘符；``data:`` 这类不带 ``/`` 的 opaque scheme 也不是本模式。
 _URL_SHAPED_PATTERN = re.compile(r"^(?:[a-zA-Z][a-zA-Z0-9+.-]+:/|//)")
-# 判断模型 reason 的对外呈现长度上限：超长截断，只进日志/前端展示。
+# 判断模型 reason 的长度上限，供日志及本会话 status 指令使用。
 DECISION_REASON_MAX_CHARS = 200
 # UMO（unified message object）为 platform:message_type:session_id 三段式。
 _UMO_PARTS = 3
 
 # 异常文本里的 URL 形态：scheme:// 开头，吃到引号/空白/尖括号为止。
-# 只认这一种形态（实证泄漏全部来自它），不做全文 secret 扫描。
 # 字符类刻意不收 `)` 与 `]`：IPv6 字面量主机的 `]`（http://[::1]:11434/...?
 # api_key=...）或路径里的 `)` 会截断匹配，query 凭证原样幸存；而把两者放进
 # 类内只可能多吞一个紧随其后的散文括号，与既有的 `,`/`.` 同罪。
@@ -115,8 +109,8 @@ _EXCEPTION_URL_PATTERN = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>]+")
 
 # 同上的**相对路径**形态：urllib3 的 MaxRetryError 把请求 URL 拆成
 # "... Max retries exceeded with url: /v1/chat?api_key=sk-...&x=1 (Caused by ...)"，
-# 没有 scheme://，上面的模式匹配不到，而它照样把 query 凭证带进 reason 并经
-# GET /status 出网。只认「以 / 开头且带 query」的片段，且前一个字符不能是
+# 没有 scheme://，上面的模式匹配不到，但仍需过滤日志和裁决理由中的 query 凭证。
+# 只认「以 / 开头且带 query」的片段，且前一个字符不能是
 # 单词字符或斜杠——否则会切进绝对 URL 的 path 部分重复脱敏，也会误伤
 # ``https://`` 的那两个斜杠。右界同绝对形态：不收括号，路径里的 `)` 不该
 # 成为 query 的泄密口（真实右界是空白）。可选的 ``host:port`` 前缀收
@@ -143,7 +137,7 @@ def _redact_relative_url(text: str) -> str:
 
     与 ``redact_url`` 分开是因为后者要求 scheme+netloc，路径形态会被它原样
     放行（只截断），凭证因此漏出去。截断预算与 ``redact_url`` 同一口径：
-    这段文本同样经 ``redact_exc_text`` 进 reason 并由 GET /status 出网。
+    这段文本同样用于日志及裁决理由。
     """
     authority = text.split("/", 1)[0]
     return (
@@ -267,26 +261,17 @@ def redact_url(value: str) -> str:
     return clean[: LOG_URL_MAX_CHARS - len(suffix)] + suffix
 
 
-def redact_exc_text(exc: BaseException) -> str:
-    """移除异常文本中的 URL 凭证、认证头和凭证字段值。
-
-    provider SDK 的异常串常把请求 URL 整段带出来（含 api_key/Signature 等
-    query 凭证）。这些文本既进日志，也进 ``reason`` 经 GET /status 出网，
-    故统一在此收口。其余错误信息保留，便于排查。
-
-    两种 URL 形态都要收：绝对 URL（scheme://）与相对路径（urllib3
-    ``MaxRetryError`` 的 ``url: /path?key=...``）。漏掉后者时凭证照样经
-    reason 出网，而它恰恰是 httpx/requests/urllib3 连接失败的标准文本。
-
-    最后两步不依赖 URL 边界：按参数名抹值，再抹 ``user:pass@`` 的 userinfo。
-    无路径的 ``host?key=…``、单标签主机、无 scheme 的 IPv6 都切不出 URL
-    形状，靠这两步收口。
-    """
-    text = safe_exc_text(exc).translate(_LOG_CONTROL_REMOVAL)
+def redact_sensitive_text(text: str) -> str:
+    """移除日志和状态文本中的控制字符、签名 URL 与凭证字段。"""
+    text = text.translate(_LOG_CONTROL_REMOVAL)
     text = _EXCEPTION_URL_PATTERN.sub(lambda m: redact_url(m.group(0)), text)
     text = _EXCEPTION_RELATIVE_URL_PATTERN.sub(lambda m: _redact_relative_url(m.group(0)), text)
     text = _USERINFO_PATTERN.sub("<redacted>@", text)
     return _CREDENTIAL_PATTERN.sub(r"\1<redacted>", text)
+
+
+def redact_exc_text(exc: BaseException) -> str:
+    return redact_sensitive_text(safe_exc_text(exc))
 
 
 async def maybe_await(value: Any) -> Any:
@@ -315,16 +300,14 @@ async def build_history_text(
     read_history: ReadHistoryCallback,
     limit: int,
     min_text_records: int,
+    timeout_sec: float | None = None,
 ) -> str:
-    """本地文本记录不足阈值时回宿主补历史，去重后按 limit 格式化。
-
-    决策（decision.py）与生成（generation.py）共用同一形状，
-    阈值与 limit 由调用方按各自配置决定。
-    """
+    """判断上下文的本地文本不足阈值时回宿主补历史，去重后按 limit 格式化。"""
     records = dedupe_message_records(local_records)
     if count_text_records(records) < min_text_records:
         try:
-            host_records = list(await read_history(umo, limit=limit))
+            async with asyncio.timeout(timeout_sec):
+                host_records = list(await read_history(umo, limit=limit))
         except Exception as exc:
             logger.debug(
                 "[%s] host history unavailable session=%s error=%s",
@@ -462,8 +445,14 @@ def parse_decision_json(text: str) -> dict[str, Any] | None:
     else:
         return None  # 无效类型
 
-    # 规范化 reason
-    reason = str(parsed.get("reason") or "未提供理由").strip()
+    # 先折单行、脱敏，再截断；提前截断会破坏凭证引号及 URL 的边界。
+    reason = redact_sensitive_text(
+        "".join(
+            char
+            for char in collapse_whitespace(parsed.get("reason") or "未提供理由")
+            if char.isprintable()
+        )
+    )
     if len(reason) > DECISION_REASON_MAX_CHARS:
         reason = reason[:DECISION_REASON_MAX_CHARS] + "..."
 
@@ -751,7 +740,7 @@ def format_message_records(records: list[MessageRecord], *, limit: int) -> str:
     return "\n".join(lines)
 
 
-def cap_context_text(text: str, max_chars: int, *, marker: str) -> str:
+def cap_context_text(text: str, max_chars: int, *, marker: str, last_line_prefix: str = "") -> str:
     """总字符预算内的保尾裁剪：历史越新越重要，超限只裁更早部分。
 
     从行边界起裁，加一行 ``marker`` 提示省略。两个例外：
@@ -770,9 +759,11 @@ def cap_context_text(text: str, max_chars: int, *, marker: str) -> str:
             break
         kept.insert(0, line)
         used += addition
-    if not kept:
-        # 连一行都放不下：按字符保尾，至少让预算不为空转。
-        kept = [text[-budget:]] if budget > 0 else []
+    if not kept and budget > 0:
+        # 单条超长消息保尾时仍保留发言者与目标标签。
+        prefix = last_line_prefix[:budget]
+        tail_budget = budget - len(prefix)
+        kept = [prefix + (text[-tail_budget:] if tail_budget else "")]
     return "\n".join([marker, *kept])
 
 

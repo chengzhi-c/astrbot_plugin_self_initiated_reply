@@ -20,7 +20,7 @@ from .models import (
     now_ts,
     today_key,
 )
-from .plugin_state import append_recent_user_message, apply_enabled_topology, read_session_state
+from .plugin_state import apply_enabled_topology, read_session_state
 from .utils import (
     collapse_whitespace,
     event_sender_id,
@@ -130,13 +130,12 @@ def list_text(settings: Settings, event: AstrMessageEvent) -> str:
     return "主动回复白名单：\n" + "\n".join(f"- {item}" for item in sorted(settings.whitelist))
 
 
-# 最近裁决一行的原因截断长度。reason 的长度不因单点上界而可依赖（模型异常
-# 路径是脱敏原文拼接，且会引用用户原文），单行回显必须自带上限。
+# 状态指令使用比持久化理由更短的展示上限。
 _RECENT_DECISION_REASON_MAX = 60
 
 
 def recent_decision_line(decision: dict[str, Any] | None) -> str:
-    """把本会话最近一次裁决渲染成一行（与 ``GET /status`` 的 ``last_decisions`` 同源）。"""
+    """把本会话最近一次裁决渲染成一行。"""
     if not decision:
         return "最近一次判断: 暂无记录"
     verdict = "接话" if decision.get("should_reply") else "不接话"
@@ -303,6 +302,8 @@ async def dispatch_command_action(
     if action == "check":
         if not plugin._can_start_tasks():
             return _lifecycle_reject_text(plugin, "手动检查")
+        text = collapse_whitespace(arg or strip_command_prefix(event_text(event)))
+        previous_event = plugin._last_events.get(umo) or event
         # 必须 force_cancel：在途检查若不取消，它只在自己的代次闸门处退出，
         # 而下面 2s 的释放等待等不到它，本次手动检查会撞「已有判断任务在运行」。
         generation = plugin._coordinator.invalidate(umo, force_cancel=True)
@@ -310,21 +311,12 @@ async def dispatch_command_action(
         # pipeline 会撞上「已有判断任务在运行」净效果是旧检查被静默掐掉、新的
         # 也没执行，用户必须重发一次。故有界等待其释放。
         await _await_previous_check_release(plugin, umo)
-        # 有界等待只在实际有在途检查时才消耗时间，而这期间到达的新用户消息
-        # 已经记下自己的事件并排好延迟检查。无条件覆写会把那条消息的事件换成
-        # 指令事件，finally 再当"自己的"清掉——它的延迟检查随后被 guard 以
-        # 「没有可用的最近消息事件」丢弃，巡检也因事件缓存为空跳过该会话。
-        # 已有更新的事件时保留它，手动检查照常跑（判定用的是 recent 文本）。
-        if not plugin._last_events.get(umo):
-            plugin._coordinator.record_event(umo, event, now_ts())
-        text = collapse_whitespace(arg or strip_command_prefix(event_text(event)))
-        if text:
-            append_recent_user_message(
-                plugin,
-                event,
-                umo=umo,
-                clean_text=text,
-            )
+        # 空 check 仍测试最近消息；invalidate 清了缓存时临时补回原事件。
+        # 等待期间到达的新消息保留自己的缓存与后续检查。
+        temporary_event = None
+        if not text and not plugin._last_events.get(umo):
+            temporary_event = previous_event
+            plugin._coordinator.record_event(umo, temporary_event, now_ts())
         try:
             check = plugin._track_background_task(
                 plugin._scheduler._run_registered_check(
@@ -332,13 +324,15 @@ async def dispatch_command_action(
                     trigger=CheckTrigger.MANUAL,
                     force=True,
                     generation=generation,
+                    target_event=event if text else None,
+                    target_text=text,
                 )
             )
             if check is None:
                 return _lifecycle_reject_text(plugin, "手动检查")
             result = await check
         finally:
-            if plugin._last_events.get(umo) is event:
+            if temporary_event is not None and plugin._last_events.get(umo) is temporary_event:
                 active_at = plugin._last_event_at.get(umo)
                 if active_at is not None:
                     plugin._coordinator.clear_event(umo, expected_active_at=active_at)

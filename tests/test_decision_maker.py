@@ -94,7 +94,7 @@ def _make_decision(
             raise history_error
         return list(history_records or [])
 
-    async def build_image_context(umo, enabled, provider_id):
+    async def build_image_context(umo, enabled, provider_id, before=None):
         calls["image"] += 1
         calls["image_args"] = (enabled, provider_id)
         return image_context
@@ -156,7 +156,7 @@ async def test_recent_messages_is_capped_before_sanitizing(tmp_path: Path) -> No
 
     缺陷形态：``sanitize_prompt_variable`` 的逐字符过滤是 O(历史总字节) 且同步
     跑在事件循环上。反序时它收到的是**整段**历史——一条超大消息就能让所有会话
-    与 Web 面板停摆（实测 20MB 历史 ≈ 2.1s）。截断先把它压进 2000 字预算。
+    与 Web 面板停摆。截断先把它压进上下文预算。
 
     用「净化器见过的最大长度」钉顺序：反序时它会收到全量历史，正序时只收到
     预算内的一段。这比计时断言确定，不受机器快慢影响。
@@ -277,6 +277,71 @@ async def test_model_timeout_reason(tmp_path: Path) -> None:
     result = await maker.ask_decision_model("s1", state, trigger="message_delay")
     assert result["should_reply"] is False
     assert result["reason"] == "判断模型超时"
+
+
+@pytest.mark.parametrize("stage", ["provider", "history"])
+async def test_preparation_reads_respect_decision_timeout(tmp_path: Path, stage: str) -> None:
+    _, models, maker, _, calls = _make_decision(tmp_path)
+    maker.settings.decision_timeout_sec = 0.02
+    cancelled = asyncio.Event()
+
+    async def blocked_read(*_args, **_kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    if stage == "provider":
+        maker._resolve_provider = blocked_read
+    else:
+        maker._read_history = blocked_read
+    task = asyncio.create_task(
+        maker.ask_decision_model(
+            "s1", _state(models, recent=[("user", "本地消息", 900.0)]), trigger="message_delay"
+        )
+    )
+    try:
+        done, _ = await asyncio.wait({task}, timeout=0.3)
+        assert done, f"{stage} 读取越过判断超时，整轮检查仍挂起"
+        result = task.result()
+        assert cancelled.is_set()
+        assert result["should_reply"] is False
+        assert calls["model"] == (0 if stage == "provider" else 1)
+        if stage == "provider":
+            assert result["reason"] == "判断模型解析失败"
+        else:
+            assert "本地消息" in calls["prompt"]
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_prompt_uses_original_image_window_and_independent_vision_budget(tmp_path: Path):
+    _, models, maker, _, calls = _make_decision(tmp_path)
+    maker.settings.decision_timeout_sec = 0.02
+    state = _state(models, active_at=900.0, recent=[("user", "Alice 的图片", 900.0)])
+    seen = []
+
+    async def read_history(_umo, *, limit):
+        state.last_active_at = 901.0
+        state.recent.append(models.MessageRecord("user", "Bob", "Bob 的图片", 901.0))
+        await asyncio.sleep(0)
+        return []
+
+    async def describe(_umo, *, enabled, provider_id, before=None):
+        seen.append(before)
+        await asyncio.sleep(0.05)
+        return "[图片描述] Alice 的猫"
+
+    maker._read_history = read_history
+    maker._build_image_context = describe
+    result = await maker.ask_decision_model("s1", state, trigger="message_delay")
+    assert seen == [900.0], "识图窗口必须固定在历史读取前的活动时间"
+    assert "Alice 的猫" in calls["prompt"]
+    assert "Bob 的图片" not in calls["prompt"]
+    assert result["should_reply"] is False
+    assert calls["model"] == 1
 
 
 async def test_timeout_returns_even_when_provider_swallows_cancellation(tmp_path: Path) -> None:
@@ -500,12 +565,12 @@ async def test_model_generate_exception_reason(tmp_path: Path) -> None:
     _, models, maker, _, _ = _make_decision(
         tmp_path,
         {"decision_model_enabled": True},
-        model_error=RuntimeError("boom"),
+        model_error=RuntimeError("internal response: private conversation excerpt"),
     )
     state = _state(models)
     result = await maker.ask_decision_model("s1", state, trigger="message_delay")
     assert result["should_reply"] is False
-    assert result["reason"] == "判断模型异常：boom"
+    assert result["reason"] == "判断模型异常，请查看 AstrBot 日志"
 
 
 async def test_invalid_json_reason(tmp_path: Path) -> None:
@@ -977,13 +1042,21 @@ async def test_skip_reason_folded_to_single_line_without_control_chars(tmp_path:
 
 # 群友可控的一段恶意 reason：换行 + C0(ESC/BEL) + DEL + C1(CSI/NEL)。
 # 逐类都要挡：ESC 伪造日志行，DEL/C1 撑坏 /selfreply status 面板。
-DIRTY_REASON = "第一行\n第二行\x1b[31m红\x1b[0m\x07alert\x7fDEL\x9b31mC1\x85NEL"
-CLEAN_REASON = "第一行 第二行[31m红[0malertDEL31mC1 NEL"
+DIRTY_REASON = "第一行\n第二行\x1b[31m红\x1b[0m\x07alert\x7fDEL\x9b31mC1\x85NEL token=private-token"
+CLEAN_REASON = "第一行 第二行[31m红[0malertDEL31mC1 NEL token=<redacted>"
 
 
 @pytest.mark.parametrize("should_reply", [True, False])
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        (DIRTY_REASON, CLEAN_REASON),
+        ('token="' + "private-token" * 30 + '"', "token=<redacted>"),
+    ],
+    ids=["control-characters", "long-credential"],
+)
 async def test_decision_reason_sanitized_before_verdict_branching(
-    tmp_path: Path, should_reply: bool
+    tmp_path: Path, should_reply: bool, source: str, expected: str
 ) -> None:
     """两种裁决走同一份清洗口径。
 
@@ -999,7 +1072,7 @@ async def test_decision_reason_sanitized_before_verdict_branching(
     _, models, maker, _, _ = _make_decision(
         tmp_path,
         {"decision_model_enabled": True},
-        model_text=json.dumps({"should_reply": should_reply, "reason": DIRTY_REASON}),
+        model_text=json.dumps({"should_reply": should_reply, "reason": source}),
     )
     state = _state(models, active_at=900.0, recent=[("user", "今天天气不错", 990.0)])
 
@@ -1019,6 +1092,6 @@ async def test_decision_reason_sanitized_before_verdict_branching(
         assert char not in reason, f"reason 仍含 {char!r}: {reason!r}"
     # 两条出口同口径：字符串出口 = 固定前缀 + dict 出口的 reason。
     if should_reply:
-        assert logical == CLEAN_REASON
+        assert logical == expected
     else:
-        assert result == f"判断不回复：{CLEAN_REASON}"
+        assert result == f"判断不回复：{expected}"

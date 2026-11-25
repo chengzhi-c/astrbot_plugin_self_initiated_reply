@@ -425,8 +425,7 @@ def run_contract_checks() -> int:
     """符号存在性 + 契约断言 + denylist 覆盖；返回进程退出码。"""
     import importlib
 
-    # 包化导入（与 CI 的 pip install -e 后运行一致）：插件内部模块使用相对导入，
-    # 顶层 import 会断（runtime_adapter 引入 .utils 相对导入后实测发现）。
+    # 按包导入，保留插件内部相对导入的解析上下文。
     from astrbot_plugin_self_initiated_reply import runtime_adapter
 
     failures: list[str] = []

@@ -73,10 +73,7 @@ _UNABLE_PATTERNS = re.compile(
     r"无法.*获取|不能.*获取|抱歉.*图|sorry.*image",
     re.IGNORECASE,
 )
-# 命中的拒答片段之外，剩余正文短于该值才判为拒答。
-# 实测标定：真拒答的剩余正文最长 8 字符，
-# 有效描述最短 12 字符，阈值取 10 留余量。不设「正文过短即拒答」的独立分支：
-# 有效描述也可能只有七个字，空描述由调用方处理。
+# 仅在命中拒答片段且剩余正文较短时拒绝，保留简短的有效图片描述。
 _UNABLE_RESIDUAL_MIN_LENGTH = 10
 # HTTP 状态码 >= 该值即视为下载失败（图片 URL 通常是 302 后的 CDN，4xx/5xx 一律放弃）。
 _HTTP_ERROR_STATUS_MIN = 400
@@ -269,12 +266,7 @@ def _atomic_write(path: Path, content: bytes) -> None:
 
 
 def _shared_ssl_context() -> ssl.SSLContext:
-    """进程内共享 TLS 上下文。
-
-    create_default_context() 每次要读约 95 个 CA（本机实测 20-40ms），而这里每个
-    请求、包括每一跳重定向都新建一个连接池：一批 5 张图最顺也要 10 次请求，
-    叠起来是数百毫秒纯 CPU 停顿，且全插件共享同一事件循环。
-    """
+    """共享 TLS 上下文，避免每次下载和重定向都同步加载 CA 证书。"""
     global _SSL_CONTEXT
     if _SSL_CONTEXT is None:
         _SSL_CONTEXT = ssl.create_default_context()
@@ -825,6 +817,7 @@ class ImageParser:
             local_path = await self._recorder_bridge.get_local_image_path(
                 image_info.message_id,
                 image_info.url,
+                platform_name=image_info.platform_name,
             )
             if local_path:
                 # 也走 allowlist：local_path 源头是对端可控的 OneBot 字段，
@@ -1020,7 +1013,7 @@ class ImageParser:
                 # 单操作超时与整体预算同源（外层 wait_for 用同一 ``_timeout_sec``）：
                 # 硬编码值在配大时永远吃不满，配小时又形同虚设。
                 timeout=self._timeout_sec,
-                follow_redirects=True,  # 跟随重定向（QQ 图片 URL 通常会 302）
+                follow_redirects=False,
                 max_redirects=3,
                 trust_env=False,
                 transport=transport,
@@ -1028,37 +1021,46 @@ class ImageParser:
                 # 让守规矩的服务端直接返回原始字节，而不是先被解码再被拒。
                 headers={"Accept-Encoding": "identity"},
             ) as client:
-                async with client.stream("GET", url) as response:
-                    if response.status_code >= _HTTP_ERROR_STATUS_MIN:
-                        return None
-                    # aiter_bytes 会先解压再交回数据，事后计数挡不住解压时的内存膨胀。
-                    # 在读 body 前拒绝传输压缩，使体积检查覆盖实际分配的载荷。
-                    encoding = str(response.headers.get("content-encoding") or "").strip().lower()
-                    if encoding not in ("", "identity"):
-                        logger.warning(
-                            "[%s] image download refused: unsupported content-encoding %s",
-                            PLUGIN_ID,
-                            encoding,
-                        )
-                        return None
-                    content_length = response.headers.get("content-length")
+                request = client.build_request("GET", url)
+                for _ in range(client.max_redirects + 1):
+                    response = await client.send(request, stream=True)
                     try:
-                        if content_length and int(content_length) > MAX_IMAGE_BYTES:
+                        # 自动重定向会先读完中间响应体；逐跳关闭，避免绕过图片体积限制。
+                        if response.next_request is not None:
+                            request = response.next_request
+                            continue
+                        if response.status_code >= _HTTP_ERROR_STATUS_MIN:
                             return None
-                    except (TypeError, ValueError):
-                        pass
-                    content = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        content.extend(chunk)
-                        if len(content) > MAX_IMAGE_BYTES:
+                        # aiter_bytes 会先解压再交回数据，必须在读取前拒绝压缩。
+                        encoding = response.headers.get("content-encoding", "").strip().lower()
+                        if encoding not in ("", "identity"):
+                            logger.warning(
+                                "[%s] image download refused: unsupported content-encoding %s",
+                                PLUGIN_ID,
+                                encoding,
+                            )
                             return None
-                    if not content:
-                        return None
-                    # The declared content-type is a hint; the payload decides.
-                    content_type = sniff_image_mime(bytes(content))
-                    if not content_type:
-                        return None
-                    return to_data_url(content_type, bytes(content))
+                        content_length = response.headers.get("content-length")
+                        try:
+                            if content_length and int(content_length) > MAX_IMAGE_BYTES:
+                                return None
+                        except ValueError:
+                            pass
+                        content = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            content.extend(chunk)
+                            if len(content) > MAX_IMAGE_BYTES:
+                                return None
+                        if not content:
+                            return None
+                        # The declared content-type is a hint; the payload decides.
+                        content_type = sniff_image_mime(bytes(content))
+                        if not content_type:
+                            return None
+                        return to_data_url(content_type, bytes(content))
+                    finally:
+                        await response.aclose()
+                return None
         except _ImageAddressBlocked as exc:
             logger.warning(
                 "[%s] image download refused by address policy: %s",
